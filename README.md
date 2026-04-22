@@ -660,6 +660,56 @@ Each of the following plans is a **capability group** that the greenfield servic
 ### PLAN B — Proactivity & Habit (make users come back)
 *Bet: 100% reactive chat = no habit. A bot that texts first creates a habit. Habit = DAU → paid conversion.*
 
+#### B.0 First-turn re-engagement nudge (within-session, Rishi-requested feature)
+
+**What it is:** When a user opens a chat with an AI influencer:
+
+1. **t = 0**: Bot immediately sends a greeting message (warm, in-character, generated from the influencer's Soul File + the user's known profile/memory if any).
+2. Alongside the greeting, the client shows **3-4 starter option chips** (same behavior as the current service's "Default Prompts" per DOLR context doc §7.3).
+3. An inactivity timer starts (default 20-30 seconds, per-bot tunable, A/B-testable globally).
+4. State machine from here:
+   - **User taps an option chip** → option becomes a user message → normal turn flow. Chips disappear on the client.
+   - **User types a message** → normal turn flow. Chips disappear.
+   - **User navigates away from the chat screen** → client sends a presence signal; timer pauses. If they come back, timer resumes.
+   - **User stays on the screen, silent, timer fires** → **chips disappear AND bot sends a second follow-up message** — feels proactive, invites a response. Follow-up is LLM-generated, references the greeting naturally, asks an open question the user is most likely to engage with (uses the user's memory + Soul File for contextual hook).
+5. After the follow-up, a second inactivity timer starts (default 45-60 seconds, longer than the first). If user still silent when THIS fires → **stop.** Do NOT send a third auto-message. Spammy behavior kills retention faster than it drives engagement.
+
+**Why this matters (Rishi's stated bet):** the first 30 seconds in a chat decide whether a user engages at all. Today, if a user opens chat and doesn't click an option, nothing happens. They close the app. With this feature, the bot "feels alive" — it notices the pause, gently prompts again — and conversion from "app opened" to "first user reply" should rise meaningfully.
+
+**Where it lives in the architecture:**
+- **Client (mobile):** renders greeting + chips; tracks presence (is this chat screen in foreground?); handles option-tap, typing, timer-fire UI state. Sends presence heartbeat to `yral-rishi-chat-ai-v2-public-api` every 10 seconds while the chat screen is active. Removes chips when (a) user acts or (b) a new bot message arrives (covers both user-typed and auto-fired cases).
+- **`yral-rishi-chat-ai-v2-conversation-turn-orchestrator`:** generates the greeting at conversation open (first turn of a new conversation OR when a returning user re-opens an existing conversation after >N hours idle). Also generates the follow-up message when the scheduler triggers it. Uses Soul File + user memory to make both messages feel personal.
+- **`yral-rishi-chat-ai-v2-proactive-message-scheduler`:** owns the inactivity timer. When a user opens a chat, scheduler registers `(user_id, conversation_id, fires_at = now + 25s)`. On presence heartbeat, scheduler can extend/reset. If timer fires without a user message being posted in between, scheduler calls orchestrator to generate the follow-up → orchestrator posts the message → push notification to mobile if app is backgrounded.
+- **Config lives in `yral-rishi-chat-ai-v2-soul-file-library`:** per-bot overrides (e.g., a "laid-back therapist" bot might wait 60 seconds; a "hyperactive companion" bot might wait 15 seconds). Global defaults in Layer 1 of the Soul File.
+
+**What the follow-up message actually says:**
+- Not "Hi, are you there?" (robotic)
+- Instead: LLM generates it with full context. Examples:
+  - Nutritionist bot: *"No rush — just curious, what did you eat last night? I can help you plan today around that."*
+  - Astrologer bot: *"By the way, I was looking at your chart — there's something interesting about your Mars placement I'd love to share when you're ready."*
+  - Companion bot: *"Kya sochh rahe ho? 😊 I'm just here whenever."* (tone/language matched to user's prior interactions if we have memory; generic warmth if we don't.)
+- The LLM prompt for follow-up generation is itself part of the Soul File's prompt layers — a "re-engagement nudge" sub-prompt that combines: greeting + 3-4 options (what was shown) + user's memory/profile + Soul File + "generate a gentle, character-appropriate follow-up that invites response without being pushy; 1-2 sentences max."
+
+**Paywall interaction (decision needed):** the follow-up message counts as 1 of the 50 free messages (because it's a bot-authored message in the conversation). This could annoy users who pay for ₹9 access then feel they "wasted" 2 messages on greeting + follow-up. **Recommend: DON'T count greeting OR auto-fired follow-up against the 50-msg paywall.** Only count messages that are a response to a user action. Encode this as a `count_toward_paywall` flag on each message; yral-billing's paywall check honors the flag.
+
+**A/B testable variables (via `yral-rishi-chat-ai-v2-events-and-analytics`):**
+- Inactivity timer duration (15s / 25s / 45s / 60s)
+- Whether to show chips at all (some creators may prefer only a greeting)
+- Follow-up message style (short/long, question/statement, emoji/plain)
+- Per-bot defaults vs. global defaults
+- Paywall-counting behavior (count / don't count)
+
+**Success metrics:**
+- Primary: **opened-chat → first-user-reply conversion rate**. Baseline (today): needs measurement during Phase 0 baseline capture. Target: +20% lift with this feature.
+- Secondary: D1 retention, session length, paid-conversion rate per chat.
+- Guardrail: **uninstall rate**. If nudging feels spammy, users uninstall. Kill the feature immediately if this metric moves >+2%.
+
+**When to ship:** Phase 2 (Week 7-12) alongside the Soul File Library MVP. This is a high-visibility, low-complexity win that showcases v2's "the chat feels alive" promise. It ALSO validates the proactive-message-scheduler infrastructure at a small scale before we use it for cross-session proactive pings (Phase 4).
+
+**Mobile-change implications** (cross-reference Section 7 Step 3.5 audit): adds minor client work — presence heartbeat emission + chip-dismissal-on-new-bot-message. Both are trivial (<1 day of mobile work each). Adds as item **M13** in the audit: *"Client-side presence heartbeat + chip dismissal on auto-fired bot message — <1 day mobile work, no protocol change, can ship with v2.0."* Still well within the "one mobile change" spirit if bundled with whatever other mobile change Saikat approves.
+
+---
+
 **Core services:**
 
 | # | Service | What it does | Why it matters |
@@ -1143,6 +1193,7 @@ Rishi's constraint is **ideally zero mobile-client changes, absolute max ONE**. 
 | M10 | Message Inbox rendering | v2 may send richer message types (voice notes, images, reactions). If mobile hardcodes text-only, richer types won't render. | ❌ NO if we ship richer media in v2. | **NEEDS APPROVAL** — can be phased (text-only v2 first, richer media in v2.1). |
 | M11 | WebSocket inbox updates | Already exists — `WS /api/v1/chat/ws/inbox/{user_id}` in current Python service. v2 preserves protocol. | ✅ YES — preserve WebSocket contract. | No change. |
 | M12 | Analytics events list | v2 may fire new event types. Mobile's analytics list (mobile-app-events-list.md per DOLR context doc) may need update. | ✅ PARTIAL — server-side events only, no mobile change needed unless we want mobile-side events. | Minor — update mobile-app-events-list.md, low effort. |
+| M13 | Presence heartbeat + chip-dismissal-on-auto-message (for Plan B.0 re-engagement nudge) | First-turn inactivity nudge needs client to emit presence pings every 10s while chat screen is open, and to dismiss option chips both on user action AND when a new bot message arrives. | ⚠️ MINOR — small client work (<1 day total), no protocol change required; can reuse existing WebSocket channel for presence. | NEEDS APPROVAL — bundle with whatever other mobile change Saikat approves. |
 
 **The headline decision for Saikat + Sarvesh + Shivam:**
 
