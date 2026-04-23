@@ -4,6 +4,10 @@
 > - [`CONSTRAINTS.md`](./CONSTRAINTS.md) — the tight reviewable list of every hard constraint, organized by category, status per row. Start here if you want a fast index.
 > - [`V2_TEMPLATE_AND_CLUSTER_PLAN.md`](./V2_TEMPLATE_AND_CLUSTER_PLAN.md) — the canonical template + rishi-4/5/6 cluster design doc (Swarm-only networking, node role layout, bootstrap workflow, CI guardrails, net-new capabilities). This doc extends that one with product-facing capability plans, roadmap, memories, and cross-team integration.
 >
+> 🚨 **CUTOVER NOTE (locked 2026-04-23):** any week/month/phase-number timelines mentioned below in the context of cutover (Phase 4, canary, DNS flip, deprovisioning old service) are **aspirational sequencing only**. Actual cutover timing is entirely at Rishi's discretion — I do not propose, schedule, or raise cutover until he explicitly says so. Yral-chat-ai Python goes live 2026-04-25 and handles load fine; v2 builds calmly alongside for as long as Rishi wants. See `feedback_no_cutover_without_explicit_approval.md` memory and CONSTRAINTS.md row A6.
+>
+> 🚨 **SENTRY REMINDER (locked 2026-04-23):** ALL v2 services use `sentry.rishi.yral.com` (Rishi's self-hosted on rishi-3). NEVER the team `apm.yral.com`. Reinforced 3 times by Rishi. See CONSTRAINTS.md row A7 + C4.
+>
 
 
 > **Purpose:** Design a **brand-new, greenfield AI-companion chat platform** that is 1000× better than the current chat infrastructure. The existing Python `yral-chat-ai` service and everything preceding it stay live as a safety net throughout. Rishi brainstorming doc. Non-programmer friendly. ADHD-aware (extensive, structured, skim-friendly).
