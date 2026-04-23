@@ -8,7 +8,7 @@
 
 - V2 greenfield plan (`i-spoke-to-chatgpt-eager-squirrel.md`) is approved. 13 services, Docker Swarm, template-first. This plan is the **template + cluster-architecture layer** underneath it.
 - Saikat is allocating 3 new servers (to become rishi-4/5/6). Spec confirmed today — see §2.
-- **Existing `yral-rishi-hetzner-infra-template` is NEVER modified** (per memory + no-delete covenant). We build a **new** template — call it `yral-rishi-chat-ai-v2-new-service-template` — that *forks* from the existing one and adds v2 learnings.
+- **Existing `yral-rishi-hetzner-infra-template` is NEVER modified** (per memory + no-delete covenant). We build a **new** template — call it `yral-rishi-agent-new-service-template` — that *forks* from the existing one and adds v2 learnings.
 - Goal: every v2 service spawned from the new template is **airtight** (no single failure hurts another service, no silent errors, rollbacks automatic, observability uniform) and the product is **1000× better** than current Python chat-ai on the dimensions Rishi cares about (see §7).
 
 ---
@@ -47,7 +47,7 @@ Rishi is a non-programmer with ADHD. He must be able to read any name in this co
 | table `msgs` | table `conversation_messages` | table should name its content |
 | column `ts` | column `created_at_timestamp_utc` | `ts` is not obvious |
 | env var `KEY` | env var `GEMINI_API_KEY` | generic name tells you nothing |
-| stack `chat-v2` | stack `yral-rishi-chat-ai-v2-public-api` | full name, already locked in |
+| stack `chat-v2` | stack `yral-rishi-agent-public-api` | full name, already locked in |
 | log field `lat` | log field `request_latency_milliseconds` | latency in what unit? |
 | function `proc()` | function `process_incoming_chat_message()` | what does "proc" mean? |
 
@@ -64,7 +64,7 @@ This is the single most important thing the template ships with. Bake it in deep
    - Block-list is overridable with a `# noqa: naming` comment only when there's a strong reason (loop index `i` in a tight numeric loop, etc.). Every override is reviewed.
 2. **SQL lint** in CI: every new table name must be ≥2 English words OR on a tiny allow-list (`users`, `conversations`, `messages`, `influencers`). Column names must be ≥1 full word — no `ts`, `dt`, `amt`, `qty`, etc.
 3. **Environment variable lint**: every env var must have ≥2 words separated by `_`. (`PORT` → `SERVICE_PORT`; `KEY` → `GEMINI_API_KEY`.)
-4. **Docker/Swarm name lint**: service + stack + secret names must match `yral-rishi-chat-ai-v2-<purpose-in-english-with-hyphens>` regex.
+4. **Docker/Swarm name lint**: service + stack + secret names must match `yral-rishi-agent-<purpose-in-english-with-hyphens>` regex.
 5. **File/directory name lint**: kebab-case, lowercase, English, ≥2 words for top-level dirs.
 6. **Pull-request template** asks: "Do all new names in this PR read as English to a non-programmer?" Reviewer must tick yes.
 7. **Documentation**: the template's `CLAUDE.md` opens with this rule in the first paragraph. Every service spawned from the template inherits that `CLAUDE.md`. Future engineers (and future-you) read it first.
@@ -88,7 +88,7 @@ Earlier I assumed Caddy lives **on-host** on rishi-4/5 (same pattern as the exis
 ### Concrete rules for the template
 
 1. **No `ports:` directive in any compose file except the edge Caddy stack.** Reviewed in CI lint — `yq` check fails the build if any other stack exports a host port.
-2. **All inter-service traffic is overlay.** Service A talks to service B by DNS name `yral-rishi-chat-ai-v2-service-b` (Swarm adds it to the overlay DNS).
+2. **All inter-service traffic is overlay.** Service A talks to service B by DNS name `yral-rishi-agent-service-b` (Swarm adds it to the overlay DNS).
 3. **Postgres, Redis, Langfuse, Prometheus, Grafana, Loki — all reachable only on overlay.** No port published. Caddy (the only edge) proxies their UIs via a subdomain if external access is needed (grafana.rishi.yral.com, langfuse.rishi.yral.com).
 4. **Three distinct overlay networks** (per §5): `yral-v2-public-web` (Caddy ↔ public-facing services), `yral-v2-internal` (service ↔ service), `yral-v2-data-plane` (services ↔ Postgres/Redis/Langfuse). A compromised business-logic service cannot directly reach Postgres without going through PgBouncer's overlay VIP.
 5. **UFW rules simplify dramatically.** Host firewall only needs: 443 on edge nodes (rishi-4/5), 22 from bastion/laptop IPs, Swarm ports 2377/7946/4789 between the 3 nodes. That's it. No per-service port-opening churn.
@@ -115,11 +115,11 @@ Rishi's rule: nowhere in the template, any service, any Caddy snippet, any CI wo
 
 ### How the pattern works
 
-Single file `cluster.hosts.yaml` in `yral-rishi-chat-ai-v2-cluster-bootstrap` describes the *shape* (host names, roles, Swarm roles, placement labels, which SSH user, which key). **Actual IPv4 values live only in GitHub Secrets**, never in git. A render step at deploy time (`scripts/render-cluster-config.py`) merges the two into a runtime config that every other script reads.
+Single file `cluster.hosts.yaml` in `yral-rishi-agent-cluster-bootstrap` describes the *shape* (host names, roles, Swarm roles, placement labels, which SSH user, which key). **Actual IPv4 values live only in GitHub Secrets**, never in git. A render step at deploy time (`scripts/render-cluster-config.py`) merges the two into a runtime config that every other script reads.
 
 ```yaml
 # cluster.hosts.yaml (shape only — lives in git, no IPs here)
-cluster_name: yral-rishi-chat-ai-v2-cluster
+cluster_name: yral-rishi-agent-cluster
 datacenter_name: hetzner-falkenstein
 
 proxy_edge_hosts:                       # rishi-1/2 — we don't own them, we SSH in
@@ -258,7 +258,7 @@ Saikat gives time-limited root SSH. After that, we operate as `rishi-deploy`. Pl
 
 **How this works in plain terms:**
 
-Cloudflare keeps saying "anyone asking for `*.rishi.yral.com` — send them to rishi-1 or rishi-2." Saikat doesn't change that. When a request for, say, `chat-ai-v2.rishi.yral.com` lands on rishi-1, Caddy on rishi-1 looks at the config and sees "for this specific subdomain, don't serve locally — forward the whole request to rishi-4 port 443." rishi-1 becomes a **reverse proxy** for our v2 subdomains.
+Cloudflare keeps saying "anyone asking for `*.rishi.yral.com` — send them to rishi-1 or rishi-2." Saikat doesn't change that. When a request for, say, `agent.rishi.yral.com` lands on rishi-1, Caddy on rishi-1 looks at the config and sees "for this specific subdomain, don't serve locally — forward the whole request to rishi-4 port 443." rishi-1 becomes a **reverse proxy** for our v2 subdomains.
 
 ```
 User → Cloudflare → rishi-1 Caddy → (forwards) → rishi-4 Caddy → service container
@@ -342,7 +342,7 @@ Core services (2-replica)              Core services (2-replica)                
 
 **Staging environment (locked in):** every service has a staging deploy alongside prod from day 1. Design:
 - **Shared expensive infra**: one Patroni cluster, one Redis, one Langfuse. Staging data is separated by namespace:
-  - Postgres: prod uses schema `chat_ai_v2_*`, staging uses `staging_chat_ai_v2_*`.
+  - Postgres: prod uses schema `agent_*`, staging uses `staging_agent_*`.
   - Redis: prod keys prefixed `prod:`, staging keys prefixed `staging:`.
   - Langfuse: `environment=production` vs `environment=staging` tag on every trace.
   - Sentry: same project, `environment` tag distinguishes.
@@ -433,7 +433,7 @@ If any test fails, we fix before proceeding. This is the price of "bulletproof."
 
 ## 7. The v2 template — what goes in, learning by learning
 
-The v2 template is a **fresh repo** (`dolr-ai/yral-rishi-chat-ai-v2-new-service-template`) that *forks from* the existing `yral-rishi-hetzner-infra-template` and *evolves*. Below is the explicit list of everything we inherit unchanged, every pain point from the existing template we fix in v2, and every net-new capability we add. This table is the spec for the v2 template. **Every row is reviewable — we refine this in conversation.**
+The v2 template is a **fresh repo** (`dolr-ai/yral-rishi-agent-new-service-template`) that *forks from* the existing `yral-rishi-hetzner-infra-template` and *evolves*. Below is the explicit list of everything we inherit unchanged, every pain point from the existing template we fix in v2, and every net-new capability we add. This table is the spec for the v2 template. **Every row is reviewable — we refine this in conversation.**
 
 ### 7.1 Inherited from existing template (keep as-is; they work)
 
@@ -493,7 +493,7 @@ The v2 template is a **fresh repo** (`dolr-ai/yral-rishi-chat-ai-v2-new-service-
 | Circuit breakers | `pybreaker` wrappers on LLM client + third-party HTTP | Failing upstream doesn't cascade |
 | Retry with jittered backoff | `tenacity` on transient failures | Handles network blips without ops noise |
 | Idempotency key support (confirmed 2026-04-23 — default-on) | Middleware enforces `X-Idempotency-Key` header on all non-GET endpoints; dedupes via Redis 24 h TTL. Per-endpoint opt-out for truly stateless writes (e.g., analytics event ingress) | Mobile retries on flaky networks never create duplicates; safer default than opt-in |
-| `services.yaml` auto-register (confirmed 2026-04-23) | Lives in new `dolr-ai/yral-rishi-chat-ai-v2-cluster-bootstrap` repo. `new-service.sh` final step opens a PR against that repo. Merge triggers regeneration of Prometheus scrape config, Caddy snippets on rishi-4/5, Uptime Kuma monitors, Grafana folders | Clean separation: strategy in plan repo, infra ops in bootstrap repo, code in service repos. Every service registered in one place |
+| `services.yaml` auto-register (confirmed 2026-04-23) | Lives in new `dolr-ai/yral-rishi-agent-cluster-bootstrap` repo. `new-service.sh` final step opens a PR against that repo. Merge triggers regeneration of Prometheus scrape config, Caddy snippets on rishi-4/5, Uptime Kuma monitors, Grafana folders | Clean separation: strategy in plan repo, infra ops in bootstrap repo, code in service repos. Every service registered in one place |
 | Schema-per-service bootstrap | Tenant SQL template creates schema + role + GRANTs + connection cap | 13 services on one Patroni cluster, cleanly |
 | pgvector ready (confirmed 2026-04-23 — day 1) | Migration adds `CREATE EXTENSION IF NOT EXISTS vector` once per cluster. Migration path to dedicated Qdrant kept behind same interface; trigger at ~50 M vectors (Month 12+ projection per v2 §2.7.5) | user-memory-service needs it day 1; simpler to operate inside Patroni than a separate Qdrant service until scale demands it |
 | WAL-G restore drill | Weekly CI job restores yesterday's WAL into throwaway Postgres | Backups that aren't restored aren't backups |
@@ -519,8 +519,8 @@ The v2 template is a **fresh repo** (`dolr-ai/yral-rishi-chat-ai-v2-new-service-
 
 Once v2 template is live, the flow is:
 
-1. Rishi picks the next service from the 13 (e.g., `yral-rishi-chat-ai-v2-soul-file-library`).
-2. `bash scripts/new-service.sh --name yral-rishi-chat-ai-v2-soul-file-library --profile api --tier core-stateful`
+1. Rishi picks the next service from the 13 (e.g., `yral-rishi-agent-soul-file-library`).
+2. `bash scripts/new-service.sh --name yral-rishi-agent-soul-file-library --profile api --tier core-stateful`
 3. Script does (≈5 minutes total):
    - Validates name under 63 chars; <39 chars after prefix.
    - Clones template at latest tag into `~/Claude Projects/<name>`.
@@ -611,12 +611,12 @@ When you're ready to start building: say "approve v2 template build" and I'll dr
 ## 12. Files that will eventually be touched (for reference, not now)
 
 **New repos to create (after approval):**
-- `dolr-ai/yral-rishi-chat-ai-v2-new-service-template` — the template itself.
-- `dolr-ai/yral-rishi-chat-ai-v2-cluster-bootstrap` — node bootstrap scripts, systemd units, UFW rules, `services.yaml` + auto-sync action. One repo per cluster, not per service.
+- `dolr-ai/yral-rishi-agent-new-service-template` — the template itself.
+- `dolr-ai/yral-rishi-agent-cluster-bootstrap` — node bootstrap scripts, systemd units, UFW rules, `services.yaml` + auto-sync action. One repo per cluster, not per service.
 
 **Local working dirs:**
-- `~/Claude Projects/yral-rishi-chat-ai-v2-new-service-template`
-- `~/Claude Projects/yral-rishi-chat-ai-v2-cluster-bootstrap`
+- `~/Claude Projects/yral-rishi-agent-new-service-template`
+- `~/Claude Projects/yral-rishi-agent-cluster-bootstrap`
 
 **Untouched (per covenant):**
 - `yral-rishi-hetzner-infra-template` — predecessor, frozen.

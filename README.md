@@ -1,6 +1,6 @@
 # Making YRAL Chat the Best in the World — The Greenfield Plan (v3)
 
-> **Companion docs in this repo** (dolr-ai/yral-rishi-chat-v2-plan):
+> **Companion docs in this repo** (dolr-ai/yral-rishi-agent-plan):
 > - [`CONSTRAINTS.md`](./CONSTRAINTS.md) — the tight reviewable list of every hard constraint, organized by category, status per row. Start here if you want a fast index.
 > - [`V2_TEMPLATE_AND_CLUSTER_PLAN.md`](./V2_TEMPLATE_AND_CLUSTER_PLAN.md) — the canonical template + rishi-4/5/6 cluster design doc (Swarm-only networking, node role layout, bootstrap workflow, CI guardrails, net-new capabilities). This doc extends that one with product-facing capability plans, roadmap, memories, and cross-team integration.
 >
@@ -18,7 +18,7 @@
 > - **Canonical product doc**: [dolr-ai/yral/blob/main/context-for-agents.md](https://github.com/dolr-ai/yral/blob/main/context-for-agents.md) — the single source of truth for YRAL features, screens, flows, glossary. **Everything we build aligns with this doc.**
 > - **Servers** (IPs shown here for reference; they must NOT appear in code/templates/scripts — see `feedback_no_hardcoded_ips.md`. In the plan doc itself, IPs are fine.):
 >   - **Legacy production cluster** (DO NOT TOUCH — read-only access only when needed): `rishi-1` → 138.201.137.181, `rishi-2` → 136.243.150.84, `rishi-3` → 136.243.147.225. Three live production projects run here; any change can take prod down.
->   - **V2 cluster** (allocated 2026-04-23 by Saikat, dedicated for yral-rishi-chat-ai-v2): `rishi-4` → 138.201.128.108 (Swarm manager, edge + state-primary), `rishi-5` → 88.99.160.251 (Swarm manager, edge + observability), `rishi-6` → 162.55.88.112 (Swarm manager, compute + Langfuse). All in Hetzner (rishi-1/2/3/4 confirmed in Falkenstein FSN1; rishi-5 ambiguous; rishi-6 likely Nuremberg NBG1 — confirm via `hcloud server describe` or ask Saikat; if cross-DC, keep Patroni sync replica within FSN1).
+>   - **V2 cluster** (allocated 2026-04-23 by Saikat, dedicated for yral-rishi-agent): `rishi-4` → 138.201.128.108 (Swarm manager, edge + state-primary), `rishi-5` → 88.99.160.251 (Swarm manager, edge + observability), `rishi-6` → 162.55.88.112 (Swarm manager, compute + Langfuse). All in Hetzner (rishi-1/2/3/4 confirmed in Falkenstein FSN1; rishi-5 ambiguous; rishi-6 likely Nuremberg NBG1 — confirm via `hcloud server describe` or ask Saikat; if cross-DC, keep Patroni sync replica within FSN1).
 >   - **Hardware**: Intel Core i7-6700 @ 3.4 GHz (4C/8T), 62.6 GB RAM, 2× 512 GB NVMe (RAID TBC), Ubuntu 24.04.4 LTS.
 >   - **Access**: `~/.ssh/rishi-hetzner-ci-key` for all 6 nodes. `rishi-deploy` user on rishi-4/5/6 (matches legacy convention). Saikat grants time-limited root (~1 week) for day-0 bootstrap; after that, scoped sudoers.
 > - **Sentry decision (locked 2026-04-23)**: v2 services emit errors/traces/perf to `sentry.rishi.yral.com` (Rishi's self-hosted Sentry on rishi-3). **We explicitly do NOT use `apm.yral.com`** (the team-shared Sentry Saikat provisioned earlier). Reason: Rishi owns `sentry.rishi.yral.com` and can tune it; `apm.yral.com` is shared team infra we don't control.
@@ -131,28 +131,28 @@ All team infrastructure is indexed at **`dashboard.yral.com`** — this is the c
 2. **Include `chat-ai-v2`** — so it's unambiguous this is Version 2.0 of the chat-ai stack (distinct from the v1 Python `yral-rishi-chat-ai` still running).
 3. **End with an explicit English purpose** — anyone reading the service name in a log line should know what it does.
 
-**Naming template:** `yral-rishi-chat-ai-v2-<explicit-purpose-in-english>`
+**Naming template:** `yral-rishi-agent-<explicit-purpose-in-english>`
 
 **Examples of correct names:**
 
 | Good ✅ | Bad ❌ | Why |
 |---|---|---|
-| `yral-rishi-chat-ai-v2-conversation-turn-orchestrator` | `chat-orch` | Only the good one tells you the owner, version, and purpose at a glance. |
-| `yral-rishi-chat-ai-v2-soul-file-library` | `prompts` | "Soul File" matches DOLR product vocab; "library" signals it's a versioned store, not a runtime thing. |
-| `yral-rishi-chat-ai-v2-user-memory-service` | `mem-svc` | English reader gets it instantly. |
-| `yral-rishi-chat-ai-v2-new-service-template` | `template-v2` | Explicit about which template's v2. |
+| `yral-rishi-agent-conversation-turn-orchestrator` | `chat-orch` | Only the good one tells you the owner, version, and purpose at a glance. |
+| `yral-rishi-agent-soul-file-library` | `prompts` | "Soul File" matches DOLR product vocab; "library" signals it's a versioned store, not a runtime thing. |
+| `yral-rishi-agent-user-memory-service` | `mem-svc` | English reader gets it instantly. |
+| `yral-rishi-agent-new-service-template` | `template-v2` | Explicit about which template's v2. |
 
 **Naming applies to:**
-- GitHub repo names: `dolr-ai/yral-rishi-chat-ai-v2-<purpose>`
-- Docker image tags: `ghcr.io/dolr-ai/yral-rishi-chat-ai-v2-<purpose>:<sha>`
-- Docker Swarm stack names: `yral-rishi-chat-ai-v2-<purpose>` (short enough for Swarm's 63-char limit — we must verify each name before accepting it)
-- Postgres schemas inside the new DB: `chat_ai_v2_<purpose>` (underscores because Postgres prefers them in identifiers)
-- Subdomains: `<purpose>.rishi.yral.com` (these are under the existing wildcard; don't repeat `rishi` in the subdomain since the wildcard already encodes it) — e.g., `chat-ai-v2.rishi.yral.com`, `creator-studio.rishi.yral.com`, `soul-file-library.rishi.yral.com`
+- GitHub repo names: `dolr-ai/yral-rishi-agent-<purpose>`
+- Docker image tags: `ghcr.io/dolr-ai/yral-rishi-agent-<purpose>:<sha>`
+- Docker Swarm stack names: `yral-rishi-agent-<purpose>` (short enough for Swarm's 63-char limit — we must verify each name before accepting it)
+- Postgres schemas inside the new DB: `agent_<purpose>` (underscores because Postgres prefers them in identifiers)
+- Subdomains: `<purpose>.rishi.yral.com` (these are under the existing wildcard; don't repeat `rishi` in the subdomain since the wildcard already encodes it) — e.g., `agent.rishi.yral.com`, `creator-studio.rishi.yral.com`, `soul-file-library.rishi.yral.com`
 - Environment variables inside services: `UPPER_SNAKE_CASE_EXPLICIT_ENGLISH` — e.g., `GEMINI_API_KEY`, `SOUL_FILE_LIBRARY_DATABASE_URL`
 - Function names in code: `verb_object_qualifier` in English — e.g., `fetch_soul_file_for_influencer`, not `get_sf`
 - Database table and column names: English words, no abbreviations — `ai_influencers` ✅, `conversation_turns` ✅, not `convos` or `ai_inf`
 
-**Swarm 63-character limit check:** Docker Swarm stack names and service names have a 63-character limit. Template names like `yral-rishi-chat-ai-v2-conversation-turn-orchestrator` are 53 chars — fits. But `yral-rishi-chat-ai-v2-<very-long-explicit-purpose>` could overflow. Every name added to the plan must be verified under 63 chars, otherwise shortened to meaningful English that still includes the `yral-rishi-chat-ai-v2` prefix. The `new-service.sh` spawner should refuse names over 39 chars after `yral-rishi-chat-ai-v2-` to leave room for secret suffixes.
+**Swarm 63-character limit check:** Docker Swarm stack names and service names have a 63-character limit. Template names like `yral-rishi-agent-conversation-turn-orchestrator` are 53 chars — fits. But `yral-rishi-agent-<very-long-explicit-purpose>` could overflow. Every name added to the plan must be verified under 63 chars, otherwise shortened to meaningful English that still includes the `yral-rishi-agent` prefix. The `new-service.sh` spawner should refuse names over 39 chars after `yral-rishi-agent-` to leave room for secret suffixes.
 
 ---
 
@@ -202,12 +202,12 @@ Postgres data for the new service is irreplaceable (Soul Files, user memories, i
 
 🚨 **Rishi's preference (strong):** build a NEW template first (sibling to the existing `yral-rishi-hetzner-infra-template`, NOT a replacement — **the old one stays untouched per the No-Delete covenant**). All 13 new services are spawned from this new template. After each service is built, review what we learned and fold useful learnings back into the template so future services benefit.
 
-**Name of the new template:** `yral-rishi-chat-ai-v2-new-service-template` (lives at `github.com/dolr-ai/yral-rishi-chat-ai-v2-new-service-template`)
+**Name of the new template:** `yral-rishi-agent-new-service-template` (lives at `github.com/dolr-ai/yral-rishi-agent-new-service-template`)
 
 ### 1.6.1 Why a template-first approach is the right call for this plan
 
 1. **ADHD-friendly mental model.** You read ONE template thoroughly, understand how a service is built, and then every other service is just variations of that. You never have to re-understand "how do I deploy something" — you understand it once, then 13 services are built by copying.
-2. **1-command service spawn.** `bash scripts/new-service.sh --name yral-rishi-chat-ai-v2-user-memory-service` → 5 minutes later, service is live, wired to Sentry, registered in Uptime Kuma, secrets set, CI green, health endpoint responding.
+2. **1-command service spawn.** `bash scripts/new-service.sh --name yral-rishi-agent-user-memory-service` → 5 minutes later, service is live, wired to Sentry, registered in Uptime Kuma, secrets set, CI green, health endpoint responding.
 3. **One place to improve.** You fix something once in the template (e.g., add structured logging, improve health-check format, add a retry policy). Next service spawned has it automatically. No per-service fix-ups.
 4. **A learning curriculum.** The template IS the curriculum for a new engineer (or Yoa, or you re-learning in 3 months). Docs + code + Dockerfile + CI yaml + secret list all in one repo.
 5. **Consistent patterns → consistent observability.** Every service exports Sentry, Langfuse traces, `/health` endpoint, structured logs, Prometheus metrics in the exact same shape. Dashboards work uniformly. Debugging any service uses the same mental model.
@@ -258,10 +258,10 @@ After each new service is built and running, Rishi + I do a 15-minute retrospect
 Each update to the template ships as a version bump (`v1.0`, `v1.1`, ...). Existing services keep their original template version (no forced upgrades). New services always spawn from the latest.
 
 **Example expected evolutions:**
-- After `yral-rishi-chat-ai-v2-user-memory-service`: add pgvector setup to the DB bootstrap layer of the template.
-- After `yral-rishi-chat-ai-v2-content-safety-and-moderation`: add a "safety classifier client" to the template for future services that need it.
-- After `yral-rishi-chat-ai-v2-creator-studio`: add an "LLM conversation session manager" helper (for multi-turn LLM interactions) to the template.
-- After `yral-rishi-chat-ai-v2-proactive-message-scheduler`: add a cron-job primitive to the template (GitHub Actions cron → template endpoint).
+- After `yral-rishi-agent-user-memory-service`: add pgvector setup to the DB bootstrap layer of the template.
+- After `yral-rishi-agent-content-safety-and-moderation`: add a "safety classifier client" to the template for future services that need it.
+- After `yral-rishi-agent-creator-studio`: add an "LLM conversation session manager" helper (for multi-turn LLM interactions) to the template.
+- After `yral-rishi-agent-proactive-message-scheduler`: add a cron-job primitive to the template (GitHub Actions cron → template endpoint).
 
 ### 1.6.5 Template is NEVER copied; services FORK from template
 
@@ -348,31 +348,31 @@ This section is the NEW center of the document. Everything downstream (Plans A-H
 
 The old plan had 75 services. For a solo-ish team, **that's too many**. Greenfield approach: **~13 purposeful services** with **explicit English names** (per your constraint). Split further only when a service has >1 team.
 
-**The 13 core services of the new platform** — all named `yral-rishi-chat-ai-v2-<explicit-english-purpose>` per Section 1.5.1.5. Names are long; that's the point. Every name fits under Swarm's 63-char limit (verified below).
+**The 13 core services of the new platform** — all named `yral-rishi-agent-<explicit-english-purpose>` per Section 1.5.1.5. Names are long; that's the point. Every name fits under Swarm's 63-char limit (verified below).
 
 | # | Service name (explicit, long, unambiguous) | Chars | Role | Stateful? | Subdomain |
 |---|---|---|---|---|---|
-| 1 | `yral-rishi-chat-ai-v2-public-api` | 32 | Public HTTPS API + WebSocket/SSE streaming. Auth. Rate limit. Routes to orchestrator or creator-studio. | Stateless | `chat-ai-v2.rishi.yral.com` (until cutover; then DNS-flip to `chat.yral.com`) |
-| 2 | `yral-rishi-chat-ai-v2-conversation-turn-orchestrator` | 53 | Runs a single chat turn end-to-end: fetch context → compose Soul File → call LLM → stream → update state. THE brain. | Stateless | internal |
-| 3 | `yral-rishi-chat-ai-v2-soul-file-library` | 40 | Layered Soul File registry (Global / Archetype / Per-Influencer / Per-User-Segment), versioned, composer, Tara Template engine. | Postgres | internal |
-| 4 | `yral-rishi-chat-ai-v2-user-memory-service` | 42 | Tiered memory: session (Redis), episodic events, semantic facts, user profile, embeddings (pgvector). | Postgres + Redis | internal |
-| 5 | `yral-rishi-chat-ai-v2-agent-skill-runtime` | 42 | Tool/skill registry + sandboxed execution. Native MCP protocol from day 1. | Postgres | internal |
-| 6 | `yral-rishi-chat-ai-v2-proactive-message-scheduler` | 50 | Scheduler + triggers + planner + dispatcher + throttler. Authors bot-initiated pings. | Postgres | internal |
-| 7 | `yral-rishi-chat-ai-v2-media-generation-and-vault` | 49 | Voice synthesis, image generation (creator-styled), content vault, consent/safety gates. | Postgres + S3 | internal |
-| 8 | `yral-rishi-chat-ai-v2-creator-studio` | 37 | Soul File Coach, bot editor, creator analytics, earnings dashboard, bot quality scorer. | Postgres | `creator-studio.rishi.yral.com` |
-| 9 | `yral-rishi-chat-ai-v2-content-safety-and-moderation` | 53 | Moderation (pre + post), crisis detection, NSFW classification, age gate, CSAM detection. Mandatory. | Stateless (models loaded) | internal |
-| 10 | `yral-rishi-chat-ai-v2-events-and-analytics` | 43 | Event pipeline (Redis Streams), metrics warehouse, dashboards, anomaly detection, cohort analysis. | Postgres | `metrics.rishi.yral.com` |
-| 11 | `yral-rishi-chat-ai-v2-meta-improvement-advisor` | 47 | Meta-AI: daily improvement recommendations, hypothesis generator, auto-experimenter. | Postgres | `advisor.rishi.yral.com` (private) |
-| 12 | `yral-rishi-chat-ai-v2-payments-and-creator-earnings` | 53 | Subscriptions, micropayments, creator payouts, tip jar, 70/30 revenue split logic. | Postgres (audit-grade, immutable append) | internal |
-| 13 | `yral-rishi-chat-ai-v2-influencer-and-profile-directory` | 55 | AI influencer catalog, profile metadata (Human + AI), follow/unfollow, "Switch Profiles", "Chat as Human" toggle. Preserves ALL existing influencers. | Postgres | internal |
+| 1 | `yral-rishi-agent-public-api` | 32 | Public HTTPS API + WebSocket/SSE streaming. Auth. Rate limit. Routes to orchestrator or creator-studio. | Stateless | `agent.rishi.yral.com` (until cutover; then DNS-flip to `chat.yral.com`) |
+| 2 | `yral-rishi-agent-conversation-turn-orchestrator` | 53 | Runs a single chat turn end-to-end: fetch context → compose Soul File → call LLM → stream → update state. THE brain. | Stateless | internal |
+| 3 | `yral-rishi-agent-soul-file-library` | 40 | Layered Soul File registry (Global / Archetype / Per-Influencer / Per-User-Segment), versioned, composer, Tara Template engine. | Postgres | internal |
+| 4 | `yral-rishi-agent-user-memory-service` | 42 | Tiered memory: session (Redis), episodic events, semantic facts, user profile, embeddings (pgvector). | Postgres + Redis | internal |
+| 5 | `yral-rishi-agent-skill-runtime` | 42 | Tool/skill registry + sandboxed execution. Native MCP protocol from day 1. | Postgres | internal |
+| 6 | `yral-rishi-agent-proactive-message-scheduler` | 50 | Scheduler + triggers + planner + dispatcher + throttler. Authors bot-initiated pings. | Postgres | internal |
+| 7 | `yral-rishi-agent-media-generation-and-vault` | 49 | Voice synthesis, image generation (creator-styled), content vault, consent/safety gates. | Postgres + S3 | internal |
+| 8 | `yral-rishi-agent-creator-studio` | 37 | Soul File Coach, bot editor, creator analytics, earnings dashboard, bot quality scorer. | Postgres | `creator-studio.rishi.yral.com` |
+| 9 | `yral-rishi-agent-content-safety-and-moderation` | 53 | Moderation (pre + post), crisis detection, NSFW classification, age gate, CSAM detection. Mandatory. | Stateless (models loaded) | internal |
+| 10 | `yral-rishi-agent-events-and-analytics` | 43 | Event pipeline (Redis Streams), metrics warehouse, dashboards, anomaly detection, cohort analysis. | Postgres | `metrics.rishi.yral.com` |
+| 11 | `yral-rishi-agent-meta-improvement-advisor` | 47 | Meta-AI: daily improvement recommendations, hypothesis generator, auto-experimenter. | Postgres | `advisor.rishi.yral.com` (private) |
+| 12 | `yral-rishi-agent-payments-and-creator-earnings` | 53 | Subscriptions, micropayments, creator payouts, tip jar, 70/30 revenue split logic. | Postgres (audit-grade, immutable append) | internal |
+| 13 | `yral-rishi-agent-influencer-and-profile-directory` | 55 | AI influencer catalog, profile metadata (Human + AI), follow/unfollow, "Switch Profiles", "Chat as Human" toggle. Preserves ALL existing influencers. | Postgres | internal |
 
-**Plus the template repo:** `yral-rishi-chat-ai-v2-new-service-template` (43 chars) — the paved road. See Section 1.6.
+**Plus the template repo:** `yral-rishi-agent-new-service-template` (43 chars) — the paved road. See Section 1.6.
 
-**GitHub org convention:** all repos live at `github.com/dolr-ai/<service-name>`. Example: `github.com/dolr-ai/yral-rishi-chat-ai-v2-soul-file-library`.
+**GitHub org convention:** all repos live at `github.com/dolr-ai/<service-name>`. Example: `github.com/dolr-ai/yral-rishi-agent-soul-file-library`.
 
 **Container registry:** `ghcr.io/dolr-ai/<service-name>:<git-sha>`.
 
-**Postgres schemas (underscores, since Postgres identifiers prefer them):** `chat_ai_v2_soul_file`, `chat_ai_v2_user_memory`, `chat_ai_v2_conversation`, etc. Each service owns one schema inside the shared Patroni cluster on rishi-4/5/6.
+**Postgres schemas (underscores, since Postgres identifiers prefer them):** `agent_soul_file`, `agent_user_memory`, `agent_conversation`, etc. Each service owns one schema inside the shared Patroni cluster on rishi-4/5/6.
 
 **Why Service #13 is new vs. prior plans:** your context doc makes clear that Human↔AI and Human↔Human chat are the same system from day 1, and that AI influencers must persist. The influencer/profile directory needs to be an explicit service, not an implicit table in chat-api.
 
@@ -689,10 +689,10 @@ Each of the following plans is a **capability group** that the greenfield servic
 **Why this matters (Rishi's stated bet):** the first 30 seconds in a chat decide whether a user engages at all. Today, if a user opens chat and doesn't click an option, nothing happens. They close the app. With this feature, the bot "feels alive" — it notices the pause, gently prompts again — and conversion from "app opened" to "first user reply" should rise meaningfully.
 
 **Where it lives in the architecture:**
-- **Client (mobile):** renders greeting + chips; tracks presence (is this chat screen in foreground?); handles option-tap, typing, timer-fire UI state. Sends presence heartbeat to `yral-rishi-chat-ai-v2-public-api` every 10 seconds while the chat screen is active. Removes chips when (a) user acts or (b) a new bot message arrives (covers both user-typed and auto-fired cases).
-- **`yral-rishi-chat-ai-v2-conversation-turn-orchestrator`:** generates the greeting at conversation open (first turn of a new conversation OR when a returning user re-opens an existing conversation after >N hours idle). Also generates the follow-up message when the scheduler triggers it. Uses Soul File + user memory to make both messages feel personal.
-- **`yral-rishi-chat-ai-v2-proactive-message-scheduler`:** owns the inactivity timer. When a user opens a chat, scheduler registers `(user_id, conversation_id, fires_at = now + 25s)`. On presence heartbeat, scheduler can extend/reset. If timer fires without a user message being posted in between, scheduler calls orchestrator to generate the follow-up → orchestrator posts the message → push notification to mobile if app is backgrounded.
-- **Config lives in `yral-rishi-chat-ai-v2-soul-file-library`:** per-bot overrides (e.g., a "laid-back therapist" bot might wait 60 seconds; a "hyperactive companion" bot might wait 15 seconds). Global defaults in Layer 1 of the Soul File.
+- **Client (mobile):** renders greeting + chips; tracks presence (is this chat screen in foreground?); handles option-tap, typing, timer-fire UI state. Sends presence heartbeat to `yral-rishi-agent-public-api` every 10 seconds while the chat screen is active. Removes chips when (a) user acts or (b) a new bot message arrives (covers both user-typed and auto-fired cases).
+- **`yral-rishi-agent-conversation-turn-orchestrator`:** generates the greeting at conversation open (first turn of a new conversation OR when a returning user re-opens an existing conversation after >N hours idle). Also generates the follow-up message when the scheduler triggers it. Uses Soul File + user memory to make both messages feel personal.
+- **`yral-rishi-agent-proactive-message-scheduler`:** owns the inactivity timer. When a user opens a chat, scheduler registers `(user_id, conversation_id, fires_at = now + 25s)`. On presence heartbeat, scheduler can extend/reset. If timer fires without a user message being posted in between, scheduler calls orchestrator to generate the follow-up → orchestrator posts the message → push notification to mobile if app is backgrounded.
+- **Config lives in `yral-rishi-agent-soul-file-library`:** per-bot overrides (e.g., a "laid-back therapist" bot might wait 60 seconds; a "hyperactive companion" bot might wait 15 seconds). Global defaults in Layer 1 of the Soul File.
 
 **What the follow-up message actually says:**
 - Not "Hi, are you there?" (robotic)
@@ -704,7 +704,7 @@ Each of the following plans is a **capability group** that the greenfield servic
 
 **Paywall interaction (decision needed):** the follow-up message counts as 1 of the 50 free messages (because it's a bot-authored message in the conversation). This could annoy users who pay for ₹9 access then feel they "wasted" 2 messages on greeting + follow-up. **Recommend: DON'T count greeting OR auto-fired follow-up against the 50-msg paywall.** Only count messages that are a response to a user action. Encode this as a `count_toward_paywall` flag on each message; yral-billing's paywall check honors the flag.
 
-**A/B testable variables (via `yral-rishi-chat-ai-v2-events-and-analytics`):**
+**A/B testable variables (via `yral-rishi-agent-events-and-analytics`):**
 - Inactivity timer duration (15s / 25s / 45s / 60s)
 - Whether to show chips at all (some creators may prefer only a greeting)
 - Follow-up message style (short/long, question/statement, emoji/plain)
@@ -890,7 +890,7 @@ Each of the following plans is a **capability group** that the greenfield servic
 **Principle:** `yral-auth-v2` and `yral-billing` are owned by Ravi / the team, NOT by us. We consume them as-is. We add only chat-side logic around them.
 
 **Auth integration in v2:**
-- New service `yral-rishi-chat-ai-v2-public-api` uses an auth middleware identical in contract to Ravi's (Authorization header → JWT → sub + ext identities)
+- New service `yral-rishi-agent-public-api` uses an auth middleware identical in contract to Ravi's (Authorization header → JWT → sub + ext identities)
 - **Fix the signature-validation gap**: fetch `auth.yral.com/.well-known/jwks.json` → cache keys in Redis with 1-hour TTL → validate RS256 signatures properly. Fall-back to `auth.dolr.ai` issuer if needed.
 - Implement `resolve_caller_type()` the same way Ravi does — via USER_INFO_SERVICE canister — so "Chat as Human" still works.
 - Implement refresh-token rotation on the client-side pattern (mobile already does this; we just honor new tokens).
@@ -902,16 +902,16 @@ Each of the following plans is a **capability group** that the greenfield servic
 - The 50-message free counter is enforced at the orchestrator before the LLM call. Query `conversation_turns` count; if >=50 and no access, return 402 Payment Required with paywall metadata (matching what mobile already expects).
 - Google Play + Apple IAP flow completely unchanged; yral-billing handles both. Mobile triggers IAP sheet; yral-billing verifies; inserts row; orchestrator reads row on next turn.
 - YRAL Pro (future tier): orchestrator reads credit balance from yral-billing; deducts per turn per tier rules.
-- Creator earnings: when yral-billing inserts a Transaction row (`BotSubscriptionReward`, bot_id, 900 paise), the 70/30 split is handled by yral-billing. Our `yral-rishi-chat-ai-v2-payments-and-creator-earnings` service reads from yral-billing's transaction stream to feed wallet dashboards. We do NOT duplicate yral-billing's ledger.
+- Creator earnings: when yral-billing inserts a Transaction row (`BotSubscriptionReward`, bot_id, 900 paise), the 70/30 split is handled by yral-billing. Our `yral-rishi-agent-payments-and-creator-earnings` service reads from yral-billing's transaction stream to feed wallet dashboards. We do NOT duplicate yral-billing's ledger.
 
 **Integration surface (new services ↔ existing team services):**
 
 | From | To | Purpose | Protocol |
 |---|---|---|---|
-| `yral-rishi-chat-ai-v2-public-api` | `auth.yral.com` (yral-auth-v2) | Fetch JWKS for signature validation | HTTPS GET `/.well-known/jwks.json`, cached |
-| `yral-rishi-chat-ai-v2-public-api` | USER_INFO_SERVICE canister (ICP) | Resolve CallerType (bot vs user) for "Chat as Human" | ic-agent via yral-canisters-client Rust crate (or equivalent Python binding) |
-| `yral-rishi-chat-ai-v2-conversation-turn-orchestrator` | `yral-billing` | Check chat access, read credit balance, decrement credits | HTTP GET/POST — 60s cache in Redis |
-| `yral-rishi-chat-ai-v2-payments-and-creator-earnings` | `yral-billing` transactions feed | Read creator-wallet transactions for dashboards | Polling or event-stream subscription (whichever yral-billing supports) |
+| `yral-rishi-agent-public-api` | `auth.yral.com` (yral-auth-v2) | Fetch JWKS for signature validation | HTTPS GET `/.well-known/jwks.json`, cached |
+| `yral-rishi-agent-public-api` | USER_INFO_SERVICE canister (ICP) | Resolve CallerType (bot vs user) for "Chat as Human" | ic-agent via yral-canisters-client Rust crate (or equivalent Python binding) |
+| `yral-rishi-agent-conversation-turn-orchestrator` | `yral-billing` | Check chat access, read credit balance, decrement credits | HTTP GET/POST — 60s cache in Redis |
+| `yral-rishi-agent-payments-and-creator-earnings` | `yral-billing` transactions feed | Read creator-wallet transactions for dashboards | Polling or event-stream subscription (whichever yral-billing supports) |
 | mobile | `yral-billing` directly (as today) | Initiate IAP, submit purchase_token | HTTPS POST (unchanged from today) |
 
 **Gaps / improvements we must address in v2:**
@@ -1046,12 +1046,12 @@ Phased build. Each phase ends with a milestone where something real ships to rea
 4. **Self-host Langfuse on rishi-4** (its own Postgres schema). Backs all future LLM tracing.
 5. **Wire Sentry.** Existing rishi-3 Sentry's DSN becomes a GitHub Org secret (per Section 1.5.1 pattern). New services read it as env var at runtime. No new Sentry instance.
 6. **Register subdomains** under `*.rishi.yral.com`: `chat-ai-v2`, `creator-studio`, `soul-file-library`, `metrics`, `advisor`, `langfuse`. Point DNS at rishi-4/5.
-7. **Build the v2 template repo** — `github.com/dolr-ai/yral-rishi-chat-ai-v2-new-service-template`. Start by copying the existing `yral-rishi-hetzner-infra-template` (**DO NOT MODIFY THE ORIGINAL** — Section 1.5 no-delete covenant). Evolve per Section 1.6.3: Sentry wiring, Langfuse middleware, Redis client, Redis Streams event helpers, feature-flag client, uniform `/health`, structured JSON logs, request-ID tracing, latency recording, LLM-client abstraction, MCP helpers, schema-per-service bootstrap, pre-flight check, 3-layered backup scripts.
-8. **Prove the template end-to-end with a hello-world service** — spawn `yral-rishi-chat-ai-v2-hello-world` via `bash scripts/new-service.sh --name yral-rishi-chat-ai-v2-hello-world`. Verify: green CI in <10 minutes, health check passes at `hello-world.rishi.yral.com`, Sentry sees a test exception, Langfuse sees a test trace, Beszel shows the container, Uptime Kuma shows green, backup script runs cleanly, restore drill passes. **Only when this works, the template is ready for real services.**
+7. **Build the v2 template repo** — `github.com/dolr-ai/yral-rishi-agent-new-service-template`. Start by copying the existing `yral-rishi-hetzner-infra-template` (**DO NOT MODIFY THE ORIGINAL** — Section 1.5 no-delete covenant). Evolve per Section 1.6.3: Sentry wiring, Langfuse middleware, Redis client, Redis Streams event helpers, feature-flag client, uniform `/health`, structured JSON logs, request-ID tracing, latency recording, LLM-client abstraction, MCP helpers, schema-per-service bootstrap, pre-flight check, 3-layered backup scripts.
+8. **Prove the template end-to-end with a hello-world service** — spawn `yral-rishi-agent-hello-world` via `bash scripts/new-service.sh --name yral-rishi-agent-hello-world`. Verify: green CI in <10 minutes, health check passes at `hello-world.rishi.yral.com`, Sentry sees a test exception, Langfuse sees a test trace, Beszel shows the container, Uptime Kuma shows green, backup script runs cleanly, restore drill passes. **Only when this works, the template is ready for real services.**
 9. **Keep or retire the hello-world service** — Rishi's call per no-delete covenant. My recommendation: keep it permanently as an integration test that fires on every template update. It stays tiny and proves the template still works after evolution.
 10. **Set up the 3-layered backups** (Section 1.5.2): Patroni HA (Layer 1) + WAL archive to Hetzner S3 bucket `rishi-yral-chat-ai-v2-wal-archive` (Layer 2 PITR) + daily pg_dump to `rishi-yral-chat-ai-v2-daily-backup` + weekly pg_dump to Backblaze B2 (Layer 3 offsite). Weekly automated restore drill scheduled.
 11. **Capture latency baselines** (Section 2.8): instrument Ravi's Rust service AND current Python `yral-rishi-chat-ai` to export per-endpoint p50/p95/p99/p99.9 latency for 1 full week. Record in `latency-baselines.md` inside the v2 template repo. **This is the number we promise to beat.**
-12. **Spawn skeleton services from the template:** `yral-rishi-chat-ai-v2-public-api` and `yral-rishi-chat-ai-v2-conversation-turn-orchestrator`. Both respond to `/health`. Nothing else yet.
+12. **Spawn skeleton services from the template:** `yral-rishi-agent-public-api` and `yral-rishi-agent-conversation-turn-orchestrator`. Both respond to `/health`. Nothing else yet.
 13. **Verify end-to-end observability:** open Beszel, Uptime Kuma, Sentry (`sentry.rishi.yral.com`), Langfuse — every new server + service is visible with green status.
 
 **Win:** template proved and ready; cluster alive with full observability + backups + baselines captured; rishi-1/2/3 untouched; mobile app unaffected; zero user-visible change. Phase 1 can start.
@@ -1201,7 +1201,7 @@ Rishi's constraint is **ideally zero mobile-client changes, absolute max ONE**. 
 | M5 | Tip jar / private content UI (Plan G) | Micropayment + content unlock flows need new screens. | Not needed for v2 MVP — defer to Plan G launch (Month 4+). | Defer. |
 | M6 | Paywall response schema | yral-billing's 402 response triggers IAP sheet. v2 must preserve the exact error shape. | ✅ YES — v2 mirrors the exact response Ravi's service returns. Verified by capturing prod responses. | No mobile change needed IF we match schema. Auto-verify during shadow phase. |
 | M7 | JWT auth header handling | v2 uses same Authorization: Bearer JWT. | ✅ YES — no change. | No change. |
-| M8 | Bot creation flow (3-step: describe → expand → profile) | v2's `yral-rishi-chat-ai-v2-soul-file-library` improves the expansion step. Mobile flow itself unchanged. | ✅ YES — backend change is invisible to mobile. Mobile keeps calling existing `create-bot` endpoint; the expanded description comes back richer. | No change. |
+| M8 | Bot creation flow (3-step: describe → expand → profile) | v2's `yral-rishi-agent-soul-file-library` improves the expansion step. Mobile flow itself unchanged. | ✅ YES — backend change is invisible to mobile. Mobile keeps calling existing `create-bot` endpoint; the expanded description comes back richer. | No change. |
 | M9 | "Chat as Human" toggle | Already exists in mobile; uses ICP bot identity delegation. v2 preserves. | ✅ YES — no change. | No change. |
 | M10 | Message Inbox rendering | v2 may send richer message types (voice notes, images, reactions). If mobile hardcodes text-only, richer types won't render. | ❌ NO if we ship richer media in v2. | **NEEDS APPROVAL** — can be phased (text-only v2 first, richer media in v2.1). |
 | M11 | WebSocket inbox updates | Already exists — `WS /api/v1/chat/ws/inbox/{user_id}` in current Python service. v2 preserves protocol. | ✅ YES — preserve WebSocket contract. | No change. |
@@ -1395,8 +1395,8 @@ When you approve this plan, I will save the following as new or updated memory e
 10. **`reference_yral_soul_file_terminology.md`** (NEW) — In YRAL product language, "Soul File" = structured personality definition of AI influencer (goals/traits/knowledge/style/behaviors). Use this term in code/docs. Do NOT invent "system prompt"/"personality config" — the DOLR vocabulary is "Soul File".
 11. **`feedback_latency_never_regresses.md`** (NEW) — New chat service must meet or beat latency of current Rust chat service AND Python `yral-chat-ai` at every percentile, at every rollout step. Automated rollback on regression. See plan Section 2.8 for enforcement details.
 12. **`feedback_llm_agnostic_design.md`** (NEW) — Chat must be LLM-agnostic: orchestrator calls through `llm-client` abstraction; swap providers via config. Long-term goal is self-hosting best open-weight models (requires Saikat GPU allocation and latency benchmarks before deployment).
-13. **`feedback_template_first_build.md`** (NEW) — Rishi strongly prefers a template-first workflow: build a new template (`yral-rishi-chat-ai-v2-new-service-template`) BEFORE building any service from it; spawn all services via 1-command `new-service.sh`; fold learnings from each new service back into the template so it gets stronger over time; NEVER modify or delete the existing `yral-rishi-hetzner-infra-template` (it's the predecessor and stays as a reference). Template is the ADHD-friendly mental model: read once, understand all 13 services.
-14. **`feedback_explicit_service_naming_v2.md`** (NEW, supersedes generic naming rule) — All new v2 services named `yral-rishi-chat-ai-v2-<explicit-english-purpose>`: must include `rishi` (owner), `chat-ai-v2` (version), and English purpose. Names can be long (up to 63 chars for Swarm); long beats cryptic. Applies to: GitHub repos, Docker images, Swarm stacks, Postgres schemas (underscores), subdomains (purpose-only since wildcard encodes rishi).
+13. **`feedback_template_first_build.md`** (NEW) — Rishi strongly prefers a template-first workflow: build a new template (`yral-rishi-agent-new-service-template`) BEFORE building any service from it; spawn all services via 1-command `new-service.sh`; fold learnings from each new service back into the template so it gets stronger over time; NEVER modify or delete the existing `yral-rishi-hetzner-infra-template` (it's the predecessor and stays as a reference). Template is the ADHD-friendly mental model: read once, understand all 13 services.
+14. **`feedback_explicit_service_naming_v2.md`** (NEW, supersedes generic naming rule) — All new v2 services named `yral-rishi-agent-<explicit-english-purpose>`: must include `rishi` (owner), `chat-ai-v2` (version), and English purpose. Names can be long (up to 63 chars for Swarm); long beats cryptic. Applies to: GitHub repos, Docker images, Swarm stacks, Postgres schemas (underscores), subdomains (purpose-only since wildcard encodes rishi).
 15. **`project_yral_scale_projection.md`** (NEW) — Scale expectations: today ~25K msgs/day, 4-6 months ~300-500K msgs/day, Month 12 ~1M+ msgs/day. Capacity plan in Section 2.7.5. Implications: horizontal scaling from day 1, multi-LLM-provider routing for rate-limit resilience, pgBouncer baked into template, partition-friendly schema design, self-hosted LLM becomes cost-justified by Month 9-12.
 16. **`reference_yral_auth_billing_architecture.md`** (NEW) — Auth = `yral-auth-v2` at `auth.yral.com` (OAuth2/PKCE, RS256 JWT, issuers `auth.yral.com` or `auth.dolr.ai`, JWT contains `sub` + `ext_delegated_identity` + `ext_ai_account_delegated_identities[]` up to 3). Billing = `yral-billing` repo (Rust/Diesel, Google Play IAP, price 900 paise = ₹9 / 24hr per bot via `bot_chat_access` table, State machine ConsumePending→Active, RTDN webhook for refunds). V2 consumes both; never reinvents. Gap inherited: Ravi's chat disables JWT signature validation (`insecure_disable_signature_validation`) — we MUST fix in v2 by fetching JWKS from `auth.yral.com/.well-known/jwks.json`.
 17. **`project_v2_mobile_change_audit.md`** (NEW) — 12 potential mobile-side changes enumerated (M1-M12 in plan Section 7 Step 3.5). Hard requirement: DNS flip at `chat.yral.com` (M1) to achieve zero mobile code change at cutover. Streaming (M2) is the biggest decision — recommendation to ship v2 without streaming, add in v2.1 when mobile is ready. Saikat + Sarvesh + Shivam sign-off needed BEFORE Phase 0 starts.
@@ -1425,7 +1425,7 @@ Responses to the mobile-change-audit memo (Section 7 Step 3.5) and the infrastru
 | **Team (Q15)** | Who builds v2? | Solo Rishi + **Claude Code agents + Codex in parallel**. Additional team allocation available if needed. | Roadmap assumes Rishi-led + AI-pair workflow. Plan explicitly includes agent-delegatable chunks of work. |
 | **Self-hosted LLM GPU (Q6)** | When do we get GPU capacity? | 🟡 **Delayed** — not a Phase 5 priority anymore. LLM-agnostic abstraction still built in from day 1; self-host is optional future. | Phase 5+ self-host milestone deprioritized (cost no longer the driver; product-fit is). |
 | **Mobile base URL (Q7)** | How does mobile get chat API URL today? | **Hardcoded.** File: `/shared/core/.../AppConfigurations.kt`, `const val CHAT_BASE_URL = "chat-ai.rishi.yral.com"`. Mobile stack is Kotlin Multiplatform (KMP), shared ~90% across iOS + Android; HTTP client is Ktor. Firebase Remote Config exists for feature flags but base URL is NOT remote-configured (opportunity for v2.1+). | Critical correction: **the URL mobile hits is `chat-ai.rishi.yral.com`, not `chat.yral.com`**. Rishi said the new Python prod URL will be `yral-chat-ai.rishi.yral.com` — need to clarify whether mobile will be updated to that or Caddy will keep routing `chat-ai.rishi.yral.com`. |
-| **Mobile 402 paywall shape (Q8)** | What JSON does mobile expect on paywall? | **The paywall is NOT a 402 HTTP response.** Billing is a separate Google Play IAP flow — mobile POSTs `purchase_token` to `/google/chat-access/grant`, polls `/google/chat-access/check`. The shared response envelope is `ApiResponse<T> { success, msg, error, data }` with `ChatAccessDataDto { hasAccess, expiresAt }` for access checks. The chat endpoint itself doesn't enforce paywall via HTTP status — mobile checks access BEFORE sending a message and triggers the IAP sheet if needed. | **Major correction to the plan.** V2's paywall logic lives in `yral-rishi-chat-ai-v2-public-api` as a pre-turn gate that returns an access-check response in this exact shape. Any error on the chat message endpoint is a regular error, not a paywall. |
+| **Mobile 402 paywall shape (Q8)** | What JSON does mobile expect on paywall? | **The paywall is NOT a 402 HTTP response.** Billing is a separate Google Play IAP flow — mobile POSTs `purchase_token` to `/google/chat-access/grant`, polls `/google/chat-access/check`. The shared response envelope is `ApiResponse<T> { success, msg, error, data }` with `ChatAccessDataDto { hasAccess, expiresAt }` for access checks. The chat endpoint itself doesn't enforce paywall via HTTP status — mobile checks access BEFORE sending a message and triggers the IAP sheet if needed. | **Major correction to the plan.** V2's paywall logic lives in `yral-rishi-agent-public-api` as a pre-turn gate that returns an access-check response in this exact shape. Any error on the chat message endpoint is a regular error, not a paywall. |
 | **Plan approval (Q13)** | Green-light to start Phase 0 building | 🟡 **NOT YET.** Explicit user rule: **plan only with me until I say "build"**. Architect every phase in detail first, freeze, then Rishi approves, then build. | Hard rule — no code gets written until explicit approval. Saved to memory as a new feedback rule. |
 
 ### 11.8.1 Streaming implementation plan (Q9 accepted — v2.0 ships with SSE)
@@ -1454,7 +1454,7 @@ Rishi wants streaming in v2.0. This forces mobile work from Sarvesh/Shivam. Here
 8. **Chip dismissal on auto-fired message** — when a bot-authored message arrives (streamed or otherwise) and the current conversation still has Default Prompts visible, dismiss them. Small UI state change.
 
 **What backend needs to build** (v2 responsibility):
-1. V2 `yral-rishi-chat-ai-v2-public-api` exposes `POST /api/v2/chat/conversations/{id}/messages` with SSE response (Content-Type: `text/event-stream`). Emits token deltas as `data: {"type":"token","content":"..."}\n\n`, final `data: {"type":"complete","message":{...}}\n\n`, errors as `data: {"type":"error","message":"..."}\n\n`.
+1. V2 `yral-rishi-agent-public-api` exposes `POST /api/v2/chat/conversations/{id}/messages` with SSE response (Content-Type: `text/event-stream`). Emits token deltas as `data: {"type":"token","content":"..."}\n\n`, final `data: {"type":"complete","message":{...}}\n\n`, errors as `data: {"type":"error","message":"..."}\n\n`.
 2. Orchestrator streams LLM tokens directly to the SSE response (bridge Gemini's streaming API → SSE), bypassing full-message buffering.
 3. Parallel to streaming: orchestrator emits Redis Streams events (`message.sent`, `turn.completed`, `memory.candidate`) for async consumers.
 4. Legacy `POST /api/v1/chat/conversations/{id}/messages` (non-streaming) stays available throughout v2 as the fallback path mobile hits when feature flag is off.
