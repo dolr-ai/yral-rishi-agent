@@ -7,19 +7,26 @@
 > - **GitHub org**: everything lives under [github.com/dolr-ai](https://github.com/dolr-ai). New repos go here.
 > - **Canonical product doc**: [dolr-ai/yral/blob/main/context-for-agents.md](https://github.com/dolr-ai/yral/blob/main/context-for-agents.md) — the single source of truth for YRAL features, screens, flows, glossary. **Everything we build aligns with this doc.**
 > - **Existing servers** (allocated by Saikat, CTO):
->   - `rishi-1` → 138.201.137.181 (Hetzner bare metal, load-balancer + Docker Swarm manager)
->   - `rishi-2` → 136.243.150.84 (Hetzner bare metal, load-balancer + Swarm worker)
->   - `rishi-3` → 136.243.147.225 (Hetzner bare metal, Swarm worker; **runs self-hosted Sentry** which we must use for error tracking)
+>   - `rishi-1` → 138.201.137.181 (Hetzner bare metal, load-balancer + Docker Swarm manager for CURRENT production services)
+>   - `rishi-2` → 136.243.150.84 (Hetzner bare metal, load-balancer + Swarm worker for CURRENT production services)
+>   - `rishi-3` → 136.243.147.225 (Hetzner bare metal, Swarm worker for CURRENT production; **runs Rishi's self-hosted Sentry at `sentry.rishi.yral.com`** — THIS is the Sentry v2 services use, NOT the team `apm.yral.com`)
+>   - 🚨 **Rishi-1/2/3 are LIVE production servers. DO NOT touch, modify, or delete anything on them. Read-only access only, when needed.** Three live projects run here; any change can take production down.
+> - **V2 CLUSTER — new servers (allocated by Saikat 2026-04-23)**:
+>   - `rishi-4` → 138.201.128.108 (Hetzner bare metal — v2 Docker Swarm manager)
+>   - `rishi-5` → 88.99.160.251 (Hetzner bare metal — v2 Swarm worker + load balancer)
+>   - `rishi-6` → 162.55.88.112 (Hetzner bare metal — v2 Swarm worker)
+>   - All v2 services live on rishi-4/5/6. Completely isolated from rishi-1/2/3.
+> - **Sentry decision (corrected 2026-04-23)**: v2 services emit errors/traces/perf to `sentry.rishi.yral.com` (Rishi's self-hosted Sentry on rishi-3). **We explicitly do NOT use `apm.yral.com`** (the team-shared Sentry Saikat provisioned earlier). Reason: Rishi owns `sentry.rishi.yral.com` and can tune it; `apm.yral.com` is shared team infra we don't control.
 > - **Wildcard DNS**: `*.rishi.yral.com` → rishi-1, rishi-2 (load balancer nodes). All new services get subdomains under this wildcard.
 > - **Current proxy**: Caddy (on rishi-1, rishi-2) — routing to `rishi-hetzner-infra-template`, Sentry, `yral-chat-ai` (Python). **Free to switch** from Caddy if justified; Saikat is neutral.
 > - **Current orchestrator**: Docker Swarm. Saikat is happy with the choice but **free to switch** (Kubernetes, Nomad, K3s) if justified.
-> - **More servers available**: Saikat will allocate 3+ new servers (rishi-4, rishi-5, rishi-6) when we need them. This is key — **the new service can run on its OWN cluster**, leaving existing rishi-1/2/3 untouched.
+> - **More servers available**: ✅ **DONE 2026-04-23** — Saikat has provisioned rishi-4/5/6 (IPs above). More can be requested if scale demands.
 > - **NO-DELETE covenant** 🚨 (hard rule from Rishi, non-negotiable): Until Rishi gives explicit per-item approval — and only after the new service is live in production — we cannot delete anything from existing infrastructure: not the Python `yral-chat-ai`, not the Hetzner template repo, not the Sentry instance, not any config on rishi-1/2/3. This extends to DNS, Caddy routes, GitHub repos, GitHub secrets, Swarm stacks. **If in doubt, ask. Never delete.**
 > - **Mobile client constraint** 🚨: The mobile app (owned by Sarvesh + Shivam) currently calls `yral-chat-ai`. The hardest constraint: **at most ONE change in the mobile codebase** when we cut over. Ideally zero — via DNS flip of a preserved URL like `chat.yral.com`. Any required mobile-side routing change needs a strong justification that Sarvesh/Shivam can defend.
 > - **Data preservation rules**: We MAY discard existing user chat history (conversations, messages) if required to rebuild cleanly. We MUST preserve all existing AI influencers (users discover them, creators earn from them) — their Soul Files, avatars, bios, earnings, follower counts all carry forward.
 > - **Feature parity required from day 1**: the new service must support (a) Human ↔ AI influencer chat, (b) Human ↔ Human chat, and (c) "Chat as Human" creator-takeover. The current schema already supports `conversation_type = 'human_chat'` via `participant_b_id` — carry that forward.
 > - **Explicit naming** 🚨: per Rishi's request — every service, table, column, function, variable must be named so an English reader can infer its purpose without comments. No cryptic abbreviations. Prefer `conversation-turn-orchestrator` over `orch-svc`, `user-message-memory-extractor` over `mem-ext`. Verbose and obvious beats terse and clever.
-> - **Existing observability** (reuse, don't rebuild): Sentry at `apm.yral.com` (rishi-3), Beszel at `beszel.yral.com`, Uptime Kuma at `status.yral.com`, Vault at `vault.yral.com`. Reuse all of these for the new service.
+> - **Existing observability** (reuse, don't rebuild): Sentry at `sentry.rishi.yral.com` (rishi-3), Beszel at `beszel.yral.com`, Uptime Kuma at `status.yral.com`, Vault at `vault.yral.com`. Reuse all of these for the new service.
 > - **Existing services we do NOT own** (integrate, don't replace): Ravi owns chat/metadata/auth/storage; Ansuman owns recommendation; Naitik owns infra (Coolify + Vault); Sreyas owns LTX video model. Our scope is chat. Other services are upstream/downstream integrations.
 > - **Team**: Rishi (ADHD, 2-3h/day deep work, non-programmer) + Yoa + whoever Saikat allocates. Roadmap assumes effectively 1-1.5 engineers.
 >
@@ -78,7 +85,7 @@ All team infrastructure is indexed at **`dashboard.yral.com`** — this is the c
 |---|---|---|
 | **Team Dashboard** | `dashboard.yral.com` | Master index of all team infra. Open this first when onboarding a new engineer. |
 | **Vault (Hashicorp)** | `vault.yral.com` (owned by Naitik) | **Canonical secret store.** Every secret — DB passwords, `GEMINI_API_KEY`, Claude API keys, S3 creds, Sentry DSN, Stripe keys, webhook secrets — lives here. Never in code. Never in Docker images. Never in environment files checked into git. Services fetch at runtime via env vars injected from Vault. |
-| **Sentry (self-hosted)** | `apm.yral.com` (on rishi-3) | All new services emit errors, traces, performance data, exceptions to this Sentry. Tagged with `service=<service-name>`. **No new Sentry instance** unless Rishi explicitly approves (see No-Delete covenant). |
+| **Sentry (self-hosted)** | `sentry.rishi.yral.com` (on rishi-3) | All new services emit errors, traces, performance data, exceptions to this Sentry. Tagged with `service=<service-name>`. **No new Sentry instance** unless Rishi explicitly approves (see No-Delete covenant). |
 | **Beszel** | `beszel.yral.com` | Install Beszel agents on rishi-4/5/6 when provisioned. One pane of glass for CPU/RAM/disk across all servers including the new ones. |
 | **Uptime Kuma** | `status.yral.com` | Register every new service's `/health` endpoint as a monitor. Page-worthy alerts route to the team chat. |
 | **Wildcard DNS** | `*.rishi.yral.com` | Each new service gets its own subdomain. For production cutover, `chat.yral.com` DNS-flips from rishi-1/2 → rishi-4/5. |
@@ -219,7 +226,7 @@ The new template is NOT built from scratch. We start by copying the existing one
 
 Things we didn't have in the old template that we need for every v2 service:
 
-- **Sentry DSN wiring pre-configured.** Every new service emits to `apm.yral.com` out of the box.
+- **Sentry DSN wiring pre-configured.** Every new service emits to `sentry.rishi.yral.com` out of the box.
 - **Langfuse client middleware.** Every new service that calls an LLM auto-traces every call to self-hosted Langfuse on rishi-4. Zero per-service setup.
 - **Redis client baked in.** Every new service gets a Redis client for session cache, rate limiting, and Redis Streams event emit/consume. One line of config.
 - **Event-stream helpers.** `emit_event("message.sent", {...})` and consumer-group subscription helpers — so every service talks via Redis Streams uniformly.
@@ -1040,7 +1047,7 @@ Phased build. Each phase ends with a milestone where something real ships to rea
 10. **Set up the 3-layered backups** (Section 1.5.2): Patroni HA (Layer 1) + WAL archive to Hetzner S3 bucket `rishi-yral-chat-ai-v2-wal-archive` (Layer 2 PITR) + daily pg_dump to `rishi-yral-chat-ai-v2-daily-backup` + weekly pg_dump to Backblaze B2 (Layer 3 offsite). Weekly automated restore drill scheduled.
 11. **Capture latency baselines** (Section 2.8): instrument Ravi's Rust service AND current Python `yral-rishi-chat-ai` to export per-endpoint p50/p95/p99/p99.9 latency for 1 full week. Record in `latency-baselines.md` inside the v2 template repo. **This is the number we promise to beat.**
 12. **Spawn skeleton services from the template:** `yral-rishi-chat-ai-v2-public-api` and `yral-rishi-chat-ai-v2-conversation-turn-orchestrator`. Both respond to `/health`. Nothing else yet.
-13. **Verify end-to-end observability:** open Beszel, Uptime Kuma, Sentry (`apm.yral.com`), Langfuse — every new server + service is visible with green status.
+13. **Verify end-to-end observability:** open Beszel, Uptime Kuma, Sentry (`sentry.rishi.yral.com`), Langfuse — every new server + service is visible with green status.
 
 **Win:** template proved and ready; cluster alive with full observability + backups + baselines captured; rishi-1/2/3 untouched; mobile app unaffected; zero user-visible change. Phase 1 can start.
 
@@ -1269,7 +1276,7 @@ For **infra template** (the paved road for new v2 services — DO NOT MODIFY, fo
 **Team-maintained observability & infra (bookmark, open before doing work):**
 - `dashboard.yral.com` — index of all team infra
 - `vault.yral.com` — secrets (get access from Saikat/Naitik)
-- `apm.yral.com` — Sentry (already rishi-3)
+- `sentry.rishi.yral.com` — Sentry (already rishi-3)
 - `beszel.yral.com` — server monitoring
 - `status.yral.com` — uptime monitoring
 
