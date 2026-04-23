@@ -52,6 +52,7 @@
 | D3 | **All v2 services tagged `service=<name>` in Sentry** and `environment=production` or `environment=staging` | 🔒 | V2_TEMPLATE_AND_CLUSTER_PLAN §5 staging | Sentry project config; every service emits tagged events |
 | D4 | **Langfuse self-hosted on rishi-6** traces every LLM call (prompt, response, tokens, latency, cost). Joinable to Sentry + Prometheus via correlation ID | 🔒 | V2 plan §2.5 + V2_TEMPLATE_AND_CLUSTER_PLAN §6.5 | Template middleware auto-traces; absent = CI fail |
 | D5 | **Uptime Kuma monitors at `status.yral.com`** hit every service's `/health/ready`; self-service monitor creation needs Saikat access confirm | 🟡 | V2_TEMPLATE_AND_CLUSTER_PLAN §10 Q5 | New service spawn auto-registers via Kuma API |
+| D6 | **Alertmanager destination: Google Chat webhook** — same mechanism current chat-ai uses for admin notifications. All critical alerts (replicas down, Patroni lag, latency regression, disk full, LLM provider errors, backup failures) route here. Team-wide visibility for Rishi + Saikat | 🔒 | Rishi 2026-04-23 (Q9 option a) | Alertmanager config in cluster-bootstrap folder uses Google Chat webhook URL from GitHub Secret `GOOGLE_CHAT_WEBHOOK_URL` |
 
 ## Category E — Performance & Product
 
