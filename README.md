@@ -6,17 +6,12 @@
 >
 > - **GitHub org**: everything lives under [github.com/dolr-ai](https://github.com/dolr-ai). New repos go here.
 > - **Canonical product doc**: [dolr-ai/yral/blob/main/context-for-agents.md](https://github.com/dolr-ai/yral/blob/main/context-for-agents.md) — the single source of truth for YRAL features, screens, flows, glossary. **Everything we build aligns with this doc.**
-> - **Existing servers** (allocated by Saikat, CTO):
->   - `rishi-1` → 138.201.137.181 (Hetzner bare metal, load-balancer + Docker Swarm manager for CURRENT production services)
->   - `rishi-2` → 136.243.150.84 (Hetzner bare metal, load-balancer + Swarm worker for CURRENT production services)
->   - `rishi-3` → 136.243.147.225 (Hetzner bare metal, Swarm worker for CURRENT production; **runs Rishi's self-hosted Sentry at `sentry.rishi.yral.com`** — THIS is the Sentry v2 services use, NOT the team `apm.yral.com`)
->   - 🚨 **Rishi-1/2/3 are LIVE production servers. DO NOT touch, modify, or delete anything on them. Read-only access only, when needed.** Three live projects run here; any change can take production down.
-> - **V2 CLUSTER — new servers (allocated by Saikat 2026-04-23)**:
->   - `rishi-4` → 138.201.128.108 (Hetzner bare metal — v2 Docker Swarm manager)
->   - `rishi-5` → 88.99.160.251 (Hetzner bare metal — v2 Swarm worker + load balancer)
->   - `rishi-6` → 162.55.88.112 (Hetzner bare metal — v2 Swarm worker)
->   - All v2 services live on rishi-4/5/6. Completely isolated from rishi-1/2/3.
-> - **Sentry decision (corrected 2026-04-23)**: v2 services emit errors/traces/perf to `sentry.rishi.yral.com` (Rishi's self-hosted Sentry on rishi-3). **We explicitly do NOT use `apm.yral.com`** (the team-shared Sentry Saikat provisioned earlier). Reason: Rishi owns `sentry.rishi.yral.com` and can tune it; `apm.yral.com` is shared team infra we don't control.
+> - **Servers** (IPs shown here for reference; they must NOT appear in code/templates/scripts — see `feedback_no_hardcoded_ips.md`. In the plan doc itself, IPs are fine.):
+>   - **Legacy production cluster** (DO NOT TOUCH — read-only access only when needed): `rishi-1` → 138.201.137.181, `rishi-2` → 136.243.150.84, `rishi-3` → 136.243.147.225. Three live production projects run here; any change can take prod down.
+>   - **V2 cluster** (allocated 2026-04-23 by Saikat, dedicated for yral-rishi-chat-ai-v2): `rishi-4` → 138.201.128.108 (Swarm manager, edge + state-primary), `rishi-5` → 88.99.160.251 (Swarm manager, edge + observability), `rishi-6` → 162.55.88.112 (Swarm manager, compute + Langfuse). All in Hetzner (rishi-1/2/3/4 confirmed in Falkenstein FSN1; rishi-5 ambiguous; rishi-6 likely Nuremberg NBG1 — confirm via `hcloud server describe` or ask Saikat; if cross-DC, keep Patroni sync replica within FSN1).
+>   - **Hardware**: Intel Core i7-6700 @ 3.4 GHz (4C/8T), 62.6 GB RAM, 2× 512 GB NVMe (RAID TBC), Ubuntu 24.04.4 LTS.
+>   - **Access**: `~/.ssh/rishi-hetzner-ci-key` for all 6 nodes. `rishi-deploy` user on rishi-4/5/6 (matches legacy convention). Saikat grants time-limited root (~1 week) for day-0 bootstrap; after that, scoped sudoers.
+> - **Sentry decision (locked 2026-04-23)**: v2 services emit errors/traces/perf to `sentry.rishi.yral.com` (Rishi's self-hosted Sentry on rishi-3). **We explicitly do NOT use `apm.yral.com`** (the team-shared Sentry Saikat provisioned earlier). Reason: Rishi owns `sentry.rishi.yral.com` and can tune it; `apm.yral.com` is shared team infra we don't control.
 > - **Wildcard DNS**: `*.rishi.yral.com` → rishi-1, rishi-2 (load balancer nodes). All new services get subdomains under this wildcard.
 > - **Current proxy**: Caddy (on rishi-1, rishi-2) — routing to `rishi-hetzner-infra-template`, Sentry, `yral-chat-ai` (Python). **Free to switch** from Caddy if justified; Saikat is neutral.
 > - **Current orchestrator**: Docker Swarm. Saikat is happy with the choice but **free to switch** (Kubernetes, Nomad, K3s) if justified.
@@ -1123,6 +1118,7 @@ Phased build. Each phase ends with a milestone where something real ships to rea
 **A6. Explicit English naming.** Any engineer (or ADHD Rishi reading code at 2am) must understand what a service/table/function does from its name alone.
 **A7. Never regress latency.** New service p50/p95/p99/p99.9 must be ≤ current service's at every rollout step. Latency regression = automatic rollback. See Section 2.8.
 **A8. LLM-agnostic by design.** Orchestrator talks to `llm-client` abstraction; switching providers is a config change, not a rewrite. Long-term goal: self-host best open-weight models when latency + quality permit.
+**A9. Maximum dynamism / no hardcoded values in code.** Rishi's philosophical rule for v2: **nothing that changes should be hardcoded in code or templates**. IPs, hostnames, ports, version strings, timeouts, tunable thresholds, feature flags, model choices, LLM provider — everything that might change per environment or per-service lives in a **single config file that all services read from**. CI lint rejects literal IPs. Template has one `shared-config.yaml` (or similar) that every spawned service consumes. Changing a tunable = edit one file, redeploy. The plan doc itself is exempt (IPs in docs are fine for human reference); this rule is about **runtime code, templates, scripts, and CI workflows**. Why: Rishi wants to add/remove/move servers or bump values without grep-and-replace across 13 services. **"Since we are creating the V2 version of the template I would love if everything is dynamic and fluid and have separate configs for things that will be used across almost all new services being created by the template itself."**
 
 ### 6.B The Build Principles
 
@@ -1381,7 +1377,7 @@ When you approve this plan, I will save the following as new or updated memory e
 2. **`project_yral_chat_v2.md`** (NEW) — The greenfield chat platform plan: scope, 13 services, 6-month roadmap, runs on rishi-4/5/6 (to be provisioned), cutover via DNS flip on `chat.yral.com` preserving mobile client (zero-change goal).
 3. **`reference_yral_infrastructure.md`** (NEW) — Canonical team infra: dashboard.yral.com (index), vault.yral.com (secrets), apm.yral.com (Sentry on rishi-3), beszel.yral.com, status.yral.com, coolify.yral.com. Reuse, never replace.
 4. **`reference_dolr_service_ownership.md`** (NEW) — Service ownership map: Ravi (chat/metadata/auth/storage), Ansuman (recommendation), Naitik (Coolify+Vault), Saikat (servers+monitoring+website), Sreyas (LTX), Sarvesh+Shivam (mobile). Know who to consult before cross-service changes.
-5. **`reference_saikat_server_allocation.md`** (NEW) — rishi-1 (138.201.137.181), rishi-2 (136.243.150.84), rishi-3 (136.243.147.225). Sentry on rishi-3. Wildcard `*.rishi.yral.com` points at rishi-1/2. New servers rishi-4/5/6 will be requested for v2.
+5. **`reference_saikat_server_allocation.md`** (NEW) — rishi-1/2/3 legacy production servers (hands-off). rishi-4/5/6 provisioned 2026-04-23 for v2 cluster. Hardware spec + role assignments recorded. IPs in memory only, never in committed code (per no-hardcoded-IPs rule).
 6. **`feedback_explicit_naming.md`** (NEW) — Code naming must be explicit English. Any English reader should infer purpose from name. Prefer verbose obvious over terse clever. Applies to services, tables, columns, functions, variables.
 7. **`feedback_secrets_github_primary_vault_shared.md`** (NEW, **corrected**) — Secret management pattern (from existing `yral-rishi-hetzner-infra-template`): per-service secrets live in **GitHub Secrets** (set via `gh secret set` during `new-service.sh`); only **team-shared secrets that ALREADY exist in Vault** get read from `vault.yral.com` at runtime via `infra.get_secret("path/key")`. Do NOT push new secrets into Vault. Everything fetched at runtime via env vars. Never in code, images, git, CI yaml. Reason: rotation without rebuild; no accidental disclosure; respects Naitik's Vault ownership.
 8. **`feedback_three_layer_backup.md`** (NEW) — 3-layer backup strategy: Patroni HA (Layer 1) + WAL archive to Hetzner S3 for PITR (Layer 2) + off-site weekly to Backblaze B2 (Layer 3). Weekly automated restore drill. Quarterly disaster recovery simulation.
@@ -1396,6 +1392,97 @@ When you approve this plan, I will save the following as new or updated memory e
 17. **`project_v2_mobile_change_audit.md`** (NEW) — 12 potential mobile-side changes enumerated (M1-M12 in plan Section 7 Step 3.5). Hard requirement: DNS flip at `chat.yral.com` (M1) to achieve zero mobile code change at cutover. Streaming (M2) is the biggest decision — recommendation to ship v2 without streaming, add in v2.1 when mobile is ready. Saikat + Sarvesh + Shivam sign-off needed BEFORE Phase 0 starts.
 
 I will not save these until you approve the plan, and each save will be its own file that I can update/delete later as facts change.
+
+---
+
+## 11.8 Decisions Locked on 2026-04-23 (Saikat + Rishi sign-off)
+
+Responses to the mobile-change-audit memo (Section 7 Step 3.5) and the infrastructure questions:
+
+### Decisions locked (no further debate needed)
+
+| # | Decision | Answer | Impact on plan |
+|---|---|---|---|
+| **Servers (Q1)** | Provision rishi-4/5/6 for v2 | ✅ **DONE 2026-04-23**. rishi-4 = Swarm manager + state-primary, rishi-5 = manager + edge/observability, rishi-6 = manager + compute/Langfuse. Hardware: Intel i7-6700, 62.6 GB RAM, 2× 512 GB NVMe each, Ubuntu 24.04.4. | Phase 0 step 1 unblocked. |
+| **Caddy routing (Q2)** | Route `chat.yral.com` (today) / `chat-ai.rishi.yral.com` (after Python go-live) → rishi-4/5/6 backend | ✅ **FEASIBLE**. Caddy on rishi-1/2 can be configured to upstream-proxy the new cluster. Rishi has `rishi-deploy` SSH user access. Config patterns live in the existing infra template's `caddy/snippet.caddy.template` (plus branch `rishi/app-ha-caddy-multi-upstream` explores multi-upstream). **DO NOT flip live routing until v2 is production-ready.** | Cutover via Caddy routing confirmed. Phase 4 (cutover) can proceed via existing Caddy on rishi-1/2 — no DNS change needed, just Caddy config update. Mobile URL unchanged. |
+| **Sentry (Q3)** | Reuse existing Sentry for v2 services | ✅ **USE `sentry.rishi.yral.com`** (Rishi's self-hosted on rishi-3), NOT `apm.yral.com` (team-shared). | Locked across plan + memories. |
+| **Langfuse (Q4)** | Self-host Langfuse on rishi-4 for LLM tracing | ✅ **APPROVED**. | Phase 0 step 4 confirmed. |
+| **Redis (Q5)** | Add Redis Cluster as new dependency on rishi-4/5/6 | ✅ **APPROVED**. | Phase 0 step 3 confirmed. |
+| **Streaming (Q9)** | SSE streaming in v2.0 or defer to v2.1? | ✅ **STREAMING IS IN FOR v2.0**. Rishi wants first-token <200ms as a headline feature. | Major — triggers mobile work. Details in Section 11.8.1 below. |
+| **JWT security gap (Q12)** | Fix Ravi's `insecure_disable_signature_validation` in v2 | ✅ **TAKE THE SAFER APPROACH** (Ravi unresponsive). v2 validates RS256 signatures via JWKS from `auth.yral.com/.well-known/jwks.json`, cached in Redis 1hr TTL. | Plan A2 confirmed. |
+| **Plan B.0 re-engagement mobile bundle (Q10)** | Include presence heartbeat + chip-dismissal-on-auto-message in v2.0 mobile changes | ✅ **BUNDLE IT**. | Small additional client work, wraps with streaming changes. |
+| **Cost ceiling (Q14)** | Monthly budget cap for LLM + infra | ✅ **NO COST CONTROLS until product-market fit.** Spend what it takes to make chat best-in-world. | Architecture gets designed for quality, not cost. Multi-provider routing still valuable for latency/availability, not primarily cost. Self-hosted LLM track deprioritized (Q6). |
+| **Team (Q15)** | Who builds v2? | Solo Rishi + **Claude Code agents + Codex in parallel**. Additional team allocation available if needed. | Roadmap assumes Rishi-led + AI-pair workflow. Plan explicitly includes agent-delegatable chunks of work. |
+| **Self-hosted LLM GPU (Q6)** | When do we get GPU capacity? | 🟡 **Delayed** — not a Phase 5 priority anymore. LLM-agnostic abstraction still built in from day 1; self-host is optional future. | Phase 5+ self-host milestone deprioritized (cost no longer the driver; product-fit is). |
+| **Mobile base URL (Q7)** | How does mobile get chat API URL today? | **Hardcoded.** File: `/shared/core/.../AppConfigurations.kt`, `const val CHAT_BASE_URL = "chat-ai.rishi.yral.com"`. Mobile stack is Kotlin Multiplatform (KMP), shared ~90% across iOS + Android; HTTP client is Ktor. Firebase Remote Config exists for feature flags but base URL is NOT remote-configured (opportunity for v2.1+). | Critical correction: **the URL mobile hits is `chat-ai.rishi.yral.com`, not `chat.yral.com`**. Rishi said the new Python prod URL will be `yral-chat-ai.rishi.yral.com` — need to clarify whether mobile will be updated to that or Caddy will keep routing `chat-ai.rishi.yral.com`. |
+| **Mobile 402 paywall shape (Q8)** | What JSON does mobile expect on paywall? | **The paywall is NOT a 402 HTTP response.** Billing is a separate Google Play IAP flow — mobile POSTs `purchase_token` to `/google/chat-access/grant`, polls `/google/chat-access/check`. The shared response envelope is `ApiResponse<T> { success, msg, error, data }` with `ChatAccessDataDto { hasAccess, expiresAt }` for access checks. The chat endpoint itself doesn't enforce paywall via HTTP status — mobile checks access BEFORE sending a message and triggers the IAP sheet if needed. | **Major correction to the plan.** V2's paywall logic lives in `yral-rishi-chat-ai-v2-public-api` as a pre-turn gate that returns an access-check response in this exact shape. Any error on the chat message endpoint is a regular error, not a paywall. |
+| **Plan approval (Q13)** | Green-light to start Phase 0 building | 🟡 **NOT YET.** Explicit user rule: **plan only with me until I say "build"**. Architect every phase in detail first, freeze, then Rishi approves, then build. | Hard rule — no code gets written until explicit approval. Saved to memory as a new feedback rule. |
+
+### 11.8.1 Streaming implementation plan (Q9 accepted — v2.0 ships with SSE)
+
+Rishi wants streaming in v2.0. This forces mobile work from Sarvesh/Shivam. Here's what needs to happen on both sides, based on research into `github.com/dolr-ai/yral-mobile`.
+
+**Mobile stack facts (research findings):**
+- **Kotlin Multiplatform (KMP)**: ~90% shared code; thin SwiftUI wrapper on iOS, thin Compose wrapper on Android. This is a WIN — any streaming work done in shared code covers both platforms simultaneously.
+- **HTTP client: Ktor Client** (KMP cross-platform) — config in `/shared/libs/http/src/commonMain/kotlin/com/yral/shared/http/HttpClientFactory.kt`. No built-in SSE parser; will need to add.
+- **No existing WebSocket or SSE usage anywhere in app** — net-new pattern for this team.
+- **UI is streaming-ready**: `ConversationMessageBubble.kt` already renders Markdown via Compose, already has an `isWaiting: Boolean` loading state. Replacing loading dots with incremental text is trivial — just update `content` field as tokens arrive and Compose recomposes.
+- **Base URL hardcoded** in `AppConfigurations.kt`: `const val CHAT_BASE_URL = "chat-ai.rishi.yral.com"`. No remote config driving it.
+- **Firebase Remote Config available** but not used for base URL — can be used to feature-flag SSE mode on/off during rollout.
+- **Chat send method**: `sendMessageJson()` in `/shared/features/chat/.../ChatRemoteDataSource.kt` line 177-193 — this is what changes from POST-to-JSON to POST-to-SSE-stream.
+
+**What mobile team needs to build** (ask Sarvesh + Shivam):
+1. **Add SSE parsing to Ktor client.** Ktor has raw streaming via `HttpClient.request()` returning a `ByteReadChannel`; need a lightweight SSE line parser on top (splits on `\n\n`, reads `data:` prefixed lines). ~100 lines of Kotlin in `/shared/libs/http/`. Reusable if the app ever streams anything else.
+2. **New chat-send path** — `sendMessageStream(conversationId, message): Flow<ChatStreamEvent>` returning Kotlin Flow emitting tokens. Replaces `sendMessageJson()` (keep old path as fallback for non-SSE backends / feature flag off).
+3. **Event types** — `ChatStreamEvent.TokenDelta(content_fragment)`, `ChatStreamEvent.Complete(full_message)`, `ChatStreamEvent.Error(reason)`. V2 backend emits these shapes; mobile parses + maps to UI.
+4. **UI wiring** — in ConversationMessageBubble.kt's parent (likely ConversationViewModel), on send:
+   - Insert assistant message with empty content + `isWaiting = true`
+   - Collect Flow; on each `TokenDelta`, append fragment to the assistant message content (Compose recomposes automatically); on `Complete`, mark not-waiting and persist via existing DB insert; on `Error`, show error state.
+5. **Error handling** — network drop mid-stream → retry from last token? Or restart whole turn? Simplest: restart whole turn, make it idempotent server-side via client_message_id.
+6. **Feature flag via Firebase Remote Config** — `enable_chat_streaming: bool`, defaulting off. Turn on per cohort during v2 canary. If streaming path errors, fallback to JSON path (both paths maintained for ~3-6 months post-launch).
+7. **Presence heartbeat (Plan B.0 nudge)** — every 10 seconds while chat screen is in foreground, emit a lightweight ping to `/api/v1/chat/conversations/{id}/presence`. Reuse Ktor client. Backend scheduler uses this to reset the inactivity timer. ~50 lines.
+8. **Chip dismissal on auto-fired message** — when a bot-authored message arrives (streamed or otherwise) and the current conversation still has Default Prompts visible, dismiss them. Small UI state change.
+
+**What backend needs to build** (v2 responsibility):
+1. V2 `yral-rishi-chat-ai-v2-public-api` exposes `POST /api/v2/chat/conversations/{id}/messages` with SSE response (Content-Type: `text/event-stream`). Emits token deltas as `data: {"type":"token","content":"..."}\n\n`, final `data: {"type":"complete","message":{...}}\n\n`, errors as `data: {"type":"error","message":"..."}\n\n`.
+2. Orchestrator streams LLM tokens directly to the SSE response (bridge Gemini's streaming API → SSE), bypassing full-message buffering.
+3. Parallel to streaming: orchestrator emits Redis Streams events (`message.sent`, `turn.completed`, `memory.candidate`) for async consumers.
+4. Legacy `POST /api/v1/chat/conversations/{id}/messages` (non-streaming) stays available throughout v2 as the fallback path mobile hits when feature flag is off.
+
+**Coordination ask for Sarvesh + Shivam:**
+- Confirm the above plan makes sense from mobile side
+- Estimate mobile-side effort (my guess: 1-2 weeks for KMP-shared SSE client + Compose wiring + feature flag; bundle Plan B.0 presence ping in the same sprint for efficiency)
+- Agree on event-shape contract (TokenDelta / Complete / Error JSON) before v2 API is frozen
+- Decide on testing approach (mock SSE server during development, integration tests with real v2 backend once Phase 1 is up)
+
+**Success criteria for streaming (v2.0 launch gate):**
+- Time-to-first-token <200ms at p95 (critical)
+- No increase in chat error rate vs. baseline Python service
+- No increase in crash rate on mobile
+- User-perceived latency survey (informal): feels faster
+
+**Fallback plan if streaming proves unstable:**
+- Firebase Remote Config flips streaming off globally; mobile falls back to JSON path; no user-visible outage.
+- Root-cause, fix, re-enable.
+
+### 11.8.2 Other corrections and clarifications
+
+- **Current mobile chat URL is `chat-ai.rishi.yral.com`**, not `chat.yral.com` — the DOLR context doc was outdated on this. Plan's cutover strategy updated: Caddy on rishi-1/2 continues to own `chat-ai.rishi.yral.com` and gradually upstreams to rishi-4/5/6 as v2 goes live. Mobile base URL unchanged.
+- **Rishi's statement that prod URL will become `yral-chat-ai.rishi.yral.com`** after Python go-live — need to clarify whether this means (a) mobile code bumps to the new URL in a future release, or (b) Caddy aliases both domains to the Python backend. Either way, v2 must serve whichever URL mobile hits at cutover time.
+- **Paywall is NOT a 402 response** — it's a pre-chat access check via yral-billing. Corrects my earlier (incorrect) assumption. V2 orchestrator calls billing to verify `hasAccess` BEFORE generating a response; if no access, returns the standard `ApiResponse` error envelope so mobile triggers the Google Play IAP sheet.
+- **Response envelope: `ApiResponse<T> { success, msg, error, data }`** — use this exact shape across all v2 endpoints so mobile's existing parsing works unchanged.
+
+### 11.8.3 The "plan-only until approved" rule (saved to memory as hard feedback)
+
+Rishi explicit rule (2026-04-23): **"Plan only with me. We'll start discussing around planning each and every phase in detail and discussing the architecture. Once we are sure about the architecture, we can freeze the plan and start building (start building only when I give explicit approval to build)."**
+
+**How I apply this from now on:**
+- No code gets written for v2 until Rishi says "build".
+- Phase 0 doesn't kick off without approval. Right now we're in architecture-conversation mode only.
+- I propose plans, open questions, alternatives; Rishi decides.
+- If I spot an ambiguity or missing piece, I raise it as a question, not an implementation.
+- If Rishi asks exploratory questions, I answer them with options, not defaults.
+- Build kickoff = a distinct, explicit user instruction. Not implied by agreement on any sub-topic.
 
 ---
 
