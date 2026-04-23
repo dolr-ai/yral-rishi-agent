@@ -1,5 +1,11 @@
 # Making YRAL Chat the Best in the World — The Greenfield Plan (v3)
 
+> **Companion docs in this repo** (dolr-ai/yral-rishi-chat-v2-plan):
+> - [`CONSTRAINTS.md`](./CONSTRAINTS.md) — the tight reviewable list of every hard constraint, organized by category, status per row. Start here if you want a fast index.
+> - [`V2_TEMPLATE_AND_CLUSTER_PLAN.md`](./V2_TEMPLATE_AND_CLUSTER_PLAN.md) — the canonical template + rishi-4/5/6 cluster design doc (Swarm-only networking, node role layout, bootstrap workflow, CI guardrails, net-new capabilities). This doc extends that one with product-facing capability plans, roadmap, memories, and cross-team integration.
+>
+
+
 > **Purpose:** Design a **brand-new, greenfield AI-companion chat platform** that is 1000× better than the current chat infrastructure. The existing Python `yral-chat-ai` service and everything preceding it stay live as a safety net throughout. Rishi brainstorming doc. Non-programmer friendly. ADHD-aware (extensive, structured, skim-friendly).
 >
 > **The constraint block (authoritative, binding):**
