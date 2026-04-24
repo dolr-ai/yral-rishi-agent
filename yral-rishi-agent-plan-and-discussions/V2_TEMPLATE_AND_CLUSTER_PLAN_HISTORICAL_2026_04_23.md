@@ -1,3 +1,22 @@
+> # ⚠️ HISTORICAL ARCHIVE — DO NOT USE AS CURRENT REFERENCE
+> 
+> **This document was the template + cluster plan as of 2026-04-23. It has been SUPERSEDED by [`V2_INFRASTRUCTURE_AND_CLUSTER_ARCHITECTURE_CURRENT.md`](./V2_INFRASTRUCTURE_AND_CLUSTER_ARCHITECTURE_CURRENT.md).**
+> 
+> **Why kept:** preserves historical context of decisions made on 2026-04-23 (the session that produced this doc). Useful if you want to understand WHY a decision was made, not WHAT the current state is.
+> 
+> **What's stale in this doc** (compared to current):
+> - References `apm.yral.com` as Sentry → current state: `sentry.rishi.yral.com` (Rishi's self-hosted on rishi-3; CONSTRAINTS A7/C4)
+> - Assumes polyrepo (one GitHub repo per service) → current state: monorepo (CONSTRAINTS F16; locked 2026-04-24)
+> - References separate `dolr-ai/yral-rishi-agent-cluster-bootstrap` repo → current state: `bootstrap-scripts-for-rishi-4-5-6-cluster-setup/` folder at monorepo root (Rishi chose this 2026-04-24)
+> - References `services.yaml` living in separate bootstrap repo → current state: same filename, inside the monorepo bootstrap folder
+> - Assumes `dolr-ai/yral-rishi-agent-new-service-template` as separate GitHub repo → current state: `yral-rishi-agent-new-service-template/` subfolder of the monorepo
+> - Section 10 open questions — mostly resolved; see CURRENT doc §10 for the residual
+> - "3 new servers to be allocated" language → servers (rishi-4/5/6) allocated 2026-04-23; IPs in memory
+> 
+> **For the current forward-useful architecture, read:** `V2_INFRASTRUCTURE_AND_CLUSTER_ARCHITECTURE_CURRENT.md`
+> 
+> ---
+> 
 # Plan: V2 template + rishi-4/5/6 cluster — bulletproof, 1000× chat-ai
 
 > Status: **DRAFT FOR REFINEMENT.** Nothing gets implemented until Rishi gives explicit "start building v2 template" approval. This doc is the shared artifact we refine together, turn by turn.
