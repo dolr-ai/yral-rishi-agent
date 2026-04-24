@@ -1,6 +1,6 @@
 # Making YRAL Chat the Best in the World — The Greenfield Plan (v3)
 
-> **Companion docs in this repo** (dolr-ai/yral-rishi-agent-plan):
+> **Companion docs in this repo** (dolr-ai/yral-rishi-agent — public monorepo):
 > - [`CONSTRAINTS.md`](./CONSTRAINTS.md) — the tight reviewable list of every hard constraint, organized by category, status per row. Start here if you want a fast index.
 > - [`V2_TEMPLATE_AND_CLUSTER_PLAN.md`](./V2_TEMPLATE_AND_CLUSTER_PLAN.md) — the canonical template + rishi-4/5/6 cluster design doc (Swarm-only networking, node role layout, bootstrap workflow, CI guardrails, net-new capabilities). This doc extends that one with product-facing capability plans, roadmap, memories, and cross-team integration.
 >
@@ -28,7 +28,7 @@
 > - **More servers available**: ✅ **DONE 2026-04-23** — Saikat has provisioned rishi-4/5/6 (IPs above). More can be requested if scale demands.
 > - **NO-DELETE covenant** 🚨 (hard rule from Rishi, non-negotiable): Until Rishi gives explicit per-item approval — and only after the new service is live in production — we cannot delete anything from existing infrastructure: not the Python `yral-chat-ai`, not the Hetzner template repo, not the Sentry instance, not any config on rishi-1/2/3. This extends to DNS, Caddy routes, GitHub repos, GitHub secrets, Swarm stacks. **If in doubt, ask. Never delete.**
 > - **Mobile client constraint** 🚨: The mobile app (owned by Sarvesh + Shivam) currently calls `yral-chat-ai`. The hardest constraint: **at most ONE change in the mobile codebase** when we cut over. Ideally zero — via DNS flip of a preserved URL like `chat.yral.com`. Any required mobile-side routing change needs a strong justification that Sarvesh/Shivam can defend.
-> - **Data preservation rules**: We MAY discard existing user chat history (conversations, messages) if required to rebuild cleanly. We MUST preserve all existing AI influencers (users discover them, creators earn from them) — their Soul Files, avatars, bios, earnings, follower counts all carry forward.
+> - **Data preservation rules** (UPDATED 2026-04-24): For LOCAL TESTING on Rishi's Motorola, we port the FULL chat-ai dataset (AI influencers + conversations + messages + read states + everything) so testing is realistic-fidelity, not empty-table. We MUST preserve all existing AI influencers always (users discover them, creators earn from them — Soul Files, avatars, bios, earnings, follower counts all carry forward). For eventual production CUTOVER (no timeline; Rishi's discretion only): the data-handling decision is separate and made when cutover is on the table — not now.
 > - **Feature parity required from day 1**: the new service must support (a) Human ↔ AI influencer chat, (b) Human ↔ Human chat, and (c) "Chat as Human" creator-takeover. The current schema already supports `conversation_type = 'human_chat'` via `participant_b_id` — carry that forward.
 > - **Explicit naming** 🚨: per Rishi's request — every service, table, column, function, variable must be named so an English reader can infer its purpose without comments. No cryptic abbreviations. Prefer `conversation-turn-orchestrator` over `orch-svc`, `user-message-memory-extractor` over `mem-ext`. Verbose and obvious beats terse and clever.
 > - **Existing observability** (reuse, don't rebuild): Sentry at `sentry.rishi.yral.com` (rishi-3), Beszel at `beszel.yral.com`, Uptime Kuma at `status.yral.com`, Vault at `vault.yral.com`. Reuse all of these for the new service.
@@ -332,12 +332,12 @@ This section is the NEW center of the document. Everything downstream (Plans A-H
 | **Docker Swarm** (current) | You know it. Your template uses it. Simple HA. No new learning cost. | Minimal ecosystem. Weaker at 20+ services. No autoscaling. | ✅ **Stay on Swarm.** |
 | **K3s** (lightweight k8s) | k8s ecosystem, Helm, operators, autoscaling. | Learning curve. More moving parts. New ops playbook. | Defer. Revisit at 100K DAU or service count >20. |
 | **Nomad** (HashiCorp) | Simpler than k8s; fits Vault ecosystem. | Smaller community. Less AI-ecosystem tooling. | Defer. Not obviously better than Swarm for our scale. |
-| **Full K8s** | Industry standard. Infinite ecosystem. | Overkill for 10K-100K DAU and 12 services. | ❌ Not now. |
+| **Full K8s** | Industry standard. Infinite ecosystem. | Overkill for 10K-100K DAU and 13 services. | ❌ Not now. |
 
 **My strong recommendation: stay on Docker Swarm** — for the new servers rishi-4/5/6 too. Reasons:
 1. You already know it. Learning another orchestrator costs months.
 2. Your template and `new-service.sh` already target Swarm. Zero template changes needed.
-3. 12 services × 3 replicas × 3 nodes fits comfortably in Swarm without autoscaling.
+3. 13 services × 3 replicas × 3 nodes fits comfortably in Swarm without autoscaling.
 4. If we hit a limit, migration to K3s is feasible because Dockerfiles and images stay the same.
 
 **Justification for Saikat:** same stack keeps ops simple; new cluster is operationally identical to existing; future migration path to k8s is preserved via Docker images.
@@ -1028,91 +1028,43 @@ If you mixed-and-matched the plans above, this is your full menu. Bold = I think
 
 ---
 
-## 5. Greenfield 6-Month Build Roadmap
+## 5. Greenfield Build Roadmap — 11 Phases
 
-Phased build. Each phase ends with a milestone where something real ships to real users. Old chat-ai stays live until Phase 3 cutover.
+**Authoritative timeline:** see `TIMELINE.md` (sibling doc) for day-by-day detail with Rishi-on-Motorola checkpoints. This section is the high-level summary. The two MUST stay aligned — TIMELINE wins on conflicts.
 
-### Phase 0 — Foundations (Weeks 1-3, template-first)
+**Sequencing principle (Rishi 2026-04-24):** template first → hello-world from template → feature-parity services → 1000× services. Local testing uses FULL data port from chat-ai (CONSTRAINTS A13). Cutover has no timeline (CONSTRAINTS A6).
 
-**Goal:** new cluster is alive with full observability + backups + a working v2 template; rishi-1/2/3 untouched; mobile app unaffected.
+| Phase | Days | What ships | 🤳 Motorola checkpoint |
+|---|---|---|---|
+| **0 — V2 template + hello-world** | 1-5 | Local v2 template at `yral-rishi-agent-new-service-template/` proven via throwaway hello-world service | #0: `docker compose up` passes locally; observability all green |
+| **1 — Feature parity services + full data port** | 6-22 | All 21 chat-ai endpoints + influencer CRUD + billing pre-check + H2H chat. Full ETL of chat-ai data into local v2 Postgres | #1-#4: Motorola exercises every v1 feature against ported-prod data |
+| **2 — Memory + Depth (Priority #1)** | 23-28 | Tiered memory (pgvector) — bot remembers across sessions | #5: bot recalls something said in earlier session |
+| **3 — Soul File + SSE Streaming (Priority #2)** | 29-36 | 4-layer Soul File composer + streaming responses (first token <200 ms); Tara stays on OpenRouter | #6: streaming feels fast; quality feels better |
+| **4 — Proactivity + First-turn Nudge (Priorities #4 + #7)** | 37-42 | Scheduler + presence heartbeat + bot follows up after 25s silence | #7: bot nudges if you sit idle |
+| **5 — Safety + Moderation (mandatory before any canary)** | 43-46 | Crisis detector + prompt injection defense + NSFW + age gate | #8: safety filter active |
+| **6 — Programmatic AI Influencer Creation via MCP (Priority #5)** | 47-52 | Open API + MCP server wrapping influencer endpoints | #9: Claude Desktop creates an influencer |
+| **7 — Creator Tools + Analytics Backend (Priority #8)** | 53-60 | Soul File Coach + creator analytics (backend) | Backend demo |
+| **8 — Meta-AI Advisor (Priority #10)** | 61-65 | Daily LLM-generated top-3 actions for Rishi | Rishi-facing dashboard |
+| **9 — Creator Monetization + Private Content (Priority #9)** | 66-80 | Tip jar, content vault, consent + safety gates | Backend first |
+| **10 — Deploy to rishi-4/5/6 cluster** | Separate approval gate | Production cluster provisioning, chaos tests, latency baselines | Rishi's explicit gate |
+| **11 — Cutover to V2** | Separate approval gate | Caddy on rishi-1/2 starts routing percentage of `chat-ai.rishi.yral.com` traffic to v2 | Rishi's explicit gate |
 
-**Template-first principle (per Section 1.6):** we build the new template BEFORE building services from it. Fixing the template once is cheaper than fixing 13 services. So Phase 0 ends with the template proven via a throwaway hello-world service, not with production services.
+**Total to Phase 1 parity on Motorola:** ~22 days at reasonable pace.
+**Total through Phase 4 (memory + streaming + proactivity = bulk of 1000× UX):** ~42 days (~6 weeks).
+**Total through Phase 9 (full backend):** ~80 days (~11-12 weeks).
 
-**Phase 0 ordered checklist:**
+Pace flexes with available hours. Every phase ends with a Motorola checkpoint; we pause, test, iterate, then move on. Cutover (Phase 11) is NOT tied to any phase — happens only when Rishi explicitly says "cut over now" (CONSTRAINTS A6).
 
-1. **Draft the server-request message to Saikat.** Explain: 13 services + HA Postgres + Redis + Langfuse colocated, new cluster isolates from rishi-1/2/3. Request rishi-4/5/6 (Hetzner bare metal, similar spec). Wait for approval. **Blocking.**
-2. **Provision rishi-4/5/6** (after Saikat confirms): OS baseline, SSH for Rishi, Ansible convergence, Beszel agents installed (appear on `beszel.yral.com`), registered on `dashboard.yral.com`.
-3. **Install cluster infra:** Docker Swarm on rishi-4/5/6 (separate from rishi-1/2/3 — independent manager token). rishi-4 = manager; rishi-5/6 = workers. Patroni HA Postgres (empty, ready). Redis Cluster. pgBouncer per-node. Caddy on rishi-4/5 as edge proxy.
-4. **Self-host Langfuse on rishi-4** (its own Postgres schema). Backs all future LLM tracing.
-5. **Wire Sentry.** Existing rishi-3 Sentry's DSN becomes a GitHub Org secret (per Section 1.5.1 pattern). New services read it as env var at runtime. No new Sentry instance.
-6. **Register subdomains** under `*.rishi.yral.com`: `chat-ai-v2`, `creator-studio`, `soul-file-library`, `metrics`, `advisor`, `langfuse`. Point DNS at rishi-4/5.
-7. **Build the v2 template repo** — `github.com/dolr-ai/yral-rishi-agent-new-service-template`. Start by copying the existing `yral-rishi-hetzner-infra-template` (**DO NOT MODIFY THE ORIGINAL** — Section 1.5 no-delete covenant). Evolve per Section 1.6.3: Sentry wiring, Langfuse middleware, Redis client, Redis Streams event helpers, feature-flag client, uniform `/health`, structured JSON logs, request-ID tracing, latency recording, LLM-client abstraction, MCP helpers, schema-per-service bootstrap, pre-flight check, 3-layered backup scripts.
-8. **Prove the template end-to-end with a hello-world service** — spawn `yral-rishi-agent-hello-world` via `bash scripts/new-service.sh --name yral-rishi-agent-hello-world`. Verify: green CI in <10 minutes, health check passes at `hello-world.rishi.yral.com`, Sentry sees a test exception, Langfuse sees a test trace, Beszel shows the container, Uptime Kuma shows green, backup script runs cleanly, restore drill passes. **Only when this works, the template is ready for real services.**
-9. **Keep or retire the hello-world service** — Rishi's call per no-delete covenant. My recommendation: keep it permanently as an integration test that fires on every template update. It stays tiny and proves the template still works after evolution.
-10. **Set up the 3-layered backups** (Section 1.5.2): Patroni HA (Layer 1) + WAL archive to Hetzner S3 bucket `rishi-yral-chat-ai-v2-wal-archive` (Layer 2 PITR) + daily pg_dump to `rishi-yral-chat-ai-v2-daily-backup` + weekly pg_dump to Backblaze B2 (Layer 3 offsite). Weekly automated restore drill scheduled.
-11. **Capture latency baselines** (Section 2.8): instrument Ravi's Rust service AND current Python `yral-rishi-chat-ai` to export per-endpoint p50/p95/p99/p99.9 latency for 1 full week. Record in `latency-baselines.md` inside the v2 template repo. **This is the number we promise to beat.**
-12. **Spawn skeleton services from the template:** `yral-rishi-agent-public-api` and `yral-rishi-agent-conversation-turn-orchestrator`. Both respond to `/health`. Nothing else yet.
-13. **Verify end-to-end observability:** open Beszel, Uptime Kuma, Sentry (`sentry.rishi.yral.com`), Langfuse — every new server + service is visible with green status.
-
-**Win:** template proved and ready; cluster alive with full observability + backups + baselines captured; rishi-1/2/3 untouched; mobile app unaffected; zero user-visible change. Phase 1 can start.
-
-### Phase 1 — Thin Slice Running End-to-End (Weeks 3-6)
-**Goal:** the simplest possible "user sends message, gets LLM reply" path through the NEW stack — in shadow.
-
-- Orchestrator runs the minimal turn lifecycle: receive → compose prompt (from `yral-prompt-system` with JUST global + bot layers) → call Gemini → stream tokens via SSE back → persist
-- `yral-prompt-system` ships: schema + 4 layers + composer + feature flags
-- `yral-safety` v1 ships: basic moderation (regex + classifier) pre/post filter
-- **Shadow traffic:** old `yral-chat-ai` keeps serving production; a sidecar mirrors every request to new `yral-orchestrator`. Compare responses, log divergence, measure latency. Users see the OLD response. **This is how we build confidence without risk.**
-- Ship the `yral-response-length-guardrail` + `yral-tone-normalizer` directly inside orchestrator (they're just post-processors on streamed tokens)
-- **Win:** new stack is alive in shadow; you can compare side-by-side whether the new stack's responses are better.
-
-### Phase 2 — Quality & Creator Tools (Weeks 7-12)
-**Goal:** the parts that make new service obviously better than old, still in shadow.
-
-- `yral-prompt-system`: full 4-layer composer, versioned, with Tara Template distilled and seeded as default
-- `yral-creator-studio`: Prompt Coach MVP — creators talk to an LLM that tunes their bot's Layer 3. Preview + approve + deploy. UI coordinated with mobile team.
-- `yral-creator-studio`: new bot creation flow (bot-bootstrap-v2 — structured intake, reference upload, instant preview)
-- `yral-analytics` v1 ships: event pipeline via Redis Streams, daily rollups, public dashboard at `metrics.rishi.yral.com`
-- `yral-safety`: upgrade with crisis detector (must ship before any canary to real users)
-- **Offline eval harness** (via Langfuse) with 200 gold prompts. Every prompt-registry change passes eval before it can be set active.
-- **Win:** you can show a creator "your bot just got 3× better in 5 minutes by chatting with the Coach." Eval scores baseline quality.
-
-### Phase 3 — Memory & First Canary (Weeks 13-18)
-**Goal:** depth + real user traffic on new stack for the first time.
-
-- `yral-memory`: tiered memory ships. Session cache (Redis), semantic facts (Postgres), vector search (pgvector). Orchestrator wires memory into the composer in parallel with prompt assembly.
-- **Canary cutover begins:** 1% of users routed to new stack (user_id hash based). Monitor Langfuse traces, eval scores, user session length, payment conversion. If metrics hold or improve, step to 10%, then 25%, then 50%.
-- Memory extractor async worker runs on every new message (event-driven, not polling)
-- **Win:** first real users on the new service; first "it remembered me!" magic moments.
-
-### Phase 4 — Proactivity + Media + Full Cutover (Weeks 19-24)
-**Goal:** the things users don't get today (initiative, multi-modal) + old service retired.
-
-- `yral-proactive-engine`: scheduler + planner + message dispatch. Every active user gets at most 1 bot-initiated message/day, timezone-aware, memory-informed. A/B test retention impact.
-- `yral-media` upgrades: voice synthesis for bot replies (opt-in per bot), creator-styled image generation
-- `yral-billing` integration: micropayments wired for future private-content
-- **100% cutover** to new stack (after 50% holds steady for 2 weeks). Old `yral-chat-ai` moved to read-only archive mode — mobile app stops hitting it — then deprovisioned 30 days later.
-- `yral-advisor` (Meta-AI) ships — starts giving you daily top-3 priority recommendations
-- **Win:** old service is gone; new service is the canonical chat platform; users get proactive bots + voice notes.
-
-### Phase 5+ (Month 7 onwards)
-- **Plan C** (archetype specialization): nutrition, coach, instructor — one archetype per month
-- **Plan G** (private content + safety gates)
-- **Plan E** (creator skill marketplace + MCP bridge) — a 6-month build on its own
-- **Self-hosted LLM track** — Rishi's stated long-term goal. Milestones:
-  1. GPU capacity allocation from Saikat (H100/A100 or Hetzner GPU tier)
-  2. Benchmark current best open-weight models (Llama 3.3 70B, Qwen 2.5 72B, DeepSeek V3, Mistral Large) against Gemini 2.5 for quality + latency
-  3. **Latency gate:** self-hosted model must match or beat Gemini's TTF under YRAL load profile. If slower, quantize / switch to smaller model (13B-32B class) / don't deploy yet.
-  4. Deploy via vLLM or TGI behind the `llm-client` abstraction — zero orchestrator code change (that's the point of LLM-agnostic design)
-  5. Shadow route 1% of traffic to self-hosted; compare quality + latency; ramp if both hold
-  6. Once proven, consider fine-tuning on YRAL conversation data (with user consent — privacy review required)
-- **Multi-region** (add servers in SG/EU if user geography warrants)
+**Open separately and IN parallel** (no specific phase): mobile-side bundled change (SSE parser + `sendMessageStream` + presence heartbeat + chip dismissal + Firebase flag) needs Sarvesh + Shivam capacity. Estimated 2-3 sprints. Documented in `running-coordination-asks-plus-mobile-team-memo-and-change-log/`.
 
 ### Parallel-forever tracks (always running)
-- **Eval harness** — nightly runs, per-prompt-change checks
-- **Shadow traffic** — stays on indefinitely, new features always go through shadow first
-- **Meta-AI Advisor** — daily output to Rishi
+
+- **Eval harness** (Langfuse built-in) — runs on every PR touching LLM-facing code; posts diff
+- **Shadow traffic middleware** — every orchestrator change runs shadow before promote
+- **Meta-AI advisor** (post Phase 8) — daily top-3 actions in your inbox
 - **Security review** — every 90 days, rotating safety audits
+- **Latency baseline check** — automated comparison vs `latency-baselines.md` (CONSTRAINTS E1)
+- **Synthetic user heartbeat** — canary bot every 5 min
 
 ---
 
@@ -1173,9 +1125,7 @@ This is the highest-risk part. 10K DAU on the existing stack; we can't break the
 - **AI influencers — MUST preserve** (per Rishi's data rule):
   - One-time ETL: `SELECT * FROM old_db.ai_influencers` → `INSERT INTO new_db.influencer.ai_influencers`. Preserve `id` column so mobile deep-links keep working.
   - Set up continuous CDC (logical replication from old Postgres to new Postgres on just this table) so any new influencer created via old service also appears in new database. No drift possible.
-- **User chats — authorized to discard** (per Rishi's data rule):
-  - Option A (preferred for cleanliness): **do NOT migrate chats**. On cutover, users' chat histories reset to empty. New conversations use new schema. Simpler, faster, cleaner — but means users see empty inboxes initially.
-  - Option B (softer UX): migrate last 30 days of chat for continuity. More migration work. Recommend: start with A, reassess before cutover based on user sentiment in canary.
+- **User chats — UPDATED 2026-04-24**: For LOCAL TESTING (the immediate concern), Rishi confirmed we port the FULL chat-ai dataset including user chats. ETL one-time + CDC continuous so local v2 mirrors prod state. For eventual production CUTOVER (no timeline; Rishi's discretion): keeping vs discarding old chats is a separate decision deferred until cutover is on the table. Older Option A vs Option B framing is superseded by Rishi's "full port for local testing" directive.
 - **Human profiles — pass-through**: profile data is owned by Ravi's metadata service upstream. New chat service just calls metadata service like old chat service did.
 
 ### Step 3 — Build & Shadow on Private Subdomain (Weeks 3-12)
@@ -1385,7 +1335,7 @@ When you approve this plan, I will save the following as new or updated memory e
 
 1. **`feedback_no_delete_covenant.md`** (UPDATE) — Expand existing rule to explicitly include: never delete any old chat services, templates, Sentry instances, Docker stacks, DNS records, Caddy routes, GitHub repos/secrets, database tables, etc. Per-item approval required. Cost of asking <<< cost of deleting wrong thing.
 2. **`project_yral_chat_v2.md`** (NEW) — The greenfield chat platform plan: scope, 13 services, 6-month roadmap, runs on rishi-4/5/6 (to be provisioned), cutover via DNS flip on `chat.yral.com` preserving mobile client (zero-change goal).
-3. **`reference_yral_infrastructure.md`** (NEW) — Canonical team infra: dashboard.yral.com (index), vault.yral.com (secrets), apm.yral.com (Sentry on rishi-3), beszel.yral.com, status.yral.com, coolify.yral.com. Reuse, never replace.
+3. **`reference_yral_infrastructure.md`** (NEW) — Canonical team infra: dashboard.yral.com (index), vault.yral.com (secrets), `sentry.rishi.yral.com` (Rishi's self-hosted Sentry on rishi-3 — the one v2 uses), `apm.yral.com` (team-shared Sentry — NOT used by v2), beszel.yral.com, status.yral.com, coolify.yral.com. Reuse, never replace.
 4. **`reference_dolr_service_ownership.md`** (NEW) — Service ownership map: Ravi (chat/metadata/auth/storage), Ansuman (recommendation), Naitik (Coolify+Vault), Saikat (servers+monitoring+website), Sreyas (LTX), Sarvesh+Shivam (mobile). Know who to consult before cross-service changes.
 5. **`reference_saikat_server_allocation.md`** (NEW) — rishi-1/2/3 legacy production servers (hands-off). rishi-4/5/6 provisioned 2026-04-23 for v2 cluster. Hardware spec + role assignments recorded. IPs in memory only, never in committed code (per no-hardcoded-IPs rule).
 6. **`feedback_explicit_naming.md`** (NEW) — Code naming must be explicit English. Any English reader should infer purpose from name. Prefer verbose obvious over terse clever. Applies to services, tables, columns, functions, variables.
@@ -1501,7 +1451,7 @@ Rishi explicit rule (2026-04-23): **"Plan only with me. We'll start discussing a
 Pick one or more to lock in:
 
 - **(a) Approve the plan as-is** → I'll save the memories from Section 11.5, then start on Phase 0 detailed specs: new-template repo scaffolding, Ansible for rishi-4/5/6 provisioning, Vault/Sentry wiring, Postgres+Redis+Langfuse install playbooks, the empty skeleton services.
-- **(b) Ask Saikat for the new servers first** → before I write any more plan, draft the formal request message for rishi-4/5/6 with justification (cluster isolation, 12 services, HA DB, Redis, GPU capacity for future self-hosted LLM). Need his approval before spending time on Phase 0 designs.
+- **(b) Ask Saikat for the new servers first** → before I write any more plan, draft the formal request message for rishi-4/5/6 with justification (cluster isolation, 13 services, HA DB, Redis, GPU capacity for future self-hosted LLM). Need his approval before spending time on Phase 0 designs.
 - **(c) Deep-dive a specific service** → which one? Examples: `yral-conversation-turn-orchestrator` (the brain), `yral-soul-file-library` (the Soul File layered system), `yral-creator-studio` (the Soul File Coach), `yral-content-safety-and-moderation` (the non-negotiable safety layer).
 - **(d) Baseline measurement first** → before committing to the SLO, capture 1 week of prod latency from Rust chat + Python chat-ai. I'll write the Sentry-export + Langfuse-instrumentation script. This is the number we promise to beat. Without it, the SLO is abstract.
 - **(e) Mobile-client coordination with Sarvesh/Shivam** → draft the architecture memo explaining the DNS-flip-only plan and get their review before anything else. If they say the API contract needs to change, we need to know now, not in week 18.
