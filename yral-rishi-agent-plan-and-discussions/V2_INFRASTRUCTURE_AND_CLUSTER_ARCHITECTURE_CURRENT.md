@@ -129,7 +129,7 @@ Only port `:443` is exposed to the host — on rishi-4 and rishi-5 via Caddy Swa
 
 ### Dynamic cluster shape via cluster.hosts.yaml
 
-Live in `bootstrap-scripts-for-rishi-4-5-6-cluster-setup/cluster.hosts.yaml` at the monorepo root (NOT inside template; per Rishi's 2026-04-24 decision — CONSTRAINTS F7 updated).
+Live in `bootstrap-scripts-for-the-v2-docker-swarm-cluster/cluster.hosts.yaml` at the monorepo root (NOT inside template; per Rishi's 2026-04-24 decision — CONSTRAINTS F7 updated).
 
 Shape only (no IPs):
 
@@ -313,7 +313,7 @@ Per CONSTRAINTS D2 + `feedback_three_layer_backup.md`:
 
 - **GitHub Secrets per-repo** = primary store for per-service secrets (DB DSNs, LLM keys, third-party API keys)
 - **Vault (`vault.yral.com`)** = read-only for team-shared lookups already there (e.g., `YRAL_METADATA_NOTIFICATION_API_KEY`). Naitik's territory. We read, we don't write.
-- **Declarative manifest** at `bootstrap-scripts-for-rishi-4-5-6-cluster-setup/secrets-manifest.yaml` declares every secret every service needs (metadata only; no values). CI gate refuses deploy if required secret missing.
+- **Declarative manifest** at `bootstrap-scripts-for-the-v2-docker-swarm-cluster/secrets-manifest.yaml` declares every secret every service needs (metadata only; no values). CI gate refuses deploy if required secret missing.
 - **Runtime injection** via Swarm secrets, mounted at `/run/secrets/<name>`. Nothing secret in images, nothing in git. Rotation = `gh secret set` → redeploy.
 - **Audit:** GitHub Actions logs secret reads per workflow. Vault logs its own. Monthly 15-min skim.
 
@@ -427,7 +427,7 @@ Any failure → fix BEFORE proceeding. This is the price of bulletproof.
 | Circuit breakers | `pybreaker` wrappers on LLM + external HTTP | Failing upstream doesn't cascade |
 | Retry w/ jittered backoff | `tenacity` on transient failures | Handles network blips without ops noise |
 | Idempotency key support (default ON) | Middleware enforces `X-Idempotency-Key` on non-GET; Redis 24h TTL dedup | Mobile retries never duplicate |
-| `services.yaml` auto-register | Lives in `bootstrap-scripts-for-rishi-4-5-6-cluster-setup/services.yaml` at monorepo root. `new-service.sh` final step updates it. Merge triggers regen of Prometheus scrape, Caddy snippets, Uptime Kuma monitors, Grafana folders | Monorepo-adapted: was "PR to separate repo"; now just edit the file |
+| `services.yaml` auto-register | Lives in `bootstrap-scripts-for-the-v2-docker-swarm-cluster/services.yaml` at monorepo root. `new-service.sh` final step updates it. Merge triggers regen of Prometheus scrape, Caddy snippets, Uptime Kuma monitors, Grafana folders | Monorepo-adapted: was "PR to separate repo"; now just edit the file |
 | Schema-per-service bootstrap | Tenant SQL template creates schema + role + GRANTs + connection cap | 13 services on one Patroni cluster, cleanly |
 | pgvector ready day 1 | Migration adds `CREATE EXTENSION IF NOT EXISTS vector` once per cluster. Migration path to Qdrant kept behind same interface; trigger at ~50M vectors (Month 12+ projection) | user-memory-service needs it day 1 |
 | WAL-G restore drill | Weekly CI job restores yesterday's WAL into throwaway Postgres | Backups not restored aren't backups |
@@ -462,7 +462,7 @@ Once the v2 template exists:
    - Renames identifiers in the service's `project.config`
    - Generates Postgres password + Redis key for this service
    - Sets GitHub repo secrets for this service (LLM keys, DB DSN, S3 creds, Sentry DSN, Langfuse keys) via `gh secret set` — scoped to the monorepo repo
-   - Opens PR against `bootstrap-scripts-for-rishi-4-5-6-cluster-setup/services.yaml` adding the new entry (one commit)
+   - Opens PR against `bootstrap-scripts-for-the-v2-docker-swarm-cluster/services.yaml` adding the new entry (one commit)
    - Watches first CI run; verifies `/health/ready` responds
    - Registers in Uptime Kuma via API
    - Prints the service's staging URL and next steps

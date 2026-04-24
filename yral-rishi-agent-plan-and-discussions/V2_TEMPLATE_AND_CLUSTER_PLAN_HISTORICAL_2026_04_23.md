@@ -7,7 +7,7 @@
 > **What's stale in this doc** (compared to current):
 > - References `apm.yral.com` as Sentry → current state: `sentry.rishi.yral.com` (Rishi's self-hosted on rishi-3; CONSTRAINTS A7/C4)
 > - Assumes polyrepo (one GitHub repo per service) → current state: monorepo (CONSTRAINTS F16; locked 2026-04-24)
-> - References separate `dolr-ai/yral-rishi-agent-cluster-bootstrap` repo → current state: `bootstrap-scripts-for-rishi-4-5-6-cluster-setup/` folder at monorepo root (Rishi chose this 2026-04-24)
+> - References separate `dolr-ai/yral-rishi-agent-cluster-bootstrap` repo → current state: `bootstrap-scripts-for-the-v2-docker-swarm-cluster/` folder at monorepo root (Rishi chose this 2026-04-24)
 > - References `services.yaml` living in separate bootstrap repo → current state: same filename, inside the monorepo bootstrap folder
 > - Assumes `dolr-ai/yral-rishi-agent-new-service-template` as separate GitHub repo → current state: `yral-rishi-agent-new-service-template/` subfolder of the monorepo
 > - Section 10 open questions — mostly resolved; see CURRENT doc §10 for the residual

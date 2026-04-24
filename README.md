@@ -11,7 +11,7 @@ This repository is a **monorepo** containing both the plan/architecture docs AND
 | **`yral-rishi-agent-plan-and-discussions/`** | All plan docs, constraints, timeline, architecture, feature-parity audits, coordination memos, design discussions. Start here if you're reading the project for the first time. |
 | **`yral-rishi-agent-new-service-template/`** | The template every service is spawned from. Built in Phase 0. See plan-and-discussions for the design. |
 | **`shared-library-code-used-by-every-v2-service/`** | Common code imported by every service: auth middleware, LLM client abstraction, Langfuse tracing, Sentry wiring, event-stream helpers, idempotency middleware, PII redaction. Built during Phase 0. |
-| **`bootstrap-scripts-for-rishi-4-5-6-cluster-setup/`** | Cluster bootstrap scripts (Swarm init, Caddy, Patroni HA, Redis Sentinel, Langfuse). Populated when cluster deployment is approved. |
+| **`bootstrap-scripts-for-the-v2-docker-swarm-cluster/`** | Cluster bootstrap scripts (Swarm init, Caddy, Patroni HA, Redis Sentinel, Langfuse). Populated when cluster deployment is approved. |
 | **13 service folders `yral-rishi-agent-*/`** | One folder per v2 service. Each is empty until its phase (see TIMELINE). |
 
 ## The 13 services (priority order)

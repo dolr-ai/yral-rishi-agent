@@ -1,4 +1,4 @@
-# bootstrap-scripts-for-rishi-4-5-6-cluster-setup
+# bootstrap-scripts-for-the-v2-docker-swarm-cluster
 
 **Status:** empty placeholder. Cluster bootstrap scripts (Ansible/systemd/UFW/docker-swarm-init) go here when Phase 9 (deploy to rishi-4/5/6) gets explicit approval.
 
