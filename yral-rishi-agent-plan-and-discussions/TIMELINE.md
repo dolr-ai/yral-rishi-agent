@@ -16,6 +16,11 @@ When testing locally: port ALL data from the current live chat-ai to the local v
 
 - Plan-only until Rishi explicitly approves this plan
 - Local implementation authorized (laptop backend + mobile local changes) per A13
+- **V2 MUST be ≥50% faster than Python yral-chat-ai on user-interactive endpoints (E1, HARD, 2026-04-24 upgrade)** — every architectural decision measured against this
+- **ALL data MUST port — AI influencers AND full user chat history (A4+A13 reversed 2026-04-24)** — applies to local testing AND cutover
+- **Claude pushes back on non-standard or likely-wrong decisions (I6, 2026-04-24)** — technical/architectural/product/UX; state concern + alternative + tradeoff + let Rishi decide
+- **Pulling live chat-ai DB data requires explicit per-operation Rishi YES (A14, 2026-04-24)** — Sentry aggregated reads pre-authorized; DB reads not
+- **Motorola testing via real cluster from Day 8+ (A9+A15, refined 2026-04-24 evening)** — Cloudflare DNS → rishi-1/2 Caddy → rishi-4/5 Swarm. Debug APK has `CHAT_BASE_URL = "agent.rishi.yral.com"` per A16. NO Cloudflare Tunnel. NOT Tier-0 browser as primary loop
 - Every mobile change = ONE change at a time, documented, never pushed (A12)
 - Every feature in chat-ai must survive (A8 — can't cut without good reason + explicit approval)
 - Naming: explicit English everywhere (B1, B5)
@@ -24,99 +29,140 @@ When testing locally: port ALL data from the current live chat-ai to the local v
 
 ---
 
-## Phase 0 — The V2 Template (Days 1-5)
+## Phase 0 — Template + Cluster (Days 1-8) — REFINED 2026-04-24 evening
 
-**Goal:** a proven, reusable template for spawning every v2 service. Nothing else happens until this is solid.
+**Goal:** by end of Day 8, Motorola debug APK sends a real chat message to `agent.rishi.yral.com`, which routes through rishi-1/2 Caddy → rishi-4/5 Swarm cluster → v2 public-api hello-world, returns a response. Real production-shape routing from Day 8 onwards.
 
-### Day 1 — Template skeleton
-Local repo: `~/Claude Projects/yral-rishi-agent/yral-rishi-agent-new-service-template/` (local git init; NO GitHub push yet).
+**Structural shift:** earlier plan had everything local Days 1-5. Refined plan (per Rishi 2026-04-24 evening): laptop for template dev Days 1-3, then rishi-4/5/6 cluster + rishi-1/2 Caddy routing Days 4-7, Motorola hits real cluster Day 8+.
 
-Fork the structure from existing `yral-rishi-hetzner-infra-template` (that template stays untouched per no-delete). Evolve:
+### Day 0.5 — Sentry baseline pull script (BEFORE template)
+Per `project_v2_first_build_task_sentry_baseline_pull.md`:
+- Read Sentry API key from `~/.config/dolr-ai/sentry-api-key` (Rishi confirms exact path)
+- Write `latency-baseline-capture-from-live-services-the-numbers-v2-must-beat/scripts/pull-sentry-baseline.py`
+- Pulls yral-chat-ai p50/p95/p99 + error counts per user-interactive endpoint
+- Appends to `daily-baseline.csv`, writes `latest-baseline.md`
+- Install launchd job (runs 9am local daily)
+- Today's number becomes the "what v2 must beat" anchor
+
+### Day 1 — Local template skeleton
+Local folder: `~/Claude Projects/yral-rishi-agent/yral-rishi-agent-new-service-template/` (inside the monorepo; no new GitHub repo per F16).
+
+Fork structure from existing `yral-rishi-hetzner-infra-template` (untouched per no-delete). Evolve:
 
 - `pyproject.toml` — Python 3.12, FastAPI, asyncio, asyncpg, redis-py, httpx, pydantic, alembic, pytest
 - `Dockerfile` — Python 3.12-slim, non-root user, multi-stage build
-- `docker-compose.yml` — service + Postgres + Redis + pgBouncer + Langfuse (for local dev)
-- `docker-compose.prod.yml` — Swarm-targeting variant (for later, when Rishi approves prod deploy)
+- `docker-compose.yml` — service + Postgres + Redis + pgBouncer + Langfuse (local dev convenience)
+- `docker-compose.swarm.yml` — Swarm stack variant (used from Day 8)
 - `project.config` — per-service single source of truth (name, domain, ports, replica tier)
 - `shared-config.yaml` — cross-service shared values (URLs, hostnames, feature-flag defaults)
-- `bootstrap/` folder (per constraint F7 — INSIDE template repo, not separate):
-  - `cluster.hosts.yaml` (shape only, no IPs — values from GitHub Secrets)
-  - `secrets-manifest.yaml` (declarative spec of every env var every service needs, per D7)
-  - `scripts/` (render-cluster-config.py, generate-ssh-config.sh, apply-node-labels.sh, etc.)
-  - `systemd/yral-v2-swarm-resync.service` (reboot resilience)
+
+Sibling at monorepo root (per F7): `bootstrap-scripts-for-the-v2-docker-swarm-cluster/`
+  - `cluster.hosts.yaml` (shape only — values from GitHub Secrets per C6)
+  - `secrets-manifest.yaml` (declarative per D7)
+  - `scripts/` (render-cluster-config.py, generate-ssh-config.sh, apply-node-labels.sh, node-bootstrap.sh)
+  - `systemd/yral-v2-swarm-resync.service` (reboot resilience per H1)
+
+**Day 1 exit criterion:** laptop `docker compose up` starts the template stack, `curl localhost:8000/health/ready` returns 200. Sentry baseline script is running daily. NO Motorola testing yet.
 
 ### Day 2 — Template app-layer scaffolding
 Every file a service spawned from template inherits:
 
 - `app/main.py` — FastAPI app, lifespan hooks, graceful shutdown
-- `app/health.py` — three-tier health endpoints (`/health/live`, `/health/ready`, `/health/deep`)
-- `app/database.py` — asyncpg connection pool via pgBouncer
-- `app/redis_client.py` — Redis Sentinel-aware client (for future HA; local mode is simple Redis)
-- `app/auth.py` — JWT middleware with dual-validate (strict-sig flag default OFF per E9)
-- `app/llm_client.py` — LLM abstraction (Gemini + Claude + OpenRouter + future self-hosted)
-  - Dual routing per A10: per-influencer-id rules → `is_nsfw` flag → archetype defaults → Gemini
-  - Tara's rule built in (per-id override to OpenRouter with her model)
-- `app/sentry_middleware.py` — Sentry DSN from env, service-name tag
+- `app/health.py` — three-tier `/health/live` `/health/ready` `/health/deep`
+- `app/database.py` — asyncpg pool via pgBouncer
+- `app/redis_client.py` — Sentinel-aware client (production mode); simple Redis for local dev
+- `app/auth.py` — JWT middleware w/ JWKS + dual-validate flag default OFF per E9
+- `app/llm_client.py` — LLM abstraction; dual routing per A10 (per-id Tara → OpenRouter; `is_nsfw` → OpenRouter; archetype defaults → Gemini + Claude for crisis)
+- `app/sentry_middleware.py` — DSN from env, `service=<name>` tag per D3
 - `app/langfuse_middleware.py` — auto-trace LLM calls
 - `app/event_stream.py` — Redis Streams emit + consumer-group helpers
-- `app/feature_flags.py` — Postgres-table-based flags with 30s polling
-- `app/idempotency_middleware.py` — default-on for non-GET, Redis 24hr dedup
-- `app/pii_redaction.py` — structured logger with allowlist
-- `app/prompt_injection_defense.py` — pre-orchestrator classifier (for LLM-consuming services)
+- `app/feature_flags.py` — Postgres-table-based flags, 30s polling per F11
+- `app/idempotency_middleware.py` — default-on for non-GET, Redis 24hr dedup per F10
+- `app/pii_redaction.py` — structured logger with allowlist per H6
+- `app/prompt_injection_defense.py` — pre-orchestrator classifier per H5
 
-### Day 3 — Template CI/CD + scripts
-- `scripts/new-service.sh` (refactored from existing template) — 1-command spawn for new service
+**Day 2 exit criterion:** full `app/` scaffolding in place; unit tests green; `docker compose up` still works.
+
+### Day 3 — Template CI/CD + scripts + docs + hello-world spawn
+- `scripts/new-service.sh` — 1-command spawn that creates a NEW SUBFOLDER in the monorepo (per F16), not a new repo
 - `scripts/generate-deploy-env-block.py` — reads secrets-manifest, emits env block for CI
-- `scripts/validate-secrets-for-this-service.sh` — CI gate, refuses deploy if required secrets missing
-- `.github/workflows/deploy.yml` — canary deploy pattern (rishi-4 → rishi-5 → rishi-6 with auto-rollback), currently local-only; remote deploy gated
-- `.github/workflows/lint-naming.yml` — CI lint enforcing explicit-English naming (per B5) + no-literal-IPs (per C6)
-- `.github/workflows/eval-diff.yml` — Langfuse eval harness runs on LLM-touching PRs
+- `scripts/validate-secrets-for-this-service.sh` — CI gate per D7
+- `.github/workflows/deploy.yml.template` — canary deploy pattern (rishi-4 → rishi-5 → rishi-6 with auto-rollback); ONLY activates from Day 8+
+- `.github/workflows/lint-naming.yml` — CI enforcing B5 + C6
+- `.github/workflows/eval-diff.yml` — Langfuse eval on LLM-touching PRs per F14 + H8
+- 5 required docs per F8 (DEEP-DIVE / READING-ORDER / CLAUDE / RUNBOOK / SECURITY)
+- Spawn throwaway `yral-rishi-agent-hello-world` via `scripts/new-service.sh`; verify it boots on laptop, has all middleware wired, emits Sentry + Langfuse, passes health checks
 
-### Day 4 — Template documentation (5 required docs per constraint F8)
-- `docs/DEEP-DIVE.md` — architecture, every component explained
-- `docs/READING-ORDER.md` — where to start
-- `docs/CLAUDE.md` — opens with explicit-English naming rule (B5)
-- `docs/RUNBOOK.md` — common operational scenarios
-- `docs/SECURITY.md` — threat model, secrets handling, auth flow
-- `README.md` — quick-start guide
+**Day 3 exit criterion:** template proven via hello-world on laptop end-to-end. If any check fails, fix the TEMPLATE, re-spawn hello-world, repeat. Fold-learnings-back-into-template principle (per I4).
 
-### Day 5 — Template proving via hello-world
-Spawn throwaway `yral-rishi-agent-hello-world` from the template:
-```bash
-cd ~/Claude\ Projects/yral-rishi-agent/yral-rishi-agent-new-service-template
-bash scripts/new-service.sh --name yral-rishi-agent-hello-world --tier supporting
-```
+🤳 **Rishi-test checkpoint #0A:** Rishi sees `docker compose up` on his laptop runs the hello-world through template; structured logs look right; Sentry + Langfuse tagged events land. No Motorola yet.
 
-Verifications:
-- [ ] CI passes locally (no GitHub; run via `act` or direct shell)
-- [ ] `docker compose up` spins up the service
-- [ ] `/health/live`, `/health/ready`, `/health/deep` all return 200
-- [ ] Sentry receives a test exception (tag `service=yral-rishi-agent-hello-world`)
-- [ ] Langfuse receives a test trace (LLM call or fake)
-- [ ] Structured logs visible in `docker compose logs`
-- [ ] Postgres schema `agent_hello_world` created and accessible
-- [ ] Redis client connects
-- [ ] Feature flag lookup works
-- [ ] pgBouncer in the path
+### Days 4-6 — rishi-4/5/6 cluster provisioning
+🚨 **Requires explicit Rishi "provision cluster" go-ahead** — this is a build-mode lift beyond Day-3 local work. CONSTRAINTS A13 authorizes the intent; the actual SSH-and-bootstrap execution gets a go/no-go at Day 3 end.
 
-🤳 **Rishi-test checkpoint #0:** Rishi sees `docker compose up` on his laptop works end-to-end. Phone doesn't talk to it yet — just confirm template is solid.
+Sequenced work (detailed node-by-node in `bootstrap-scripts-for-the-v2-docker-swarm-cluster/`):
 
-**If any verification fails, we fix the TEMPLATE (not the hello-world), then re-spawn.** This is the "fold learnings back into template" principle.
+- Day 4 morning — Saikat grants time-limited root on rishi-4/5/6 per allocation. `rishi-deploy` user + narrow sudoers configured (matches legacy convention).
+- Day 4 afternoon — Node bootstrap: Docker Engine + Swarm init on rishi-4 (manager), rishi-5 and rishi-6 join as managers, UFW rules (only :443 inbound per C3), three encrypted overlays (`yral-v2-public-web`, `yral-v2-internal`, `yral-v2-data-plane`).
+- Day 5 — Patroni HA Postgres across rishi-4/5/6 (sync commit on ≥1 replica per F3), pgBouncer in front per G3, WAL-G continuous archive to Hetzner S3 per D2 L2, schema-per-service bootstrap script (per F3).
+- Day 5 — Redis Sentinel per C11 (primary rishi-4, replica rishi-5, sentinels across 4/5/6).
+- Day 6 — Langfuse self-hosted on rishi-6 per D4. Beszel agents on rishi-4/5/6. Uptime Kuma monitors registered via API per D5.
+- Day 6 — Caddy as Swarm service (rishi-4/5) receiving TLS from rishi-1/2 per C10 (no ACME on v2 cluster at this phase). `tls internal` for internal overlay; public cert terminated on rishi-1/2.
+- Day 6 afternoon — Chaos tests per H3 exit criteria: kill rishi-6 drain, kill rishi-4 Patroni container, fill rishi-5 disk 80%, partition rishi-6 from 4/5 for 10 minutes. ALL must pass.
+
+**Day 6 exit criterion:** cluster is running, no v2 services deployed yet, chaos tests green, HA verified.
+
+### Day 7 — rishi-1/2 Caddy snippet + first cluster deploy
+🚨 **Requires explicit Rishi "go" on rishi-1/2 Caddy change** — per A2 exception, authorized but worth typing YES once more before it lands.
+
+- Write v2-routing snippet for `yral-rishi-hetzner-infra-template` repo:
+  - `caddy/conf.d/agent.rishi.yral.com.caddy` — reverse-proxies to `https://rishi-4:443 https://rishi-5:443` with health checks, round-robin, fail-over
+  - Follows existing snippet pattern (e.g., `chat-ai.rishi.yral.com.caddy`)
+  - SHA-rotating config names per H2
+- PR against `yral-rishi-hetzner-infra-template`, CI green, review, merge.
+- Deploy via existing template pipeline: snippet lands on rishi-1/2, `docker exec caddy caddy reload --force`.
+- DNS: `agent.rishi.yral.com` already covered by wildcard `*.rishi.yral.com` → rishi-1, rishi-2.
+- Deploy `yral-rishi-agent-hello-world` stack to v2 Swarm via GitHub Actions canary workflow (rishi-4 → health check → rishi-5 → health check → rishi-6 per I2).
+
+**Day 7 exit criterion:** `curl https://agent.rishi.yral.com/health/ready` from Rishi's laptop returns 200 served from the cluster.
+
+🤳 **Rishi-test checkpoint #0B:** Rishi curls `agent.rishi.yral.com/health/ready` from his laptop and phone browser. Both return 200. The full Cloudflare DNS → rishi-1/2 Caddy → rishi-4/5 Swarm → hello-world pipe is live.
+
+### Day 8 — Motorola first test against real cluster
+- Build first debug APK: `cd ~/Claude Projects/yral-mobile; ./gradlew assembleDebug`. Only local change: `AppConfigurations.kt` → `CHAT_BASE_URL = "agent.rishi.yral.com"`.
+- Document change #0 in `mobile-client-change-log.md` (what, why, what might break, test evidence per A12).
+- Rishi `adb install -r app/build/outputs/apk/debug/*.apk` on Motorola.
+- APK talks to hello-world endpoint (synthetic shape matching the first chat-ai endpoint we'll replace).
+
+🤳 **Rishi-test checkpoint #0C (THE MILESTONE):** Rishi's Motorola debug APK sends a request to `agent.rishi.yral.com`, it lands on rishi-4 or rishi-5 (we can see in Langfuse + Sentry), response comes back, UI renders. The full production-shape pipe is proven on real hardware.
+
+If anything fails Day 7 or Day 8, we don't move forward until green. Phase 1 begins only after Checkpoint #0C is solid.
+
+> **Note 2026-04-27 (Codex audit):** earlier drafts of this TIMELINE had a separate Day-2 app-scaffolding block + Day-3 hello-world checklist that appeared AFTER the Phase-0 boundary, creating structural drift. Both are now folded into Day 2 and Day 3 of Phase 0 above. The detailed app-layer files (`app/main.py`, `app/auth.py`, `app/llm_client.py` etc.) are the contents of Day 2 in Phase 0; the hello-world spawn + verification checklist is Day 3 in Phase 0. No separate "Day 2" block exists outside Phase 0.
 
 ---
 
-## Phase 1 — Feature Parity Services (Days 6-22)
+## Phase 1 — Feature Parity Services (Days 9-25, re-numbered 2026-04-24 evening)
 
-**Goal:** every feature in chat-ai works in v2, tested by Rishi on his Motorola, against local backend with full production data ported.
+**Goal:** every feature in chat-ai works in v2, tested by Rishi on his Motorola against the REAL rishi-4/5/6 cluster via `agent.rishi.yral.com`, with full production data ported. ZERO mobile code changes beyond `CHAT_BASE_URL` (per A16).
 
-### Day 6 — Data port ETL (all of chat-ai → local v2 Postgres)
+> **Day-number note (2026-04-24):** the sub-day numbers in this section pre-date the Phase-0-expansion to Days 1-8. Treat each sub-day label as approximate and add ~3 days to pre-refactor numbers. I'll re-number precisely when Rishi wants a clean pass. The SEQUENCE is still correct; only the calendar days shift.
+>
+> **No mobile code changes in Phase 1** — per A16, the debug APK's single local edit (CHAT_BASE_URL in AppConfigurations.kt) is change #0, documented in `mobile-client-change-log.md` but not counted as a real mobile change. Firebase Remote Config overrides, SSE parsing, presence heartbeat, etc. are Phase 3+ work.
+
+### Day 9 — Data port ETL (all of chat-ai → v2 cluster Postgres)
+
+🚨 **Per CONSTRAINTS A14, every read from live chat-ai DB requires explicit Rishi YES.** Before Day 6, I submit the exact pull plan (tables, row counts, destination paths, retention plan, PII-handling) and Rishi types YES. No pull runs silently.
 
 Build a one-time ETL script that:
 - Connects to the current live chat-ai Postgres (read-only, via tunnel if needed — never writes)
-- Dumps `ai_influencers`, `conversations`, `messages`, and any other live tables
-- Transforms minimally if schema differs (v2 schemas are explicit-English e.g., `agent_influencer_directory.ai_influencers`)
+- Dumps `ai_influencers`, `conversations`, `messages`, `users`, `read_states`, and any other live tables identified in the feature-parity audit
+- Transforms minimally into v2 schema (v2 schemas are explicit-English e.g., `agent_influencer_directory.ai_influencers`, `agent_conversation.messages`) — greenfield schema, whatever's best for the 50%-faster goal (E1)
 - Loads into local v2 Postgres
 - Preserves all IDs (so mobile deep-links still work in testing)
+- Every row in chat-ai must land somewhere in v2 — no row silently dropped (per A4 reversed; chat history MUST port)
+- Snapshot stored at `~/Claude Projects/yral-rishi-agent/.local-snapshots/chat-ai-<timestamp>.sql`; path git-ignored; retention 7 days by default
+- Re-runnable ETL script is CODE (in monorepo); the SNAPSHOT itself stays out of git
 
 Verification:
 - Count of influencers in local v2 == count in prod
@@ -126,10 +172,12 @@ Verification:
 
 Rishi-visible: local Postgres now mirrors production state.
 
-### Days 7-8 — Spawn `yral-rishi-agent-public-api` from template
-Single HTTP entry point. Implements endpoints in phased order below (Days 9-18). For now, skeleton: just health + JWT auth middleware.
+### Day 10 — Spawn `yral-rishi-agent-public-api` from template
+> Old "Days 7-8" label was pre-Phase-0-expansion; corrected 2026-04-27 (Codex audit). Phase 0 ends Day 8; Phase 1 starts Day 9 with ETL above; Day 10 spawns public-api.
 
-### Days 9-10 — Core chat endpoints (Phase 1.A)
+Single HTTP entry point. Implements endpoints in phased order below (Days 11-18). For now, skeleton: just health + JWT auth middleware.
+
+### Days 11-12 — Core chat endpoints (Phase 1.A)
 Implement against the ported data:
 
 - `POST /api/v1/chat/conversations` — create conversation (or get existing) with an influencer
@@ -157,21 +205,16 @@ Idempotency via `client_message_id` preserved. Presigned S3 URLs in responses. I
 - `GET /api/v2/chat/conversations` (v2 bot-aware inbox — this is what mobile actually uses)
 - `GET /api/v3/chat/conversations` (v3 unified inbox — lower priority, confirm if mobile uses)
 
-### Day 13 — **Mobile Change #1: Firebase Remote Config URL override flag**
-Per A12 workflow: one change at a time, documented.
+### Day 15 — Motorola check against ported data + parity endpoints
+> Old "Day 13 — Firebase Remote Config flag" was REMOVED per A16 (mobile changes deferred to Phase 3+). Old "laptop-ip" testing block was REMOVED per A15 (real cluster from Day 8+, no laptop testing).
 
-Make exactly one edit in `~/Claude Projects/yral-mobile/`:
-- `AppConfigurations.kt` → reads optional `chat_base_url_override` from Firebase Remote Config; falls back to hardcoded prod URL if empty
-- `AppDI.kt` → Koin binding routes to the override when set
-- Firebase Remote Config default = empty string → zero behavior change for all users except when override is set per-account
+Build debug APK with `CHAT_BASE_URL = "agent.rishi.yral.com"` (single local edit in `AppConfigurations.kt` per A12 + A15). Install on Motorola via `adb install -r`. Verify:
+- App opens, hits real cluster via Cloudflare → rishi-1/2 Caddy → rishi-4/5 Swarm → public-api
+- Influencer list loads with REAL production data (ported via Day 9 ETL)
+- Conversation history loads (full chat history ported per A4)
+- Send a message — gets response via v2 (no streaming yet — parity mode)
 
-Document in `mobile-client-change-log.md` with all 6 fields.
-
-Build debug APK, install on Motorola, verify:
-- Flag empty → app hits prod chat-ai (existing behavior) ✅
-- Flag set to `http://<laptop-ip>:8000` → app hits local backend ✅
-
-🤳 **Rishi-test checkpoint #1:** Rishi's phone reaches local backend. Influencer list loads (real production data).
+🤳 **Rishi-test checkpoint #1:** Rishi's Motorola hits real v2 cluster, sends a message, gets an LLM response that looks identical (or better) to chat-ai. Influencer list + history all there.
 
 ### Days 14-15 — Media + image generation + audio
 - Spawn `yral-rishi-agent-media-generation-and-vault`
@@ -379,21 +422,27 @@ When approved:
 | 10 — rishi-4/5/6 deploy | Separate approval | Production infra |
 | 11 — Cutover | Separate approval | Rishi's call |
 
-**Total to Phase 1 parity on Rishi's Motorola: ~22 days at reasonable pace.**
-**Total through Phase 4 (memory + streaming + proactivity = bulk of 1000× UX): ~42 days (~6 weeks).**
-**Total through Phase 9 (backend fully built): ~80 days (~11-12 weeks).**
+**Total to Phase 1 parity on Rishi's Motorola: ~25 days at reasonable pace** (Phase 0 = Days 1-8, Phase 1 = Days 9-25).
+**Total through Phase 4 (Billing integration — priority 3): ~50 days (~7 weeks).**
+**Total through Phase 9 (Meta-AI advisor — priority 10, all backend built): ~90 days (~13 weeks).**
 
-Pace flexes with your available hours. Every phase has a Rishi-on-Motorola checkpoint; we pause, test, iterate, then move on.
+Pace flexes with your available hours. Every phase has a Rishi-on-Motorola checkpoint; we pause, test, iterate, then move on. Cutover (per A6) is NOT tied to any phase — entirely your call, no timeline.
 
 ---
 
 ## What I need from you BEFORE Day 1
 
-1. **Approval of this plan** — explicit OK after review
-2. **Gemini API key** (or OpenRouter key) for local backend — dev/test key is fine
-3. **Laptop WiFi IP or preference for Cloudflare tunnel** — phone needs to reach the local backend
-4. **Firebase Remote Config admin access** — to set `chat_base_url_override` for your account
-5. **Read-only access to current chat-ai Postgres** — for the Phase 1 Day 6 data port ETL. SSH tunnel via `deploy@rishi-1` is fine (read-only queries)
+> **Updated 2026-04-27 per Codex audit** — replaced stale "Laptop WiFi IP / Cloudflare tunnel / Firebase override" pre-launch questions with the current real checklist (see `multi-session-parallel-build-coordination/MASTER-STATUS.md` for live version).
+
+1. **Type "build"** in coordinator session (per A5 + I1 — we're plan-only until you do)
+2. **Codex API key** for OpenAI Codex review — store as GitHub repo secret `OPENAI_CODEX_API_KEY` per I10
+3. **Sentry API key** for `sentry.rishi.yral.com` — confirm location (default `~/.config/dolr-ai/sentry-api-key`) per I7
+4. **GitHub branch protection on main** — require PR + 1 approval + CI green per I10
+5. **Saikat sign-off** on Phase 0 cluster provisioning (rishi-4/5/6) + the rishi-1/2 Caddy snippet via `yral-rishi-hetzner-infra-template` per A2 carve-out
+6. **Gemini + OpenRouter API keys** for local backend — dev/test keys fine; secrets-manifest per D7
+7. **Per-operation YES on chat-ai data port** when Day 9 ETL is ready (per A14 — pulling live chat-ai DB requires explicit approval each time)
+
+NO laptop-IP needed (Day 8+ uses real cluster via `agent.rishi.yral.com` per A15). NO Cloudflare Tunnel needed (refined away 2026-04-24 evening). NO Firebase Remote Config flag needed during Phase 1 (deferred to Phase 3 per A16).
 
 ---
 

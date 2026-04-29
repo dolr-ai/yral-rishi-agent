@@ -1,0 +1,76 @@
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║  WORKFLOW: lint-state-hygiene.yml                                       ║
+# ║                                                                          ║
+# ║  ⭐ THIS FILE IN ONE SENTENCE                                            ║
+# ║  Verifies SESSION-N-LOG.md was updated for every PR (per I11 state      ║
+# ║  persistence — sessions write a diary entry on every meaningful work).  ║
+# ║                                                                          ║
+# ║  📖 EXPLAINED FOR A NON-PROGRAMMER                                       ║
+# ║  Each session has a diary file (SESSION-N-LOG.md) where it records      ║
+# ║  what it just did, in plain English. This makes recovery easy when      ║
+# ║  laptop crashes — you read the diary, you know where work was. This     ║
+# ║  workflow makes sure the diary actually got updated when code lands.    ║
+# ║                                                                          ║
+# ║  🔗 HOW IT FITS                                                          ║
+# ║  - Triggered: every pull_request to main                                 ║
+# ║  - Defends: I11 (state persistence) + I12 (resume protocol)             ║
+# ║                                                                          ║
+# ║  ⭐ START HERE                                                           ║
+# ║  The check is simple — was SESSION-N-LOG.md among the changed files?    ║
+# ║                                                                          ║
+# ╚══════════════════════════════════════════════════════════════════════╝
+
+name: Lint State Hygiene
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate-state-update:
+    name: Verify SESSION-N-LOG was updated
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: Check out PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Determine session from branch name
+        id: session
+        run: |
+          BRANCH="${{ github.event.pull_request.head.ref }}"
+          if [[ "$BRANCH" =~ ^session-([0-9]+)/ ]]; then
+            echo "session=${BASH_REMATCH[1]}" >> $GITHUB_OUTPUT
+          else
+            # Coordinator and other branches don't need session-log updates
+            echo "session=skip" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Verify session log was updated
+        run: |
+          SESSION="${{ steps.session.outputs.session }}"
+          if [ "$SESSION" = "skip" ]; then
+            echo "Not a session-N branch — skipping state hygiene check"
+            exit 0
+          fi
+
+          LOG_FILE="yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-${SESSION}-LOG.md"
+
+          git fetch origin main
+          # Was the log file modified in this PR?
+          if git diff --name-only origin/main...HEAD | grep -q "^$LOG_FILE$"; then
+            echo "✅ $LOG_FILE was updated"
+          else
+            echo "::error::SESSION-${SESSION}-LOG.md was NOT updated for this PR."
+            echo "Per I11, every session-PR must include a log entry describing what was done."
+            echo "Append an entry to: $LOG_FILE"
+            echo "Format per templates/SESSION-N-LOG-TEMPLATE.md."
+            exit 1
+          fi

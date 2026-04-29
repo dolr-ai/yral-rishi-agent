@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ╔══════════════════════════════════════════════════════════════════╗
+  ║  LAUNCHD PLIST: com.yral.rishi.agent.master-status                  ║
+  ║                                                                      ║
+  ║  ⭐ THIS FILE IN ONE SENTENCE                                        ║
+  ║  Tells macOS launchd to run regenerate-master-status.sh every 15    ║
+  ║  minutes so MASTER-STATUS.md stays current.                         ║
+  ║                                                                      ║
+  ║  📖 EXPLAINED FOR A NON-PROGRAMMER                                   ║
+  ║  This is macOS's version of cron. Once installed, it runs the      ║
+  ║  status-regenerator script in the background every 15 min, even    ║
+  ║  when no Terminal is open. Rishi opens MASTER-STATUS.md and sees   ║
+  ║  fresh state.                                                        ║
+  ║                                                                      ║
+  ║  🔧 INSTALL (Rishi runs once)                                        ║
+  ║  cp .claude/scripts/com.yral.rishi.agent.master-status.plist \      ║
+  ║     ~/Library/LaunchAgents/                                         ║
+  ║  launchctl load ~/Library/LaunchAgents/com.yral.rishi.agent.master-status.plist
+  ║                                                                      ║
+  ║  🔧 UNINSTALL (if you ever need)                                     ║
+  ║  launchctl unload ~/Library/LaunchAgents/com.yral.rishi.agent.master-status.plist
+  ║  rm ~/Library/LaunchAgents/com.yral.rishi.agent.master-status.plist ║
+  ║                                                                      ║
+  ╚══════════════════════════════════════════════════════════════════╝
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Reverse-DNS label per macOS convention -->
+    <key>Label</key>
+    <string>com.yral.rishi.agent.master-status</string>
+
+    <!-- The script to run when triggered -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/rishichadha/Claude Projects/yral-rishi-agent/.claude/scripts/regenerate-master-status.sh</string>
+    </array>
+
+    <!-- Run every 900 seconds (15 minutes) -->
+    <key>StartInterval</key>
+    <integer>900</integer>
+
+    <!-- Run once at load time (so MASTER-STATUS regenerates immediately, not after 15 min) -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- If the laptop sleeps when a fire is due, run when it wakes -->
+    <key>StartOnMount</key>
+    <false/>
+
+    <!-- Capture stdout + stderr for debugging when things break -->
+    <key>StandardOutPath</key>
+    <string>/Users/rishichadha/.local/share/yral-v2-master-status.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/rishichadha/.local/share/yral-v2-master-status.err</string>
+</dict>
+</plist>

@@ -1,0 +1,132 @@
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║  WORKFLOW: pr-codex-review.yml                                          ║
+# ║                                                                          ║
+# ║  ⭐ THIS FILE IN ONE SENTENCE                                            ║
+# ║  Runs OpenAI Codex as an independent reviewer on every PR opened to     ║
+# ║  main, posts inline comments, supports the coordinator's merge decision.║
+# ║                                                                          ║
+# ║  📖 EXPLAINED FOR A NON-PROGRAMMER                                       ║
+# ║  When someone (a session, you, or me) opens a PR to merge code into     ║
+# ║  the main branch, this workflow automatically calls OpenAI Codex with   ║
+# ║  the diff + our CONSTRAINTS.md + the doc standard. Codex reads it       ║
+# ║  fresh (no chat history bias) and comments on anything that looks       ║
+# ║  wrong, missing, or non-standard. Codex's review is INDEPENDENT — it   ║
+# ║  catches things Claude (the author) might have missed.                  ║
+# ║                                                                          ║
+# ║  🔗 HOW IT FITS                                                          ║
+# ║  - Triggered: every pull_request event to main (open/sync/reopen)       ║
+# ║  - Calls: .github/scripts/codex-review.py                               ║
+# ║  - Reads: secrets.OPENAI_CODEX_API_KEY                                  ║
+# ║  - Writes: PR comments via secrets.GITHUB_TOKEN                         ║
+# ║                                                                          ║
+# ║  📥 INPUTS / 📤 OUTPUTS                                                  ║
+# ║  - Input: PR diff + CONSTRAINTS.md + session scope                      ║
+# ║  - Output: inline comments on the PR + summary comment                  ║
+# ║                                                                          ║
+# ║  ⚠️ SIDE EFFECTS                                                         ║
+# ║  - Spends OpenAI API credits (~$0.10-$0.50 per PR review)               ║
+# ║  - Writes comments to PR (visible to all collaborators)                 ║
+# ║                                                                          ║
+# ║  ⭐ START HERE                                                           ║
+# ║  Read the `codex-review` job first; it's the main pipeline.            ║
+# ║                                                                          ║
+# ╚══════════════════════════════════════════════════════════════════════╝
+
+name: Codex Review on PR
+
+# Trigger: every PR to main (open, sync, reopen)
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+# Permissions: read repo + write PR comments
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  codex-review:
+    name: Codex independent review
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      # Checkout the PR branch (not main) so we review the proposed changes
+      - name: Check out PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0  # full history; needed for diff against main
+
+      # Setup Python; Codex caller uses the OpenAI SDK
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies for Codex caller
+        run: |
+          # Minimal deps; codex-review.py only needs openai SDK + httpx
+          pip install openai httpx
+
+      # Compute diff against main; Codex reads the diff, not the full repo
+      - name: Compute diff against main
+        run: |
+          git fetch origin main
+          git diff origin/main...HEAD > /tmp/pr.diff
+          echo "Diff line count:"
+          wc -l /tmp/pr.diff
+
+      # Assemble context Codex needs (CONSTRAINTS, scope, doc standard)
+      - name: Assemble review context
+        run: |
+          mkdir -p /tmp/context
+          # Constraints file — the locked rules
+          cp yral-rishi-agent-plan-and-discussions/CONSTRAINTS.md /tmp/context/
+          # Doc standard — what good code looks like
+          cp yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/01-SESSION-SHARDING-AND-OWNERSHIP.md /tmp/context/
+          # API contract — for parity / shape checks
+          cp yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/interface-contracts/00-api-contract.md /tmp/context/ 2>/dev/null || true
+          # Codex prompt
+          cp .github/scripts/codex-prompt.txt /tmp/context/
+
+      # The actual Codex call — see codex-review.py for the prompt logic
+      - name: Run Codex review
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_CODEX_API_KEY }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          python .github/scripts/codex-review.py \
+            --diff /tmp/pr.diff \
+            --context-dir /tmp/context \
+            --pr-number "$PR_NUMBER" \
+            --pr-branch "$PR_BRANCH" \
+            --pr-title "$PR_TITLE" \
+            --output /tmp/review.json
+
+      # Post Codex's findings as PR comments (inline + summary)
+      - name: Post Codex review as PR comments
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          python .github/scripts/post-codex-review.py \
+            --review /tmp/review.json \
+            --pr "$PR_NUMBER" \
+            --repo "$REPO"
+
+      # Summary status — if Codex flagged hard violations, fail the check
+      - name: Determine review status
+        run: |
+          # Read Codex's overall verdict from review.json
+          OVERALL=$(python -c "import json; print(json.load(open('/tmp/review.json'))['overall'])")
+          echo "Codex overall verdict: $OVERALL"
+          if [ "$OVERALL" = "request_changes" ]; then
+            echo "::error::Codex requested changes — see PR comments"
+            exit 1
+          fi
+          # 'approve' or 'comment_only' — pass the check

@@ -1,48 +1,56 @@
-# How the Mobile Client Sees V2 (answering Rishi's question 2026-04-23)
+# How the Mobile Client Sees V2 (answering Rishi's question 2026-04-23, REVISED 2026-04-27 per A16)
+
+> **Revision 2026-04-27:** the original draft of this doc bundled SSE streaming into v2.0 mobile changes. CONSTRAINTS A16 (locked 2026-04-24 evening) reverses that: feature parity FIRST, mobile code changes DEFERRED to Phase 3+. This doc is updated to match. Codex audit 2026-04-27 caught the misalignment.
 
 **Rishi asked:** "I don't understand if we'll need to change API calls in the mobile front end client, or if the heavy lifting of being able to use the new services will be done using the one public API."
 
-**Short answer:** the heavy lifting IS done by ONE public API. Mobile sees one URL, one set of endpoints. It never knows there are 13 services behind the scenes.
+**Short answer:** the heavy lifting IS done by ONE public API. Mobile sees one URL, one set of endpoints. It never knows there are 13 services behind the scenes. **For Phase 1 (feature parity), mobile needs ZERO code changes — only the local debug-APK `CHAT_BASE_URL` swap per A15. Real mobile code changes start Phase 3+, one at a time per A12.**
 
 ## Plain-English explanation
 
 Today, mobile talks to ONE server:
 ```
-mobile → chat-ai.rishi.yral.com → (the Python yral-chat-ai, going live 2026-04-25)
+mobile → chat-ai.rishi.yral.com → (the Python yral-chat-ai, live since 2026-04-23)
 ```
 
 That Python service does EVERYTHING internally: chat, influencers, billing check, memory extraction, moderation. One service, one URL, one codebase.
 
 In v2, mobile STILL talks to ONE server:
 ```
-mobile → chat-ai.rishi.yral.com → yral-rishi-agent-public-api
-                                      │
-                                      ↓ (internally routes to)
-                                      ├─→ orchestrator
-                                      ├─→ soul-file-library
-                                      ├─→ user-memory-service
-                                      ├─→ agent-skill-runtime
-                                      ├─→ ... 9 more services
-                                      └─→ content-safety-and-moderation
+mobile → chat-ai.rishi.yral.com  (at cutover; debug APK uses agent.rishi.yral.com)
+                │
+                ▼
+         yral-rishi-agent-public-api
+                │
+                ↓ (internally routes to)
+                ├─→ orchestrator
+                ├─→ soul-file-library
+                ├─→ user-memory-service
+                ├─→ agent-skill-runtime
+                ├─→ ... 9 more services
+                └─→ content-safety-and-moderation
 ```
 
-Mobile doesn't see any of the 13 services individually. All it sees is the same `chat-ai.rishi.yral.com` URL with the same endpoint shapes. The internal routing is our problem, not mobile's.
+Mobile doesn't see any of the 13 services individually. All it sees is the same URL with the same endpoint shapes. The internal routing is our problem, not mobile's.
 
 ## So does the mobile app need any code changes?
 
-**Goal: ONE bundled change.** The ideal is zero, but we want streaming (SSE) in v2.0, which requires mobile updates. We bundle everything into ONE mobile release:
+**Phase 1 (Days 9-25, feature parity): NO mobile code changes.** Per CONSTRAINTS A16, v2's public-api returns the SAME JSON shapes as chat-ai for every endpoint. The debug APK has only ONE local edit (per A15): `AppConfigurations.kt` → `CHAT_BASE_URL = "agent.rishi.yral.com"`. This is a config edit, NOT a code change. Documented in `mobile-client-change-log.md` as "change #0" — locally edited, never pushed (per A12).
 
-### What mobile needs to change (bundled into a single release)
+**Phase 3+ (Day ~29 onwards, the 1000× features): mobile changes start, ONE AT A TIME per A12.** Each change is local, documented, tested on Motorola, accumulates until Rishi walks Sarvesh through the bundle.
 
-1. **SSE streaming support** (the big one). Mobile's Ktor HTTP client needs an SSE parser (~100 lines of Kotlin in `/shared/libs/http/`). New `sendMessageStream()` method returns a Kotlin Flow of token events. Feature-flagged via Firebase Remote Config so it can be rolled back instantly.
-2. **Presence heartbeat** for Plan B.0 first-turn nudge. Client sends a lightweight ping every 10s while the chat screen is in foreground. Uses existing WebSocket channel. ~50 lines.
-3. **Chip dismissal on auto-fired bot message**. When a new bot message arrives (streamed or unsolicited), if the chat's Default Prompts chips are still visible, dismiss them. Small UI state change.
+### Phase 3+ mobile changes (in order, deferred from earlier draft)
 
-### What mobile does NOT need to change
+1. **Change #1 — SSE streaming support.** Mobile's Ktor HTTP client gets an SSE parser (~100 lines of Kotlin in `/shared/libs/http/`). New `sendMessageStream()` method returns a Kotlin Flow of token events. Feature-flagged via Firebase Remote Config so it can be rolled back instantly. ~1-2 weeks of mobile work.
+2. **Change #2 — Presence heartbeat** for Plan B.0 first-turn nudge. Client sends a lightweight ping every 10s while the chat screen is in foreground. Uses existing WebSocket channel. ~1 day.
+3. **Change #3 — Chip dismissal on auto-fired bot message.** When a new bot message arrives (streamed or unsolicited), if the chat's Default Prompts chips are still visible, dismiss them. Small UI state change. ~0.5 day.
+4. **Change #4+ — New screens** (private content vault, tip jar, creator Prompt Coach) — each their own change.
 
-- Base URL (`chat-ai.rishi.yral.com` stays; Caddy on rishi-1/2 upstream-proxies to rishi-4/5 when v2 is ready)
+### What mobile does NOT need to change (ever, through cutover)
+
+- Base URL (`chat-ai.rishi.yral.com` stays; Caddy on rishi-1/2 upstream-proxies to rishi-4/5 when v2 is ready — mobile URL unchanged, this is the A3 + A15 promise)
 - Authentication (same OAuth2 JWT via yral-auth-v2)
-- Paywall flow (same Google Play IAP, same `/google/chat-access/check` + `/grant` endpoints, same JSON shape `ApiResponse<ChatAccessDataDto{hasAccess, expiresAt}>`)
+- Paywall flow — same Google Play IAP, same `/google/chat-access/check` + `/grant` endpoints, same JSON shape `ApiResponse<ChatAccessDataDto{hasAccess, expiresAt}>`. **Paywall is NOT a 402** (per CONSTRAINTS E7; the corrected understanding from 2026-04-23 evening).
 - Endpoint URLs for chat, influencers, messages, conversations — all identical in v2 (feature parity, strict superset)
 - Chat-as-Human toggle, Switch Profiles, Message Inbox — all unchanged
 - Bot creation 3-step flow — backend improves quality, but mobile flow identical

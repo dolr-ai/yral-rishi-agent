@@ -1,0 +1,105 @@
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║  WORKFLOW: lint-naming-and-comments.yml                                 ║
+# ║                                                                          ║
+# ║  ⭐ THIS FILE IN ONE SENTENCE                                            ║
+# ║  Enforces explicit-English naming (B1, B5, B6) + B7 doc standard         ║
+# ║  on Python code: file headers, function WHAT/WHEN/WHY, comment density.║
+# ║                                                                          ║
+# ║  📖 EXPLAINED FOR A NON-PROGRAMMER                                       ║
+# ║  This is the lint that makes sure code follows the heavy doc standard   ║
+# ║  Rishi chose (option a — line-by-line role comments + 8 docs per       ║
+# ║  service). Catches: cryptic names, missing file headers, missing        ║
+# ║  function docstrings, low comment density, banned abbreviations.        ║
+# ║                                                                          ║
+# ║  🔗 HOW IT FITS                                                          ║
+# ║  - Triggered: every pull_request to main                                 ║
+# ║  - Defends: B1 (English names), B5 (extends to all artifacts),          ║
+# ║             B6 (banned generic folder names), B7 (3-tier reading)       ║
+# ║                                                                          ║
+# ║  ⚠️ NOTE                                                                 ║
+# ║  This is the SCAFFOLD version. The full lint logic ships in Phase 0     ║
+# ║  Day 2 when Session 2 builds the template's lint scripts. For now,     ║
+# ║  this workflow runs basic regex checks. Codex review (per I10) catches  ║
+# ║  the deeper issues.                                                     ║
+# ║                                                                          ║
+# ╚══════════════════════════════════════════════════════════════════════╝
+
+name: Lint Naming and Comments
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint-naming:
+    name: Verify explicit English naming + B7 doc standard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Get changed Python files
+        id: changed
+        run: |
+          git fetch origin main
+          # Only Python files that were added or modified
+          git diff --name-only --diff-filter=AM origin/main...HEAD | grep '\.py$' > /tmp/changed-py.txt || true
+          echo "py_count=$(wc -l < /tmp/changed-py.txt)" >> $GITHUB_OUTPUT
+
+      - name: Check banned abbreviations (B2)
+        if: steps.changed.outputs.py_count != '0'
+        run: |
+          # B2 allowed: id, url, api, http, json, sql, utc, tls, dns, ssl, css, html, uuid, ip
+          # Everything else = banned (db, cfg, svc, mgr, ctx, etc.)
+          BANNED='\b(db|cfg|svc|mgr|ctx|misc|util|helper|cmn|tmp|val|var|obj|fn|fnc|prm|arg)\b'
+          VIOLATIONS=0
+          while IFS= read -r file; do
+            if grep -nE "$BANNED" "$file" > /tmp/violations.txt; then
+              echo "::error file=$file::Banned abbreviation found in $file:"
+              cat /tmp/violations.txt
+              VIOLATIONS=$((VIOLATIONS + $(wc -l < /tmp/violations.txt)))
+            fi
+          done < /tmp/changed-py.txt
+          if [ "$VIOLATIONS" -gt 0 ]; then
+            echo "::error::$VIOLATIONS banned abbreviations. See B1, B2, B5 in CONSTRAINTS."
+            exit 1
+          fi
+          echo "✅ No banned abbreviations"
+
+      - name: Check banned folder names (B6)
+        run: |
+          # B6 — utils/, helpers/, misc/, common/ banned without descriptive qualifier
+          if find . -type d \( -name "utils" -o -name "helpers" -o -name "misc" -o -name "common" \) | grep -v node_modules | grep -v .git; then
+            echo "::error::Banned generic folder names found. Rename per B6 (e.g. string-formatting-helpers/)"
+            exit 1
+          fi
+          echo "✅ No banned generic folder names"
+
+      - name: Check file-header block presence (B7)
+        if: steps.changed.outputs.py_count != '0'
+        run: |
+          # B7 — every file gets a header block. Must contain at least:
+          # "THIS FILE IN ONE SENTENCE" or "FILE:" marker in first 50 lines
+          MISSING=0
+          while IFS= read -r file; do
+            # Skip __init__.py and test files for now
+            if [[ "$file" == *__init__.py ]] || [[ "$file" == */conftest.py ]]; then
+              continue
+            fi
+            if ! head -50 "$file" | grep -q -E "(THIS FILE IN ONE SENTENCE|FILE:.*\.py)"; then
+              echo "::error file=$file::Missing B7 file-header block. See template's `app/main.py` for the format."
+              MISSING=$((MISSING + 1))
+            fi
+          done < /tmp/changed-py.txt
+          if [ "$MISSING" -gt 0 ]; then
+            echo "::error::$MISSING files missing B7 file-header block."
+            exit 1
+          fi
+          echo "✅ All Python files have header blocks"

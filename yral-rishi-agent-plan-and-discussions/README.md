@@ -3,11 +3,27 @@
 > **Companion docs in this repo** (dolr-ai/yral-rishi-agent — public monorepo):
 > - [`CONSTRAINTS.md`](./CONSTRAINTS.md) — the tight reviewable list of every hard constraint, organized by category, status per row. Start here if you want a fast index.
 > - [`V2_TEMPLATE_AND_CLUSTER_PLAN.md`](./V2_TEMPLATE_AND_CLUSTER_PLAN.md) — the canonical template + rishi-4/5/6 cluster design doc (Swarm-only networking, node role layout, bootstrap workflow, CI guardrails, net-new capabilities). This doc extends that one with product-facing capability plans, roadmap, memories, and cross-team integration.
+> - [`FUTURE_PICKUPS.md`](./FUTURE_PICKUPS.md) — parking-lot for ideas surfaced during R&D that are NOT in the current plan. Each entry has trigger conditions for revisiting. Currently holds: double-lane request queueing, A2UI declarative agent-to-UI protocol (both from OpenClaw R&D 2026-04-27).
 >
-> 🚨 **CUTOVER NOTE (locked 2026-04-23):** any week/month/phase-number timelines mentioned below in the context of cutover (Phase 4, canary, DNS flip, deprovisioning old service) are **aspirational sequencing only**. Actual cutover timing is entirely at Rishi's discretion — I do not propose, schedule, or raise cutover until he explicitly says so. Yral-chat-ai Python goes live 2026-04-25 and handles load fine; v2 builds calmly alongside for as long as Rishi wants. See `feedback_no_cutover_without_explicit_approval.md` memory and CONSTRAINTS.md row A6.
+> 🚨 **CUTOVER NOTE (locked 2026-04-23):** any week/month/phase-number timelines mentioned below in the context of cutover (Phase 4, canary, DNS flip, deprovisioning old service) are **aspirational sequencing only**. Actual cutover timing is entirely at Rishi's discretion — I do not propose, schedule, or raise cutover until he explicitly says so. Yral-chat-ai Python WENT LIVE 2026-04-23 and is handling production load; users are reporting slow latency (directly motivates the 50%-faster HARD target in E1). V2 builds calmly alongside for as long as Rishi wants. See `feedback_no_cutover_without_explicit_approval.md` memory and CONSTRAINTS.md row A6.
 >
-> 🚨 **SENTRY REMINDER (locked 2026-04-23):** ALL v2 services use `sentry.rishi.yral.com` (Rishi's self-hosted on rishi-3). NEVER the team `apm.yral.com`. Reinforced 3 times by Rishi. See CONSTRAINTS.md row A7 + C4.
+> 🚨 **SENTRY REMINDER (locked 2026-04-23):** ALL v2 services use `sentry.rishi.yral.com` (Rishi's self-hosted on rishi-3). NEVER the team `apm.yral.com`. Reinforced 3 times by Rishi. See CONSTRAINTS.md row A7 + C4. **Sentry API access pre-authorized 2026-04-24** for reading yral-chat-ai perf/error data to establish and track baselines (CONSTRAINTS I7).
 >
+> 🚨 **HARD CONSTRAINTS (locked 2026-04-24):**
+> 1. **V2 MUST be ≥50% FASTER than Python yral-chat-ai** on user-interactive endpoints (chat open, send message, streaming TTFT, list conversations). Stretch goal: match world-class AI companion apps (Character.ai, Replika, Talkie). Every decision flows from this. See CONSTRAINTS E1.
+> 2. **Full greenfield + first-principles + ALL data MUST port** — reverses the earlier "chat history is discardable" position. User chat history, AI influencers, messages, read states all carry forward for LOCAL TESTING and PRODUCTION CUTOVER. V2 schema is free to be whatever's best for the goal; ETL transforms rows. See CONSTRAINTS A4 + A13.
+> 3. **Claude pushes back** on non-industry-standard or likely-wrong decisions — technical, architectural, product, UX. Rishi is a non-programmer with ADHD and explicitly wants pushback. Format: state concern, give alternative, explain tradeoff, let Rishi decide. See CONSTRAINTS I6.
+> 4. **Real YRAL mobile Android app tests against the real cluster from Day 8+** — refined 2026-04-24 evening from earlier "Cloudflare Tunnel to laptop" plan. Route: Cloudflare DNS → rishi-1/2 Caddy (Rishi-owned, set up via `yral-rishi-hetzner-infra-template`) → rishi-4/5 Swarm ingress. Debug APK built by Claude, `CHAT_BASE_URL = agent.rishi.yral.com`. See CONSTRAINTS A9 + A15.
+> 5. **Feature parity FIRST, mobile code changes DEFERRED to Phase 3+** — Day 8 through ~Day 28, v2 is a drop-in replacement (same JSON shapes as chat-ai). Motorola debug APK needs ZERO code changes in this window, only `CHAT_BASE_URL` swap. Mobile changes (SSE streaming, presence, new screens) start Phase 3, one-at-a-time per A12. See CONSTRAINTS A16.
+> 6. **3-tier code documentation standard for non-programmer + ADHD reading (locked 2026-04-27).** Every code file supports reading at three depths: Tier 1 (30s file-header skim), Tier 2 (1-2 min function/class headers with WHAT/WHEN/WHY), Tier 3 (line-by-line role-comments — ROLE not SYNTAX). Functions in priority order, RELATED FILES footers, no abbreviations. 8 required docs per service: DEEP-DIVE / READING-ORDER / CLAUDE / RUNBOOK / SECURITY (existing 5) + WALKTHROUGH (narrative trace of one user action through the code) + GLOSSARY (every domain term defined) + WHEN-YOU-GET-LOST (1-page recovery doc with restaurant/pantry analogies). CI-enforced: comment density, doc presence, AI agents re-comment as part of every code change. See CONSTRAINTS B7 + F8.
+>
+> 🚨 **REFINED PHASE-0 SEQUENCE (locked 2026-04-24 evening):**
+> - Days 1-3: LOCAL template dev on laptop (Docker Compose, localhost). Fast iteration to prove template + hello-world. No Motorola testing.
+> - Days 4-7: rishi-4/5/6 cluster provisioning (Swarm + Patroni + Redis Sentinel + Langfuse + Caddy Swarm service + chaos tests per H3). In parallel with final template work.
+> - Days 7-8: rishi-1/2 Caddy snippet added via `yral-rishi-hetzner-infra-template` repo (Rishi owns that Caddy). DNS `agent.rishi.yral.com` routes through.
+> - Day 8+: Motorola debug APK points at real cluster. Every checkpoint from here on = real production-shape routing.
+>
+
 
 
 > **Purpose:** Design a **brand-new, greenfield AI-companion chat platform** that is 1000× better than the current chat infrastructure. The existing Python `yral-chat-ai` service and everything preceding it stay live as a safety net throughout. Rishi brainstorming doc. Non-programmer friendly. ADHD-aware (extensive, structured, skim-friendly).
@@ -28,7 +44,7 @@
 > - **More servers available**: ✅ **DONE 2026-04-23** — Saikat has provisioned rishi-4/5/6 (IPs above). More can be requested if scale demands.
 > - **NO-DELETE covenant** 🚨 (hard rule from Rishi, non-negotiable): Until Rishi gives explicit per-item approval — and only after the new service is live in production — we cannot delete anything from existing infrastructure: not the Python `yral-chat-ai`, not the Hetzner template repo, not the Sentry instance, not any config on rishi-1/2/3. This extends to DNS, Caddy routes, GitHub repos, GitHub secrets, Swarm stacks. **If in doubt, ask. Never delete.**
 > - **Mobile client constraint** 🚨: The mobile app (owned by Sarvesh + Shivam) currently calls `yral-chat-ai`. The hardest constraint: **at most ONE change in the mobile codebase** when we cut over. Ideally zero — via DNS flip of a preserved URL like `chat.yral.com`. Any required mobile-side routing change needs a strong justification that Sarvesh/Shivam can defend.
-> - **Data preservation rules** (UPDATED 2026-04-24): For LOCAL TESTING on Rishi's Motorola, we port the FULL chat-ai dataset (AI influencers + conversations + messages + read states + everything) so testing is realistic-fidelity, not empty-table. We MUST preserve all existing AI influencers always (users discover them, creators earn from them — Soul Files, avatars, bios, earnings, follower counts all carry forward). For eventual production CUTOVER (no timeline; Rishi's discretion only): the data-handling decision is separate and made when cutover is on the table — not now.
+> - **Data preservation rules** (REVERSED & UPGRADED 2026-04-24): ALL DATA MUST PORT — for LOCAL TESTING on Rishi's Motorola AND for eventual PRODUCTION CUTOVER (whenever Rishi says). AI influencers (Soul Files, avatars, bios, earnings, follower counts) + full user chat history (conversations, messages, read states, unread counts, typing state) all carry forward. Reversed from earlier "chat history discardable" position per Rishi 2026-04-24: *"earlier we were discussing that we are fine losing chat data — but now I am sure that would be the wrong approach since it will hamper user experience for current users."* V2 schema is fully greenfield (design from first principles for the 50%-faster + 1000×-better goal); ETL transforms chat-ai rows into whatever shape v2 wants. Pulling data from live yral-chat-ai during dev requires explicit Rishi approval per-operation (CONSTRAINTS A14).
 > - **Feature parity required from day 1**: the new service must support (a) Human ↔ AI influencer chat, (b) Human ↔ Human chat, and (c) "Chat as Human" creator-takeover. The current schema already supports `conversation_type = 'human_chat'` via `participant_b_id` — carry that forward.
 > - **Explicit naming** 🚨: per Rishi's request — every service, table, column, function, variable must be named so an English reader can infer its purpose without comments. No cryptic abbreviations. Prefer `conversation-turn-orchestrator` over `orch-svc`, `user-message-memory-extractor` over `mem-ext`. Verbose and obvious beats terse and clever.
 > - **Existing observability** (reuse, don't rebuild): Sentry at `sentry.rishi.yral.com` (rishi-3), Beszel at `beszel.yral.com`, Uptime Kuma at `status.yral.com`, Vault at `vault.yral.com`. Reuse all of these for the new service.
@@ -476,7 +492,7 @@ The old plan had 75 services. For a solo-ish team, **that's too many**. Greenfie
 
 **Critical preservation rule:** the `influencer.ai_influencers` table gets **complete data migration** from the existing `ai_influencers` table (ID preservation, creator_user_id preserved, Soul File content preserved as Layer 3). Existing mobile deep-links to influencer IDs must still work post-cutover.
 
-**Discardable data (if migration simplification requires):** `conversation.conversations` + `conversation.messages` can be either migrated or discarded. Default: migrate to give users continuity; but if schema changes are too invasive, we're authorized to start fresh with empty chat history.
+**All chat data MUST migrate (locked 2026-04-24, reversed from earlier "discardable" position):** `conversation.conversations` + `conversation.messages` + read states + unread counts ALL port from chat-ai to v2. Rishi: *"losing chat data would be the wrong approach — it will hamper user experience for current users."* V2 schema is fully greenfield (not constrained to match chat-ai); ETL transforms old rows into new shape during migration. No row dropped. Applies to LOCAL TESTING (immediate, against a snapshot of chat-ai data pulled per CONSTRAINTS A14) AND PRODUCTION CUTOVER (when Rishi says).
 
 **Event flow via Redis Streams:** Every significant event (message.sent, message.received, payment.completed, influencer.created, crisis.flagged, chat_as_human.toggled) → one Redis Stream entry. Downstream services consume via consumer groups. No polling, no N² service mesh.
 
@@ -594,32 +610,46 @@ Async workers triggered by events:
 
 ### 2.8 Latency Service Level Objective (SLO) — non-negotiable
 
-🚨 **Rishi's hard constraint:** the new service's latency must be **≤ current production latency** of BOTH Ravi's Rust chat service AND our Python `yral-chat-ai`, at every percentile (p50, p95, p99, p99.9) across every endpoint mobile calls, at every rollout percentage. **Latency regression = automatic stop of rollout.** No exceptions.
+🚨 **Rishi's hard constraint (UPGRADED 2026-04-24):** v2 MUST be **at least 50% FASTER than Python yral-chat-ai** (which went live 2026-04-23 and is drawing user complaints about slow latency) on user-interactive endpoints. Stretch goal: match world-class AI companion apps (Character.ai, Replika, Talkie — typical TTFT 200-400ms, full message 1-3s). This is the single constraint every architectural decision flows from — if a design choice doesn't help v2 be 50% faster, it doesn't ship.
 
-**Step 1 — Baseline measurement (Phase 0 deliverable):**
-- Capture 1 full week of production latency from Ravi's Rust service (if still serving traffic) AND current Python `yral-chat-ai`. Source: Sentry performance tab, Langfuse if wired, Beszel.
-- Metrics captured per endpoint: `POST /api/v1/chat/conversations/{id}/messages` (hot path), `GET /conversations`, `GET /messages`, WebSocket inbox, `POST /images`.
-- Statistics: p50, p95, p99, p99.9 for (a) full request completion and (b) first-token-out latency once streaming is enabled.
-- Record in `latency-baselines.md` in the v2 repo. **This document is the number to beat. Every PR must check against it.**
+**What "user-interactive" means (the 50%-faster scope):**
+- Chat screen load (conversation list + metadata) — user taps chat tab, sees everything instantly
+- Conversation open (load messages + typing state + unread counts) — user taps a bot, history is there
+- Send message → first token of streamed response (TTFT) — the hot path
+- Send message → full response complete — the full turn
+- WebSocket inbox push (new-message delivery) — instant, no polling delay
+- Send image / media — within 2× of text-message TTFT
 
-**Step 2 — Latency budgets (Phase 1 design):**
-- Target p99 `send message → first token` = **≤ baseline × 0.8** (we aim 20% faster; we MUST NOT be slower).
-- Turn-lifecycle budget breakdown (p95 sub-targets):
-  - Auth + rate-limit check: <10ms
+Admin / list-all / ban / search / rarely-used endpoints hold to the softer "≤ baseline" rule (CONSTRAINTS E1) — they aren't worth architecting around.
+
+**Step 1 — Baseline measurement (CONTINUOUS, not one-time; starts Day 1):**
+- **Sentry API (pre-authorized 2026-04-24, key at `~/.config/dolr-ai/sentry-api-key` TBC)** pulls `sentry.rishi.yral.com` perf data daily for yral-chat-ai.
+- Metrics captured per user-interactive endpoint: p50, p95, p99 for (a) full request completion and (b) first-token latency where applicable.
+- For Ravi's Rust `yral-ai-chat`: captured if still serving traffic; if all traffic has moved to Python chat-ai already (confirm via Saikat), the Python baseline alone is the binding number.
+- Output: `latency-baseline-capture-from-live-services-the-numbers-v2-must-beat/daily-baseline.csv` — appends one row per day; plotted in `baseline-over-time.md`.
+- **World-class reference numbers** (for stretch goal, NOT for hard-target compliance): pulled from published benchmarks / product demos / user reports of Character.ai, Replika, Talkie. Recorded in `world-class-companion-apps-latency-reference.md`.
+
+**Step 2 — Latency budgets (designed against the 50%-faster target):**
+- HARD target per endpoint: `v2_p95 ≤ 0.5 × python_chat_ai_p95`
+- STRETCH target: within 1.2× of world-class companion app latencies
+- Turn-lifecycle budget breakdown (hot-path TTFT, assuming Python chat-ai p95 TTFT ~1500ms → v2 hard target ~750ms p95, stretch ~400ms):
+  - Auth + JWT validation (from JWKS cache): <10ms
+  - Billing pre-check (Redis cache hit): <5ms
   - Redis session-memory fetch: <5ms
   - Postgres semantic-facts fetch: <20ms (**in parallel with LLM init**)
-  - pgvector semantic search: <50ms (**in parallel**; abort + skip if it overruns)
-  - Soul File composition from warm cache: <5ms
+  - pgvector semantic search: <50ms (**in parallel**; short-circuit if it overruns)
+  - Soul File composition from warm Redis cache (composed-string cache): <5ms
+  - Anthropic / provider prompt-cache hit on the static prefix (Layers 1-4 of the Soul File): saves ~80-90% of the prefix-tokens contribution to TTFT after the first turn (see Step 4 architectural rule "Stable prompt prefix for provider-side caching")
   - Safety pre-filter on user message: <30ms (**in parallel with prompt build**)
-  - LLM first-token time (Gemini): ~200-400ms typical — this is the wall clock
-  - Network + framing back to client: <20ms
-- **Non-negotiable architectural rule:** every memory/retrieval/safety step runs IN PARALLEL with LLM-call initialization, never serially before it. If any step is slow, abort it and ship the turn without that enrichment.
+  - LLM first-token time (Gemini Flash): ~200-400ms typical — this is the wall clock; reason Tara's OpenRouter route may need special care
+  - Network + framing back to client (SSE): <20ms
+- **Non-negotiable architectural rule:** every memory/retrieval/safety step runs IN PARALLEL with LLM-call initialization, never serially before it. If any step is slow, short-circuit it and ship the turn without that enrichment rather than waiting.
 
 **Step 3 — Enforcement (continuous):**
-- Every service emits per-request latency to Langfuse + Sentry. Per-turn traces link end-to-end.
-- Automated hourly comparison: new-service p95 vs. baseline. If slower, page Rishi in team chat.
-- **Canary ramp gate:** if p95 > 1.0× baseline for 30 consecutive minutes on any monitored endpoint, auto-rollback halves the traffic percentage. Rishi's manual approval required to resume.
-- Load test before each phase transition: synthetic burst at 100× current QPS, verify p99 still beats baseline.
+- Every v2 service emits per-request latency to Langfuse + Sentry. Per-turn traces link end-to-end.
+- **CI latency gate:** every PR merged to main runs a synthetic load test against a staging instance; fails if any user-interactive endpoint p95 > `0.5 × current_python_chat_ai_p95` for that endpoint.
+- Automated hourly comparison in prod: v2 p95 vs yral-chat-ai p95 (via Sentry API). If v2 is slower than `0.5×` target on ANY user-interactive endpoint for 30 consecutive minutes, auto-rollback halves traffic percentage. Rishi's manual approval required to resume.
+- Load test before each phase transition: synthetic burst at 100× current QPS, verify p99 still beats `0.5×` target.
 - Langfuse per-turn breakdown view shows where time was spent — easy regression diagnosis.
 
 **Step 4 — Architectural safeguards (fail open, fail fast, fail invisible):**
@@ -628,6 +658,7 @@ Async workers triggered by events:
 - **Streaming makes latency invisible after first token:** user perceives time to first token, not full response time. Every architectural choice should preserve first-token latency over everything else.
 - **Pre-warm during user idle:** between user turns, background jobs warm memory caches for likely next user. Next turn starts hot.
 - **Never block on a cold dependency.** Every non-critical call has a timeout + graceful fallback path.
+- **Stable prompt prefix for provider-side caching (locked 2026-04-27):** the composed Soul File prefix sent to the LLM provider MUST be **byte-identical across turns** for the same `(influencer_id, user_segment)` pair within the provider's cache TTL (Anthropic ephemeral = 5 minutes; Gemini context-cache = configurable; OpenRouter passes through to upstream). This unlocks Anthropic `cache_control: {type: "ephemeral"}` breakpoints (and equivalent on Gemini / OpenAI), buying ~80-90% TTFT reduction on the prefix contribution and ~90% input-token cost reduction on cache hits. Forbidden inside the cached prefix: timestamps, request IDs, UUIDs, random bullet ordering, current-date strings, model-temperature suffixes, anything that mutates per turn. The cache-control breakpoint sits at the END of Layer 4 (Per-User-Segment) and BEFORE per-turn user message, fresh memory facts, and recent-message context — those go in the uncached suffix. The `yral-rishi-agent-soul-file-library` composer owns this contract; the `yral-rishi-agent-conversation-turn-orchestrator` consumes the composed prefix as opaque bytes. CI gate: a test composes the prefix twice for the same `(influencer_id, user_segment)` 100ms apart and asserts byte-identity. For providers that don't support cache_control (some OpenRouter upstream models), document the latency delta but still emit the stable prefix — switching providers later is then a config change, not a refactor. See FUTURE_PICKUPS.md for related deferred patterns from OpenClaw R&D.
 
 **Step 5 — Design consequences (things this SLO forbids):**
 - Memory retrieval can be ADDED (parallel + short-circuit), does NOT break SLO.
@@ -649,23 +680,62 @@ Each of the following plans is a **capability group** that the greenfield servic
 ### PLAN A — Memory & Depth (fix shallowness)
 *Bet: D30 retention ≈ 0% because bots forget. Fix memory → fix retention → fix revenue.*
 
+🚨 **Architectural decision (locked 2026-04-27): memory layer is greenfield, NOT a mem0 dependency.** mem0 (mem0ai/mem0, Apache 2.0, ~54K stars) was evaluated as a candidate dependency for A2/A3/A4 and rejected for these specific reasons:
+
+1. **Convention mismatch with YRAL standards.** YRAL's `feedback_explicit_naming` rule (every identifier reads as English) and `feedback_documentation_standards` rule (line-by-line comments + WHY blocks + 5 required docs per service) would force renaming/recommenting of mem0's 26,814 LOC — work comparable to rewriting the 1,300 LOC YRAL actually needs.
+2. **Surface-area mismatch.** mem0 ships 28 vector-store backends, 12 LLM provider adapters, procedural-memory mode, embedchain legacy, server, dashboard, TS port. YRAL would import ~26K LOC to use ~1.7K. The relevant subset (extraction prompt, pgvector wrapper, multi-signal search, entity linking) totals ~1,700 LOC and is well within scope to reimplement.
+3. **Resilience gap.** mem0's `Memory.add()` is soft-fail throughout: no retry on LLM rate-limits, no transactional atomicity across the 7-phase write (extract → embed → vector-insert → history-insert → entity-link), no row-level locks for concurrent writes to the same `(user_id, agent_id)`. Any production deployment needs a hardened wrapper anyway — at which point reimplementation is comparable effort to wrapping.
+4. **Soul File integration is native here, bolted-on there.** YRAL's per-influencer extraction (different prompts for Tara vs. a coach bot vs. a companion bot) is naturally expressed in custom code that consumes the Soul File composer; in mem0 it sits behind a generic `custom_instructions` string parameter.
+5. **Frontier-AI calculus shift.** With current LLM coding assistance, the "we figured out the architecture so you don't have to" value of mem0 has dropped: reading and understanding their extraction prompt is fast, and YRAL-domain-specific prompts are easier to write fresh than to adapt.
+
+**What we DO lift from mem0 (architectural reference, no code dependency):**
+- The **ADD-only extraction philosophy** (no LLM-driven UPDATE/DELETE on existing memories — append, dedup by content hash, let retrieval-time scoring resolve contradictions). mem0 v3 (April 2026) made this their core design choice; it's correct and we adopt it.
+- The **7-section extraction prompt structure**: profile summary, last-k messages (pronoun resolution), recently-extracted-this-session (in-session dedup), top-N similar existing memories (cross-session dedup), new messages, observation date (temporal grounding), current date.
+- The **multi-signal retrieval pattern**: semantic distance + BM25 keyword score + entity-match boost, fused before ranking. We tune the fusion weights for chat-companion use.
+- The **entity-linking-as-second-collection pattern**: extract named entities from each memory, embed and store separately with `linked_memory_ids` back-references, dedup at score ≥ ~0.95.
+- The **hash-based content dedup** (MD5 of memory text as content address; skip insert on hash match) — cheap, no LLM call, prevents exact duplicates.
+
+**What we deliberately do NOT copy from mem0:**
+- 28-backend abstraction layer (we use pgvector only; one wrapper, no plugin system).
+- Procedural-memory mode (different problem; not relevant to chat companions).
+- PostHog telemetry (privacy + compliance; we use Langfuse + Sentry already).
+- Soft-fail-everywhere resilience pattern (we add retry + idempotency + transactional writes from day 1).
+
+**Reference reading for the team building Plan A:** `/tmp/mem0-research/mem0/mem0/configs/prompts.py` (extraction prompt), `mem0/memory/main.py:573-971` (`Memory.add()` flow), `mem0/memory/main.py:1126-1410` (`Memory.search()` flow), `mem0/vector_stores/pgvector.py` (pgvector wrapper). Read these to understand the WHY behind the patterns above before writing YRAL's versions.
+
+**Trade-off accepted:** we lose ~6 months of edge-case discovery that mem0's 90,000 developers have already done in production. We mitigate via aggressive Sentry + Langfuse instrumentation from day 1, the eval suite from Plan F (`yral-bot-quality-scorer`), and a feature flag to disable memory writes if extraction-quality eval drops below threshold.
+
+**Time-cost comparison (informing the decision):**
+- mem0-as-dependency path: ~4-6 weeks (write hardened wrapper service + influencer-specific extraction extension + telemetry-disable + retry/idempotency layer).
+- Greenfield-with-mem0-as-reference path: ~4-6 weeks (write extraction prompt + pgvector wrapper + multi-signal search + entity linking + retry/idempotency).
+- Roughly equal effort. Reversibility weighs in favour of greenfield: switching to mem0 later if rebuild stalls is easier than removing mem0 once embedded.
+
+---
+
 **Core services (in build order):**
 
 | # | Service | What it does | Why it matters |
 |---|---|---|---|
 | A1 | `yral-llm-gateway` | Gemini-protocol proxy that intercepts every chat-ai → LLM call | The seam. Nothing else in this plan works without it. |
-| A2 | `yral-memory-store` | Stores extracted facts per (user_id, influencer_id): "user's cat is named Momo", "user's goal = lose 5kg by June" | Survives past 10-message window |
-| A3 | `yral-memory-extractor` | Async worker that tails `messages` table, calls small LLM to extract facts, writes to memory-store | Runs behind the scenes, no latency added |
-| A4 | `yral-embedding-index` | Vector DB (pgvector inside shared Postgres — don't bring a new DB) of every message chunk | Semantic retrieval: "what did we talk about last Tuesday?" |
-| A5 | `yral-user-profile` | Stable profile per user: name, tone preferences, location, goals, relationship stage with each bot | Different from memory; this is the stable identity |
-| A6 | `yral-conversation-summarizer` | Hourly job: summarizes old conversation chunks into short narratives, frees up context budget | "Compression" layer; enables effectively infinite history |
-| A7 | `yral-memory-consolidator` | Daily "sleep" job that merges duplicate memories, resolves contradictions, promotes frequent facts to profile | Imitates human memory consolidation; keeps store clean |
+| A2 | `yral-memory-store` | Stores extracted facts per (user_id, influencer_id): "user's cat is named Momo", "user's goal = lose 5kg by June". **Greenfield Postgres+pgvector implementation; design lifts mem0's ADD-only philosophy + content-hash dedup + JSONB payload shape — see decision block above.** | Survives past 10-message window |
+| A3 | `yral-memory-extractor` | Async worker that tails `messages` table, calls small LLM to extract facts, writes to memory-store. **Extraction prompt is YRAL-native, structured per mem0's 7-section pattern (profile / last-k / recently-extracted / similar-existing / new-messages / observation-date / current-date) but worded for YRAL multi-influencer chat with Soul File context per influencer.** Runs strictly async (after-turn, behind Redis Stream — never blocks the user-visible response). | Runs behind the scenes, no latency added |
+| A4 | `yral-embedding-index` | Vector DB (pgvector inside shared Postgres — don't bring a new DB) of every message chunk. **Multi-signal retrieval: cosine distance + PostgreSQL full-text BM25 + named-entity-match boost, fused at query time. Entity links live in a sibling pgvector collection per the mem0 reference design.** | Semantic retrieval: "what did we talk about last Tuesday?" |
+| A5 | `yral-user-profile` | Stable profile per user: name, tone preferences, location, goals, relationship stage with each bot | Different from memory; this is the stable identity. **Not present in mem0 reference; YRAL-original.** |
+| A6 | `yral-conversation-summarizer` | Hourly job: summarizes old conversation chunks into short narratives, frees up context budget | "Compression" layer; enables effectively infinite history. **Not present in mem0 reference; YRAL-original.** |
+| A7 | `yral-memory-consolidator` | Daily "sleep" job that merges duplicate memories, resolves contradictions, promotes frequent facts to profile | Imitates human memory consolidation; keeps store clean. **Not present in mem0 reference; YRAL-original.** |
 
 **What chat feels like after Plan A:** bot remembers your birthday, your cat's name, what you told it last Tuesday, your goals, and writes responses in YOUR preferred tone. Feels like a friend, not a lookup.
 
 **Template fit:** all 7 are Python/FastAPI; share one Postgres with pgvector extension; A3 + A6 + A7 are HTTP services invoked by cron (GitHub Actions cron-pings the endpoint — works inside your template without adding workers).
 
-**Timeline realistic for you (2-3h/day, ADHD):** 6-8 weeks for A1-A4 (the "minimum viable memory"). A5-A7 over months 3-4.
+**Timeline realistic for you (2-3h/day, ADHD):** 6-8 weeks for A1-A4 (the "minimum viable memory"). A5-A7 over months 3-4. The greenfield-not-mem0 decision does NOT change this estimate — see the time-cost comparison in the decision block above.
+
+**Day-1 instrumentation (non-negotiable for the rebuild):**
+- Sentry transaction per `.add()` and `.search()` call, tagged with `(user_id, agent_id)` and the phase that errored if any.
+- Langfuse trace per extraction LLM call, capturing input messages + extraction prompt + model output + parse outcome (succeeded / repaired / failed).
+- Per-phase latency emitted to Langfuse (so we can see if extraction is slow, embedding is slow, or pgvector insert is slow without code-spelunking).
+- Daily eval run against a held-out 200-conversation set; auto-flag if extraction recall drops >10% vs the prior week's baseline.
+- Feature flag `memory_extraction_enabled` (default on) that, when flipped off, skips all `.add()` writes but lets `.search()` continue against historical data — kill-switch if extraction quality regresses without warning.
 
 ---
 
@@ -824,7 +894,7 @@ Each of the following plans is a **capability group** that the greenfield servic
 | # | Service | What it does | Why it matters |
 |---|---|---|---|
 | F1 | `yral-prompt-registry` | Versioned store of system prompts organized in **layers**: (1) global YRAL layer, (2) archetype layer (companion/nutritionist/coach), (3) per-bot layer (creator-editable), (4) per-user-segment layer (new users get extra warmth, paying users get deeper content) | The "config file" you said you don't have. One source of truth, versioned, rollback-able. |
-| F2 | `yral-prompt-composer` | Gateway sub-component: merges the 4 layers into final system prompt at request time. Feature-flag per layer. | You can tweak GLOBAL layer once → every bot on YRAL improves overnight. |
+| F2 | `yral-prompt-composer` | Gateway sub-component: merges the 4 layers into final system prompt at request time. Feature-flag per layer. **Composes the prefix in deterministic byte-identical order (Layer 1 → 2 → 3 → 4) for provider-side prompt caching — see Section 2.8 Step 4 "Stable prompt prefix" rule.** | You can tweak GLOBAL layer once → every bot on YRAL improves overnight. Byte-stable composition unlocks Anthropic/Gemini prompt cache → ~80-90% TTFT reduction on the prefix after turn 1. |
 | F3 | `yral-creator-prompt-coach` ⭐ | LLM chat service the CREATOR talks to: *"make my bot warmer", "make it funnier", "stop giving essays"*. The coach writes prompt edits, shows preview conversations, lets creator approve. This is literally "users can chat with an LLM to improve their bot's system config." | Turns every creator into a prompt engineer without them knowing it. Highest-leverage idea in this whole doc. |
 | F4 | `yral-bot-bootstrap-v2` | Replaces the "user types one word → bad auto-prompt" flow. Instead: LLM runs a 4-question structured intake (voice? quirks? values? what-it-WON'T-do?) then synthesizes a rich prompt from a proven template. Can also ingest creator reference material (text, existing chat samples). | Fixes quality at the source — the moment bots are created. |
 | F5 | `yral-few-shot-bank` | Curated library of 5-10 "example conversation turns" per archetype. Injected into the prompt so the bot learns style by example, not just instruction. | Few-shot > instruction for response style. Industry standard. |
@@ -899,7 +969,7 @@ Each of the following plans is a **capability group** that the greenfield servic
 **Billing integration in v2:**
 - v2 never implements payment logic itself. Every access check is a gRPC/HTTP call to yral-billing.
 - **Add a caching layer in the orchestrator**: before each turn, check `yral-billing` for `(user_id, bot_id)` active access. Cache in Redis with 60-second TTL to avoid hitting yral-billing on every message. (If billing says "expires at T", cache until T.)
-- The 50-message free counter is enforced at the orchestrator before the LLM call. Query `conversation_turns` count; if >=50 and no access, return 402 Payment Required with paywall metadata (matching what mobile already expects).
+- The 50-message free counter is enforced at the orchestrator before the LLM call. Query `conversation_turns` count; if >=50 and no `bot_chat_access` row, return access-denied via standard `ApiResponse` envelope (NOT 402 — see CONSTRAINTS E7 + Section 11.8.2 below for the corrected paywall contract). Mobile reads `hasAccess: false` and triggers Google Play IAP sheet client-side.
 - Google Play + Apple IAP flow completely unchanged; yral-billing handles both. Mobile triggers IAP sheet; yral-billing verifies; inserts row; orchestrator reads row on next turn.
 - YRAL Pro (future tier): orchestrator reads credit balance from yral-billing; deducts per turn per tier rules.
 - Creator earnings: when yral-billing inserts a Transaction row (`BotSubscriptionReward`, bot_id, 900 paise), the 70/30 split is handled by yral-billing. Our `yral-rishi-agent-payments-and-creator-earnings` service reads from yral-billing's transaction stream to feed wallet dashboards. We do NOT duplicate yral-billing's ledger.
@@ -918,7 +988,7 @@ Each of the following plans is a **capability group** that the greenfield servic
 1. **JWT signature validation** (fix Ravi's inherited gap) — proper RS256 verification against JWKS.
 2. **Mutual TLS between internal services** (or Swarm overlay network isolation) so downstream services can trust `user_id` without re-validating JWT per hop.
 3. **Centralized access-check caching** so yral-billing isn't hit per turn — 60s Redis cache keyed on `(user_id, bot_id)`.
-4. **Paywall metadata in 402 response** — mobile expects specific shape; we preserve the exact shape Ravi's service returns so mobile code doesn't change.
+4. **Paywall response envelope match** — paywall is NOT a 402 (corrected 2026-04-23 evening + reaffirmed by Codex audit 2026-04-27; see Section 11.8.2 + CONSTRAINTS E7). v2 returns `ApiResponse<ChatAccessDataDto{hasAccess, expiresAt}>` for the pre-chat access check; mobile triggers Google Play IAP client-side when `hasAccess=false`. v2 must match the exact shape so mobile code doesn't change.
 5. **Support both Google Play and iOS Apple IAP** — even if Apple flow isn't live today, design yral-billing integration to be rail-agnostic from v2's perspective.
 6. **Paywall A/B testing hooks** — future experimentation (e.g., 30 msgs vs 50 msgs free, ₹9 vs ₹19, monthly vs daily) is routed through yral-billing, but v2's orchestrator must treat the paywall threshold as a config value, not a constant.
 
@@ -1149,7 +1219,7 @@ Rishi's constraint is **ideally zero mobile-client changes, absolute max ONE**. 
 | M3 | Add new screens: Soul File Editor + Prompt Coach (creator side) | Plan F creator-side tooling needs UI. Backend can be ready; UI is absent without mobile work. | ❌ NO — UI is mobile-only. But can ship v2 WITHOUT these features first (backend ready, mobile adds UI later). | NEEDS APPROVAL — can be phased; not a blocker for v2 backend cutover. |
 | M4 | Proactive message push notifications | New in v2 — bot texts user first (Plan B). Existing push notification infra via metadata service can be reused. | ✅ PARTIAL — reuse existing FCM/APNS pipeline; only the notification payload template changes (copy/image). Mobile tap-handling already opens chat. | Minor change — confirm notification payload schema is compatible. |
 | M5 | Tip jar / private content UI (Plan G) | Micropayment + content unlock flows need new screens. | Not needed for v2 MVP — defer to Plan G launch (Month 4+). | Defer. |
-| M6 | Paywall response schema | yral-billing's 402 response triggers IAP sheet. v2 must preserve the exact error shape. | ✅ YES — v2 mirrors the exact response Ravi's service returns. Verified by capturing prod responses. | No mobile change needed IF we match schema. Auto-verify during shadow phase. |
+| M6 | Paywall response schema (CORRECTED 2026-04-23 + Codex audit 2026-04-27) | Paywall is NOT a 402. Mobile does pre-chat IAP check via yral-billing returning `ApiResponse<ChatAccessDataDto{hasAccess, expiresAt}>`. If `hasAccess=false`, mobile triggers Google Play IAP sheet client-side. v2 must match this exact envelope. | ✅ YES — v2 returns identical envelope. No 402 anywhere. | No mobile change needed IF we match schema. Auto-verify during shadow phase. See CONSTRAINTS E7 + Section 11.8.2 for authoritative contract. |
 | M7 | JWT auth header handling | v2 uses same Authorization: Bearer JWT. | ✅ YES — no change. | No change. |
 | M8 | Bot creation flow (3-step: describe → expand → profile) | v2's `yral-rishi-agent-soul-file-library` improves the expansion step. Mobile flow itself unchanged. | ✅ YES — backend change is invisible to mobile. Mobile keeps calling existing `create-bot` endpoint; the expanded description comes back richer. | No change. |
 | M9 | "Chat as Human" toggle | Already exists in mobile; uses ICP bot identity delegation. v2 preserves. | ✅ YES — no change. | No change. |
@@ -1168,7 +1238,7 @@ Rishi's constraint is **ideally zero mobile-client changes, absolute max ONE**. 
 
 **Action before Phase 0:** Rishi writes a one-page memo to Saikat + Sarvesh + Shivam asking for sign-off on:
 1. DNS-flip feasibility for `chat.yral.com` (critical — M1)
-2. Paywall 402 response schema preservation (M6)
+2. Paywall response envelope match — `ApiResponse<ChatAccessDataDto>`, NOT 402 (M6, corrected per Codex audit 2026-04-27)
 3. Whether streaming (M2) ships in v2 or v2.1
 4. Whether creator-side UI (M3) is in-scope for v2 or later
 
@@ -1205,7 +1275,7 @@ Rishi's constraint is **ideally zero mobile-client changes, absolute max ONE**. 
 
 ### Rollback plan (at every step)
 - **Steps 1-3:** no user impact, no rollback needed (everything on private subdomain)
-- **Step 4-5 (canary):** at Caddy → flip traffic-percentage back to 0% → users on old service in <10 seconds. No code change. No data loss (influencer data is replicated; chat history intact because we did not migrate it).
+- **Step 4-5 (canary):** at Caddy → flip traffic-percentage back to 0% → users on old service in <10 seconds. No code change. No data loss (chat history ported to v2 via ETL AND still present in chat-ai — both systems hold the same data during coexistence; influencer data replicated via CDC).
 - **Step 6 (cutover):** flip Caddy split back to any percentage; old service still alive on rishi-1/2. Full rollback <5 minutes.
 - **Catastrophic rollback (even months post-cutover):** old service is still deployed, just not receiving traffic. Flip DNS. Back in business. This is the reason we don't delete.
 
