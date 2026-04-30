@@ -294,11 +294,13 @@ def call_codex(client: OpenAI, messages: list[dict]) -> dict:
     WHY  — Codex returns prose; we ask it to return strict JSON via the
            response_format parameter so post-codex-review.py can parse it cleanly.
     """
-    # Use a model that's good at structured output + JSON mode. gpt-4o is the
-    # reliable choice as of build time. When o1 or gpt-5 are stable + cheap,
-    # consider switching here.
+    # Use the newest model — per Rishi (2026-04-30): "get the best model".
+    # gpt-5.5 is the latest as of build time (released ~6 days ago per
+    # OpenAI dashboard). More expensive per call (~$0.50-$2 per review)
+    # but better reasoning + larger context window. If gpt-5.5 ever gets
+    # deprecated or renamed, fallback options: "gpt-5", "gpt-4o".
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model="gpt-5.5",
         messages=messages,
         response_format={"type": "json_object"},  # forces JSON output
         temperature=0.2,  # low temperature = more consistent reviews
