@@ -85,8 +85,9 @@ def main() -> None:
     # Read each context file (CONSTRAINTS, scope, prompt) into memory
     context_files = read_context_files(args.context_dir)
 
-    # Assemble the messages we send to Codex (system + user)
-    messages = assemble_messages(
+    # Assemble the messages we send to Codex (system + user) AND track
+    # whether any truncation happened (used by fail-closed guard below)
+    messages, truncation_info = assemble_messages(
         diff_text=diff_text,
         context_files=context_files,
         pr_number=args.pr_number,
@@ -98,10 +99,74 @@ def main() -> None:
     client = OpenAI(api_key=api_key)
     review_json = call_codex(client, messages)
 
+    # FAIL-CLOSED GUARD (per Codex's I10 audit-hole flag).
+    # If we truncated the diff, Codex never saw all of it — so it CANNOT
+    # have audited the full set of changes. We override any "approve" to
+    # "request_changes" with a clear reason so coordinator + Rishi know
+    # they have to do a full manual review.
+    review_json = enforce_truncation_fail_closed(review_json, truncation_info)
+
     # Write the structured review to disk for post-codex-review.py to read
     Path(args.output).write_text(json.dumps(review_json, indent=2))
     print(f"✅ Codex review written to {args.output}")
     print(f"   Overall verdict: {review_json.get('overall', 'unknown')}")
+    if truncation_info["diff_truncated"] or truncation_info["context_truncated"]:
+        print(f"   Truncation occurred — fail-closed guard applied: "
+              f"{truncation_info}")
+
+
+def enforce_truncation_fail_closed(
+    review_json: dict, truncation_info: dict
+) -> dict:
+    """
+    WHAT — If any part of the diff or context was truncated, override any
+           Codex `approve` verdict to `request_changes` with a clear reason.
+    WHEN — Called once after Codex returns a verdict.
+    WHY  — Per Codex's own I10 review of this script: truncation creates an
+           audit hole — Codex could approve a PR with bugs hidden in cut
+           hunks. Fail-closed means coordinator + Rishi MUST manually review
+           any PR where truncation happened. Cost of false-positive is one
+           extra manual review; cost of false-negative is shipping a bug.
+    """
+    if not truncation_info.get("diff_truncated"):
+        # No truncation — Codex saw everything; trust its verdict
+        return review_json
+
+    original_overall = review_json.get("overall", "unknown")
+    if original_overall == "approve":
+        # The dangerous case — override to request_changes
+        original_summary = review_json.get("summary", "")
+        review_json["overall"] = "request_changes"
+        review_json["summary"] = (
+            f"FAIL-CLOSED GUARD: diff was truncated to fit Codex's token "
+            f"budget (original {truncation_info['original_diff_chars']} chars, "
+            f"sent within {truncation_info['diff_budget_chars']} char budget). "
+            f"Codex did not see all changes, so cannot APPROVE per I10. "
+            f"Manual coordinator + Rishi review required, OR split the PR "
+            f"into smaller pieces. Original Codex verdict (advisory only): "
+            f"{original_overall}. Original summary: {original_summary}"
+        )
+        # Insert a synthetic blocker finding at the top so it shows up
+        # prominently in the PR comments
+        findings = review_json.get("findings", [])
+        findings.insert(0, {
+            "file": "(workflow)",
+            "line": 0,
+            "severity": "blocker",
+            "category": "audit_hole",
+            "issue": (
+                "Diff was truncated for token budget; Codex review is "
+                "incomplete. Cannot approve per I10."
+            ),
+            "suggestion": (
+                "Either (a) split this PR into smaller chunks until each "
+                "fits within the Codex token budget, or (b) coordinator + "
+                "Rishi conduct a manual full-diff review and use admin "
+                "override."
+            ),
+        })
+        review_json["findings"] = findings
+    return review_json
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -153,15 +218,25 @@ def assemble_messages(
     pr_number: str,
     pr_branch: str,
     pr_title: str,
-) -> list[dict]:
+) -> tuple[list[dict], dict]:
     """
     WHAT — Builds the list of messages to send to OpenAI's chat completions API.
+           Returns (messages, truncation_info) so callers can fail-closed if
+           any truncation occurred.
     WHEN — Called once before the API call.
     WHY  — We use the system role for Codex's persona/prompt and the user role
            for the actual diff + PR metadata. Industry-standard ChatGPT API shape.
            Enforces a strict token budget AND prioritizes critical context
            (CONSTRAINTS.md never truncated) so Codex always has the binding
            rules it needs to flag scope violations.
+
+    Returns:
+      messages: list[dict] in OpenAI chat format
+      truncation_info: dict with keys:
+        - diff_truncated: bool — True if any part of the diff was cut
+        - context_truncated: bool — True if any non-critical context was cut
+        - critical_truncated: bool — True if critical context overflowed
+                                      (this triggers a hard-failure upstream)
     """
     # The system prompt is Codex's "job description" — never truncated
     system_prompt = context_files.get("codex-prompt.txt",
@@ -201,25 +276,31 @@ def assemble_messages(
             user_parts.append(f"\n## {name}\n\n{contents}")
             used_chars += len(contents) + 50
 
+    # Track if critical context overflowed — this is a hard-fail upstream
+    critical_truncated = used_chars > maximum_prompt_characters
+
     # Pass 2: budget remaining for non-critical context + diff
     remaining_budget = maximum_prompt_characters - used_chars
     diff_reserved = max(8_000, remaining_budget // 2)  # at least 8k for diff
     other_context_budget = max(0, remaining_budget - diff_reserved)
 
     # Distribute non-critical context across the remaining budget
+    context_truncated = False
     non_critical = [(n, c) for n, c in context_files.items()
                     if n != "codex-prompt.txt" and n not in CRITICAL_CONTEXT]
     if non_critical:
         per_other_max = max(500, other_context_budget // len(non_critical))
         for name, contents in non_critical:
-            truncated = truncate_with_marker(contents, per_other_max,
-                                             f"context file {name}")
+            truncated, was_trunc = truncate_with_marker(
+                contents, per_other_max, f"context file {name}")
+            if was_trunc:
+                context_truncated = True
             user_parts.append(f"\n## {name}\n\n{truncated}")
             used_chars += min(len(contents), per_other_max) + 50
 
     # Whatever remains is for the diff (with a hard floor of 4k chars)
     diff_budget = max(4_000, maximum_prompt_characters - used_chars)
-    diff_to_send = truncate_diff_smart(diff_text, diff_budget)
+    diff_to_send, diff_truncated = truncate_diff_smart(diff_text, diff_budget)
 
     # Append the diff
     user_parts.append("\n# DIFF UNDER REVIEW\n")
@@ -233,53 +314,68 @@ def assemble_messages(
     total_chars = len(system_prompt) + len(user_message)
     print(f"Prompt size: {total_chars} chars (~{total_chars // 4} tokens). "
           f"CRITICAL untruncated; non-critical budget {other_context_budget}; "
-          f"diff budget {diff_budget}.")
+          f"diff budget {diff_budget}; "
+          f"diff_truncated={diff_truncated}; context_truncated={context_truncated}.")
 
-    return [
+    messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_message},
     ]
+    truncation_info = {
+        "diff_truncated": diff_truncated,
+        "context_truncated": context_truncated,
+        "critical_truncated": critical_truncated,
+        "original_diff_chars": len(diff_text),
+        "diff_budget_chars": diff_budget,
+    }
+    return messages, truncation_info
 
 
-def truncate_with_marker(text: str, max_chars: int, label: str) -> str:
+def truncate_with_marker(text: str, max_chars: int, label: str) -> tuple[str, bool]:
     """
     WHAT — Truncates text to max_chars, leaving a clear TRUNCATED marker.
+           Returns (truncated_text, was_truncated_flag).
     WHEN — Called for any context file or diff exceeding its share of budget.
     WHY  — Without a marker, Codex might think the partial content is the
            full content. The marker tells Codex "more was cut; flag if
-           you need it."
+           you need it." The boolean flag is consumed upstream by the
+           fail-closed truncation guard (per Codex's I10 audit-hole flag).
     """
     if max_chars <= 0:
-        return f"[OMITTED — no budget for {label}]"
+        return (f"[OMITTED — no budget for {label}]", True)
     if len(text) <= max_chars:
-        return text
+        return (text, False)
     keep = max(50, max_chars - 200)  # leave room for the truncation marker
-    return (
+    truncated = (
         text[:keep]
         + f"\n\n... [TRUNCATED at {keep} chars / {len(text)} total — "
         f"{label} too large for token budget; review the trimmed portion above] ..."
     )
+    return (truncated, True)
 
 
-def truncate_diff_smart(diff_text: str, max_chars: int) -> str:
+def truncate_diff_smart(diff_text: str, max_chars: int) -> tuple[str, bool]:
     """
     WHAT — Truncates a multi-file git diff to a hard total char budget while
-           preserving file boundaries. Per-file budgets sum to <= max_chars
-           (no overflow) — fix for Codex's flag on the prior version.
+           preserving file boundaries. Returns (truncated_text, was_truncated).
     WHEN — Called when the diff exceeds its share of the prompt budget.
     WHY  — On huge PRs we want Codex to at least see file names + a sample
            of each file's diff. The sum of per-file budgets must NEVER
-           exceed the total budget (the bug Codex caught was per_chunk_max
-           = max(800, total // n) — for many files, 800/file overflows).
+           exceed the total budget. The was_truncated flag is consumed by
+           the fail-closed truncation guard so Codex cannot APPROVE a PR
+           where it never saw the full diff (Codex I10 audit-hole flag).
     """
     if max_chars <= 0:
-        return f"[DIFF OMITTED — no budget remaining; total diff is {len(diff_text)} chars]"
+        return (
+            f"[DIFF OMITTED — no budget remaining; total diff is {len(diff_text)} chars]",
+            True,
+        )
     if len(diff_text) <= max_chars:
-        return diff_text
+        return (diff_text, False)
 
     # Split diff into per-file chunks (each starts with `diff --git`)
-    chunks = []
-    current_chunk = []
+    chunks: list[str] = []
+    current_chunk: list[str] = []
     for line in diff_text.split("\n"):
         if line.startswith("diff --git ") and current_chunk:
             chunks.append("\n".join(current_chunk))
@@ -294,44 +390,52 @@ def truncate_diff_smart(diff_text: str, max_chars: int) -> str:
         return truncate_with_marker(diff_text, max_chars, "diff (no file boundaries)")
 
     # Header text describing the truncation (counts toward budget)
-    header_template = (
-        "## NOTE TO REVIEWER\n"
-        "This PR contains {n} file(s). Each file's diff is truncated below "
-        "to keep total prompt under {max} chars (full diff: {full} chars). "
-        "Review file boundaries + visible portions; flag if you need more.\n\n"
+    header = (
+        f"## NOTE TO REVIEWER\n"
+        f"This PR contains {len(chunks)} file(s). Each file's diff is truncated "
+        f"below to keep total prompt under {max_chars} chars (full diff: "
+        f"{len(diff_text)} chars). Review file boundaries + visible portions; "
+        f"flag if you need more. The fail-closed guard upstream will force "
+        f"`request_changes` on this review since truncation occurred.\n\n"
     )
-    header = header_template.format(n=len(chunks), max=max_chars, full=len(diff_text))
     body_budget = max(0, max_chars - len(header))
 
     # CORRECT math: per_chunk = body_budget / n_chunks, no minimum overflow.
     # Floor of 50 chars per chunk so file path is visible; if even 50/chunk
     # overflows budget, drop the lowest-priority chunks.
     per_chunk_max = max(50, body_budget // max(1, len(chunks)))
+    truncated_chunks: list[str] = []
     if per_chunk_max * len(chunks) > body_budget:
         # Even at 50 chars/chunk we'd overflow. Keep only as many chunks
         # as fit; show file list for the rest.
         n_keep = max(1, body_budget // 50)
         kept = chunks[:n_keep]
-        dropped_files = []
-        for dropped in chunks[n_keep:]:
-            first_line = dropped.split("\n", 1)[0] if dropped else "(empty)"
-            dropped_files.append(first_line)
-        truncated_chunks = [truncate_with_marker(c, per_chunk_max,
-                                                 "file diff body") for c in kept]
+        dropped_files = [
+            (dropped.split("\n", 1)[0] if dropped else "(empty)")
+            for dropped in chunks[n_keep:]
+        ]
+        for chunk in kept:
+            chunk_text, _was_trunc = truncate_with_marker(chunk, per_chunk_max,
+                                                          "file diff body")
+            truncated_chunks.append(chunk_text)
         if dropped_files:
+            visible = ", ".join(dropped_files[:20])
+            ellipsis = "..." if len(dropped_files) > 20 else ""
             truncated_chunks.append(
                 f"\n... [{len(dropped_files)} more file(s) DROPPED for budget; "
-                f"file list: {', '.join(dropped_files[:20])}{'...' if len(dropped_files) > 20 else ''}]"
+                f"file list: {visible}{ellipsis}]"
             )
     else:
-        truncated_chunks = [truncate_with_marker(c, per_chunk_max,
-                                                 "file diff body") for c in chunks]
+        for chunk in chunks:
+            chunk_text, _was_trunc = truncate_with_marker(chunk, per_chunk_max,
+                                                          "file diff body")
+            truncated_chunks.append(chunk_text)
 
     result = header + "\n".join(truncated_chunks)
     # Final clamp: if floating-point or off-by-one nudges us over, hard-cap
     if len(result) > max_chars:
-        result = result[:max_chars - 100] + "\n\n... [HARD-CAPPED at total budget]"
-    return result
+        result = result[: max_chars - 100] + "\n\n... [HARD-CAPPED at total budget]"
+    return (result, True)
 
 
 # Model preference order (newest first). Per Rishi (2026-04-30): "best model".
