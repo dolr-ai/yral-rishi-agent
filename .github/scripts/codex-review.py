@@ -159,26 +159,25 @@ def assemble_messages(
     WHEN — Called once before the API call.
     WHY  — We use the system role for Codex's persona/prompt and the user role
            for the actual diff + PR metadata. Industry-standard ChatGPT API shape.
-           Also enforces a token budget so we don't blow past OpenAI Tier 1's
-           30k TPM limit on gpt-4o (~120k chars budget for whole prompt).
+           Enforces a strict token budget AND prioritizes critical context
+           (CONSTRAINTS.md never truncated) so Codex always has the binding
+           rules it needs to flag scope violations.
     """
-    # The system prompt is Codex's "job description" — what kind of reviewer it is
+    # The system prompt is Codex's "job description" — never truncated
     system_prompt = context_files.get("codex-prompt.txt",
         "You are a code reviewer. Return JSON.")
 
-    # Token budget for whole prompt (system + user). Tier 1 cap is 30k TPM.
-    # Conservative: aim for ~20k tokens total (~80k chars) so we stay well under.
+    # Total prompt budget: 80k chars (~20k tokens). Leaves room under Tier 1's
+    # 30k TPM cap on gpt-5.5 / gpt-4o.
     MAX_PROMPT_CHARS = 80_000
 
-    # Reserve room for system prompt + PR metadata + context files headers
-    fixed_overhead_chars = len(system_prompt) + 2_000
+    # CRITICAL context that must NEVER be truncated (per Codex's flag — these
+    # files contain the binding rules; truncating them defeats the review).
+    # If any of these alone blows the budget, Codex review fails loudly so
+    # we know to redesign rather than silently shipping a partial review.
+    CRITICAL_CONTEXT = {"CONSTRAINTS.md", "01-SESSION-SHARDING-AND-OWNERSHIP.md"}
 
-    # Reserve room for context files (CONSTRAINTS, scope doc, etc.). If they're
-    # huge, truncate each to a max so the diff still has room.
-    context_budget_chars = MAX_PROMPT_CHARS - fixed_overhead_chars - 20_000  # 20k for diff
-    per_context_max = max(2_000, context_budget_chars // max(1, len(context_files)))
-
-    # Build the user message: PR metadata + constraints + diff
+    # Build the user message header
     user_parts = [
         f"# PR being reviewed",
         f"- Number: {pr_number}",
@@ -188,22 +187,36 @@ def assemble_messages(
         "# Context files (read these to understand the project's rules)",
     ]
 
-    # Append every context file (CONSTRAINTS, scope doc, etc.) — truncated if needed
+    # Pass 1: include critical context untruncated (sets the floor budget usage)
+    used_chars = len(system_prompt) + sum(len(p) for p in user_parts) + 1_000
     for name, contents in context_files.items():
         if name == "codex-prompt.txt":
-            continue  # already in system prompt
-        truncated = truncate_with_marker(contents, per_context_max,
-                                         f"context file {name}")
-        user_parts.append(f"\n## {name}\n\n{truncated}")
+            continue
+        if name in CRITICAL_CONTEXT:
+            user_parts.append(f"\n## {name}\n\n{contents}")
+            used_chars += len(contents) + 50
 
-    # Compute remaining budget for the diff
-    so_far = sum(len(p) for p in user_parts)
-    diff_budget = MAX_PROMPT_CHARS - fixed_overhead_chars - so_far
+    # Pass 2: budget remaining for non-critical context + diff
+    remaining_budget = MAX_PROMPT_CHARS - used_chars
+    diff_reserved = max(8_000, remaining_budget // 2)  # at least 8k for diff
+    other_context_budget = max(0, remaining_budget - diff_reserved)
 
-    # Truncate the diff if it's too big to fit
+    # Distribute non-critical context across the remaining budget
+    non_critical = [(n, c) for n, c in context_files.items()
+                    if n != "codex-prompt.txt" and n not in CRITICAL_CONTEXT]
+    if non_critical:
+        per_other_max = max(500, other_context_budget // len(non_critical))
+        for name, contents in non_critical:
+            truncated = truncate_with_marker(contents, per_other_max,
+                                             f"context file {name}")
+            user_parts.append(f"\n## {name}\n\n{truncated}")
+            used_chars += min(len(contents), per_other_max) + 50
+
+    # Whatever remains is for the diff (with a hard floor of 4k chars)
+    diff_budget = max(4_000, MAX_PROMPT_CHARS - used_chars)
     diff_to_send = truncate_diff_smart(diff_text, diff_budget)
 
-    # Finally, the diff — this is the actual code under review
+    # Append the diff
     user_parts.append("\n# DIFF UNDER REVIEW\n")
     user_parts.append("```diff")
     user_parts.append(diff_to_send)
@@ -211,11 +224,12 @@ def assemble_messages(
 
     user_message = "\n".join(user_parts)
 
-    # Final size check + log so we can debug if Codex still rejects
+    # Final size + sanity log
     total_chars = len(system_prompt) + len(user_message)
-    print(f"Prompt size: {total_chars} chars (~{total_chars // 4} tokens)")
+    print(f"Prompt size: {total_chars} chars (~{total_chars // 4} tokens). "
+          f"CRITICAL untruncated; non-critical budget {other_context_budget}; "
+          f"diff budget {diff_budget}.")
 
-    # Standard OpenAI chat-completion message format
     return [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_message},
@@ -224,16 +238,17 @@ def assemble_messages(
 
 def truncate_with_marker(text: str, max_chars: int, label: str) -> str:
     """
-    WHAT — Truncates text to max_chars, leaving a clear marker so Codex
-           knows it was truncated (and what to ask about if needed).
-    WHEN — Called for any context file or diff that exceeds budget.
-    WHY  — Without a marker, Codex might assume the partial content is
-           the full content. The marker tells Codex "there's more we
-           cut for token-budget reasons."
+    WHAT — Truncates text to max_chars, leaving a clear TRUNCATED marker.
+    WHEN — Called for any context file or diff exceeding its share of budget.
+    WHY  — Without a marker, Codex might think the partial content is the
+           full content. The marker tells Codex "more was cut; flag if
+           you need it."
     """
+    if max_chars <= 0:
+        return f"[OMITTED — no budget for {label}]"
     if len(text) <= max_chars:
         return text
-    keep = max_chars - 200  # leave room for the truncation marker
+    keep = max(50, max_chars - 200)  # leave room for the truncation marker
     return (
         text[:keep]
         + f"\n\n... [TRUNCATED at {keep} chars / {len(text)} total — "
@@ -243,13 +258,17 @@ def truncate_with_marker(text: str, max_chars: int, label: str) -> str:
 
 def truncate_diff_smart(diff_text: str, max_chars: int) -> str:
     """
-    WHAT — Smarter diff truncation: prefer file headers + first N lines per file
-           over raw cut-at-byte-N (which loses critical context like file names).
-    WHEN — Called when the full diff exceeds the token budget.
-    WHY  — On big PRs (like the foundational PR #1 with 50+ files), Codex
-           reviewing only the first 20k chars of raw diff would miss most
-           file names. Better to summarize: file list + truncated bodies.
+    WHAT — Truncates a multi-file git diff to a hard total char budget while
+           preserving file boundaries. Per-file budgets sum to <= max_chars
+           (no overflow) — fix for Codex's flag on the prior version.
+    WHEN — Called when the diff exceeds its share of the prompt budget.
+    WHY  — On huge PRs we want Codex to at least see file names + a sample
+           of each file's diff. The sum of per-file budgets must NEVER
+           exceed the total budget (the bug Codex caught was per_chunk_max
+           = max(800, total // n) — for many files, 800/file overflows).
     """
+    if max_chars <= 0:
+        return f"[DIFF OMITTED — no budget remaining; total diff is {len(diff_text)} chars]"
     if len(diff_text) <= max_chars:
         return diff_text
 
@@ -266,58 +285,121 @@ def truncate_diff_smart(diff_text: str, max_chars: int) -> str:
         chunks.append("\n".join(current_chunk))
 
     if not chunks:
-        # Fallback: no `diff --git` markers — just truncate raw
+        # No file markers — just truncate raw
         return truncate_with_marker(diff_text, max_chars, "diff (no file boundaries)")
 
-    # Distribute budget across chunks (with per-chunk minimum so file headers survive)
-    per_chunk_max = max(800, max_chars // len(chunks))
-    truncated_chunks = []
-    for chunk in chunks:
-        truncated_chunks.append(truncate_with_marker(chunk, per_chunk_max,
-                                                    "file diff body"))
-
-    result = "\n".join(truncated_chunks)
-    summary = (
-        f"## NOTE TO REVIEWER\n"
-        f"This PR contains {len(chunks)} file(s). Each file's diff was "
-        f"truncated to ~{per_chunk_max} chars to fit OpenAI's TPM budget. "
-        f"Total diff was {len(diff_text)} chars; sent {len(result)}. "
-        f"Review file boundaries + visible portions; flag if you need more.\n\n"
+    # Header text describing the truncation (counts toward budget)
+    header_template = (
+        "## NOTE TO REVIEWER\n"
+        "This PR contains {n} file(s). Each file's diff is truncated below "
+        "to keep total prompt under {max} chars (full diff: {full} chars). "
+        "Review file boundaries + visible portions; flag if you need more.\n\n"
     )
-    return summary + result
+    header = header_template.format(n=len(chunks), max=max_chars, full=len(diff_text))
+    body_budget = max(0, max_chars - len(header))
+
+    # CORRECT math: per_chunk = body_budget / n_chunks, no minimum overflow.
+    # Floor of 50 chars per chunk so file path is visible; if even 50/chunk
+    # overflows budget, drop the lowest-priority chunks.
+    per_chunk_max = max(50, body_budget // max(1, len(chunks)))
+    if per_chunk_max * len(chunks) > body_budget:
+        # Even at 50 chars/chunk we'd overflow. Keep only as many chunks
+        # as fit; show file list for the rest.
+        n_keep = max(1, body_budget // 50)
+        kept = chunks[:n_keep]
+        dropped_files = []
+        for dropped in chunks[n_keep:]:
+            first_line = dropped.split("\n", 1)[0] if dropped else "(empty)"
+            dropped_files.append(first_line)
+        truncated_chunks = [truncate_with_marker(c, per_chunk_max,
+                                                 "file diff body") for c in kept]
+        if dropped_files:
+            truncated_chunks.append(
+                f"\n... [{len(dropped_files)} more file(s) DROPPED for budget; "
+                f"file list: {', '.join(dropped_files[:20])}{'...' if len(dropped_files) > 20 else ''}]"
+            )
+    else:
+        truncated_chunks = [truncate_with_marker(c, per_chunk_max,
+                                                 "file diff body") for c in chunks]
+
+    result = header + "\n".join(truncated_chunks)
+    # Final clamp: if floating-point or off-by-one nudges us over, hard-cap
+    if len(result) > max_chars:
+        result = result[:max_chars - 100] + "\n\n... [HARD-CAPPED at total budget]"
+    return result
+
+
+# Model preference order (newest first). Per Rishi (2026-04-30): "best model".
+# Each fallback step handles its own quirks (e.g. older models support
+# custom temperature; newer reasoning models reject it).
+#
+# Override at runtime via env var CODEX_MODEL_PREFERENCE (comma-separated).
+DEFAULT_MODEL_PREFERENCES: list[str] = ["gpt-5.5", "gpt-5", "gpt-4o"]
 
 
 def call_codex(client: OpenAI, messages: list[dict]) -> dict:
     """
-    WHAT — Calls OpenAI's chat completions API; parses JSON from the response.
+    WHAT — Calls OpenAI chat completions; parses JSON; falls back across
+           model preferences if the preferred model is unavailable.
     WHEN — Called once per PR review.
-    WHY  — Codex returns prose; we ask it to return strict JSON via the
-           response_format parameter so post-codex-review.py can parse it cleanly.
+    WHY  — Per Codex's own flag: hard-switching to a single model is brittle.
+           This implementation tries gpt-5.5 first (best reasoning), falls
+           back to gpt-5 (next best), then gpt-4o (battle-tested) on:
+             - NotFoundError (model name unrecognized)
+             - BadRequestError with message about unsupported parameter
+           Other errors (rate limit, timeout, etc.) bubble up — they're
+           NOT model-specific and retry-on-different-model wouldn't help.
     """
-    # Use the newest model — per Rishi (2026-04-30): "get the best model".
-    # gpt-5.5 is the latest as of build time (released ~6 days ago per
-    # OpenAI dashboard). More expensive per call (~$0.50-$2 per review)
-    # but better reasoning + larger context window. If gpt-5.5 ever gets
-    # deprecated or renamed, fallback options: "gpt-5", "gpt-4o".
-    # gpt-5.5 does NOT support custom temperature (only default value=1).
-    # Newer reasoning models lock this param. Omit it; rely on the prompt's
-    # explicit "be concise, return JSON" instructions for consistency.
-    response = client.chat.completions.create(
-        model="gpt-5.5",
-        messages=messages,
-        response_format={"type": "json_object"},  # forces JSON output
-    )
+    import openai  # imported here so the fallback class refs are local
 
-    # Extract the JSON content from the response
-    content = response.choices[0].message.content
+    # Allow override via env var (CODEX_MODEL_PREFERENCE=gpt-5.5,gpt-5,gpt-4o)
+    override = os.environ.get("CODEX_MODEL_PREFERENCE", "").strip()
+    if override:
+        models = [m.strip() for m in override.split(",") if m.strip()]
+    else:
+        models = DEFAULT_MODEL_PREFERENCES
 
-    try:
-        # Parse the JSON Codex returned
-        return json.loads(content)
-    except json.JSONDecodeError as exc:
-        # If Codex returns malformed JSON, fail loudly with the raw content for debugging
-        print(f"ERROR: Codex returned non-JSON: {content[:500]}", file=sys.stderr)
-        sys.exit(2)
+    last_error: Exception | None = None
+    for model_name in models:
+        # Build kwargs — older models accept temperature; newer models reject
+        # custom temperature. Try without first; only retry with temperature
+        # if the API explicitly demands it.
+        kwargs = {
+            "model": model_name,
+            "messages": messages,
+            "response_format": {"type": "json_object"},
+        }
+        try:
+            print(f"Trying Codex review with model={model_name}...")
+            response = client.chat.completions.create(**kwargs)
+            print(f"✅ Got Codex response from {model_name}")
+        except openai.NotFoundError as exc:
+            # Model name not recognized by OpenAI account — try next
+            print(f"Model {model_name} not found; trying next preference. ({exc})",
+                  file=sys.stderr)
+            last_error = exc
+            continue
+        except openai.BadRequestError as exc:
+            # Most often: unsupported param. We already minimized our params,
+            # so this likely means the model variant has stricter requirements.
+            # Try next preference rather than guessing what to remove.
+            print(f"Model {model_name} bad request; trying next preference. ({exc})",
+                  file=sys.stderr)
+            last_error = exc
+            continue
+        # If we got here, the call succeeded — extract + parse JSON
+        content = response.choices[0].message.content
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError:
+            print(f"ERROR: {model_name} returned non-JSON: {content[:500]}",
+                  file=sys.stderr)
+            sys.exit(2)
+
+    # All models exhausted
+    print(f"ERROR: all {len(models)} model preferences failed. Last error: {last_error}",
+          file=sys.stderr)
+    sys.exit(3)
 
 
 # ══════════════════════════════════════════════════════════════════════

@@ -201,8 +201,11 @@ Do NOT start coding until I type "build". After "build", you operate in Auto-mod
 **Scope (write-allowed):**
 - `yral-rishi-agent-plan-and-discussions/**`
 - `shared-library-code-used-by-every-v2-service/**` (curate; sessions PR additions to me)
-- `.github/workflows/**`
-- `interface-contracts/**` (which services expose what to whom)
+- `.github/**` — entire `.github` tree (workflows + scripts + PR template + issue templates)
+- `.claude/**` — Claude Code config + hooks + scripts + agent definitions
+- `interface-contracts/**` (which services expose what to whom — historical; now lives under `multi-session-parallel-build-coordination/interface-contracts/`)
+- Root-level top-of-repo files: `README.md`, `.gitignore`, `LICENSE` (when added)
+- `~/Library/LaunchAgents/com.yral.rishi.agent.*.plist` files installed locally on Rishi's laptop (not committed; deployed via instructions in plan-and-discussions)
 
 **Coordinator daily loop:**
 1. Morning: read each session's SESSION-N-LOG.md from yesterday
