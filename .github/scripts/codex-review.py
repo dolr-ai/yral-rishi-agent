@@ -167,9 +167,14 @@ def assemble_messages(
     system_prompt = context_files.get("codex-prompt.txt",
         "You are a code reviewer. Return JSON.")
 
-    # Total prompt budget: 80k chars (~20k tokens). Leaves room under Tier 1's
-    # 30k TPM cap on gpt-5.5 / gpt-4o.
-    MAX_PROMPT_CHARS = 80_000
+    # Total prompt budget in CHARACTERS — leaves room under OpenAI's TPM cap.
+    # Configurable via env var per C7 (no hardcoded thresholds in code).
+    # Default 80,000 chars (~20,000 tokens) keeps us safely under Tier 1's
+    # 30k TPM cap on gpt-5.5 / gpt-4o with margin for the response.
+    # Renamed from prior MAX_PROMPT_CHARS (B2 banned abbreviation `CHARS`).
+    maximum_prompt_characters = int(
+        os.environ.get("CODEX_REVIEW_MAX_PROMPT_CHARACTERS", "80000")
+    )
 
     # CRITICAL context that must NEVER be truncated (per Codex's flag — these
     # files contain the binding rules; truncating them defeats the review).
@@ -197,7 +202,7 @@ def assemble_messages(
             used_chars += len(contents) + 50
 
     # Pass 2: budget remaining for non-critical context + diff
-    remaining_budget = MAX_PROMPT_CHARS - used_chars
+    remaining_budget = maximum_prompt_characters - used_chars
     diff_reserved = max(8_000, remaining_budget // 2)  # at least 8k for diff
     other_context_budget = max(0, remaining_budget - diff_reserved)
 
@@ -213,7 +218,7 @@ def assemble_messages(
             used_chars += min(len(contents), per_other_max) + 50
 
     # Whatever remains is for the diff (with a hard floor of 4k chars)
-    diff_budget = max(4_000, MAX_PROMPT_CHARS - used_chars)
+    diff_budget = max(4_000, maximum_prompt_characters - used_chars)
     diff_to_send = truncate_diff_smart(diff_text, diff_budget)
 
     # Append the diff
