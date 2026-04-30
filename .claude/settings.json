@@ -1,0 +1,17 @@
+{
+  "_comment": "Claude Code settings for the yral-rishi-agent monorepo. Registers our PostToolUse hook so SESSION-N-LOG auto-appends on git commits per I11. Keep this file committed to git so all sessions inherit the same hook config.",
+
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /Users/rishichadha/Claude\\ Projects/yral-rishi-agent/.claude/hooks/post-tool-use.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,121 @@
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║  WORKFLOW: lint-scope-violations.yml                                    ║
+# ║                                                                          ║
+# ║  ⭐ THIS FILE IN ONE SENTENCE                                            ║
+# ║  Blocks PRs that touch files outside the owning session's scope.        ║
+# ║                                                                          ║
+# ║  📖 EXPLAINED FOR A NON-PROGRAMMER                                       ║
+# ║  We have 5 sessions (1, 2, 3, 4, 5) each owning a specific subfolder    ║
+# ║  in the monorepo. When session-N opens a PR (branch name starts with    ║
+# ║  "session-N/"), this lint checks that ONLY files inside session-N's     ║
+# ║  owned scope are changed. If a session-3 PR tries to edit a session-4   ║
+# ║  file, this workflow blocks the merge. Defense-in-depth so sessions     ║
+# ║  don't accidentally step on each other's work.                          ║
+# ║                                                                          ║
+# ║  🔗 HOW IT FITS                                                          ║
+# ║  - Triggered: every pull_request to main                                 ║
+# ║  - Reads: branch name to determine session ownership                    ║
+# ║  - Reads: scope map from 01-SESSION-SHARDING-AND-OWNERSHIP.md           ║
+# ║  - Defends: I8 (session sharding) + I9 (Auto-mode forbidden ops)        ║
+# ║                                                                          ║
+# ║  ⭐ START HERE                                                           ║
+# ║  The `validate-scope` job is the only logic here. It maps branch        ║
+# ║  prefix to allowed paths, then diffs.                                   ║
+# ║                                                                          ║
+# ╚══════════════════════════════════════════════════════════════════════╝
+
+name: Lint Scope Violations
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate-scope:
+    name: Verify PR stays in owning session's scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Determine session from branch name
+        id: session
+        run: |
+          # Branch convention: session-N/<feature> per I8
+          BRANCH="${{ github.event.pull_request.head.ref }}"
+          if [[ "$BRANCH" =~ ^session-([0-9]+)/ ]]; then
+            SESSION_NUM="${BASH_REMATCH[1]}"
+            echo "session=$SESSION_NUM" >> $GITHUB_OUTPUT
+          elif [[ "$BRANCH" =~ ^coordinator/ ]]; then
+            echo "session=coordinator" >> $GITHUB_OUTPUT
+          else
+            echo "::warning::Branch name doesn't follow session-N/ or coordinator/ pattern: $BRANCH"
+            echo "session=unknown" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Compute changed files
+        id: files
+        run: |
+          git fetch origin main
+          # All files touched in this PR (added, modified, deleted)
+          git diff --name-only origin/main...HEAD > /tmp/changed-files.txt
+          echo "Changed file count: $(wc -l < /tmp/changed-files.txt)"
+          cat /tmp/changed-files.txt
+
+      - name: Validate scope per session
+        run: |
+          SESSION="${{ steps.session.outputs.session }}"
+          VIOLATIONS=0
+
+          # Define scope per session — must match 01-SESSION-SHARDING-AND-OWNERSHIP.md
+          # Coordinator can touch anything (including these workflow files)
+          declare -A SESSION_PATHS
+          SESSION_PATHS[1]="bootstrap-scripts-for-the-v2-docker-swarm-cluster/|latency-baseline-capture-from-live-services-the-numbers-v2-must-beat/scripts/"
+          SESSION_PATHS[2]="yral-rishi-agent-new-service-template/|yral-rishi-agent-hello-world/"
+          SESSION_PATHS[3]="yral-rishi-agent-public-api/"
+          SESSION_PATHS[4]="yral-rishi-agent-conversation-turn-orchestrator/|yral-rishi-agent-soul-file-library/|yral-rishi-agent-influencer-and-profile-directory/"
+          SESSION_PATHS[5]="yral-rishi-agent-user-memory-service/|etl-scripts/|tests/"
+
+          if [ "$SESSION" = "coordinator" ]; then
+            echo "✅ Coordinator branch — all paths allowed"
+            exit 0
+          fi
+
+          if [ "$SESSION" = "unknown" ]; then
+            echo "::error::Branch must start with session-N/ or coordinator/"
+            exit 1
+          fi
+
+          ALLOWED="${SESSION_PATHS[$SESSION]}"
+          if [ -z "$ALLOWED" ]; then
+            echo "::error::No scope defined for session-$SESSION"
+            exit 1
+          fi
+
+          # Check each changed file against the allowed pattern
+          while IFS= read -r file; do
+            if [[ "$file" =~ ^($ALLOWED) ]]; then
+              echo "✅ $file (in session-$SESSION scope)"
+            else
+              echo "❌ $file (OUT OF SCOPE for session-$SESSION)"
+              VIOLATIONS=$((VIOLATIONS + 1))
+            fi
+          done < /tmp/changed-files.txt
+
+          if [ "$VIOLATIONS" -gt 0 ]; then
+            echo ""
+            echo "::error::$VIOLATIONS files outside session-$SESSION's scope. See 01-SESSION-SHARDING-AND-OWNERSHIP.md"
+            echo "If you need a file in another scope, request it from coordinator (don't edit directly)."
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ All $(wc -l < /tmp/changed-files.txt) changed files are in session-$SESSION's scope"
