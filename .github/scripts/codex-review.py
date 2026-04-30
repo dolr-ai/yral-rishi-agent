@@ -159,10 +159,24 @@ def assemble_messages(
     WHEN — Called once before the API call.
     WHY  — We use the system role for Codex's persona/prompt and the user role
            for the actual diff + PR metadata. Industry-standard ChatGPT API shape.
+           Also enforces a token budget so we don't blow past OpenAI Tier 1's
+           30k TPM limit on gpt-4o (~120k chars budget for whole prompt).
     """
     # The system prompt is Codex's "job description" — what kind of reviewer it is
     system_prompt = context_files.get("codex-prompt.txt",
         "You are a code reviewer. Return JSON.")
+
+    # Token budget for whole prompt (system + user). Tier 1 cap is 30k TPM.
+    # Conservative: aim for ~20k tokens total (~80k chars) so we stay well under.
+    MAX_PROMPT_CHARS = 80_000
+
+    # Reserve room for system prompt + PR metadata + context files headers
+    fixed_overhead_chars = len(system_prompt) + 2_000
+
+    # Reserve room for context files (CONSTRAINTS, scope doc, etc.). If they're
+    # huge, truncate each to a max so the diff still has room.
+    context_budget_chars = MAX_PROMPT_CHARS - fixed_overhead_chars - 20_000  # 20k for diff
+    per_context_max = max(2_000, context_budget_chars // max(1, len(context_files)))
 
     # Build the user message: PR metadata + constraints + diff
     user_parts = [
@@ -174,25 +188,103 @@ def assemble_messages(
         "# Context files (read these to understand the project's rules)",
     ]
 
-    # Append every context file (CONSTRAINTS, scope doc, etc.)
+    # Append every context file (CONSTRAINTS, scope doc, etc.) — truncated if needed
     for name, contents in context_files.items():
         if name == "codex-prompt.txt":
             continue  # already in system prompt
-        user_parts.append(f"\n## {name}\n\n{contents}")
+        truncated = truncate_with_marker(contents, per_context_max,
+                                         f"context file {name}")
+        user_parts.append(f"\n## {name}\n\n{truncated}")
+
+    # Compute remaining budget for the diff
+    so_far = sum(len(p) for p in user_parts)
+    diff_budget = MAX_PROMPT_CHARS - fixed_overhead_chars - so_far
+
+    # Truncate the diff if it's too big to fit
+    diff_to_send = truncate_diff_smart(diff_text, diff_budget)
 
     # Finally, the diff — this is the actual code under review
     user_parts.append("\n# DIFF UNDER REVIEW\n")
     user_parts.append("```diff")
-    user_parts.append(diff_text)
+    user_parts.append(diff_to_send)
     user_parts.append("```")
 
     user_message = "\n".join(user_parts)
+
+    # Final size check + log so we can debug if Codex still rejects
+    total_chars = len(system_prompt) + len(user_message)
+    print(f"Prompt size: {total_chars} chars (~{total_chars // 4} tokens)")
 
     # Standard OpenAI chat-completion message format
     return [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_message},
     ]
+
+
+def truncate_with_marker(text: str, max_chars: int, label: str) -> str:
+    """
+    WHAT — Truncates text to max_chars, leaving a clear marker so Codex
+           knows it was truncated (and what to ask about if needed).
+    WHEN — Called for any context file or diff that exceeds budget.
+    WHY  — Without a marker, Codex might assume the partial content is
+           the full content. The marker tells Codex "there's more we
+           cut for token-budget reasons."
+    """
+    if len(text) <= max_chars:
+        return text
+    keep = max_chars - 200  # leave room for the truncation marker
+    return (
+        text[:keep]
+        + f"\n\n... [TRUNCATED at {keep} chars / {len(text)} total — "
+        f"{label} too large for token budget; review the trimmed portion above] ..."
+    )
+
+
+def truncate_diff_smart(diff_text: str, max_chars: int) -> str:
+    """
+    WHAT — Smarter diff truncation: prefer file headers + first N lines per file
+           over raw cut-at-byte-N (which loses critical context like file names).
+    WHEN — Called when the full diff exceeds the token budget.
+    WHY  — On big PRs (like the foundational PR #1 with 50+ files), Codex
+           reviewing only the first 20k chars of raw diff would miss most
+           file names. Better to summarize: file list + truncated bodies.
+    """
+    if len(diff_text) <= max_chars:
+        return diff_text
+
+    # Split diff into per-file chunks (each starts with `diff --git`)
+    chunks = []
+    current_chunk = []
+    for line in diff_text.split("\n"):
+        if line.startswith("diff --git ") and current_chunk:
+            chunks.append("\n".join(current_chunk))
+            current_chunk = [line]
+        else:
+            current_chunk.append(line)
+    if current_chunk:
+        chunks.append("\n".join(current_chunk))
+
+    if not chunks:
+        # Fallback: no `diff --git` markers — just truncate raw
+        return truncate_with_marker(diff_text, max_chars, "diff (no file boundaries)")
+
+    # Distribute budget across chunks (with per-chunk minimum so file headers survive)
+    per_chunk_max = max(800, max_chars // len(chunks))
+    truncated_chunks = []
+    for chunk in chunks:
+        truncated_chunks.append(truncate_with_marker(chunk, per_chunk_max,
+                                                    "file diff body"))
+
+    result = "\n".join(truncated_chunks)
+    summary = (
+        f"## NOTE TO REVIEWER\n"
+        f"This PR contains {len(chunks)} file(s). Each file's diff was "
+        f"truncated to ~{per_chunk_max} chars to fit OpenAI's TPM budget. "
+        f"Total diff was {len(diff_text)} chars; sent {len(result)}. "
+        f"Review file boundaries + visible portions; flag if you need more.\n\n"
+    )
+    return summary + result
 
 
 def call_codex(client: OpenAI, messages: list[dict]) -> dict:
