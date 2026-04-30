@@ -299,11 +299,13 @@ def call_codex(client: OpenAI, messages: list[dict]) -> dict:
     # OpenAI dashboard). More expensive per call (~$0.50-$2 per review)
     # but better reasoning + larger context window. If gpt-5.5 ever gets
     # deprecated or renamed, fallback options: "gpt-5", "gpt-4o".
+    # gpt-5.5 does NOT support custom temperature (only default value=1).
+    # Newer reasoning models lock this param. Omit it; rely on the prompt's
+    # explicit "be concise, return JSON" instructions for consistency.
     response = client.chat.completions.create(
         model="gpt-5.5",
         messages=messages,
         response_format={"type": "json_object"},  # forces JSON output
-        temperature=0.2,  # low temperature = more consistent reviews
     )
 
     # Extract the JSON content from the response
