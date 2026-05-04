@@ -56,6 +56,37 @@ resolution: Update `SESSION_PATHS[1]` in lint-scope-violations.yml to:
          `YRAL_SESSION_ID=N` in each session's launch environment so
          the post-tool-use hook routes diary entries correctly.
 
+### DEP-002 — Session 1 hit a bash parser bug in `.claude/hooks/post-tool-use.sh`
+Raised: 2026-05-04 by Session 1
+What:    The hook fails on every git commit with:
+         `post-tool-use.sh: line 80: unexpected EOF while looking for matching ')'`
+         The bug is in the `NEW_ENTRY=$(cat <<ENTRY ... ENTRY)` block —
+         specifically the unquoted heredoc tag `<<ENTRY`, which lets bash
+         try to parse single-quote pairs inside the heredoc body. The
+         body contains `there's` and `'s/^/- /'`; bash's parser ends up
+         hunting for an unmatched apostrophe and falls off the end.
+Why:     The hook is the I11 mechanism that auto-writes commit-trigger
+         diary entries to `SESSION-N-LOG.md`. With the hook broken,
+         every Session 1 commit emits a hook-blocking error, and no
+         auto-diary entry is appended. Sessions are forced to write
+         every entry manually (which is what I did for Session 1's
+         first commit `68bc52b`).
+Blocks:  Not a hard merge block — commits still succeed. But every
+         Bash tool call that runs `git commit` surfaces the hook error
+         to the session, which is noisy and arguably scope-blocking
+         for an Auto-mode session expected to commit unattended.
+ETA needed: Coordinator fix-by-Session-2 launch (Day 1 end) so other
+         sessions don't hit the same surprise on their first commit.
+Suggested
+resolution: Quote the heredoc tag — change `<<ENTRY` to `<<'ENTRY'` on
+         the line that opens the `cat` heredoc. Quoted heredoc tags
+         disable variable expansion AND fix the apostrophe-parser
+         issue. Then move the `$TIMESTAMP / $COMMIT_SHA / $COMMIT_MSG /
+         $FILES_CHANGED` substitutions out of the heredoc and into a
+         `printf` call after the heredoc body is captured. Or rewrite
+         the block as a series of `echo`/`printf` lines instead of one
+         heredoc — eliminates the parsing edge case entirely.
+
 ---
 
 ## RESOLVED

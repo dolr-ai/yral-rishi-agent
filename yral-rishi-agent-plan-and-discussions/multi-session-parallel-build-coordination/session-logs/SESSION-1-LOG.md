@@ -66,6 +66,12 @@ against. Pre-authorized by I7 (Sentry API aggregated reads — no per-run YES).
 - **DEP-001** in cross-session-dependencies.md flags three CI/scope mismatches
   between the agent spec, the workflow definitions, and the real folder
   paths. Coordinator decision needed before this PR can pass CI.
+- **DEP-002** raised AFTER first commit landed: the
+  `.claude/hooks/post-tool-use.sh` heredoc has an unquoted tag that fires
+  a bash parser error on every commit. Commit itself succeeds; the hook
+  fails to write the auto-diary entry. Manual milestone entries are the
+  workaround. Coordinator should change `<<ENTRY` to `<<'ENTRY'` and
+  rework the variable substitution.
 
 ---
 

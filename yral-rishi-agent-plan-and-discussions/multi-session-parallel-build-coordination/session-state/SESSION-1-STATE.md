@@ -42,10 +42,17 @@ resolve DEP-001 (lint-scope-violations.yml needs path corrections).
   own log/state/deps file paths. Will block PR merge until coordinator
   edits the workflow.
 - Same DEP-001 also notes: `YRAL_SESSION_ID` env var is unset in this
-  Claude Code session, so the post-tool-use hook routes commit-trigger
-  diary entries to `SESSION-coordinator-LOG.md`. Manual milestone
-  entries to SESSION-1-LOG.md are working around this until the env
-  var is set on next session restart.
+  Claude Code session, so the post-tool-use hook (when fixed per DEP-002)
+  would route commit-trigger diary entries to `SESSION-coordinator-LOG.md`
+  instead of `SESSION-1-LOG.md`. Manual milestone entries to
+  SESSION-1-LOG.md are the workaround until the env var is set on next
+  session restart.
+- **DEP-002** (raised 2026-05-04 after first commit): `post-tool-use.sh`
+  heredoc has an unquoted tag (`<<ENTRY` not `<<'ENTRY'`); bash parser
+  fails on every commit with "unexpected EOF while looking for matching
+  ')'". Commit itself succeeds — only the auto-diary append fails.
+  Manual milestone entries cover the gap. Coordinator's fix is a
+  one-character change to the hook script.
 
 ## PENDING PRs (mine)
 
