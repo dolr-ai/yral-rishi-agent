@@ -77,12 +77,20 @@ jobs:
 
           # Define scope per session — must match 01-SESSION-SHARDING-AND-OWNERSHIP.md
           # Coordinator can touch anything (including these workflow files)
+          # ALSO allowed for every session: their own SESSION-N-LOG.md +
+          # SESSION-N-STATE.md + appending to cross-session-dependencies.md
+          # (these live in coordinator scope but sessions MUST update them
+          # per I11/I12). And the latency-baseline folder lives nested
+          # under plan-and-discussions/ in the actual repo (DEP-001 fix
+          # 2026-05-04 — Session 1 caught this).
           declare -A SESSION_PATHS
-          SESSION_PATHS[1]="bootstrap-scripts-for-the-v2-docker-swarm-cluster/|latency-baseline-capture-from-live-services-the-numbers-v2-must-beat/scripts/"
-          SESSION_PATHS[2]="yral-rishi-agent-new-service-template/|yral-rishi-agent-hello-world/"
-          SESSION_PATHS[3]="yral-rishi-agent-public-api/"
-          SESSION_PATHS[4]="yral-rishi-agent-conversation-turn-orchestrator/|yral-rishi-agent-soul-file-library/|yral-rishi-agent-influencer-and-profile-directory/"
-          SESSION_PATHS[5]="yral-rishi-agent-user-memory-service/|etl-scripts/|tests/"
+          # Common per-session paths (own log + state files, cross-session-deps file)
+          COMMON_SESSION_PATHS="yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-${SESSION}-LOG\.md|yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-state/SESSION-${SESSION}-STATE\.md|yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/cross-session-dependencies\.md"
+          SESSION_PATHS[1]="bootstrap-scripts-for-the-v2-docker-swarm-cluster/|yral-rishi-agent-plan-and-discussions/latency-baseline-capture-from-live-services-the-numbers-v2-must-beat/scripts/|${COMMON_SESSION_PATHS}"
+          SESSION_PATHS[2]="yral-rishi-agent-new-service-template/|yral-rishi-agent-hello-world/|${COMMON_SESSION_PATHS}"
+          SESSION_PATHS[3]="yral-rishi-agent-public-api/|${COMMON_SESSION_PATHS}"
+          SESSION_PATHS[4]="yral-rishi-agent-conversation-turn-orchestrator/|yral-rishi-agent-soul-file-library/|yral-rishi-agent-influencer-and-profile-directory/|${COMMON_SESSION_PATHS}"
+          SESSION_PATHS[5]="yral-rishi-agent-user-memory-service/|etl-scripts/|tests/|${COMMON_SESSION_PATHS}"
 
           if [ "$SESSION" = "coordinator" ]; then
             echo "✅ Coordinator branch — all paths allowed"

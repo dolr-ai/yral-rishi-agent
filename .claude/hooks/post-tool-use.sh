@@ -76,38 +76,41 @@ COMMIT_MSG=$(git -C "$REPO_ROOT" log -1 --pretty=%s 2>/dev/null || echo "(no com
 FILES_CHANGED=$(git -C "$REPO_ROOT" diff-tree --no-commit-id --name-only -r HEAD 2>/dev/null || echo "(unknown)")
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-# Build the new entry
-NEW_ENTRY=$(cat <<ENTRY
-## $TIMESTAMP — $COMMIT_SHA
-### Action
-$COMMIT_MSG
-
-### Files touched
-$(echo "$FILES_CHANGED" | sed 's/^/- /')
-
-### Notes
-Auto-appended by post-tool-use.sh hook. Add manual milestone entries
-above this line if there's a meaningful boundary worth marking.
-
----
-
-ENTRY
-)
+# Build the new entry in a temp file (avoids heredoc-inside-$() bash bug
+# that broke on apostrophes/quotes in commit messages — DEP-002 fix
+# 2026-05-04, Session 1 caught this).
+NEW_ENTRY_FILE=$(mktemp)
+{
+  printf '## %s — %s\n' "$TIMESTAMP" "$COMMIT_SHA"
+  printf '### Action\n%s\n\n' "$COMMIT_MSG"
+  printf '### Files touched\n'
+  echo "$FILES_CHANGED" | sed 's/^/- /'
+  printf '\n### Notes\n'
+  printf 'Auto-appended by post-tool-use.sh hook. Add manual milestone entries\n'
+  printf 'above this line when crossing a meaningful boundary.\n\n---\n\n'
+} > "$NEW_ENTRY_FILE"
 
 # Insert the new entry at the TOP of the file (after the header lines)
-# We use awk to find the first '## ' line and insert before it,
-# OR append at the end if no entries exist yet
-if grep -q "^## " "$LOG_FILE"; then
-  # File has prior entries — insert before the first '## ' line
-  awk -v entry="$NEW_ENTRY" '
-    /^## / && !inserted { print entry; inserted=1 }
-    { print }
-  ' "$LOG_FILE" > "${LOG_FILE}.tmp" && mv "${LOG_FILE}.tmp" "$LOG_FILE"
+# OR append at the end if no entries exist yet.
+if grep -q '^## ' "$LOG_FILE"; then
+  # File has prior entries — splice new entry before the first '## ' line.
+  # We do this with a simple file split rather than awk -v entry=... because
+  # awk's -v assignment chokes on multi-line values.
+  HEADER_END_LINE=$(grep -n '^## ' "$LOG_FILE" | head -1 | cut -d: -f1)
+  HEADER_END_LINE=$((HEADER_END_LINE - 1))
+  TMP_OUTPUT=$(mktemp)
+  head -n "$HEADER_END_LINE" "$LOG_FILE" > "$TMP_OUTPUT"
+  cat "$NEW_ENTRY_FILE" >> "$TMP_OUTPUT"
+  tail -n +"$((HEADER_END_LINE + 1))" "$LOG_FILE" >> "$TMP_OUTPUT"
+  mv "$TMP_OUTPUT" "$LOG_FILE"
 else
   # No prior entries — append at end
-  echo "" >> "$LOG_FILE"
-  echo "$NEW_ENTRY" >> "$LOG_FILE"
+  printf '\n' >> "$LOG_FILE"
+  cat "$NEW_ENTRY_FILE" >> "$LOG_FILE"
 fi
+
+# Cleanup temp file
+rm -f "$NEW_ENTRY_FILE"
 
 # Silent success — don't spam Claude Code with output
 exit 0
