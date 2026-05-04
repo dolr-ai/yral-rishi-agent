@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ╔══════════════════════════════════════════════════════════════════════╗
+  ║  pull-sentry-baseline.plist.template                                  ║
+  ║                                                                        ║
+  ║  ⭐ THIS FILE IN ONE SENTENCE                                          ║
+  ║  macOS launchd schedule that runs pull-sentry-baseline.py every       ║
+  ║  morning at 9:00 a.m. local time (== 9:00 IST when the laptop's      ║
+  ║  timezone is set to Asia/Kolkata, which Rishi's is).                  ║
+  ║                                                                        ║
+  ║  📖 EXPLAINED FOR A NON-PROGRAMMER                                     ║
+  ║  Apple's launchd is the macOS equivalent of cron. This XML file tells ║
+  ║  launchd "every day at 9 a.m., run this Python script". launchd is   ║
+  ║  smarter than cron in two ways: (1) if the laptop is asleep at 9 a.m.,║
+  ║  the job catches up automatically when it wakes; (2) launchd captures ║
+  ║  stdout/stderr to log files we name below. Per CONSTRAINTS row I7,   ║
+  ║  Sentry API access is pre-authorized, so this can run unattended      ║
+  ║  without per-day Rishi YES.                                           ║
+  ║                                                                        ║
+  ║  🔗 HOW IT FITS                                                        ║
+  ║  - Loaded by: ./install-launchd-job.sh (renders __PLACEHOLDER__       ║
+  ║    fields below with absolute paths from $HOME, then `launchctl       ║
+  ║    bootstrap`-s it into the user's launchd domain).                  ║
+  ║  - Output:    appends to ../daily-baseline.csv and rewrites           ║
+  ║    ../latest-baseline.md every successful run.                        ║
+  ║  - Stop/uninstall: `launchctl bootout gui/$(id -u)/com.dolr-ai.       ║
+  ║    yral-rishi-agent.pull-sentry-baseline` (per A1 no-delete, the      ║
+  ║    plist file is preserved even when the job is unloaded).            ║
+  ║                                                                        ║
+  ║  ⚠️ TEMPLATE FILE                                                      ║
+  ║  This file contains __PLACEHOLDER__ tokens that install-launchd-job.sh║
+  ║  substitutes with real paths. DO NOT load this file directly into     ║
+  ║  launchctl — load only the rendered copy at:                          ║
+  ║      ~/Library/LaunchAgents/                                          ║
+  ║      com.dolr-ai.yral-rishi-agent.pull-sentry-baseline.plist          ║
+  ╚══════════════════════════════════════════════════════════════════════╝
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTD/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+
+    <!-- Reverse-DNS label launchd uses to identify this job. Must match -->
+    <!-- the rendered file name below for `launchctl bootstrap` to work. -->
+    <key>Label</key>
+    <string>com.dolr-ai.yral-rishi-agent.pull-sentry-baseline</string>
+
+    <!-- The command launchd runs. /usr/bin/python3 ships with macOS so -->
+    <!-- there is no virtualenv or Homebrew dependency to manage.       -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>__YRAL_REPO_ROOT__/yral-rishi-agent-plan-and-discussions/latency-baseline-capture-from-live-services-the-numbers-v2-must-beat/scripts/pull-sentry-baseline.py</string>
+    </array>
+
+    <!-- Working directory for the Python process. Not strictly needed —  -->
+    <!-- the script resolves all paths from __file__ — but setting it    -->
+    <!-- avoids surprising relative-path bugs if a future caller adds one.-->
+    <key>WorkingDirectory</key>
+    <string>__YRAL_REPO_ROOT__/yral-rishi-agent-plan-and-discussions/latency-baseline-capture-from-live-services-the-numbers-v2-must-beat</string>
+
+    <!-- Daily schedule. Hour is in the laptop's local timezone, which   -->
+    <!-- on Rishi's MacBook is Asia/Kolkata (IST). 9 a.m. IST per the    -->
+    <!-- day-by-day plan in .claude/agents/session-1-infra-cluster.md.   -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>9</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <!-- Do not run on launchd load (i.e. on every login). Only run on  -->
+    <!-- the calendar schedule above. Prevents an accidental burst of   -->
+    <!-- pulls when the laptop is restarted multiple times in a day.    -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <!-- If the laptop is asleep when the timer fires, launchd queues   -->
+    <!-- the job and runs it as soon as the laptop wakes. macOS native; -->
+    <!-- no extra config needed (this is launchd's default behaviour).  -->
+
+    <!-- Keep stderr separate from stdout so a future log scan can      -->
+    <!-- distinguish "OK pull-sentry-baseline ..." lines from errors.   -->
+    <key>StandardOutPath</key>
+    <string>__USER_HOME__/.local/share/yral-rishi-agent/baseline-cron.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>__USER_HOME__/.local/share/yral-rishi-agent/baseline-cron.stderr.log</string>
+
+    <!-- Pass the user's PATH-less environment plus a couple of vars the -->
+    <!-- script may want to override the default org/project slug with.  -->
+    <!-- HOME is needed for any subprocess that resolves ~ (security cli -->
+    <!-- itself does not, but a future addition might).                  -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__USER_HOME__</string>
+        <key>PATH</key>
+        <string>/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <!-- Override the defaults if the Sentry slugs differ on your    -->
+        <!-- self-hosted instance. Comment out when the defaults work.   -->
+        <!-- <key>SENTRY_ORGANIZATION_SLUG</key><string>dolr-ai</string> -->
+        <!-- <key>SENTRY_PROJECT_SLUG</key><string>yral-chat-ai</string> -->
+    </dict>
+
+    <!-- One process at a time. If the previous run is somehow still    -->
+    <!-- alive when the next 9 a.m. fires, launchd skips this trigger   -->
+    <!-- instead of stacking concurrent pulls.                          -->
+    <key>AbandonProcessGroup</key>
+    <false/>
+
+    <!-- Lower CPU/IO priority — the pull is not time-critical, and    -->
+    <!-- yielding to the user's foreground work matches the spirit of  -->
+    <!-- "background diagnostic, not interactive job".                 -->
+    <key>ProcessType</key>
+    <string>Background</string>
+
+</dict>
+</plist>
+
+<!--
+  ══════════════════════════════════════════════════════════════════════
+  RELATED FILES
+  ─────────────
+  - install-launchd-job.sh
+        Renders this template into ~/Library/LaunchAgents/ and bootstraps it.
+  - pull-sentry-baseline.py
+        The Python script this plist runs; reads token from Keychain.
+  - README.md
+        First-time install + uninstall + verify-it-ran instructions.
+  - secrets.yaml
+        Declares the Keychain-backed SENTRY_AUTH_TOKEN secret.
+  ══════════════════════════════════════════════════════════════════════
+-->
