@@ -25,6 +25,14 @@
 
 set -euo pipefail
 
+# launchd runs this with a minimal env: no PATH, no HOME, no gh auth context.
+# Restore the user shell's PATH so we can find git + gh + jq + yq, and set
+# HOME so gh CLI can read its config at ~/.config/gh/hosts.yml.
+# (D.2 fix 2026-05-05 — Codex flagged "gh CLI not configured" in MASTER-STATUS
+# auto-regen output because launchd context lacks user PATH.)
+export HOME="${HOME:-/Users/rishichadha}"
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$HOME/.local/bin"
+
 # Repo root — adjust if location ever changes (it shouldn't per A1)
 REPO_ROOT="/Users/rishichadha/Claude Projects/yral-rishi-agent"
 COORD_DIR="$REPO_ROOT/yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination"
