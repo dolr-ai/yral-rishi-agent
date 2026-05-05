@@ -1,0 +1,368 @@
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  patroni-stack.yml                                                          ║
+# ║                                                                              ║
+# ║  ⭐ THIS FILE IN ONE SENTENCE                                                ║
+# ║  Docker Swarm stack file that wires up the v2 cluster's HA Postgres:       ║
+# ║  3-node etcd quorum + 3-node Patroni cluster (one per host) + 2-replica   ║
+# ║  pgBouncer in front, all on the encrypted data-plane overlay only.        ║
+# ║                                                                              ║
+# ║  📖 EXPLAINED FOR A NON-PROGRAMMER                                           ║
+# ║  Each `services:` entry below is one Docker Swarm service. They are       ║
+# ║  pinned to specific hostnames via `placement.constraints` so etcd-1       ║
+# ║  always lives on rishi-4, etcd-2 on rishi-5, etcd-3 on rishi-6. Same      ║
+# ║  pinning for Patroni: leader candidate on rishi-4, sync replica on        ║
+# ║  rishi-5, async replica on rishi-6. Patroni picks who is actually leader  ║
+# ║  via etcd consensus — the pinning just controls placement, not roles.    ║
+# ║                                                                              ║
+# ║  🔗 HOW IT FITS                                                              ║
+# ║  - Deployed by patroni-install.sh; it renders ${YRAL_PATRONI_STACK_       ║
+# ║    RESOLVED_*} placeholders below with SHA-rotating Swarm secret names    ║
+# ║    per CONSTRAINTS H2.                                                     ║
+# ║  - Networks:    only yral-agent-data-plane-overlay — no public exposure   ║
+# ║                 per CONSTRAINTS C3.                                        ║
+# ║  - Storage:     /data/patroni-data per node, bind-mounted (V2 infra §7.2).║
+# ║                                                                              ║
+# ║  ⚠️ DRAFT — NO STACKS DEPLOYED YET (per agent spec + A13).                   ║
+# ║                                                                              ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+version: "3.9"
+
+# Anchor block: every container shares these defaults so we don't restate
+# resource limits, restart policy, and overlay attachment per service.
+x-yral-data-plane-defaults: &yral_data_plane_defaults
+  networks:
+    - yral-agent-data-plane-overlay
+  deploy:
+    restart_policy:
+      condition: any
+      delay: 5s
+      max_attempts: 5
+      window: 60s
+
+
+services:
+
+  # ───────────────── etcd quorum (3 nodes, one per host) ──────────────────
+
+  etcd-rishi-4:
+    <<: *yral_data_plane_defaults
+    image: quay.io/coreos/etcd:v3.5.13
+    hostname: etcd-rishi-4
+    command:
+      - etcd
+      - --name=etcd-rishi-4
+      - --data-dir=/var/lib/etcd
+      - --advertise-client-urls=http://etcd-rishi-4:2379
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --initial-advertise-peer-urls=http://etcd-rishi-4:2380
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-cluster=etcd-rishi-4=http://etcd-rishi-4:2380,etcd-rishi-5=http://etcd-rishi-5:2380,etcd-rishi-6=http://etcd-rishi-6:2380
+      - --initial-cluster-state=new
+      - --initial-cluster-token=yral-v2-etcd-cluster
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [node.hostname == rishi-4]
+      resources:
+        limits:   { cpus: "0.5", memory: 512M }
+        reservations: { cpus: "0.1", memory: 128M }
+    volumes:
+      - type: bind
+        source: /data/etcd-rishi-4
+        target: /var/lib/etcd
+
+  etcd-rishi-5:
+    <<: *yral_data_plane_defaults
+    image: quay.io/coreos/etcd:v3.5.13
+    hostname: etcd-rishi-5
+    command:
+      - etcd
+      - --name=etcd-rishi-5
+      - --data-dir=/var/lib/etcd
+      - --advertise-client-urls=http://etcd-rishi-5:2379
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --initial-advertise-peer-urls=http://etcd-rishi-5:2380
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-cluster=etcd-rishi-4=http://etcd-rishi-4:2380,etcd-rishi-5=http://etcd-rishi-5:2380,etcd-rishi-6=http://etcd-rishi-6:2380
+      - --initial-cluster-state=new
+      - --initial-cluster-token=yral-v2-etcd-cluster
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [node.hostname == rishi-5]
+      resources:
+        limits:   { cpus: "0.5", memory: 512M }
+        reservations: { cpus: "0.1", memory: 128M }
+    volumes:
+      - type: bind
+        source: /data/etcd-rishi-5
+        target: /var/lib/etcd
+
+  etcd-rishi-6:
+    <<: *yral_data_plane_defaults
+    image: quay.io/coreos/etcd:v3.5.13
+    hostname: etcd-rishi-6
+    command:
+      - etcd
+      - --name=etcd-rishi-6
+      - --data-dir=/var/lib/etcd
+      - --advertise-client-urls=http://etcd-rishi-6:2379
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --initial-advertise-peer-urls=http://etcd-rishi-6:2380
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-cluster=etcd-rishi-4=http://etcd-rishi-4:2380,etcd-rishi-5=http://etcd-rishi-5:2380,etcd-rishi-6=http://etcd-rishi-6:2380
+      - --initial-cluster-state=new
+      - --initial-cluster-token=yral-v2-etcd-cluster
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [node.hostname == rishi-6]
+      resources:
+        limits:   { cpus: "0.5", memory: 512M }
+        reservations: { cpus: "0.1", memory: 128M }
+    volumes:
+      - type: bind
+        source: /data/etcd-rishi-6
+        target: /var/lib/etcd
+
+
+  # ────────── Patroni / Postgres 15 — Spilo image (Zalando) ───────────────
+  # Spilo bundles Patroni + Postgres + WAL-G + pgBackRest; configuration is
+  # primarily environment-variable-driven. Each instance has a stable hostname so etcd
+  # discovery and Patroni leader election work deterministically.
+
+  patroni-rishi-4:
+    <<: *yral_data_plane_defaults
+    image: ghcr.io/zalando/spilo-15:3.0-p1
+    hostname: patroni-rishi-4
+    environment:
+      SCOPE: yral-v2-postgres
+      PGVERSION: "15"
+      ETCD_HOSTS: etcd-rishi-4:2379,etcd-rishi-5:2379,etcd-rishi-6:2379
+      PATRONI_NAME: patroni-rishi-4
+      PATRONI_RESTAPI_LISTEN: 0.0.0.0:8008
+      PATRONI_RESTAPI_CONNECT_ADDRESS: patroni-rishi-4:8008
+      PATRONI_POSTGRESQL_LISTEN: 0.0.0.0:5432
+      PATRONI_POSTGRESQL_CONNECT_ADDRESS: patroni-rishi-4:5432
+      PATRONI_POSTGRESQL_DATA_DIR: /home/postgres/pgdata/pgroot/data
+      PATRONI_POSTGRESQL_BIN_DIR: /usr/lib/postgresql/15/bin
+      # Sync commit on at least one replica per CONSTRAINTS F3.
+      PATRONI_SYNCHRONOUS_MODE: "true"
+      PATRONI_SYNCHRONOUS_MODE_STRICT: "false"
+      PATRONI_MAXIMUM_LAG_ON_FAILOVER: "1048576"
+      PATRONI_SUPERUSER_USERNAME: postgres
+      PATRONI_REPLICATION_USERNAME: standby
+      PATRONI_admin_USERNAME: admin
+      # WAL-G archive command for L2 backups per CONSTRAINTS D2.
+      WALG_S3_PREFIX: s3://${YRAL_HETZNER_S3_WAL_BUCKET_NAME}/yral-v2-postgres
+      AWS_S3_FORCE_PATH_STYLE: "true"
+      AWS_REGION: ${YRAL_HETZNER_S3_REGION}
+      AWS_ENDPOINT: ${YRAL_HETZNER_S3_ENDPOINT}
+      USE_WALG_BACKUP: "true"
+      USE_WALG_RESTORE: "true"
+    secrets:
+      - source: ${YRAL_PATRONI_STACK_RESOLVED_YRAL_V2_POSTGRES_SUPERUSER_PASSWORD}
+        target: postgres-superuser-password
+      - source: ${YRAL_PATRONI_STACK_RESOLVED_YRAL_V2_PATRONI_REPLICATION_PASSWORD}
+        target: patroni-replication-password
+      - source: ${YRAL_PATRONI_STACK_RESOLVED_YRAL_V2_PATRONI_REST_API_PASSWORD}
+        target: patroni-rest-api-password
+      - source: ${YRAL_PATRONI_STACK_RESOLVED_YRAL_V2_HETZNER_S3_ACCESS_KEY_ID}
+        target: hetzner-s3-access-key-id
+      - source: ${YRAL_PATRONI_STACK_RESOLVED_YRAL_V2_HETZNER_S3_SECRET_ACCESS_KEY}
+        target: hetzner-s3-secret-access-key
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [node.hostname == rishi-4]
+      resources:
+        limits:   { cpus: "1.5", memory: 3G }
+        reservations: { cpus: "0.5", memory: 1G }
+    volumes:
+      - type: bind
+        source: /data/patroni-data
+        target: /home/postgres/pgdata
+    healthcheck:
+      test: ["CMD-SHELL", "curl --silent --fail http://localhost:8008/liveness || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  patroni-rishi-5:
+    <<: *yral_data_plane_defaults
+    image: ghcr.io/zalando/spilo-15:3.0-p1
+    hostname: patroni-rishi-5
+    environment:
+      SCOPE: yral-v2-postgres
+      PGVERSION: "15"
+      ETCD_HOSTS: etcd-rishi-4:2379,etcd-rishi-5:2379,etcd-rishi-6:2379
+      PATRONI_NAME: patroni-rishi-5
+      PATRONI_RESTAPI_LISTEN: 0.0.0.0:8008
+      PATRONI_RESTAPI_CONNECT_ADDRESS: patroni-rishi-5:8008
+      PATRONI_POSTGRESQL_LISTEN: 0.0.0.0:5432
+      PATRONI_POSTGRESQL_CONNECT_ADDRESS: patroni-rishi-5:5432
+      PATRONI_POSTGRESQL_DATA_DIR: /home/postgres/pgdata/pgroot/data
+      PATRONI_POSTGRESQL_BIN_DIR: /usr/lib/postgresql/15/bin
+      PATRONI_SYNCHRONOUS_MODE: "true"
+      PATRONI_SYNCHRONOUS_MODE_STRICT: "false"
+      PATRONI_SUPERUSER_USERNAME: postgres
+      PATRONI_REPLICATION_USERNAME: standby
+      PATRONI_admin_USERNAME: admin
+      WALG_S3_PREFIX: s3://${YRAL_HETZNER_S3_WAL_BUCKET_NAME}/yral-v2-postgres
+      AWS_S3_FORCE_PATH_STYLE: "true"
+      AWS_REGION: ${YRAL_HETZNER_S3_REGION}
+      AWS_ENDPOINT: ${YRAL_HETZNER_S3_ENDPOINT}
+      USE_WALG_BACKUP: "true"
+      USE_WALG_RESTORE: "true"
+    secrets:
+      - source: ${YRAL_PATRONI_STACK_RESOLVED_YRAL_V2_POSTGRES_SUPERUSER_PASSWORD}
+        target: postgres-superuser-password
+      - source: ${YRAL_PATRONI_STACK_RESOLVED_YRAL_V2_PATRONI_REPLICATION_PASSWORD}
+        target: patroni-replication-password
+      - source: ${YRAL_PATRONI_STACK_RESOLVED_YRAL_V2_PATRONI_REST_API_PASSWORD}
+        target: patroni-rest-api-password
+      - source: ${YRAL_PATRONI_STACK_RESOLVED_YRAL_V2_HETZNER_S3_ACCESS_KEY_ID}
+        target: hetzner-s3-access-key-id
+      - source: ${YRAL_PATRONI_STACK_RESOLVED_YRAL_V2_HETZNER_S3_SECRET_ACCESS_KEY}
+        target: hetzner-s3-secret-access-key
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [node.hostname == rishi-5]
+      resources:
+        limits:   { cpus: "1.5", memory: 3G }
+        reservations: { cpus: "0.5", memory: 1G }
+    volumes:
+      - type: bind
+        source: /data/patroni-data
+        target: /home/postgres/pgdata
+
+  patroni-rishi-6:
+    <<: *yral_data_plane_defaults
+    image: ghcr.io/zalando/spilo-15:3.0-p1
+    hostname: patroni-rishi-6
+    environment:
+      SCOPE: yral-v2-postgres
+      PGVERSION: "15"
+      ETCD_HOSTS: etcd-rishi-4:2379,etcd-rishi-5:2379,etcd-rishi-6:2379
+      PATRONI_NAME: patroni-rishi-6
+      PATRONI_RESTAPI_LISTEN: 0.0.0.0:8008
+      PATRONI_RESTAPI_CONNECT_ADDRESS: patroni-rishi-6:8008
+      PATRONI_POSTGRESQL_LISTEN: 0.0.0.0:5432
+      PATRONI_POSTGRESQL_CONNECT_ADDRESS: patroni-rishi-6:5432
+      PATRONI_POSTGRESQL_DATA_DIR: /home/postgres/pgdata/pgroot/data
+      PATRONI_POSTGRESQL_BIN_DIR: /usr/lib/postgresql/15/bin
+      # Per V2 infra doc §5: rishi-6 stays async-only if it ends up cross-DC,
+      # so it never becomes the synchronous replica. Patroni respects this
+      # via tags below.
+      PATRONI_TAGS_NOSYNC: "true"
+      PATRONI_TAGS_NOLOADBALANCE: "false"
+      PATRONI_TAGS_CLONEFROM: "false"
+      PATRONI_SUPERUSER_USERNAME: postgres
+      PATRONI_REPLICATION_USERNAME: standby
+      PATRONI_admin_USERNAME: admin
+      WALG_S3_PREFIX: s3://${YRAL_HETZNER_S3_WAL_BUCKET_NAME}/yral-v2-postgres
+      AWS_S3_FORCE_PATH_STYLE: "true"
+      AWS_REGION: ${YRAL_HETZNER_S3_REGION}
+      AWS_ENDPOINT: ${YRAL_HETZNER_S3_ENDPOINT}
+      USE_WALG_BACKUP: "true"
+      USE_WALG_RESTORE: "true"
+    secrets:
+      - source: ${YRAL_PATRONI_STACK_RESOLVED_YRAL_V2_POSTGRES_SUPERUSER_PASSWORD}
+        target: postgres-superuser-password
+      - source: ${YRAL_PATRONI_STACK_RESOLVED_YRAL_V2_PATRONI_REPLICATION_PASSWORD}
+        target: patroni-replication-password
+      - source: ${YRAL_PATRONI_STACK_RESOLVED_YRAL_V2_PATRONI_REST_API_PASSWORD}
+        target: patroni-rest-api-password
+      - source: ${YRAL_PATRONI_STACK_RESOLVED_YRAL_V2_HETZNER_S3_ACCESS_KEY_ID}
+        target: hetzner-s3-access-key-id
+      - source: ${YRAL_PATRONI_STACK_RESOLVED_YRAL_V2_HETZNER_S3_SECRET_ACCESS_KEY}
+        target: hetzner-s3-secret-access-key
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [node.hostname == rishi-6]
+      resources:
+        limits:   { cpus: "1.5", memory: 3G }
+        reservations: { cpus: "0.5", memory: 1G }
+    volumes:
+      - type: bind
+        source: /data/patroni-data
+        target: /home/postgres/pgdata
+
+
+  # ─────── pgBouncer (2 replicas on edge nodes) ─────────────────────────
+  # Per CONSTRAINTS G3: pgBouncer in front of Patroni from day 1. Each
+  # service connects to pgbouncer:5432 and gets routed to the current
+  # Patroni leader via pgBouncer's `auth_type=md5` + `dbname=*` config.
+
+  pgbouncer:
+    <<: *yral_data_plane_defaults
+    image: edoburu/pgbouncer:1.21.0
+    hostname: pgbouncer
+    environment:
+      DB_HOST: patroni-rishi-4
+      DB_PORT: "5432"
+      LISTEN_PORT: "5432"
+      MAX_CLIENT_CONN: "500"
+      DEFAULT_POOL_SIZE: "20"
+      RESERVE_POOL_SIZE: "5"
+      RESERVE_POOL_TIMEOUT: "3"
+      POOL_MODE: transaction
+      AUTH_TYPE: md5
+      ADMIN_USERS: postgres,admin
+      # PGBOUNCER_USER + PGBOUNCER_PASSWORD will be wired in once we have
+      # a dedicated pgbouncer auth role; for the draft, edoburu's image
+      # falls back to passthrough auth against Patroni.
+    secrets:
+      - source: ${YRAL_PATRONI_STACK_RESOLVED_YRAL_V2_POSTGRES_SUPERUSER_PASSWORD}
+        target: postgres-superuser-password
+    deploy:
+      mode: replicated
+      replicas: 2
+      placement:
+        constraints: [node.labels.node_role == edge]
+        preferences:
+          - spread: node.hostname
+      resources:
+        limits:   { cpus: "0.5", memory: 384M }
+        reservations: { cpus: "0.1", memory: 128M }
+
+
+# Swarm secrets are created (with SHA-rotating names per H2) by
+# patroni-install.sh BEFORE this stack is deployed. They appear here as
+# `external: true` so deploy doesn't try to re-create them.
+secrets:
+  ${YRAL_PATRONI_STACK_RESOLVED_YRAL_V2_POSTGRES_SUPERUSER_PASSWORD}:
+    external: true
+  ${YRAL_PATRONI_STACK_RESOLVED_YRAL_V2_PATRONI_REPLICATION_PASSWORD}:
+    external: true
+  ${YRAL_PATRONI_STACK_RESOLVED_YRAL_V2_PATRONI_REST_API_PASSWORD}:
+    external: true
+  ${YRAL_PATRONI_STACK_RESOLVED_YRAL_V2_HETZNER_S3_ACCESS_KEY_ID}:
+    external: true
+  ${YRAL_PATRONI_STACK_RESOLVED_YRAL_V2_HETZNER_S3_SECRET_ACCESS_KEY}:
+    external: true
+
+
+# The data-plane overlay is created once by node-bootstrap.sh swarm-init.
+networks:
+  yral-agent-data-plane-overlay:
+    external: true
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# RELATED FILES
+# ─────────────
+# - patroni-install.sh   — deploys this stack; creates the SHA-suffixed secrets.
+# - node-bootstrap.sh    — must run first (creates data-plane overlay + bind mounts).
+# - ../secrets-manifest.yaml — declares every secret consumed here.
+# ══════════════════════════════════════════════════════════════════════════

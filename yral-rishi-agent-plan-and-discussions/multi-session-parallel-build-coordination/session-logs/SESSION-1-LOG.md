@@ -1,6 +1,91 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-05 — MILESTONE: Day 1-2 stateful core drafts (PR B)
+
+### Action
+Drafted the stateful-core portion of the rishi-4/5/6 cluster bootstrap on
+branch `session-1/cluster-stateful-core-draft` (separate branch from
+PR A's `session-1/cluster-bootstrap-scripts-draft`). PR B bundles six new
+files in `bootstrap-scripts-for-the-v2-docker-swarm-cluster/scripts/`:
+
+1. **`patroni-install.sh`** (329 lines) — pre-flight checks (Swarm
+   manager + required env vars + data-plane overlay), creates `/data/
+   patroni-data` bind-mount on each node, materialises 5 SHA-rotating
+   Swarm secrets per H2, envsubst-renders the stack, deploys, registers
+   with the H1 resync service.
+2. **`patroni-stack.yml`** (368 lines) — 3 etcd services pinned via
+   `node.hostname` constraints to rishi-4/5/6, 3 Spilo Patroni services
+   (`ghcr.io/zalando/spilo-15:3.0-p1`) one per host, sync commit on ≥1
+   replica per F3, async-only tag on rishi-6 per V2 §5 cross-DC plan,
+   2-replica edoburu pgBouncer per G3, all on data-plane overlay only.
+3. **`redis-sentinel-install.sh`** (205 lines) — same install pattern,
+   1 SHA-rotating secret (`REDIS_PRIMARY_PASSWORD`).
+4. **`redis-sentinel-stack.yml`** (242 lines) — Redis 7 primary on
+   rishi-4 (with AOF + RDB + 8GB maxmemory-policy=allkeys-lru), replica
+   on rishi-5, 3 Sentinels (one per host) with quorum=2 and 5s
+   `down-after-milliseconds` per C11.
+5. **`langfuse-install.sh`** (227 lines) — same install pattern, 4
+   SHA-rotating secrets (NextAuth + Encryption + Postgres + ClickHouse).
+6. **`langfuse-stack.yml`** (191 lines) — Langfuse 3 web + worker pinned
+   to rishi-6 via `node.hostname`, ClickHouse 24.3 on rishi-6 for trace
+   events, Postgres metadata on the shared Patroni cluster (`langfuse`
+   schema). Web spans both data-plane and internal-service overlays so
+   v2 services can post traces.
+
+PR A (foundation: node-bootstrap + caddy + secrets-manifest) is open at
+https://github.com/dolr-ai/yral-rishi-agent/pull/9.
+
+### Files touched
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/scripts/patroni-install.sh (new, 329 lines)
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/scripts/patroni-stack.yml (new, 368 lines)
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/scripts/redis-sentinel-install.sh (new, 205 lines)
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/scripts/redis-sentinel-stack.yml (new, 242 lines)
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/scripts/langfuse-install.sh (new, 227 lines)
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/scripts/langfuse-stack.yml (new, 191 lines)
+- yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-1-LOG.md (this entry)
+- yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-state/SESSION-1-STATE.md (resume snapshot)
+
+### Why
+Phase 0 Day 1-2 stateful-core deliverable per agent spec. Drafts only —
+no SSH to rishi-4/5/6, no live data pulls. Days 4-7 execution requires
+separate explicit Rishi YES per A13.
+
+Anchored constraints: A13 (drafts only), B1/B2/B5/B7 (English naming +
+3-tier doc), C3 (data-plane overlay only — no host ports), C11 (Redis
+Sentinel topology), D2 (WAL-G archive command for L2 backups), D4
+(Langfuse self-hosted on rishi-6), D7 (secrets manifest), F3 (HA
+Postgres + sync commit + schema-per-service), G3 (pgBouncer in front),
+H1 (resync service registration), H2 (SHA-rotating Swarm secret names).
+
+### Test evidence
+- `bash -n` against all three install scripts → syntax OK.
+- `python3 yaml.safe_load` against all three stack YAMLs (with placeholder
+  substitution for `${YRAL_*_RESOLVED_*}`) → parse OK. Initial
+  redis-sentinel-stack.yml had a YAML-vs-shell-heredoc indentation bug
+  in the Sentinel command blocks; fixed by switching from `command: >`
+  folded scalar to `command: [sh, -c, |...]` literal-block form so the
+  embedded heredoc terminates at column 0 after YAML strips leading
+  whitespace.
+- B2 banned-abbrev grep across all 6 files → clean. Three matches are
+  literal Linux paths (`/var/lib/etcd`, `/var/lib/clickhouse`,
+  `/tmp/...`) — same exemption logic as PR A's `/tmp` and `keychain-db`.
+- **No live execution** — drafts only.
+
+### Codex truncation note
+Bundle is 1562 lines of code/yaml + ~150 lines of LOG/STATE = ~1712 line
+PR diff. Codex's smart-truncation guard (per coordinator commit
+`3a42a93`) will likely cap visibility at ~800 lines; I've ordered the
+files in `git add` so Patroni (the most security/correctness-critical)
+appears first in the diff. Could split further into 3 PRs (Patroni;
+Redis; Langfuse) but the user explicitly requested ≤2 PRs for the Day
+1-2 bundle, and 3 PRs would multiply review overhead.
+
+### Blockers raised
+None.
+
+---
+
 ## 2026-05-05 — MILESTONE: Day 1-2 cluster bootstrap drafts (PR A: foundation)
 
 ### Action

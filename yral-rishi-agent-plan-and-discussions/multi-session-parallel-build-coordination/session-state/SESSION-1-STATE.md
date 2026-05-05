@@ -1,5 +1,5 @@
 # Session 1 STATE — Infra & Cluster
-> Updated: 2026-05-05 (Day 1-2 cluster bootstrap drafts — PR A foundation opened).
+> Updated: 2026-05-05 (PR #9 merged; PR #10 rebased onto main).
 
 ## ⭐ START-OF-SESSION SUMMARY (read first when resuming)
 
@@ -10,49 +10,52 @@ yral-rishi-hetzner-infra-template repo.
 
 ## LAST THING I DID
 
-Drafted PR A (foundation) of the Day 1-2 cluster bootstrap deliverables on
-branch `session-1/cluster-bootstrap-scripts-draft`: `node-bootstrap.sh`
-(three-phase Hetzner-node setup with root-window / swarm-init / swarm-join),
-`caddy-swarm-service.yml` (Caddy 2-replica Swarm stack pinned to edge nodes,
-:443 ingress only), and the cluster-level `secrets-manifest.yaml` (16
-secrets declared in the CONSTRAINTS D7 schema). Drafts only — no SSH to
-rishi-4/5/6, no live data pulls, per CONSTRAINTS A13. Day 0.5 work (PR #4)
-merged on main yesterday as commit `e2a0743` via admin override.
+PR #9 (foundation: node-bootstrap + Caddy + cluster secrets-manifest) merged
+on main as commit `6668eb5`. PR #10 (stateful core: Patroni + etcd +
+pgBouncer + Redis Sentinel + Langfuse + ClickHouse) hit merge conflicts in
+SESSION-1-LOG and SESSION-1-STATE because PR #9 had also touched them.
+Resolved by rebasing PR #10's branch onto latest main, taking main's
+PR #9 entries as the LOG base, prepending the PR #10 milestone block above
+PR #9's, and rewriting STATE to reflect the new reality. Force-pushed the
+rebased branch.
 
 ## CURRENT TASK
 
-PR A awaiting commit + push + PR open. After PR A merges or gets the green
-light, draft PR B (stateful core): `patroni-install.sh` (HA Postgres +
-etcd + pgBouncer + WAL-G archive per F3 + G3 + D2), `redis-sentinel-
-install.sh` (primary on rishi-4 + replica on rishi-5 + sentinels per C11),
-`langfuse-install.sh` (self-hosted on rishi-6 per D4).
+PR #10 awaiting Codex re-review on the rebased + force-pushed branch.
+Once #10 merges, Day 3 work begins: chaos test scripts per H3 — still
+drafts only, no servers touched until separate Rishi YES per A13.
 
 ## NEXT 3 PLANNED ACTIONS
 
-1. Commit PR A bundle (3 new files + LOG/STATE updates) on
-   `session-1/cluster-bootstrap-scripts-draft`. Push. Open PR with
-   PR_REQUEST_TEMPLATE. Coordinator + Codex review picks it up.
-2. Draft PR B (stateful core) on the same branch as a follow-up commit
-   if PR A reviewer feedback is light, OR on a new branch if PR A needs
-   more rework. ~800 lines: patroni + redis + langfuse install scripts.
-3. After both PRs merge, Day 3 work begins: chaos test scripts per H3
-   (kill-rishi-6.sh, kill-patroni-leader.sh, fill-rishi-5-disk.sh,
-   partition-rishi-6.sh, run-all-chaos-tests.sh) — still drafts only.
+1. Wait for PR #10 CI + Codex re-review on the rebased branch; respond to
+   any feedback. Coordinator will ping when ready to merge.
+2. After PR #10 merges, draft Day 3 chaos test scripts on a fresh branch
+   `session-1/chaos-test-scripts-draft`: kill-rishi-6.sh,
+   kill-patroni-leader.sh, fill-rishi-5-disk.sh, partition-rishi-6.sh,
+   reboot-rishi-6.sh, plus run-all-chaos-tests.sh runner per CONSTRAINTS H3.
+3. After Day 3 merges, draft the Day 7 Caddy snippet PR against
+   `dolr-ai/yral-rishi-hetzner-infra-template` (per CONSTRAINTS A2
+   carve-out) — this is the PR that wires `agent.rishi.yral.com` through
+   rishi-1/2 Caddy to rishi-4/5 ingress. Will surface to coordinator
+   first since it touches an external repo.
 
 ## BLOCKERS
 
-None. DEP-001 + DEP-002 from yesterday are RESOLVED on main. Session 1
-scope path now correctly includes `bootstrap-scripts-for-the-v2-docker-
-swarm-cluster/` and the per-session log/state/deps file paths.
+None. DEP-001 + DEP-002 from 2026-05-04 are RESOLVED on main.
 
 ## PENDING PRs (mine)
 
-- **PR A** (this push): `session-1/cluster-bootstrap-scripts-draft` —
-  node-bootstrap.sh + caddy-swarm-service.yml + secrets-manifest.yaml +
-  LOG/STATE updates. ~1160 lines of code/yaml + ~120 lines of LOG/STATE.
-  Codex may truncate the diff above ~800 lines; security-critical paths
-  (pre-flight + UFW + sudoers + Swarm init) appear first in
-  node-bootstrap.sh so they should land within the visible window.
+- **PR #10** `session-1/cluster-stateful-core-draft` — stateful core
+  (Patroni + Redis + Langfuse). Rebased onto main 2026-05-05 to clear
+  LOG/STATE merge conflicts after #9 merged. Force-pushed.
+
+## MERGED PRs (mine, recent)
+
+- **PR #9** `session-1/cluster-bootstrap-scripts-draft` — foundation
+  (node-bootstrap.sh + caddy-swarm-service.yml + secrets-manifest.yaml).
+  Merged on main as `6668eb5` (2026-05-05).
+- **PR #4** Day 0.5 Sentry baseline pull cron. Merged on main as
+  `e2a0743` (2026-05-04, admin override).
 
 ## CROSS-SESSION DEPS (mine)
 
@@ -61,11 +64,9 @@ None open.
 ## CONFIRM TO RISHI (pre-written for resume)
 
 ```
-I'm resuming Session 1. Day 1-2 PR A (node-bootstrap.sh + Caddy stack +
-cluster-level secrets-manifest.yaml) is open on branch
-session-1/cluster-bootstrap-scripts-draft. PR B (Patroni + Redis +
-Langfuse install scripts) queued next on same or follow-up branch.
-Day 3 chaos-test drafts come after both. No blockers, no open deps.
-Drafts only — Days 4-7 server-touching work needs a separate explicit
-YES from you per A13. Ready to continue?
+I'm resuming Session 1. PR #9 (foundation) merged. PR #10 (stateful
+core) is rebased onto main and force-pushed; awaiting fresh CI +
+Codex re-review. Once #10 merges, Day 3 chaos test drafts come
+next on a fresh branch — still drafts only, no SSH to any rishi-N
+node until you type a separate YES per A13. Ready to continue?
 ```
