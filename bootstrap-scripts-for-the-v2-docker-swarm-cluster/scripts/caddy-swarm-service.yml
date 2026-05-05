@@ -1,0 +1,184 @@
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  caddy-swarm-service.yml                                                    ║
+# ║                                                                              ║
+# ║  ⭐ THIS FILE IN ONE SENTENCE                                                ║
+# ║  Docker Swarm stack file that deploys Caddy as a 2-replica edge ingress    ║
+# ║  service pinned to rishi-4 and rishi-5 (the edge nodes), terminating       ║
+# ║  HTTPS from rishi-1/2 with self-signed `tls internal` certs and routing    ║
+# ║  to v2 services over the Swarm overlay network.                            ║
+# ║                                                                              ║
+# ║  📖 EXPLAINED FOR A NON-PROGRAMMER                                           ║
+# ║  rishi-1 and rishi-2 are the public-facing edge that Cloudflare points at  ║
+# ║  (per CONSTRAINTS A2 + C5). They reverse-proxy HTTPS traffic to our        ║
+# ║  cluster. This stack file is the OTHER side of that hop — the Caddy that   ║
+# ║  receives the traffic on rishi-4/5 and forwards it to the right v2         ║
+# ║  service container over the encrypted overlay. Caddy handles TLS even on  ║
+# ║  this internal hop because rishi-1/2 forward as HTTPS; `tls internal`     ║
+# ║  means Caddy generates its own self-signed cert (Cloudflare is in "Full"  ║
+# ║  mode, not Strict, so the self-signed cert is accepted).                  ║
+# ║                                                                              ║
+# ║  🔗 HOW IT FITS                                                              ║
+# ║  - Deployed by:  `docker stack deploy --compose-file caddy-swarm-          ║
+# ║                  service.yml yral-v2-edge-caddy` from rishi-4 after        ║
+# ║                  node-bootstrap.sh swarm-init has finished.                ║
+# ║  - Listens on:   :443 host port (Swarm ingress mode) — the only host port  ║
+# ║                  v2 exposes per CONSTRAINTS C3.                            ║
+# ║  - Routes into:  yral-agent-public-web-overlay — every v2 public service   ║
+# ║                  (public-api, hello-world, etc.) attaches here.            ║
+# ║  - Pairs with:   the rishi-1/2 Caddy snippet (added Day 7 via              ║
+# ║                  yral-rishi-hetzner-infra-template per A2 carve-out).      ║
+# ║                                                                              ║
+# ║  📥 INPUTS                                                                   ║
+# ║  - Caddyfile config from a Swarm config object `yral_v2_edge_caddyfile_   ║
+# ║    <sha8>` (sha-rotating per CONSTRAINTS H2). Built by                     ║
+# ║    scripts/generate-caddy-swarm-config.sh (later deliverable) from a       ║
+# ║    Caddyfile template + per-service routing rules.                          ║
+# ║                                                                              ║
+# ║  📤 OUTPUTS / SIDE EFFECTS                                                   ║
+# ║  - 2 Caddy replicas running, one each on rishi-4 and rishi-5.              ║
+# ║  - Persistent volume `yral_v2_edge_caddy_data` per node holds Caddy's      ║
+# ║    on-disk certificate cache so reloads do not regenerate certs.           ║
+# ║  - Health-check endpoint `/__caddy-healthz` answered locally by Caddy.    ║
+# ║                                                                              ║
+# ║  ⚠️ DRAFT — NO STACKS DEPLOYED YET (per agent spec + A13)                    ║
+# ║  Real `docker stack deploy` happens Day 6/7 with separate Rishi YES.      ║
+# ║                                                                              ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+# Compose schema 3.9 is the highest version Swarm consumes; using it
+# unlocks `mode: replicated`, `placement.constraints`, and config rotation.
+version: "3.9"
+
+services:
+
+  # The single Caddy service. 2 replicas means traffic survives one node
+  # going away — meets the chaos-test requirement in CONSTRAINTS H3.
+  caddy-edge-ingress:
+    # Pin to a known Caddy release. Bumping the tag is a deliberate PR;
+    # `latest` would silently roll us forward and is forbidden everywhere
+    # in v2.
+    image: caddy:2.8.4-alpine
+
+    # Deploy stanza is Swarm-only. Compose ignores it on a single laptop.
+    deploy:
+      mode: replicated
+      replicas: 2
+      placement:
+        # Only edge-labelled nodes run this service. node-bootstrap.sh
+        # tags rishi-4 and rishi-5 with node_role=edge; rishi-6 has
+        # node_role=compute and therefore never schedules a replica here.
+        constraints:
+          - node.labels.node_role == edge
+        # Spread the two replicas, one per node. Without this, the Swarm
+        # scheduler might place both replicas on the same edge node and
+        # we lose redundancy.
+        preferences:
+          - spread: node.hostname
+
+      # Update strategy: roll one at a time with a 10s health-check pause
+      # between replicas. Drains the old replica via stop-grace-period.
+      update_config:
+        parallelism: 1
+        order: start-first
+        delay: 10s
+        failure_action: rollback
+
+      rollback_config:
+        parallelism: 1
+        order: stop-first
+
+      restart_policy:
+        condition: on-failure
+        max_attempts: 3
+        window: 60s
+
+      # Per CONSTRAINTS C3: the only host port v2 exposes is :443 on
+      # rishi-4 and rishi-5. Swarm ingress mode load-balances incoming
+      # TCP across the 2 replicas regardless of which edge node the
+      # traffic actually lands on.
+    ports:
+      - target: 443
+        published: 443
+        protocol: tcp
+        mode: ingress
+
+    # Read-only filesystem on the container — Caddy needs write access
+    # only to /data (cert cache) which we mount as a per-node volume.
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M
+
+    volumes:
+      # /data is Caddy's cert + state directory. Per-node bind mount via
+      # a Swarm volume keeps each replica's cache local; failover regenerates.
+      - type: volume
+        source: yral_v2_edge_caddy_data
+        target: /data
+      - type: volume
+        source: yral_v2_edge_caddy_config
+        target: /config
+
+    # The Caddyfile is delivered as a Swarm config object so we get the
+    # SHA-rotating naming pattern from CONSTRAINTS H2. The deploy workflow
+    # is responsible for creating the config with the SHA suffix; this
+    # file references the *current* alias.
+    configs:
+      - source: yral_v2_edge_caddyfile_current
+        target: /etc/caddy/Caddyfile
+        mode: 0444
+
+    networks:
+      # Public web overlay only — Caddy must NOT see the internal or
+      # data-plane overlays per CONSTRAINTS C3 isolation.
+      - yral-agent-public-web-overlay
+
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+
+# Named volumes — Swarm creates them on first deploy and persists across
+# replica restarts. Local driver = the data lives on whichever node the
+# replica runs on; that is fine because Caddy regenerates `tls internal`
+# certs in seconds when a replica moves.
+volumes:
+  yral_v2_edge_caddy_data:
+    driver: local
+  yral_v2_edge_caddy_config:
+    driver: local
+
+
+# The overlay network is created once by node-bootstrap.sh; here we just
+# reference it as `external: true` so the stack deploy does not try to
+# (re)create it.
+networks:
+  yral-agent-public-web-overlay:
+    external: true
+
+
+# Caddyfile content arrives as a Swarm config object created by the
+# deploy workflow — the alias `yral_v2_edge_caddyfile_current` always
+# points at the latest `_<sha8>` revision per CONSTRAINTS H2.
+configs:
+  yral_v2_edge_caddyfile_current:
+    external: true
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# RELATED FILES
+# ─────────────
+# - node-bootstrap.sh
+#       Creates yral-agent-public-web-overlay this stack attaches to.
+# - ../secrets-manifest.yaml
+#       Declares CADDY-related secrets (e.g. ACME account email if we ever
+#       move off `tls internal` to real Let's Encrypt on the v2 cluster).
+# - generate-caddy-swarm-config.sh (future deliverable)
+#       Renders the Caddyfile body + creates the SHA-rotating Swarm config.
+# - The rishi-1/2 Caddy snippet PR (Day 7 deliverable, against
+#       dolr-ai/yral-rishi-hetzner-infra-template per CONSTRAINTS A2)
+#       reverse-proxies into this Swarm service over `https://rishi-4:443
+#       https://rishi-5:443`.
+# ══════════════════════════════════════════════════════════════════════════
