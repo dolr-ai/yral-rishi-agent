@@ -1,6 +1,91 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-05 — MILESTONE: Day 1-2 cluster bootstrap drafts (PR A: foundation)
+
+### Action
+Drafted the foundation portion of the rishi-4/5/6 cluster bootstrap on
+branch `session-1/cluster-bootstrap-scripts-draft`. PR A bundles three
+files in `bootstrap-scripts-for-the-v2-docker-swarm-cluster/`:
+
+1. `scripts/node-bootstrap.sh` — three-phase bootstrap (root-window /
+   swarm-init / swarm-join). Phase routing via `YRAL_BOOTSTRAP_PHASE`
+   env var. Pre-flight refuses non-root + non-Ubuntu-24.04. root-window
+   phase installs Docker, creates rishi-deploy + narrow sudoers,
+   configures UFW with allow-list-only SSH + per-role port rules,
+   enables unattended security upgrades, disables root password auth.
+   swarm-init phase initialises Docker Swarm on rishi-4, creates the
+   three encrypted overlay networks per CONSTRAINTS C3, applies
+   placement labels, installs the H1 yral-v2-swarm-resync.service.
+   swarm-join joins rishi-5/6 with same systemd + label setup.
+
+2. `scripts/caddy-swarm-service.yml` — Caddy 2.8.4 as a 2-replica Swarm
+   service pinned to edge-labelled nodes (rishi-4, rishi-5). Ingress
+   mode :443 only (CONSTRAINTS C3), `tls internal`, attached to the
+   public-web overlay only (NOT internal/data-plane — isolation), per-
+   replica volume for cert cache, SHA-rotating Caddyfile via Swarm
+   config object alias `yral_v2_edge_caddyfile_current` (CONSTRAINTS H2).
+   read_only filesystem + tmpfs for /tmp.
+
+3. `secrets-manifest.yaml` — declarative cluster-level manifest in the
+   D7 schema. 16 secrets declared: HETZNER_CI_SSH_PRIVATE_KEY,
+   RISHI_{4,5,6}_PUBLIC_IPV4, POSTGRES_SUPERUSER_PASSWORD,
+   PATRONI_{REPLICATION,REST_API}_PASSWORD, REDIS_PRIMARY_PASSWORD,
+   LANGFUSE_{NEXTAUTH_SECRET,ENCRYPTION_KEY},
+   HETZNER_S3_{ACCESS_KEY_ID,SECRET_ACCESS_KEY},
+   BACKBLAZE_B2_{APPLICATION_KEY_ID,APPLICATION_KEY_SECRET},
+   GOOGLE_CHAT_WEBHOOK_URL, GHCR_PULL_TOKEN. Each entry: required_in
+   per env, source per env, rotation_policy with runbook, consumed_by
+   cross-references, classification (blast_radius / access_pattern /
+   sensitivity).
+
+PR B (queued, separate branch + PR after PR A merges) will hold
+patroni-install.sh + redis-sentinel-install.sh + langfuse-install.sh.
+
+### Files touched
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/scripts/node-bootstrap.sh (new, 599 lines)
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/scripts/caddy-swarm-service.yml (new, 184 lines)
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/secrets-manifest.yaml (new, 378 lines)
+- yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-1-LOG.md (this entry)
+- yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-state/SESSION-1-STATE.md (resume snapshot updated)
+
+### Why
+Phase 0 Day 1-2 deliverable per agent spec (`.claude/agents/session-1-
+infra-cluster.md` line 64-69). Drafted only — no SSH to rishi-4/5/6,
+no live data pulls, per CONSTRAINTS A13. Days 4-7 execution requires
+separate explicit Rishi YES.
+
+### Test evidence
+- `bash -n node-bootstrap.sh` → syntax OK.
+- `python3 -c "yaml.safe_load(...)"` against caddy + secrets-manifest → parse OK.
+- B2 banned-abbrev grep across all three files → clean. (One false-positive
+  match in caddy-swarm-service.yml is the literal Linux mount path
+  `/tmp` — same exemption logic as the `keychain-db` match in PR #4;
+  CI lint scopes to *.py so YAML never trips.)
+- `python3 -c "..."` against secrets-manifest confirmed 16 secrets
+  parse with all required fields (name, classification.sensitivity,
+  source per env, rotation_policy).
+- **No live execution** — drafts only, per A13. Ubuntu version check,
+  Swarm init, UFW config, etc. will be verified on real rishi-4/5/6
+  during Day 4-6 with separate Rishi YES.
+
+### PR split rationale
+Bundle would have hit ~1900 lines including PR B contents. Per user
+guidance "<800 per PR for Codex truncation" we split into:
+- **PR A (this commit)**: foundation = node + edge + secrets manifest (~1160 lines).
+- **PR B (next)**: stateful core = patroni + redis + langfuse (~800 lines).
+
+PR A is still over 800 because node-bootstrap is unavoidably a
+~600-line script (multiple phases + B7 doc on each). Codex will
+truncate but should see the most security-critical paths first
+(pre-flight, UFW, sudoers, Swarm init).
+
+### Blockers raised
+None. All three files in Session 1 scope per the lint-scope-violations
+fix from PR #5.
+
+---
+
 ## 2026-05-04 — MILESTONE: Session 1 launched + Day 0.5 deliverable opened
 
 ### Action

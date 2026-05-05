@@ -1,5 +1,5 @@
 # Session 1 STATE — Infra & Cluster
-> Updated: 2026-05-04 (Session 1 first launch + Day 0.5 deliverable).
+> Updated: 2026-05-05 (Day 1-2 cluster bootstrap drafts — PR A foundation opened).
 
 ## ⭐ START-OF-SESSION SUMMARY (read first when resuming)
 
@@ -10,66 +10,62 @@ yral-rishi-hetzner-infra-template repo.
 
 ## LAST THING I DID
 
-Built the Day 0.5 Sentry baseline pull deliverable on branch
-`session-1/sentry-baseline-cron`: Python script (Keychain-backed token,
-Sentry Discover API), launchd plist template + installer for the daily
-9 a.m. IST schedule, declarative secrets.yaml, README, and a manual
-milestone entry to SESSION-1-LOG. Also raised DEP-001 in
-cross-session-dependencies.md flagging three CI/scope mismatches that
-coordinator needs to resolve before the PR can land.
+Drafted PR A (foundation) of the Day 1-2 cluster bootstrap deliverables on
+branch `session-1/cluster-bootstrap-scripts-draft`: `node-bootstrap.sh`
+(three-phase Hetzner-node setup with root-window / swarm-init / swarm-join),
+`caddy-swarm-service.yml` (Caddy 2-replica Swarm stack pinned to edge nodes,
+:443 ingress only), and the cluster-level `secrets-manifest.yaml` (16
+secrets declared in the CONSTRAINTS D7 schema). Drafts only — no SSH to
+rishi-4/5/6, no live data pulls, per CONSTRAINTS A13. Day 0.5 work (PR #4)
+merged on main yesterday as commit `e2a0743` via admin override.
 
 ## CURRENT TASK
 
-Awaiting commit + push + PR open. Then waiting on coordinator to
-resolve DEP-001 (lint-scope-violations.yml needs path corrections).
+PR A awaiting commit + push + PR open. After PR A merges or gets the green
+light, draft PR B (stateful core): `patroni-install.sh` (HA Postgres +
+etcd + pgBouncer + WAL-G archive per F3 + G3 + D2), `redis-sentinel-
+install.sh` (primary on rishi-4 + replica on rishi-5 + sentinels per C11),
+`langfuse-install.sh` (self-hosted on rishi-6 per D4).
 
 ## NEXT 3 PLANNED ACTIONS
 
-1. Commit branch + push + open PR with explicit DEP-001 cross-link.
-2. Once DEP-001 is RESOLVED by coordinator, re-trigger CI on the PR.
-3. After PR merges, start Day 1-2 work: draft cluster bootstrap scripts
-   (`node-bootstrap.sh`, `patroni-install.sh`, `redis-sentinel-install.sh`,
-   `langfuse-install.sh`, `caddy-swarm-service.yml`, `secrets-manifest.yaml`)
-   in `bootstrap-scripts-for-the-v2-docker-swarm-cluster/` — drafted
-   only, NOT executed against any server yet.
+1. Commit PR A bundle (3 new files + LOG/STATE updates) on
+   `session-1/cluster-bootstrap-scripts-draft`. Push. Open PR with
+   PR_REQUEST_TEMPLATE. Coordinator + Codex review picks it up.
+2. Draft PR B (stateful core) on the same branch as a follow-up commit
+   if PR A reviewer feedback is light, OR on a new branch if PR A needs
+   more rework. ~800 lines: patroni + redis + langfuse install scripts.
+3. After both PRs merge, Day 3 work begins: chaos test scripts per H3
+   (kill-rishi-6.sh, kill-patroni-leader.sh, fill-rishi-5-disk.sh,
+   partition-rishi-6.sh, run-all-chaos-tests.sh) — still drafts only.
 
 ## BLOCKERS
 
-- **DEP-001** (raised 2026-05-04): scope-lint paths in
-  `.github/workflows/lint-scope-violations.yml` do not include the
-  `yral-rishi-agent-plan-and-discussions/` prefix that the actual
-  latency-baseline folder lives under, nor do they include Session 1's
-  own log/state/deps file paths. Will block PR merge until coordinator
-  edits the workflow.
-- Same DEP-001 also notes: `YRAL_SESSION_ID` env var is unset in this
-  Claude Code session, so the post-tool-use hook (when fixed per DEP-002)
-  would route commit-trigger diary entries to `SESSION-coordinator-LOG.md`
-  instead of `SESSION-1-LOG.md`. Manual milestone entries to
-  SESSION-1-LOG.md are the workaround until the env var is set on next
-  session restart.
-- **DEP-002** (raised 2026-05-04 after first commit): `post-tool-use.sh`
-  heredoc has an unquoted tag (`<<ENTRY` not `<<'ENTRY'`); bash parser
-  fails on every commit with "unexpected EOF while looking for matching
-  ')'". Commit itself succeeds — only the auto-diary append fails.
-  Manual milestone entries cover the gap. Coordinator's fix is a
-  one-character change to the hook script.
+None. DEP-001 + DEP-002 from yesterday are RESOLVED on main. Session 1
+scope path now correctly includes `bootstrap-scripts-for-the-v2-docker-
+swarm-cluster/` and the per-session log/state/deps file paths.
 
 ## PENDING PRs (mine)
 
-- `session-1/sentry-baseline-cron` — Day 0.5 Sentry baseline cron + script
-  + plist + installer + secrets.yaml + README. Opened 2026-05-04. CI will
-  fail `lint-scope-violations` until DEP-001 is resolved.
+- **PR A** (this push): `session-1/cluster-bootstrap-scripts-draft` —
+  node-bootstrap.sh + caddy-swarm-service.yml + secrets-manifest.yaml +
+  LOG/STATE updates. ~1160 lines of code/yaml + ~120 lines of LOG/STATE.
+  Codex may truncate the diff above ~800 lines; security-critical paths
+  (pre-flight + UFW + sudoers + Swarm init) appear first in
+  node-bootstrap.sh so they should land within the visible window.
 
 ## CROSS-SESSION DEPS (mine)
 
-- DEP-001 raised by Session 1 — awaiting coordinator.
+None open.
 
 ## CONFIRM TO RISHI (pre-written for resume)
 
 ```
-I'm resuming Session 1. Last work was Day 0.5 sentry-baseline-cron PR
-on branch session-1/sentry-baseline-cron, blocked by DEP-001
-(scope-lint paths need coordinator fix). Once DEP-001 RESOLVED I
-re-run CI. After merge, Day 1-2 cluster bootstrap script drafting.
-Ready to continue?
+I'm resuming Session 1. Day 1-2 PR A (node-bootstrap.sh + Caddy stack +
+cluster-level secrets-manifest.yaml) is open on branch
+session-1/cluster-bootstrap-scripts-draft. PR B (Patroni + Redis +
+Langfuse install scripts) queued next on same or follow-up branch.
+Day 3 chaos-test drafts come after both. No blockers, no open deps.
+Drafts only — Days 4-7 server-touching work needs a separate explicit
+YES from you per A13. Ready to continue?
 ```
