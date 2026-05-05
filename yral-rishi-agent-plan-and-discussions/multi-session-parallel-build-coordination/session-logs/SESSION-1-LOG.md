@@ -1,6 +1,77 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-05 — MILESTONE: Day 3 chaos-test drafts (fill + partition + runner → PR B)
+
+### Action
+Drafted the remaining three Phase 0 H3 chaos files on branch
+`session-1/day-3-chaos-tests-fill-partition-runner`. PR B bundles three
+new files in `bootstrap-scripts-for-the-v2-docker-swarm-cluster/chaos-tests/`:
+
+1. **`fill-rishi-5-disk.sh`** (277 lines) — `fallocate`s a single dummy
+   file on rishi-5's `/data` partition sized to bring usage to ~80%
+   (matches the `disk free < 20%` Alertmanager threshold per V2 §6.5),
+   waits 5 minutes, asserts the `DiskFreeLessThan20Percent` alert is
+   firing in Alertmanager's `/api/v2/alerts` API, runs a write+read
+   sanity to confirm Patroni still accepts writes under disk pressure,
+   then `rm`s the dummy file and polls `df` until usage falls back
+   below threshold. Cleanup trap deletes the dummy file even on
+   early failure.
+2. **`partition-rishi-6.sh`** (302 lines) — captures rishi-6's IPv4
+   then runs `iptables --append INPUT/OUTPUT --jump DROP` on rishi-4 +
+   rishi-5 (both directions, every packet to/from the captured IP),
+   tagged with the unique comment `yral-v2-chaos-partition-rishi-6` so
+   cleanup deletes only our rules. Holds the partition for 10 minutes
+   per H3 row 4. Verifies (a) etcd quorum healthy on rishi-4/5,
+   (b) Patroni still committing writes, then removes iptables rules and
+   confirms rishi-6's etcd member reports healthy again. EXIT trap
+   removes iptables rules even on early failure — leaving DROP rules
+   in place would permanently break the cluster.
+3. **`run-all-chaos-tests.sh`** (280 lines) — Phase 0 exit-criteria
+   orchestrator that invokes all four chaos scripts in sequence with a
+   2-minute settle window between each. Writes a Markdown report at
+   `/tmp/yral-v2-chaos-test-report-<YYYY-MM-DD-HHMM>.md` with each test's
+   start/end times + pass/fail outcome. Operator pastes this into the
+   Phase 0 completion checklist on Day 6.
+
+PR A (kill scripts) is open at #12 with `kill-rishi-6.sh` and
+`kill-patroni-leader.sh`. PR B's orchestrator references PR A's scripts;
+both are independently reviewable.
+
+### Files touched
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/chaos-tests/fill-rishi-5-disk.sh (new, 277 lines)
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/chaos-tests/partition-rishi-6.sh (new, 302 lines)
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/chaos-tests/run-all-chaos-tests.sh (new, 280 lines)
+- yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-1-LOG.md (this entry)
+- yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-state/SESSION-1-STATE.md (resume snapshot)
+
+### Why
+Phase 0 Day 3 deliverable per agent spec line 70-72 + CONSTRAINTS H3.
+Drafts only — no chaos run anywhere. Day 6 is the first time these
+scripts touch the cluster, with separate Rishi YES per A13.
+
+### Test evidence
+- `bash -n` against all three scripts → syntax OK.
+- B2 banned-abbrev grep → matches limited to literal `/tmp/...` lock
+  paths (Linux), `--arg` (jq flag). Same exemption pattern as PR #4 /
+  #9 / #10 / PR A.
+- **No chaos run** — drafts only. Same triple-gated trigger as PR A's
+  scripts: `YRAL_CHAOS_RUN_AUTHORISED` matches today + Swarm-manager +
+  lock file. Cleanup traps tested by reading the EXIT trap exits in
+  bash but not by actual chaos execution.
+
+### PR split rationale
+Day 3 bundle is ~1381 lines of code total (5 chaos files). Per the
+user's "if past 1000 lines, split into 2 PRs" instruction:
+- PR A (#12): kill scripts (522 lines, ~620 with LOG/STATE).
+- PR B (this): fill + partition + orchestrator (859 lines, ~960 with
+  LOG/STATE).
+
+### Blockers raised
+None.
+
+---
+
 ## 2026-05-05 — MILESTONE: Day 3 chaos-test drafts (kill scripts → PR A)
 
 ### Action
