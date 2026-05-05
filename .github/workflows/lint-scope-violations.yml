@@ -97,7 +97,10 @@ jobs:
           # loophole). Coordinator owns: plan-and-discussions, shared lib,
           # entire .github + .claude trees, root README + .gitignore + LICENSE,
           # and (historically) interface-contracts at the old location.
-          COORDINATOR_PATHS="yral-rishi-agent-plan-and-discussions/|shared-library-code-used-by-every-v2-service/|\.github/|\.claude/|README\.md|\.gitignore|LICENSE|interface-contracts/"
+          # Root-file entries END-ANCHORED with $ so `README.md.bak` or
+          # `LICENSE-old` can't slip through (Codex flagged this 2026-05-05).
+          # Directory entries keep trailing slash for prefix-match.
+          COORDINATOR_PATHS="yral-rishi-agent-plan-and-discussions/|shared-library-code-used-by-every-v2-service/|\.github/|\.claude/|interface-contracts/|README\.md$|\.gitignore$|LICENSE$"
 
           if [ "$SESSION" = "coordinator" ]; then
             ALLOWED="$COORDINATOR_PATHS"
