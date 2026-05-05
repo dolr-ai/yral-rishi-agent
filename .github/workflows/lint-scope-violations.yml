@@ -92,20 +92,25 @@ jobs:
           SESSION_PATHS[4]="yral-rishi-agent-conversation-turn-orchestrator/|yral-rishi-agent-soul-file-library/|yral-rishi-agent-influencer-and-profile-directory/|${COMMON_SESSION_PATHS}"
           SESSION_PATHS[5]="yral-rishi-agent-user-memory-service/|etl-scripts/|tests/|${COMMON_SESSION_PATHS}"
 
-          if [ "$SESSION" = "coordinator" ]; then
-            echo "✅ Coordinator branch — all paths allowed"
-            exit 0
-          fi
+          # Coordinator allowlist — explicit per ownership doc (D.3 fix
+          # 2026-05-05; Codex flagged blanket bypass on PR #5 as a scope
+          # loophole). Coordinator owns: plan-and-discussions, shared lib,
+          # entire .github + .claude trees, root README + .gitignore + LICENSE,
+          # and (historically) interface-contracts at the old location.
+          COORDINATOR_PATHS="yral-rishi-agent-plan-and-discussions/|shared-library-code-used-by-every-v2-service/|\.github/|\.claude/|README\.md|\.gitignore|LICENSE|interface-contracts/"
 
-          if [ "$SESSION" = "unknown" ]; then
+          if [ "$SESSION" = "coordinator" ]; then
+            ALLOWED="$COORDINATOR_PATHS"
+            echo "Coordinator branch — checking against explicit allowlist"
+          elif [ "$SESSION" = "unknown" ]; then
             echo "::error::Branch must start with session-N/ or coordinator/"
             exit 1
-          fi
-
-          ALLOWED="${SESSION_PATHS[$SESSION]}"
-          if [ -z "$ALLOWED" ]; then
-            echo "::error::No scope defined for session-$SESSION"
-            exit 1
+          else
+            ALLOWED="${SESSION_PATHS[$SESSION]}"
+            if [ -z "$ALLOWED" ]; then
+              echo "::error::No scope defined for session-$SESSION"
+              exit 1
+            fi
           fi
 
           # Check each changed file against the allowed pattern
