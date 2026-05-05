@@ -1,6 +1,62 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-05 — MILESTONE: Day 3 chaos-test drafts (kill scripts → PR A)
+
+### Action
+Drafted the two "kill" chaos tests for Phase 0 H3 exit criteria on branch
+`session-1/day-3-chaos-test-scripts`. PR A bundles two new files in
+`bootstrap-scripts-for-the-v2-docker-swarm-cluster/chaos-tests/`:
+
+1. **`kill-rishi-6.sh`** (235 lines) — drains rishi-6 from the Swarm via
+   `docker node update --availability drain`, waits 60 s, asserts every
+   hot-path service has 0 replicas on rishi-6 + Patroni leader still
+   rishi-4 + etcd quorum healthy on remaining members, then sets the
+   node back to `availability=active`. Triple-gated trigger
+   (`YRAL_CHAOS_RUN_AUTHORISED=$(date +%Y-%m-%d)` + Swarm-manager check
+   + lock file). Idempotent + reversible.
+
+2. **`kill-patroni-leader.sh`** (287 lines) — discovers the current
+   Patroni leader via REST API, SIGKILLs the underlying container,
+   polls Patroni until SOME other node reports `leader` role within 30 s
+   (matches Patroni's `loop_wait × 3` default), runs a write+read
+   sanity roundtrip via pgBouncer to confirm no data loss, then waits
+   for the killed container to rejoin as a follower (replica or
+   sync_standby).
+
+PR B (queued, separate branch from main) will hold fill-rishi-5-disk.sh
++ partition-rishi-6.sh + run-all-chaos-tests.sh orchestrator. Split per
+user instruction "if past 1000 lines, split into 2 PRs": full bundle is
+~1381 lines of code, this PR is ~620 (kill scripts + LOG/STATE).
+
+### Files touched
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/chaos-tests/kill-rishi-6.sh (new, 235 lines)
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/chaos-tests/kill-patroni-leader.sh (new, 287 lines)
+- yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-1-LOG.md (this entry)
+- yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-state/SESSION-1-STATE.md (resume snapshot)
+
+### Why
+Phase 0 Day 3 deliverable per agent spec line 70-72 + CONSTRAINTS H3.
+Drafts only — no servers touched, no chaos run anywhere. Real execution
+happens Day 6 of cluster provisioning with separate explicit Rishi YES.
+
+### Test evidence
+- `bash -n` against both scripts → syntax OK.
+- B2 banned-abbrev grep → matches limited to: literal `/tmp/...` lock
+  paths (Linux standard), `--arg` (jq command-line flag). Same exemption
+  pattern as PR #4 / #9 / #10 (`keychain-db`, `/tmp`, `/var/lib/etcd`).
+  CI lint scopes to `*.py` so `.sh` doesn't fail.
+- **No chaos run** — drafts only. The triple-gated authorisation
+  refuses to run unless `YRAL_CHAOS_RUN_AUTHORISED` equals today's date
+  AND the operator is on a Swarm manager AND no other chaos run is in
+  progress. Running on Day 6 will be the first time any of these
+  scripts touch the cluster.
+
+### Blockers raised
+None.
+
+---
+
 ## 2026-05-05 — MILESTONE: Day 1-2 stateful core drafts (PR B)
 
 ### Action
