@@ -1,0 +1,242 @@
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  redis-sentinel-stack.yml                                                   ║
+# ║                                                                              ║
+# ║  ⭐ THIS FILE IN ONE SENTENCE                                                ║
+# ║  Docker Swarm stack that puts Redis 7 primary on rishi-4, replica on       ║
+# ║  rishi-5, and three Sentinels (one per node) for quorum=2 failover, all   ║
+# ║  on the encrypted data-plane overlay only — per CONSTRAINTS C11.          ║
+# ║                                                                              ║
+# ║  📖 EXPLAINED FOR A NON-PROGRAMMER                                           ║
+# ║  Three Sentinels = quorum 2; any one can fail and the remaining two still ║
+# ║  agree on whether to fail over. Apps never connect to Redis directly —    ║
+# ║  they ask Sentinels "where is the current primary?" and connect there.    ║
+# ║  When the primary dies, Sentinels promote the replica and tell the apps   ║
+# ║  about the new primary on their next discovery query.                     ║
+# ║                                                                              ║
+# ║  🔗 HOW IT FITS                                                              ║
+# ║  - Deployed by redis-sentinel-install.sh (envsubst's the SHA-rotated      ║
+# ║    secret name).                                                           ║
+# ║  - Network:  yral-agent-data-plane-overlay only — no public exposure (C3).║
+# ║  - Storage:  /data/redis-data on rishi-4 + rishi-5 (bind mount, V2 §7.2).║
+# ║                                                                              ║
+# ║  ⚠️ DRAFT — NO STACKS DEPLOYED YET (per agent spec + A13).                   ║
+# ║                                                                              ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+version: "3.9"
+
+x-yral-data-plane-defaults: &yral_data_plane_defaults
+  networks:
+    - yral-agent-data-plane-overlay
+  deploy:
+    restart_policy:
+      condition: any
+      delay: 5s
+      max_attempts: 5
+      window: 60s
+
+
+services:
+
+  # ───────────────── Redis primary (rishi-4) ──────────────────────────────
+
+  redis-primary:
+    <<: *yral_data_plane_defaults
+    image: redis:7.2-alpine
+    hostname: redis-primary
+    # Read password from /run/secrets at start; AOF + RDB persistence enabled.
+    command: >
+      sh -c '
+        export REDIS_PASSWORD="$(cat /run/secrets/redis-primary-password)";
+        exec redis-server
+          --requirepass "$$REDIS_PASSWORD"
+          --masterauth "$$REDIS_PASSWORD"
+          --appendonly yes
+          --appendfsync everysec
+          --save 900 1
+          --save 300 10
+          --maxmemory 8gb
+          --maxmemory-policy allkeys-lru
+          --bind 0.0.0.0
+          --protected-mode yes
+      '
+    secrets:
+      - source: ${YRAL_REDIS_STACK_RESOLVED_REDIS_PRIMARY_PASSWORD}
+        target: redis-primary-password
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [node.hostname == rishi-4]
+      resources:
+        limits:   { cpus: "1.0", memory: 8.5G }
+        reservations: { cpus: "0.25", memory: 1G }
+    volumes:
+      - type: bind
+        source: /data/redis-data
+        target: /data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $$(cat /run/secrets/redis-primary-password) ping | grep PONG"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+
+  # ───────────────── Redis replica (rishi-5) ──────────────────────────────
+
+  redis-replica:
+    <<: *yral_data_plane_defaults
+    image: redis:7.2-alpine
+    hostname: redis-replica
+    command: >
+      sh -c '
+        export REDIS_PASSWORD="$(cat /run/secrets/redis-primary-password)";
+        exec redis-server
+          --requirepass "$$REDIS_PASSWORD"
+          --masterauth "$$REDIS_PASSWORD"
+          --replicaof redis-primary 6379
+          --replica-read-only yes
+          --appendonly yes
+          --appendfsync everysec
+          --maxmemory 8gb
+          --maxmemory-policy allkeys-lru
+          --bind 0.0.0.0
+          --protected-mode yes
+      '
+    secrets:
+      - source: ${YRAL_REDIS_STACK_RESOLVED_REDIS_PRIMARY_PASSWORD}
+        target: redis-primary-password
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [node.hostname == rishi-5]
+      resources:
+        limits:   { cpus: "1.0", memory: 8.5G }
+        reservations: { cpus: "0.25", memory: 1G }
+    volumes:
+      - type: bind
+        source: /data/redis-data
+        target: /data
+
+
+  # ───────────────── Three Sentinels (quorum=2) ───────────────────────────
+  # Each Sentinel watches `redis-primary` (its DNS name on the overlay) and
+  # votes on failover. Quorum 2 means any 2 of the 3 must agree before
+  # promoting the replica.
+
+  redis-sentinel-rishi-4:
+    <<: *yral_data_plane_defaults
+    image: redis:7.2-alpine
+    hostname: redis-sentinel-rishi-4
+    command:
+      - sh
+      - -c
+      - |
+        export REDIS_PASSWORD="$(cat /run/secrets/redis-primary-password)"
+        cat > /tmp/sentinel.conf <<SENTINEL_CONF
+        port 26379
+        sentinel monitor yral-v2-redis-primary redis-primary 6379 2
+        sentinel auth-pass yral-v2-redis-primary $$REDIS_PASSWORD
+        sentinel down-after-milliseconds yral-v2-redis-primary 5000
+        sentinel failover-timeout yral-v2-redis-primary 30000
+        sentinel parallel-syncs yral-v2-redis-primary 1
+        sentinel resolve-hostnames yes
+        sentinel announce-hostnames yes
+        SENTINEL_CONF
+        exec redis-sentinel /tmp/sentinel.conf
+    secrets:
+      - source: ${YRAL_REDIS_STACK_RESOLVED_REDIS_PRIMARY_PASSWORD}
+        target: redis-primary-password
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [node.hostname == rishi-4]
+      resources:
+        limits:   { cpus: "0.25", memory: 256M }
+        reservations: { cpus: "0.05", memory: 64M }
+
+  redis-sentinel-rishi-5:
+    <<: *yral_data_plane_defaults
+    image: redis:7.2-alpine
+    hostname: redis-sentinel-rishi-5
+    command:
+      - sh
+      - -c
+      - |
+        export REDIS_PASSWORD="$(cat /run/secrets/redis-primary-password)"
+        cat > /tmp/sentinel.conf <<SENTINEL_CONF
+        port 26379
+        sentinel monitor yral-v2-redis-primary redis-primary 6379 2
+        sentinel auth-pass yral-v2-redis-primary $$REDIS_PASSWORD
+        sentinel down-after-milliseconds yral-v2-redis-primary 5000
+        sentinel failover-timeout yral-v2-redis-primary 30000
+        sentinel parallel-syncs yral-v2-redis-primary 1
+        sentinel resolve-hostnames yes
+        sentinel announce-hostnames yes
+        SENTINEL_CONF
+        exec redis-sentinel /tmp/sentinel.conf
+    secrets:
+      - source: ${YRAL_REDIS_STACK_RESOLVED_REDIS_PRIMARY_PASSWORD}
+        target: redis-primary-password
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [node.hostname == rishi-5]
+      resources:
+        limits:   { cpus: "0.25", memory: 256M }
+        reservations: { cpus: "0.05", memory: 64M }
+
+  redis-sentinel-rishi-6:
+    <<: *yral_data_plane_defaults
+    image: redis:7.2-alpine
+    hostname: redis-sentinel-rishi-6
+    command:
+      - sh
+      - -c
+      - |
+        export REDIS_PASSWORD="$(cat /run/secrets/redis-primary-password)"
+        cat > /tmp/sentinel.conf <<SENTINEL_CONF
+        port 26379
+        sentinel monitor yral-v2-redis-primary redis-primary 6379 2
+        sentinel auth-pass yral-v2-redis-primary $$REDIS_PASSWORD
+        sentinel down-after-milliseconds yral-v2-redis-primary 5000
+        sentinel failover-timeout yral-v2-redis-primary 30000
+        sentinel parallel-syncs yral-v2-redis-primary 1
+        sentinel resolve-hostnames yes
+        sentinel announce-hostnames yes
+        SENTINEL_CONF
+        exec redis-sentinel /tmp/sentinel.conf
+    secrets:
+      - source: ${YRAL_REDIS_STACK_RESOLVED_REDIS_PRIMARY_PASSWORD}
+        target: redis-primary-password
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [node.hostname == rishi-6]
+      resources:
+        limits:   { cpus: "0.25", memory: 256M }
+        reservations: { cpus: "0.05", memory: 64M }
+
+
+secrets:
+  ${YRAL_REDIS_STACK_RESOLVED_REDIS_PRIMARY_PASSWORD}:
+    external: true
+
+
+networks:
+  yral-agent-data-plane-overlay:
+    external: true
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# RELATED FILES
+# ─────────────
+# - redis-sentinel-install.sh — deploys this stack with SHA-rotated secret.
+# - patroni-stack.yml         — sibling stateful stack on the same overlay.
+# - ../secrets-manifest.yaml  — declares REDIS_PRIMARY_PASSWORD.
+# ══════════════════════════════════════════════════════════════════════════

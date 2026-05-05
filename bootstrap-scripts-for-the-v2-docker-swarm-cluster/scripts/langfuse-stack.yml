@@ -1,0 +1,191 @@
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  langfuse-stack.yml                                                         ║
+# ║                                                                              ║
+# ║  ⭐ THIS FILE IN ONE SENTENCE                                                ║
+# ║  Docker Swarm stack that runs Langfuse 3 (web + worker) on rishi-6 with    ║
+# ║  ClickHouse for high-cardinality trace storage and the shared Patroni     ║
+# ║  cluster (langfuse schema) for primary metadata, per CONSTRAINTS D4.      ║
+# ║                                                                              ║
+# ║  📖 EXPLAINED FOR A NON-PROGRAMMER                                           ║
+# ║  Langfuse 3.x split its storage: structured metadata (projects, users,    ║
+# ║  API keys) live in Postgres; high-cardinality trace events (spans,        ║
+# ║  generations, observations) live in ClickHouse. We point Langfuse's       ║
+# ║  Postgres URL at our shared Patroni cluster (schema `langfuse`); we run   ║
+# ║  ClickHouse alongside on rishi-6 as a co-located Swarm service.           ║
+# ║                                                                              ║
+# ║  🔗 HOW IT FITS                                                              ║
+# ║  - Deployed by langfuse-install.sh (envsubst's the SHA-rotated secrets).  ║
+# ║  - Networks: data-plane overlay (Postgres + ClickHouse) + internal-       ║
+# ║    service-overlay (so v2 services post traces).                          ║
+# ║  - Storage: /data/clickhouse-data on rishi-6 (bind mount, V2 §7.2).       ║
+# ║                                                                              ║
+# ║  ⚠️ DRAFT — NO STACKS DEPLOYED YET (per agent spec + A13).                   ║
+# ║                                                                              ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+version: "3.9"
+
+services:
+
+  # ───────────────── ClickHouse (rishi-6, langfuse traces) ────────────────
+
+  langfuse-clickhouse:
+    image: clickhouse/clickhouse-server:24.3-alpine
+    hostname: langfuse-clickhouse
+    networks:
+      - yral-agent-data-plane-overlay
+    environment:
+      CLICKHOUSE_DB: langfuse
+      CLICKHOUSE_USER: langfuse
+      CLICKHOUSE_PASSWORD_FILE: /run/secrets/langfuse-clickhouse-password
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    secrets:
+      - source: ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_CLICKHOUSE_PASSWORD}
+        target: langfuse-clickhouse-password
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [node.hostname == rishi-6]
+      resources:
+        limits:   { cpus: "1.5", memory: 4G }
+        reservations: { cpus: "0.25", memory: 1G }
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 5
+    volumes:
+      - type: bind
+        source: /data/clickhouse-data
+        target: /var/lib/clickhouse
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+
+
+  # ───────────────── Langfuse web (rishi-6) ───────────────────────────────
+
+  langfuse-web:
+    image: langfuse/langfuse:3
+    hostname: langfuse-web
+    networks:
+      - yral-agent-data-plane-overlay
+      - yral-agent-internal-service-to-service-overlay
+    environment:
+      # Postgres lives on the shared Patroni cluster, schema langfuse.
+      DATABASE_HOST: pgbouncer
+      DATABASE_PORT: "5432"
+      DATABASE_NAME: postgres
+      DATABASE_USERNAME: langfuse
+      DATABASE_SCHEMA_NAME: langfuse
+      # File-based auth: read from /run/secrets at startup.
+      DATABASE_PASSWORD_FILE: /run/secrets/langfuse-postgres-password
+      NEXTAUTH_URL: https://langfuse.rishi.yral.com
+      NEXTAUTH_SECRET_FILE: /run/secrets/langfuse-nextauth-secret
+      ENCRYPTION_KEY_FILE: /run/secrets/langfuse-encryption-key
+      # ClickHouse for traces.
+      CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+      CLICKHOUSE_USER: langfuse
+      CLICKHOUSE_PASSWORD_FILE: /run/secrets/langfuse-clickhouse-password
+      CLICKHOUSE_DB: langfuse
+      # Redis (shared cluster Sentinel) for background queues.
+      REDIS_HOST: redis-sentinel-rishi-4
+      REDIS_PORT: "26379"
+      LANGFUSE_DEFAULT_PROJECT_ID: yral-v2-default
+      TELEMETRY_ENABLED: "false"
+    secrets:
+      - source: ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_NEXTAUTH_SECRET}
+        target: langfuse-nextauth-secret
+      - source: ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_ENCRYPTION_KEY}
+        target: langfuse-encryption-key
+      - source: ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_POSTGRES_PASSWORD}
+        target: langfuse-postgres-password
+      - source: ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_CLICKHOUSE_PASSWORD}
+        target: langfuse-clickhouse-password
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [node.hostname == rishi-6]
+      resources:
+        limits:   { cpus: "1.0", memory: 1.5G }
+        reservations: { cpus: "0.25", memory: 512M }
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 5
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/api/public/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+
+  # ───────────────── Langfuse worker (rishi-6) ────────────────────────────
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    hostname: langfuse-worker
+    networks:
+      - yral-agent-data-plane-overlay
+    environment:
+      DATABASE_HOST: pgbouncer
+      DATABASE_PORT: "5432"
+      DATABASE_NAME: postgres
+      DATABASE_USERNAME: langfuse
+      DATABASE_SCHEMA_NAME: langfuse
+      DATABASE_PASSWORD_FILE: /run/secrets/langfuse-postgres-password
+      ENCRYPTION_KEY_FILE: /run/secrets/langfuse-encryption-key
+      CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+      CLICKHOUSE_USER: langfuse
+      CLICKHOUSE_PASSWORD_FILE: /run/secrets/langfuse-clickhouse-password
+      CLICKHOUSE_DB: langfuse
+      REDIS_HOST: redis-sentinel-rishi-4
+      REDIS_PORT: "26379"
+    secrets:
+      - source: ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_ENCRYPTION_KEY}
+        target: langfuse-encryption-key
+      - source: ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_POSTGRES_PASSWORD}
+        target: langfuse-postgres-password
+      - source: ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_CLICKHOUSE_PASSWORD}
+        target: langfuse-clickhouse-password
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [node.hostname == rishi-6]
+      resources:
+        limits:   { cpus: "1.0", memory: 1G }
+        reservations: { cpus: "0.25", memory: 384M }
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 5
+
+
+secrets:
+  ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_NEXTAUTH_SECRET}:
+    external: true
+  ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_ENCRYPTION_KEY}:
+    external: true
+  ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_POSTGRES_PASSWORD}:
+    external: true
+  ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_CLICKHOUSE_PASSWORD}:
+    external: true
+
+
+networks:
+  yral-agent-data-plane-overlay:
+    external: true
+  yral-agent-internal-service-to-service-overlay:
+    external: true
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# RELATED FILES
+# ─────────────
+# - langfuse-install.sh      — deploys this stack with SHA-rotated secrets.
+# - patroni-stack.yml        — provides the Postgres backend for Langfuse.
+# - redis-sentinel-stack.yml — provides Redis queue backend.
+# - ../secrets-manifest.yaml — declares the four Langfuse secrets.
+# ══════════════════════════════════════════════════════════════════════════
