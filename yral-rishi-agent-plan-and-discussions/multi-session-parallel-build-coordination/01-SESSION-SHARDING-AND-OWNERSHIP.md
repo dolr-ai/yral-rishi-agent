@@ -49,6 +49,18 @@ yral-rishi-agent/   (monorepo root)
     (CI workflows, Codex review action, lint workflows)
 ```
 
+## Common per-session write paths (every session, regardless of N)
+
+In addition to its assigned subfolder(s) below, **every session is also allowed to write its own log + state files + append to the shared dependencies kanban**:
+
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-N-LOG.md` — the session's own append-only diary, auto-updated by `.claude/hooks/post-tool-use.sh` on every git commit (per I11)
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-state/SESSION-N-STATE.md` — the session's own "where am I now" snapshot, regenerated on every commit (per I11)
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/cross-session-dependencies.md` — the shared kanban; sessions append entries to OPEN section, coordinator moves them to RESOLVED
+
+These files live under `yral-rishi-agent-plan-and-discussions/**` (which is otherwise coordinator-owned), but each session has a narrow exception for its OWN log/state file. The lint workflow `lint-scope-violations.yml` enforces this via the `COMMON_SESSION_PATHS` regex — session-1 cannot edit SESSION-2-LOG.md or vice versa.
+
+**Doc/lint reconciled 2026-05-05** (Codex flagged inconsistency on PR #9/#10 audits; the lint already had the right behavior, this doc just hadn't been updated).
+
 ## Session 1 — Infra & Cluster
 
 **Identity:** "I am Session 1. I own everything that makes rishi-4/5/6 a usable Docker Swarm cluster, plus the rishi-1/2 Caddy routing snippet for v2."
