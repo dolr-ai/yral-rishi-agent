@@ -33,3 +33,8 @@ node_modules/
 
 # Docker
 *.docker-volume
+
+# Claude Code runtime state — never useful in repo, gets recreated locally
+.claude/scheduled_tasks.lock
+.claude/local-state/
+.claude/cache/
