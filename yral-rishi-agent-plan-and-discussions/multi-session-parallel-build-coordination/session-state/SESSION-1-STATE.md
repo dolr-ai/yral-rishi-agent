@@ -1,5 +1,5 @@
 # Session 1 STATE — Infra & Cluster
-> Updated: 2026-05-05 (PR #12 merged; PR #13 rebased onto main).
+> Updated: 2026-05-05 EOD (Day 3 complete; idling at Day 4 boundary).
 
 ## ⭐ START-OF-SESSION SUMMARY (read first when resuming)
 
@@ -10,50 +10,52 @@ yral-rishi-hetzner-infra-template repo.
 
 ## LAST THING I DID
 
-PR #12 (Day 3 kill chaos tests: kill-rishi-6 + kill-patroni-leader) merged
-on main as commit `48351ff`. PR #13 (Day 3 fill + partition + orchestrator)
-hit merge conflicts in SESSION-1-LOG and SESSION-1-STATE because PR #12 had
-also touched them. Resolved by rebasing PR #13's branch onto latest main,
-taking main's PR #12 entries as the LOG base, prepending the PR #13
-milestone block above PR #12's, and rewriting STATE to reflect the new
-reality. Force-pushed the rebased branch.
+Day 3 chaos test drafts both merged: PR #12 (kill scripts) as `48351ff`
+and PR #13 (fill + partition + orchestrator) as `bbdc101`. PR #13 needed
+a rebase onto main to clear LOG/STATE merge conflicts after PR #12 landed
+first; same pattern as the PR #10 rebase from Day 1-2. Force-push
+succeeded; CI cleared; coordinator merged. Day 0.5 + Days 1-3 are now
+all on main.
 
 ## CURRENT TASK
 
-PR #13 awaiting Codex re-review on the rebased + force-pushed branch.
-Once #13 merges, Day 3 (Phase 0 chaos tests) is complete. Day 4-7
-cluster provisioning is the next gate — separate explicit Rishi YES
-required per A13.
+**Idling at Day 4 boundary. Awaiting Rishi YES for SSH to rishi-4/5/6.**
+
+Per CONSTRAINTS A13, Days 4-7 cluster provisioning (running
+`node-bootstrap.sh` against the real Hetzner boxes, then the stateful
+install scripts, then the chaos test runner) requires a separate
+explicit Rishi YES — that's a deliberate process gate, not a blocker.
+All scripts the cluster provisioning will use are already drafted and
+merged on main.
 
 ## NEXT 3 PLANNED ACTIONS
 
-1. Wait for PR #13 CI + Codex re-review on the rebased branch; respond
-   to feedback. Coordinator pings when ready to merge.
-2. Once #13 merges, idle pending Rishi's "go" signal for Day 4-7
-   cluster provisioning (run node-bootstrap.sh on rishi-4/5/6, then the
-   stateful install scripts, then the chaos test runner).
-3. Day 7 (after cluster is up + chaos green): draft the Caddy snippet
-   PR against `dolr-ai/yral-rishi-hetzner-infra-template` per A2
-   carve-out — wires `agent.rishi.yral.com` through rishi-1/2 Caddy to
-   rishi-4/5 ingress. Touches an external repo so will surface to
-   coordinator + Rishi first.
+1. Wait for Rishi to type "go provision the cluster" or equivalent
+   explicit YES, OR for him to redirect me to a different task while
+   Sessions 2/5 launch.
+2. When the YES lands: run Day 4 morning sequence per agent spec —
+   Saikat root window opens on rishi-4/5/6, run `node-bootstrap.sh`
+   `root-window` phase on each, then `swarm-init` on rishi-4 and
+   `swarm-join` on rishi-5/6.
+3. Day 5: deploy Patroni + Redis Sentinel + Langfuse stacks via the
+   sibling install scripts already on main; Day 6 chaos test runner;
+   Day 7 Caddy snippet PR against `dolr-ai/yral-rishi-hetzner-infra-template`.
 
 ## BLOCKERS
 
-None at the technical level. Day 4-7 cluster provisioning is GATED on
-Rishi YES per A13 — that's a deliberate process gate, not a blocker.
+None at the technical level. **Day 4-7 cluster provisioning is GATED
+on explicit Rishi YES per A13** — that's a deliberate process gate.
 
 ## PENDING PRs (mine)
 
-- **PR #13** `session-1/day-3-chaos-tests-fill-partition-runner` —
-  fill-rishi-5-disk + partition-rishi-6 + run-all-chaos-tests
-  orchestrator. Rebased onto main 2026-05-05 to clear LOG/STATE merge
-  conflicts after #12 merged. Force-pushed.
+None. (This STATE-only update PR will land on its own.)
 
 ## MERGED PRs (mine, recent)
 
+- **PR #13** Day 3 chaos tests: fill + partition + run-all-chaos-tests.
+  Merged on main as `bbdc101` (2026-05-05).
 - **PR #12** Day 3 chaos test kill scripts (kill-rishi-6 +
-  kill-patroni-leader). Merged on main as `48351ff` (2026-05-05).
+  kill-patroni-leader). Merged as `48351ff` (2026-05-05).
 - **PR #10** Day 1-2 stateful core (Patroni + Redis + Langfuse).
   Merged 2026-05-05.
 - **PR #9** Day 1-2 foundation (node-bootstrap + Caddy +
@@ -68,9 +70,10 @@ None open.
 ## CONFIRM TO RISHI (pre-written for resume)
 
 ```
-I'm resuming Session 1. PR #12 (Day 3 kill chaos tests) merged. PR #13
-(Day 3 fill + partition + orchestrator) is rebased onto main and
-force-pushed; awaiting fresh CI + Codex re-review. Once #13 merges,
-Day 3 is complete. Day 4-7 cluster provisioning is the next gate —
-needs your separate explicit YES per A13. Ready to continue?
+I'm resuming Session 1. Days 0.5–3 are complete and merged on main
+(Sentry baseline cron, cluster bootstrap scripts, stateful core, chaos
+tests). I'm idling at the Day 4 boundary — running the bootstrap scripts
+against rishi-4/5/6 needs your separate explicit YES per A13. Tomorrow
+I either start touching real servers (your call) or fan out to other
+work while Sessions 2/5 launch. Ready to continue?
 ```
