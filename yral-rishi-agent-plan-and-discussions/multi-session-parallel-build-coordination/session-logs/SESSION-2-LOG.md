@@ -3,6 +3,28 @@
 
 ---
 
+## 2026-05-13 — Day 1, PR 2 (compose files) — rebased onto main after PR #17 merged
+
+**Branch:** `session-2/template-skeleton-compose`
+
+**Files added (2):**
+- `yral-rishi-agent-new-service-template/docker-compose.yml` — local dev stack. Service (built from local Dockerfile, port 8000 exposed, `--reload`, source mounted RO) + Postgres 17-alpine (port 5432 exposed, named volume) + pgBouncer 1.23.1 (bitnami image, session mode, port 6432 internal) + Redis 7-alpine (port 6379 exposed, appendonly). Langfuse intentionally left disabled via `LANGFUSE_TRACING_ENABLED=false` — full Langfuse stack is ~1GB of containers and the rishi-6 shared instance is the real-traffic destination per D4. A docker-compose profile for local Langfuse can be added later if a dev specifically asks (A2.1).
+- `yral-rishi-agent-new-service-template/docker-compose.swarm.yml` — production Swarm stack. Service-only (cluster owns Postgres/Redis/pgBouncer/Langfuse). Image from GHCR. 3 replicas per G2. Rolling update parallelism=1, order=start-first, auto-rollback on failure (I2). Resource caps 1 CPU / 512 MiB / replica. Healthcheck against `/health/ready` (F9). Three external overlay networks per C3 (`yral-v2-public-web`, `yral-v2-internal`, `yral-v2-data-plane`). Three external Swarm secrets (`database_password`, `redis_password`, `sentry_dsn`). Caddy auto-discovery labels for the edge stack.
+
+**Decisions made (worth recording):**
+- **Local Langfuse: env-disabled, no profile.** Per A2.1, defer the optional `--profile langfuse-local` until someone asks.
+- **pgBouncer in session mode locally, transaction mode in prod.** Session mode avoids the asyncpg + pgBouncer prepared-statement gotcha for dev simplicity; prod (Session 1's stateful-core stack) uses transaction mode for real connection multiplexing.
+- **Swarm `version: "3.9"`.** Highest Swarm-compatible Compose schema.
+- **`external: true` everywhere for networks + secrets in swarm.yml.** Session 1's cluster bootstrap is responsible for creating them; deploy fails fast if they're missing.
+
+**B7 compliance:** both files carry the file header (with ⭐ START HERE), section headers, role-not-syntax comments, RELATED FILES footer.
+
+**Constraints honored:** C3, C7, C11, D1/D8, F9, F13, G2, I2.
+
+**Next:** PR 3 (rebase-pending) — `project.config` + `shared-config.yaml` + `secrets.yaml.template` + `.env.example` on `session-2/template-skeleton-configs`.
+
+---
+
 ## 2026-05-13T09:45:54Z — 6abba4d
 ### Action
 Session 2 Day 1 PR 1: pyproject.toml + Dockerfile + .dockerignore
