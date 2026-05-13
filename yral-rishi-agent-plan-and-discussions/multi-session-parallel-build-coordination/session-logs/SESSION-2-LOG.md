@@ -3,6 +3,37 @@
 
 ---
 
+## 2026-05-13 — Day 3, PR 2b (3 B7-new doc scaffolds)
+
+**Branch:** `session-2/f8-walkthrough-glossary-lost-docs` (off main with PR #34 merged)
+
+Closes out the 8-doc F8 requirement. PR #34 landed the 5 originals (DEEP-DIVE / READING-ORDER / CLAUDE / RUNBOOK / SECURITY); this PR adds the 3 B7-new docs.
+
+**Files added (3):**
+- `yral-rishi-agent-new-service-template/WALKTHROUGH.md` — 11-step narrative trace of "service startup + first request" through the codebase. Each step cites the file(s) involved + the why. Covers uvicorn module-load → Sentry init → Langfuse init → logging config → app construction → middleware mount → first request through `RequestIdMiddleware.dispatch` → response leaves → SIGTERM graceful shutdown. 81 lines.
+- `yral-rishi-agent-new-service-template/GLOSSARY.md` — alphabetical table of 28 domain terms with plain-English definitions. Each entry references the relevant CONSTRAINTS row (or the file where the term lives in code) when applicable. Covers: Allowlist / asyncpg / Caddy / Canary deploy / ContextVar / GHCR / Idempotency key / JWKS / Langfuse / Lifespan / Loki / Middleware / Multi-stage build / No-op / Overlay network / Patroni / pgBouncer / pydantic / Replica / Sentinel / Sentry / Service tag / Singleton / Soul File / Stateful core / structlog / Swarm / Swarm secret / Synthetic user / uvicorn. 51 lines.
+- `yral-rishi-agent-new-service-template/WHEN-YOU-GET-LOST.md` — restaurant analogy + "Are you trying to ___?" pointer table + "fastest path back to productive" recovery procedures (>1 day away → state/log; >1 week away → README/DEEP-DIVE/WALKTHROUGH path). Per B7 the "restaurant/pantry analogy + north-star orientation" is the spec; delivered. 73 lines.
+
+**Total diff ~205 lines.** Coordinator estimated ~120; reality came in higher because GLOSSARY's table-with-definitions format is naturally line-heavy. Still well under Codex's truncation threshold.
+
+**Decisions made (worth recording):**
+- **WALKTHROUGH traces "startup + first request"** — the simplest concrete action the template can tell end-to-end today (no real endpoints yet). The 11-step structure stays once real endpoints land; the steps just get more detail.
+- **GLOSSARY is alphabetical, not topic-grouped.** ADHD-friendly per Rishi — you scan alphabetically without needing to know which "topic bucket" a term belongs to.
+- **Each GLOSSARY entry cites a CONSTRAINTS row OR the code file where the term lives.** Lets a reader trace from definition → enforcement point.
+- **WHEN-YOU-GET-LOST uses the restaurant analogy** per B7 spec. Kept the analogy tight (5 mappings) + added a "when the analogy breaks" section so a reader doesn't take the metaphor too literally.
+- **WHEN-YOU-GET-LOST includes both "1-day away" and "1-week away" recovery paths.** Different mental contexts; different reads.
+- **Avoided over-using `config`** in light of coordinator's heads-up on the not-yet-formal B2 status. Used "configuration" or other phrasings where natural.
+
+**B7 compliance:** every doc carries the one-line purpose at top, ⭐ START HERE section, concrete CONSTRAINTS citations, RELATED FILES footer, `## Status: Scaffold` marker noting "real content Days 5-6 per role spec".
+
+**Constraints honored:** A2.1 (lean scaffolds, no speculative content), B7 (3-tier reading flow + restaurant analogy on WHEN-YOU-GET-LOST per the explicit spec), F8 (CORRECT 3 of 8 doc names this time; coordinator-verified after the PR #32 lesson).
+
+**Carve-outs used:** B2 PR #31 (`ci`), PR #26 (`init`), PR #24 (`app`).
+
+**Next:** PR 3 — `session-2/new-service-sh`: `scripts/new-service.sh` 1-command spawner. Then PR 4 (D8 bridge scripts) + PR 5 (spawn hello-world).
+
+---
+
 ## 2026-05-13 — Day 3, PR 2a REDO (F8-compliant 5-doc scaffolds)
 
 **Branch:** `session-2/f8-compliant-doc-scaffolds` (off main; PR #32 closed + branch deleted)
