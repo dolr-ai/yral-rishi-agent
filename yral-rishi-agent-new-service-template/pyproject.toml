@@ -104,6 +104,12 @@ dependencies = [
     # files against Postgres. Per CONSTRAINTS H11, every migration PR
     # is auto-tested against a WAL-restored snapshot before merge.
     "alembic==1.14.0",
+
+    # sentry-sdk — error tracking shipped to sentry.rishi.yral.com per
+    # A7 + D3. The [fastapi] extra adds the FastAPI + Starlette
+    # integrations that auto-capture unhandled exceptions in the
+    # request path. Init lives in app/sentry_middleware.py.
+    "sentry-sdk[fastapi]==2.22.0",
 ]
 
 # ===========================================================================
