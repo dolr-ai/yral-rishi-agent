@@ -3,6 +3,37 @@
 
 ---
 
+## 2026-05-13 — Day 3, PR 2a REDO (F8-compliant 5-doc scaffolds)
+
+**Branch:** `session-2/f8-compliant-doc-scaffolds` (off main; PR #32 closed + branch deleted)
+
+**Why the redo:** PR #32 shipped the 5 docs as README/ARCHITECTURE/RUNBOOK/ONBOARDING/TROUBLESHOOTING based on a coordinator-message list. Codex flagged it. Per CONSTRAINTS F8 row + CURRENT-TRUTH.md + Rishi's 2026-04-27 doc-set decision, the locked names are: **DEEP-DIVE / READING-ORDER / CLAUDE / RUNBOOK / SECURITY** (5 originals) + WALKTHROUGH / GLOSSARY / WHEN-YOU-GET-LOST (3 new). Coordinator + Codex caught coordinator drift; redo cost a full PR cycle. Lesson: cross-check CONSTRAINTS.md row text on any coordinator citation BEFORE writing the code. Logging here so future-me reads this entry first when CONSTRAINTS citations come up.
+
+**Files added (5):**
+- `yral-rishi-agent-new-service-template/DEEP-DIVE.md` — visual walkthrough with 4 ASCII diagrams (request flow, deploy flow, DB HA, network topology). Each diagram is annotated with the relevant CONSTRAINTS row. 152 lines.
+- `yral-rishi-agent-new-service-template/READING-ORDER.md` — numbered table (25 rows) of every file in reading order. Each row has ETA + priority (🟥 HIGH / 🟨 MED / ⬜ LOW) + 1-line "why you read it". Total budget table at the bottom. 55 lines.
+- `yral-rishi-agent-new-service-template/CLAUDE.md` — instructions for AI agents working in this service (Claude Code + Codex). Sections: ⭐ If you only read one section (A2.1), service identity, constraints to cite, when-asked-to-add-new-module, when-asked-to-modify-main.py, when writing tests, when writing CI, when Codex flags something, **cross-check coordinator's constraint citations** (closes the loop on this PR's redo). 85 lines.
+- `yral-rishi-agent-new-service-template/RUNBOOK.md` — operating procedures. ⭐ START HERE if it's an incident, deploy + rollback per I2/I3, common operations table, P0/P1/P2 severity, replicas crash-looping section, slow-requests section, monitoring list (Sentry/Langfuse/Grafana/Uptime Kuma/Google Chat per D6), backups. 92 lines.
+- `yral-rishi-agent-new-service-template/SECURITY.md` — threat model. 7 load-bearing security properties up top, then sections: authentication (E6/E9), authorization (F3 schema isolation), secrets (D1+D8 with the 5-inheritance-secrets table), PII (H6 + send_default_pii=False), prompt injection (H5), network isolation (C3+C10), out-of-scope threats, who-to-call. 99 lines.
+
+**Total diff ~483 lines.** Over the <200 line target but well under Codex's truncation threshold (~800). Matches coordinator's "5 originals first" split. DEEP-DIVE is the heaviest at 152 lines (ASCII diagrams are line-heavy by nature).
+
+**Decisions made (worth recording):**
+- **Skipped the README placeholder cleanup.** Per coordinator: README is GitHub convention, not F8. If genuinely needed, fold into a separate note. The placeholder is currently fine; cleaning it can happen Days 5-6 alongside real content. Keeps this PR strictly F8-scoped.
+- **DEEP-DIVE diagrams use box-drawing characters.** Renders cleanly in GitHub markdown + any plain-text viewer. No mermaid dependency.
+- **READING-ORDER uses emoji priority markers** (🟥/🟨/⬜). Matches the existing project voice (MASTER-STATUS.md uses ⭐/🚦/📊/🤖 liberally; agent docs use ⭐ START HERE markers throughout). ADHD-friendly per Rishi.
+- **CLAUDE.md includes a "cross-check coordinator's constraint citations" section.** Captures the lesson from this PR's redo so future AI agents working here don't repeat it.
+
+**B7 compliance:** every doc carries the one-line purpose at top, ⭐ START HERE section, concrete constraint citations, RELATED FILES footer, `## Status: Scaffold` marker noting "real content Days 5-6".
+
+**Constraints honored:** A2.1 (no README cleanup folded in; scope discipline), B7 (3-tier reading flow on every doc), F8 (CORRECT 5 of 8 doc names this time — DEEP-DIVE/READING-ORDER/CLAUDE/RUNBOOK/SECURITY), I6 (closed-loop on the redo — pushed back on the wrong list once it was clear, accepted coordinator's correct list, logged the lesson).
+
+**Carve-outs used:** B2 PR #31 (`ci`), PR #26 (`init`), PR #24 (`app`).
+
+**Next:** PR 2b — `session-2/template-three-b7-doc-scaffolds`: WALKTHROUGH + GLOSSARY + WHEN-YOU-GET-LOST scaffolds. That set was correct in the original plan.
+
+---
+
 ## 2026-05-13 — Day 3, PR 1 (per-service CI workflow template)
 
 **Branch:** `session-2/ci-workflow-template` (off main with PR #28 merged)
