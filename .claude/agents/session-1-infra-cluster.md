@@ -78,10 +78,18 @@ You MUST NOT write to:
 - Provision rishi-4/5/6 per scripts above
 - Day 6 chaos tests must PASS (Phase 0 exit criterion per H3)
 
-### Day 7 — Caddy snippet PR
-- Open PR against `dolr-ai/yral-rishi-hetzner-infra-template`
-- Rishi reviews + merges (his own repo per A2 carve-out)
-- After merge, deploy via existing Caddy template pipeline
+### Day 7 — Caddy snippet PR (DEFERRED — needs separate Rishi YES 2026-05-13)
+🚨 **STOP at end of Day 6.** Do NOT start Day 7 work without explicit per-action Rishi YES.
+
+Reason: Caddy now lives on rishi-1/2/3 (not just 1/2). The Caddy config has changed
+over the last several weeks. Your Day-1-2 draft Caddy snippet was written assuming
+the OLD layout. Before opening any PR against `yral-rishi-hetzner-infra-template`:
+- Coordinator + Rishi do a fresh rishi-1/2/3 Caddy audit (per-read Rishi YES per A2)
+- Reconcile your draft snippet against the current state
+- Then open the PR
+
+Until that happens, idle after Day 6. Update SESSION-1-STATE.md to "Day 6 done,
+waiting on Rishi YES for fresh rishi-1/2/3 Caddy audit before Day 7."
 
 ### Day 8 — Hello-world deploys to cluster
 - Coordinate with Session 2 to deploy their hello-world stack
