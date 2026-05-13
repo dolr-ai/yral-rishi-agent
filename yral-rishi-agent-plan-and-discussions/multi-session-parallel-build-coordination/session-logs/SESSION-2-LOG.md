@@ -3,6 +3,33 @@
 
 ---
 
+## 2026-05-13 — Day 1, PR 3 (configs + secrets manifest) — rebased onto main after PR #18 merged
+
+**Branch:** `session-2/template-skeleton-configs`
+
+**Files added (4):**
+- `yral-rishi-agent-new-service-template/project.config` — per-service single source of truth. Bash-sourceable KEY=value pairs (identity, Postgres SCHEMA/ROLE/CONNECTION_LIMIT per F3, Swarm STACK + IMAGE_REPO at GHCR per F13, Sentry service tag per D3, replica caps + REPLICA_COUNT=3 per G2, backup endpoint + bucket per D2 L3 row, three on/off feature flags).
+- `yral-rishi-agent-new-service-template/shared-config.yaml` — cross-service shared values (per C7). YAML sections: sentry (host=sentry.rishi.yral.com per A7+C4), langfuse (host=langfuse.rishi.yral.com per D4), auth (jwks_url + cache + strict-validation default FALSE per E6/E9), billing (access_check_url + 60s cache per E7), database (pgbouncer + asyncpg statement_cache_size=0), redis (sentinel master + 3 sentinel hosts per C11), idempotency (default ON, 24hr TTL per F10), feature_flags (30s poll per F11), llm (default Gemini + NSFW OpenRouter per A10 + runaway cap 500 INR/day per E4), latency (max_p95_ratio=0.5 per E1, streaming first-token 200ms per E2).
+- `yral-rishi-agent-new-service-template/secrets.yaml.template` — per-service secrets manifest per D8. Five inheritance secrets: DATABASE_URL, REDIS_SENTINEL_PASSWORD, SENTRY_DSN, LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY. Each declared with full D8 schema. ${PROJECT_NAME} substitution for new-service.sh.
+- `yral-rishi-agent-new-service-template/.env.example` — hand-written today to match secrets.yaml.template + 3 non-secret env vars (ENVIRONMENT, LOG_LEVEL, LANGFUSE_TRACING_ENABLED). Day 3 generator script will replace + drift-check via CI.
+
+**Also modified (1):**
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/cross-session-dependencies.md` — raised DEP-003 (Session 1 confirm 3 Swarm overlay names). Per coordinator (2026-05-13): resolves on Session 1's Day 4 finish; not blocking.
+
+**Decisions made (worth recording):**
+- **`project.config` stays bash-sourceable key=value, NOT YAML.** Matches existing infra-template's pattern and works with CI's `>> $GITHUB_ENV` parsing.
+- **`secrets.yaml.template` with `.template` suffix.** new-service.sh copies + sed-substitutes it per spawn.
+- **5 inheritance secrets, not more.** Service-specific secrets (JWT_JWKS_URL, OPENROUTER_API_KEY, etc.) get added per service. Keeps template minimal per A2.1.
+- **`shared-config.yaml` lives per-service, not at umbrella root.** Per F16 monorepo: each spawned service has its own copy; CI lint (Day 3) verifies they all match the canonical template version.
+
+**B7 compliance:** every file carries the file header (with ⭐ START HERE), section headers, role-not-syntax comments, RELATED FILES footer.
+
+**Constraints honored:** A2.1, A7/C4, C3, C7, C11, D1/D8, D2/D3/D4, E1/E2/E4/E6/E7/E9, F3/F9/F10/F11/F13, G2, I2, I9, I11.
+
+**Next:** idle until Day 2 kickoff. Day 2 plan = app-layer middleware (PR 4: app/main.py + health, PR 5: database + redis, PR 6: sentry + langfuse, PR 7: auth + idempotency + pii + prompt-injection, PR 8: llm_client + event_stream + feature_flags).
+
+---
+
 ## 2026-05-13 — Day 1, PR 2 (compose files) — rebased onto main after PR #17 merged
 
 **Branch:** `session-2/template-skeleton-compose`
