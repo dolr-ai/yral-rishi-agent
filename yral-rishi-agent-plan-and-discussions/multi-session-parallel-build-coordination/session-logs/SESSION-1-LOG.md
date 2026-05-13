@@ -1,6 +1,89 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-13 — HARDENING: apply_placement_labels_to_this_node targets local NodeID (defense-in-depth follow-up to rishi-5 ghost incident)
+
+### Action
+Surfaced by the rishi-5 Day-4 swarm-join incident earlier today. The
+script's `apply_placement_labels_to_this_node` ran
+`docker node update --label-add ... ${YRAL_NODE_NAME}` (i.e., addressed
+by hostname). On rishi-5, yesterday's failed IPv6-advertise swarm-join
+had left a Down ghost node with hostname `rishi-5` in the cluster's
+membership list. When today's successful IPv4-advertise join created a
+second `rishi-5` entry, `docker node update ... rishi-5` errored with:
+
+```
+Error response from daemon: node rishi-5 is ambiguous (2 matches found)
+```
+
+Labels never applied. Recovery required a narrow A1 carve-out
+(`docker node rm` of the ghost) plus a one-off label-update targeted by
+explicit node ID.
+
+Hardening: capture the local node's Swarm-assigned NodeID via
+`docker info --format '{{.Swarm.NodeID}}'`, then `docker node update`
+by ID — not by hostname — in every case branch. A stale ghost sharing
+the hostname can no longer make this command ambiguous because the ID
+is globally unique. Added a role-comment block documenting the
+rishi-5 ghost incident as the motivator so future re-readers don't
+think the by-ID indirection is gratuitous.
+
+Pre-flight: if `docker info` doesn't yield a NodeID (e.g., the swarm
+init/join step earlier somehow didn't complete), the function exits 1
+with a clear error pointing at the missing prerequisite.
+
+### Files touched
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/scripts/node-bootstrap.sh (+18 / -3, single function)
+- yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-1-LOG.md (this entry)
+
+### Why
+Day 4 close-sequence (step a per Rishi 2026-05-13). Defense-in-depth
+against the failure mode the rishi-5 ghost incident surfaced. NOT
+load-bearing for any rishi-N step we've already done — rishi-6's
+swarm-join + labels landed clean on the first try without this fix
+because rishi-6 was a fresh server with no prior Swarm history → no
+hostname ambiguity possible by construction. Hardening is for the
+NEXT cluster build (recovery, re-init, new node addition) where
+hostname collisions are far more likely than on the green-field
+first build.
+
+Per A2.1: single concern, tight diff (+18/-3 net +15 lines), no new
+abstractions, no new dependencies. Sixth Session-1 mechanical fix
+PR in the #19/#21/#23/#29/(this) sequence — all same shape.
+
+### Test evidence
+- `bash -n node-bootstrap.sh` → syntax OK.
+- `git diff --stat` → 1 file, +18/-3.
+- Behaviour matrix:
+  - Healthy single-Swarm-membership node (typical case) → NodeID
+    capture succeeds, label-update by ID works identically to the
+    old hostname-based path.
+  - Node with stale ghost sharing hostname → label-update by ID
+    targets the REAL node (the one whose NodeID `docker info`
+    reports here, locally). Ghost is unaffected (correctly — it's
+    a stale entry that someone else with A1 YES should clean up).
+  - Node not yet in a Swarm → `docker info` returns empty NodeID
+    → pre-flight exit 1 with clear pointer to missing prerequisite.
+- No live re-run on real servers — Day 4 is done; this hardening
+  doesn't need re-execution. It will exercise on Day-5+ if Patroni
+  install scripts ever re-invoke label-apply or on the next fresh
+  cluster build.
+
+### Blockers raised
+None.
+
+### What's next after this merges (Day 4 close, step b)
+Single `session-1/day-4-cluster-bringup-complete` PR with:
+- One bundled SESSION-1-LOG milestone capturing all 3 nodes' phases
+  (root-window + swarm-init/join), the 4 bugs-caught arc
+  (substring / encrypted / IPv4 / ambiguity), the IPsec-XFRM-policies-
+  lazy note for future operators, and the final cluster-state table.
+- SESSION-1-STATE update to "Day 4 done; idle pending Day 5 green-light".
+- No code changes; should auto-merge per I14 (.md-only + small +
+  Codex APPROVE expected).
+
+---
+
 ## 2026-05-13 — MILESTONE: Day 4 fix — IPv4 `--advertise-addr` (4th script bug; caught on rishi-5 swarm-join)
 
 ### Action
