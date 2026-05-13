@@ -3,6 +3,35 @@
 
 ---
 
+## 2026-05-13 — Day 3, PR 2a (5 original doc scaffolds)
+
+**Branch:** `session-2/template-five-doc-scaffolds` (off main with PR #30 merged + PR #31 B2 `ci` carve-out)
+
+**Files added (4) + modified (1):**
+- `yral-rishi-agent-new-service-template/README.md` — REPLACED the prior 7-line placeholder. New version: ⭐ START HERE pointers per persona, quick-start runbook, doc index table for all 8 required docs, constraints-honored list with citations. 58 lines.
+- `yral-rishi-agent-new-service-template/ARCHITECTURE.md` — 30-second-summary section, module map table (one row per `app/*.py`), inbound/outbound dependency placeholders, data flow sketch, constraints-honored list. 78 lines.
+- `yral-rishi-agent-new-service-template/RUNBOOK.md` — ⭐ START HERE if it's an incident, deploy + rollback procedures, common operations table, P0/P1/P2 severity classifications, monitoring + alerts list (Sentry, Langfuse, Grafana, Uptime Kuma, Alertmanager → Google Chat per D6). 73 lines.
+- `yral-rishi-agent-new-service-template/ONBOARDING.md` — Day-1-to-Day-5 reading order with "done when ___" lines per day. Day 1: get it running. Day 2: code tour. Day 3: read the constraints. Day 4-5: first PR. Plus first-PR low-risk suggestions + first-PR anti-pattern list. 70 lines.
+- `yral-rishi-agent-new-service-template/TROUBLESHOOTING.md` — symptom-to-fix tables, 9 symptom sections (won't start / unhealthy / slow / DB / Redis / Sentry / Langfuse / logs / deploy). Each has table-format fixes. 104 lines.
+
+**Total diff ~383 lines.** Over the <200 line target but well within Codex's truncation threshold; matches coordinator's "5 originals first" split suggestion.
+
+**Decisions made (worth recording):**
+- **Used the coordinator's canonical doc list, not the role spec's.** Role spec said DEEP-DIVE / READING-ORDER / CLAUDE / RUNBOOK / SECURITY + WALKTHROUGH/GLOSSARY/WHEN-YOU-GET-LOST. Coordinator's most recent message clarified: README / ARCHITECTURE / RUNBOOK / ONBOARDING / TROUBLESHOOTING (the 5 "originals" per the documentation-standards memory) + WALKTHROUGH / GLOSSARY / WHEN-YOU-GET-LOST. Following coordinator's most recent canonical list.
+- **README replaces the placeholder rather than augmenting it.** Old README was a 7-line "empty placeholder; see plan doc" message. New version is the actual entrypoint per the 8-doc structure. Placeholder text gone.
+- **Each doc has a `## Status` footer marking it as a scaffold.** Day 5-6 fills in real content per role spec. The footer makes the "this isn't finished" state explicit so a future reader doesn't mistake the scaffolds for finished docs.
+- **Per-section ⭐ START HERE pointers in TROUBLESHOOTING and RUNBOOK.** ADHD-friendly (per Rishi's situation): the most urgent symptom maps to the most prominent section.
+- **`RELATED FILES` footer on every doc.** B7 requirement; reinforces the cross-doc reading flow.
+- **Concrete constraint citations everywhere.** Each doc cites the specific CONSTRAINTS row (A2.1, A7, B7, etc.) so a reader can trace "why" without guessing.
+
+**Carve-outs used:** B2 (PR #31 `ci`), B2 (PR #26 `init`), B2 (PR #24 `app`).
+
+**Constraints honored:** A2.1 (scaffolds, not speculative full content), B7 (3-tier reading flow + RELATED FILES on every doc), F8 (8 required docs — this PR covers 5 of them), I6 (followed coordinator's most-recent canonical list over the older role spec).
+
+**Next:** PR 2b — `session-2/template-three-b7-doc-scaffolds`: WALKTHROUGH + GLOSSARY + WHEN-YOU-GET-LOST scaffolds. Then PR 3 (new-service.sh), PR 4 (D8 bridge scripts), PR 5 (spawn hello-world).
+
+---
+
 ## 2026-05-13 — Day 3, PR 1 (per-service CI workflow template)
 
 **Branch:** `session-2/ci-workflow-template` (off main with PR #28 merged)
