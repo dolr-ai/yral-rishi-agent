@@ -1,6 +1,56 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-13 — NOTE: PR #23 follow-up — defense-in-depth verify for existing overlays
+
+### Action
+Codex review on PR #23 flagged a real C3 gap that the encrypted-flag fix alone
+did not close: `create_encrypted_overlay_networks` skips overlay creation when
+the name already exists, but doesn't verify the existing overlay actually has
+`encrypted=true`. A pre-existing UNencrypted overlay (legacy provision, manual
+`docker network create`, prior buggy run of this very script) would be
+silently accepted — exact C3 violation invisible on the second-run path. Today's
+trap on rishi-4 (PR #23's body) would have been undetectable to the script on
+a re-run.
+
+Added a defense-in-depth check inside the "already exists — skipping" branch:
+read `Options.encrypted` via `docker network inspect` and `exit 1` with a clear
+error if it isn't `"true"`. Fail loud, do NOT auto-rm — auto-rm would re-open
+the A1 deletion surface. Remediation requires a separate Rishi YES.
+
+Pushed as a follow-up commit on the existing PR #23 branch
+(`session-1/fix-overlay-encrypted-flag`).
+
+### Files touched
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/scripts/node-bootstrap.sh (+17 / -1; one branch in one function)
+- yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-1-LOG.md (this note)
+
+### Why
+Codex caught a real defense-in-depth issue on the PR. CONSTRAINTS C3 violation
+is the stake — Codex was right; merging PR #23 without this check would have
+left the gap permanently open even though the immediate bug was fixed. Per
+A2.1: this is tightening an existing verification (not adding new abstractions
+or test harnesses), single-concern, ~17 lines, well under the 100-line trigger.
+
+### Test evidence
+- `bash -n node-bootstrap.sh` → syntax OK.
+- Code path matrix:
+  - Overlay does not exist → script creates with `encrypted=true` (unchanged).
+  - Overlay exists with `encrypted=true` → script skips (unchanged, just prints clearer message).
+  - Overlay exists with `encrypted=""` or `encrypted=false` or missing key →
+    script EXIT 1 with ERROR pointing the operator at manual A1 remediation
+    (new behaviour — was silent skip before).
+- Diff: +17 / -1, single branch inside the existing function. No new functions,
+  no new dependencies.
+
+### Blockers raised
+None. After PR #23 (this updated version) merges, the previously-planned
+rishi-4 recovery still applies: rm the 3 unencrypted overlays under the
+pre-authorised narrow A1 carve-out, re-run swarm-init, verify encrypted=true,
+STOP, ping.
+
+---
+
 ## 2026-05-13 — MILESTONE: Day 4 fix — overlay `--opt encrypted=true` (PR coming)
 
 ### Action

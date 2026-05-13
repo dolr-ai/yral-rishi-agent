@@ -475,7 +475,23 @@ create_encrypted_overlay_networks() {
         "${DATA_PLANE_OVERLAY_NAME}"; do
 
         if echo "${existing_overlay_networks}" | grep --quiet --line-regexp "${overlay_network_name}"; then
-            echo "node-bootstrap: overlay ${overlay_network_name} already exists — skipping"
+            # Defense-in-depth verification: a pre-existing overlay
+            # (legacy provision, manual `docker network create`, prior
+            # buggy run of this script) might be UNencrypted even though
+            # its name matches what we want. Plain existence check alone
+            # would silently accept a C3 violation. Read the `encrypted`
+            # option directly and fail loud if it isn't "true". Auto-rm
+            # is intentionally NOT done here — remediation needs a
+            # separate Rishi YES per A1.
+            local existing_overlay_encrypted_option
+            existing_overlay_encrypted_option="$(docker network inspect "${overlay_network_name}" \
+                --format '{{index .Options "encrypted"}}' 2>/dev/null || echo "")"
+            if [[ "${existing_overlay_encrypted_option}" != "true" ]]; then
+                echo "ERROR node-bootstrap: overlay ${overlay_network_name} exists but encrypted='${existing_overlay_encrypted_option}' (expected 'true' per CONSTRAINTS C3)" >&2
+                echo "  Manual remediation required (separate Rishi YES per A1 — auto-rm is NOT in scope here)." >&2
+                exit 1
+            fi
+            echo "node-bootstrap: overlay ${overlay_network_name} already exists with encrypted=true — skipping"
             continue
         fi
         docker network create \
