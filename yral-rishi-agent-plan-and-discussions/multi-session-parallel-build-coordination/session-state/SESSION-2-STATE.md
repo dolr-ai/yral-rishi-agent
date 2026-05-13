@@ -1,5 +1,5 @@
 # Session 2 STATE — Template & Hello-World
-> Updated: 2026-05-13 — Day 2, PR 4 commit (closes Day 2 middleware skeleton).
+> Updated: 2026-05-13 — Day 3, PR 1 commit (CI workflow template).
 
 ## ⭐ START-OF-SESSION SUMMARY (read first when resuming)
 
@@ -7,31 +7,28 @@ I am Session 2. I own the v2 template (`yral-rishi-agent-new-service-template/`)
 
 ## LAST THING I DID
 
-Day 2 / PR 4 — added `app/config.py`: typed pydantic-settings `Settings` model + `get_settings()` cached singleton wrapping the env vars currently used by sentry / langfuse / logging modules. Added `pydantic-settings==2.7.1` to pyproject.toml. ~129 line diff. Single concern (no bundling).
+Day 3 / PR 1 — added the per-service CI workflow template at `yral-rishi-agent-new-service-template/.github/workflows/per-service-ci.yml`. Two jobs (`lint` + `docker-build`); ~116 lines. Path-scoped per F16. NOT auto-discovered by GitHub (lives in subdir, not root) — file is the source of truth for what new-service.sh writes to root at spawn time, and what coordinator can install at root for the template itself.
 
 ## CURRENT TASK
 
-PR 4 pushed and opened. Idling until coordinator confirms merge. After that, Day 2 middleware skeleton is complete and Day 3 begins.
+PR 1 pushed and opened. Idling until coordinator confirms merge.
 
 ## NEXT 3 PLANNED ACTIONS
 
-After PR 4 merges, Day 3 work begins:
-
-1. CI workflows for the template — Docker build + smoke (against the local compose), pytest + coverage gate per J1, lint-secrets-hygiene per D8 (validates `secrets.yaml.template` schema + matches `.env.example`), lint-shared-config (verifies the template's canonical `shared-config.yaml`).
-2. 8 required docs per F8 (DEEP-DIVE / READING-ORDER / CLAUDE / RUNBOOK / SECURITY / WALKTHROUGH / GLOSSARY / WHEN-YOU-GET-LOST) — initial scaffolds, real content fills in Days 5-6.
-3. `scripts/new-service.sh` + `validate-secrets.sh` + `sync-github-secrets.sh` + `gen-env-example.sh` per D8. Then spawn `yral-rishi-agent-hello-world` from the template and verify end-to-end.
+1. PR 2 — `session-2/template-eight-docs`: 8 doc scaffolds per F8 (DEEP-DIVE / READING-ORDER / CLAUDE / RUNBOOK / SECURITY / WALKTHROUGH / GLOSSARY / WHEN-YOU-GET-LOST). Initial stubs only; real content lands Days 5-6 per role spec.
+2. PR 3 — `session-2/new-service-sh`: `scripts/new-service.sh` 1-command spawner. Copies template folder to `yral-rishi-agent-<name>/`, sed-substitutes PROJECT_NAME everywhere, emits root-level workflow content for coordinator to stage.
+3. PR 4 — `session-2/d8-bridge-scripts`: `validate-secrets.sh` + `sync-github-secrets.sh` + `gen-env-example.sh`. Closes the SENTRY_TRACES_SAMPLE_RATE / LANGFUSE_HOST gap noted by coordinator (single source of truth = secrets.yaml + a non-secret-env list).
+4. (After PR 4) PR 5 — `session-2/spawn-hello-world`: run new-service.sh against template, commit the spawned service. J1-J6 testing pyramid kicks in here.
 
 ## BLOCKERS
 
-None. DEP-003 (Swarm overlay names) per coordinator resolves on Session 1's Day 4 swarm-init; not blocking template-folder work.
+None hard. DEP-003 per coordinator: resolves on Session 1's Day 4 swarm-init; not blocking template-folder work.
 
 ## PENDING PRs (mine)
 
 - Day 1: PR #17 + PR #18 + PR #20 — all merged.
-- Day 2 PR 1 (PR #22) — Sentry middleware — merged.
-- Day 2 PR 2 (PR #25) — Langfuse middleware — merged.
-- Day 2 PR 3 (PR #27) — request-ID + structured logging (bundled) — merged.
-- Day 2 PR 4 — `session-2/config-loader` — opening now.
+- Day 2 PR 1 (PR #22), PR 2 (PR #25), PR 3 (PR #27), PR 4 (PR #28) — all merged.
+- Day 3 PR 1 — `session-2/ci-workflow-template` — opening now.
 
 ## CROSS-SESSION DEPS (mine)
 
@@ -40,18 +37,22 @@ None. DEP-003 (Swarm overlay names) per coordinator resolves on Session 1's Day 
 ## CONFIRM TO RISHI (pre-written for resume)
 
 ```
-I'm Session 2, Day 2 PR 4 opened — closes Day 2 middleware skeleton.
+I'm Session 2, Day 3 PR 1 opened.
 
 WORKTREE: /Users/rishichadha/Claude Projects/yral-rishi-agent-worktrees/session-2
 
-DONE: Day 1 (#17 + #18 + #20). Day 2 PRs 1-3 (#22, #25, #27).
-DONE: Day 2 PR 4 — config.py + pydantic-settings (~129 lines).
+DONE: Day 1 (#17 + #18 + #20). Day 2 (#22, #25, #27, #28).
+DONE: Day 3 PR 1 — per-service CI workflow template (~116 lines, in scope).
 
-NEXT (after PR 4 merges, Day 3 begins):
-  - CI workflows for the template (docker build, pytest, lint hygiene)
-  - 8 required docs per F8 (scaffolds; real content Days 5-6)
-  - scripts/new-service.sh + bridge scripts per D8
-  - Spawn yral-rishi-agent-hello-world from template, verify e2e
+Scope note: my agent definition forbids root `.github/workflows/`.
+Shipped the workflow as a template inside the template folder.
+Coordinator installs at root.
+
+NEXT (sequential per your direction):
+  PR 2: 8 doc scaffolds (stubs; content fills Days 5-6)
+  PR 3: scripts/new-service.sh
+  PR 4: D8 bridge scripts (validate/sync/gen-env)
+  PR 5: spawn hello-world (J1-J6 testing kicks in)
 
 Continue?
 ```
