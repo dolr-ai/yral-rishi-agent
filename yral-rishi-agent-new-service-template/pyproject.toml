@@ -100,6 +100,11 @@ dependencies = [
     # objects.
     "pydantic==2.10.5",
 
+    # pydantic-settings — env-driven typed config models. Used by
+    # app/config.py to build the Settings singleton; one parse of
+    # the env at startup, validated, then served to every callsite.
+    "pydantic-settings==2.7.1",
+
     # alembic — schema migration tool. Generates + runs SQL migration
     # files against Postgres. Per CONSTRAINTS H11, every migration PR
     # is auto-tested against a WAL-restored snapshot before merge.
