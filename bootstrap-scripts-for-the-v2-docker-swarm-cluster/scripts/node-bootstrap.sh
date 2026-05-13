@@ -242,9 +242,19 @@ add_docker_apt_repository_if_missing() {
     #        the `compose-plugin` we rely on. Docker's official repo is the
     #        documented source per Docker's own install instructions.
     local docker_apt_keyring_path="/etc/apt/keyrings/docker.gpg"
-    local docker_apt_source_list_path="/etc/apt/sources.list.d/docker.list"
+    # Skip the repo-add if Docker's apt source is registered in EITHER
+    # legacy `docker.list` (one-line `deb …` format) or the newer
+    # `docker.sources` (YAML-style deb822) Hetzner provisioning sometimes
+    # uses — adding a second file with a different `Signed-By` key path
+    # makes `apt-get update` fail with a Signed-By conflict. The `command
+    # -v docker` short-circuit covers the case where Docker was installed
+    # via a different path entirely (no apt source file present here).
+    local docker_apt_source_list_path_legacy_format="/etc/apt/sources.list.d/docker.list"
+    local docker_apt_source_list_path_deb822_format="/etc/apt/sources.list.d/docker.sources"
 
-    if [[ -f "${docker_apt_source_list_path}" ]]; then
+    if [[ -f "${docker_apt_source_list_path_legacy_format}" \
+       || -f "${docker_apt_source_list_path_deb822_format}" ]] \
+       || command -v docker >/dev/null 2>&1; then
         return 0
     fi
 
@@ -253,7 +263,7 @@ add_docker_apt_repository_if_missing() {
         | gpg --dearmor --output "${docker_apt_keyring_path}"
     chmod a+r "${docker_apt_keyring_path}"
     echo "deb [arch=amd64 signed-by=${docker_apt_keyring_path}] https://download.docker.com/linux/ubuntu noble stable" \
-        > "${docker_apt_source_list_path}"
+        > "${docker_apt_source_list_path_legacy_format}"
 }
 
 
