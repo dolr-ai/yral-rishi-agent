@@ -3,6 +3,35 @@
 
 ---
 
+## 2026-05-13 — Day 2, PR 4 (config loader)
+
+**Branch:** `session-2/config-loader` (off main with PR #27 merged)
+
+**Files added (1):**
+- `yral-rishi-agent-new-service-template/app/config.py` — typed pydantic-settings `Settings` model + cached `get_settings()` singleton. Wraps the env vars currently used by sentry / langfuse / logging modules: `environment`, `log_level`, `sentry_dsn`, `sentry_service_tag`, `sentry_traces_sample_rate`, `langfuse_tracing_enabled`, `langfuse_public_key`, `langfuse_secret_key`, `langfuse_host`. case_sensitive=False so `SENTRY_DSN` or `sentry_dsn` both match. 124 lines including B7 docs.
+
+**Files modified (1):**
+- `yral-rishi-agent-new-service-template/pyproject.toml` — added `pydantic-settings==2.7.1`.
+
+**Total diff ~129 lines**, well under the <200 target. Single concern this time (no bundling).
+
+**Decisions made (worth recording):**
+- **Env-only loading; shared-config.yaml integration deferred.** Per A2.1 the YAML loader lands when the first consumer needs nested structured data (e.g. Redis Sentinel hosts list per C11). Adding pyyaml + a merge layer before any consumer needs it would be over-engineering. Documented in the file header as a clear "next-up" note.
+- **`functools.lru_cache(maxsize=1)` for the singleton.** Stdlib, dependency-free, exactly the right shape. Avoided rolling a manual module-level `_settings = None` + getter pattern.
+- **Existing middleware NOT refactored to use Settings in this PR.** They still read env directly. The Settings class is available for future modules (database, redis client, LLM client). Migrating existing modules is a follow-up if needed. Keeps this PR focused.
+- **`extra="ignore"` in SettingsConfigDict.** Avoids Settings construction failing when the env has unrelated vars (PATH, PWD, hundreds of `GITHUB_*` in CI, etc.).
+- **No nested submodel structure.** Flat `sentry_dsn` instead of `sentry.dsn` — matches the actual env var shape and keeps the single-underscore convention. Nesting can come later if a consumer naturally wants `settings.sentry.dsn` access.
+
+**B7 compliance:** file carries the file header (with ⭐ START HERE), class + function WHAT/WHEN/WHY blocks, role-not-syntax comments, RELATED FILES footer.
+
+**Constraints honored:** A2.1 (no speculative YAML loader, no premature refactor of existing modules), B1 (every name reads as English), B2 (`config` is an allowed abbreviation in B2's original list; `init` carve-out also active), F12 (Python 3.12 + pydantic-settings 2.x), C7 (path forward documented — shared-config.yaml loader is where YAML lands).
+
+**Codex false-positive note (coordinator-flagged on PR #27):** Codex hallucinated a `per-req` NIT when the diff said `per-request`. Same pattern as the earlier `app` BLOCKER hallucination. Watching for similar truncation-fail-closed inventions on future PRs; will read Codex comments against the actual diff before acting on them.
+
+**Next:** Day 2 middleware skeleton complete after PR 4 merges. Day 3 work begins: CI workflows + 8 docs + new-service.sh + spawn hello-world. J1-J6 testing pyramid starts mattering here.
+
+---
+
 ## 2026-05-13 — Day 2, PR 3 (request-ID middleware + structured logging, bundled per coordinator)
 
 **Branch:** `session-2/request-id-and-logging` (off main with PR #25 merged + PR #26 broadened B2 carve-out for `init`)
