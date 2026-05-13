@@ -37,6 +37,15 @@ from app.sentry_middleware import init_sentry
 # (below) so SIGTERM doesn't drop in-flight LLM traces.
 from app.langfuse_middleware import flush_langfuse, init_langfuse
 
+# Structured logging with PII allowlist redaction per H6. Configured
+# at module-load so any startup log lines emit through the same
+# pipeline as request logs.
+from app.logging import configure_logging
+
+# Per-request correlation ID middleware. Mounted on the FastAPI app
+# below so it runs OUTERMOST in the request chain.
+from app.request_id_middleware import RequestIdMiddleware
+
 
 # Run Sentry init now, at module import time. After this line, every
 # unhandled exception below is shipped to sentry.rishi.yral.com (per A7).
@@ -45,6 +54,11 @@ init_sentry()
 # Init Langfuse the same way. No-ops when LANGFUSE_TRACING_ENABLED is
 # false (the default in docker-compose.yml for local dev).
 init_langfuse()
+
+# Configure structlog + stdlib logging. Order: AFTER Sentry/Langfuse
+# init (so their startup messages can land through this pipeline) but
+# BEFORE app creation so any startup log line is structured.
+configure_logging()
 
 
 @asynccontextmanager
@@ -77,13 +91,23 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Mount RequestIdMiddleware. In Starlette/FastAPI, `add_middleware`
+# is LIFO for incoming requests — the LAST added is the FIRST to
+# see the request. We want the request ID assigned before anything
+# else looks at the request, so this is the LAST middleware we add
+# in main.py. Subsequent PRs that add more middleware MUST add them
+# BEFORE this line so they sit inside it.
+app.add_middleware(RequestIdMiddleware)
+
 
 # ===========================================================================
 # RELATED FILES:
-#   __init__.py            — marks app/ as a Python package
-#   sentry_middleware.py   — init_sentry() called above (per A7)
-#   langfuse_middleware.py — init_langfuse() + flush_langfuse() (per D4)
-#   pyproject.toml         — fastapi + uvicorn + sentry-sdk + langfuse deps
-#   Dockerfile             — CMD ["uvicorn", "app.main:app", ...]
-#   docker-compose.yml     — local-dev runner with --reload
+#   __init__.py              — marks app/ as a Python package
+#   sentry_middleware.py     — init_sentry() called above (per A7)
+#   langfuse_middleware.py   — init_langfuse() + flush_langfuse() (per D4)
+#   logging.py               — configure_logging() called above (per H6)
+#   request_id_middleware.py — RequestIdMiddleware mounted above
+#   pyproject.toml           — fastapi + sentry-sdk + langfuse + structlog
+#   Dockerfile               — CMD ["uvicorn", "app.main:app", ...]
+#   docker-compose.yml       — local-dev runner with --reload
 # ===========================================================================

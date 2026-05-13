@@ -115,6 +115,11 @@ dependencies = [
     # from every v2 service traces to langfuse.rishi.yral.com. The
     # singleton + getter + flush helper live in app/langfuse_middleware.py.
     "langfuse==2.59.7",
+
+    # structlog — structured (k=v / JSON) logging. Per H6 the template
+    # ships an allowlist-based redaction processor (in app/logging.py)
+    # that drops any field key not on a known-safe list.
+    "structlog==24.4.0",
 ]
 
 # ===========================================================================
