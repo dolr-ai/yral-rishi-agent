@@ -3,6 +3,42 @@
 
 ---
 
+## 2026-05-13 — Day 2, PR 3 (request-ID middleware + structured logging, bundled per coordinator)
+
+**Branch:** `session-2/request-id-and-logging` (off main with PR #25 merged + PR #26 broadened B2 carve-out for `init`)
+
+**Files added (2):**
+- `yral-rishi-agent-new-service-template/app/request_id_middleware.py` — `RequestIdMiddleware` (Starlette BaseHTTPMiddleware) + module-level `ContextVar` + `get_request_id()` accessor. Reads `X-Request-ID` or mints UUID4 per request, binds to ContextVar for the request's lifetime, tags the Sentry scope, echoes the header on the response. 91 lines.
+- `yral-rishi-agent-new-service-template/app/logging.py` — structlog config + two custom processors. `_inject_request_id` stamps the ContextVar's value onto every log line; `_redact_disallowed_fields` redacts any field key NOT on `_FIELD_ALLOWLIST` per H6 (allowlist not denylist — the H6-correct interpretation). 22-field allowlist covers structlog built-ins, request-scoped IDs, service identity, HTTP shape, opaque user IDs, error classification, LLM telemetry. JSON renderer for staging/production, ConsoleRenderer locally. 114 lines.
+
+**Files modified (2):**
+- `yral-rishi-agent-new-service-template/app/main.py` — imports + module-load `configure_logging()` call + `app.add_middleware(RequestIdMiddleware)` after app creation. Comment notes that `add_middleware` is LIFO so RequestIdMiddleware (added last) runs OUTERMOST.
+- `yral-rishi-agent-new-service-template/pyproject.toml` — added `structlog==24.4.0`.
+
+**Total diff ~240 lines.** Over the <200 target but coordinator bundled two concerns into one PR, so the size was implicit.
+
+**Decisions made (worth recording):**
+- **ContextVar over `request.state`.** ContextVar propagates across `await` boundaries; `request.state` requires a reference to the FastAPI Request object that background tasks + exception handlers don't have.
+- **Mint UUID4 on missing header.** Don't depend on the edge Caddy stack setting the header — guarantees every log/trace has a request_id.
+- **Allowlist redaction, not denylist.** H6 explicitly calls for an allowlist. Denylists miss any new field name nobody flagged; allowlists default-deny.
+- **`_FIELD_ALLOWLIST` is conservative.** 22 fields covering structlog built-ins + the obvious safe-shape fields (HTTP method/path/status, opaque IDs, LLM telemetry shape). Per-service additions require a 1-line PR — small security review per field.
+- **`add_middleware(RequestIdMiddleware)` LAST so it runs OUTERMOST.** Starlette's middleware ordering is LIFO; the last `add_middleware` call is the first to see incoming requests. Comment in main.py spells this out for the next person adding middleware.
+- **`configure_logging()` runs AFTER Sentry/Langfuse init but BEFORE app creation.** Anything logged during app startup goes through the structured pipeline.
+
+**Used name `app/logging.py`.** Risk: shadows stdlib `logging` module. Verified safe — Python's `import logging` always resolves to stdlib (absolute imports), and our file is only reachable via `from app.logging import ...`. B1-compliant name; A2.1-compliant choice (no clever renaming).
+
+**B7 compliance:** both files carry the file header (with ⭐ START HERE), function WHAT/WHEN/WHY blocks, role-not-syntax comments, RELATED FILES footer.
+
+**Constraints honored:** A2.1 (trimmed verbose B7 headers to fit closer to size budget), B1 (every name reads as English), B2 (`init` carve-out per PR #26 — `init_*` functions stay as written), F12 (Python 3.12 + asyncio-safe ContextVar), H6 (PII allowlist redaction in the log processor).
+
+**Carve-outs used:**
+- B2 + PR #24 — `app/` package name.
+- B2 + PR #26 — `init_*` function names + this PR's reliance on existing `init_sentry()` / `init_langfuse()`.
+
+**Next:** PR 4 (Day-2 plan PR 5 in the original sketch) — `session-2/config-loader`: `app/config.py` typed pydantic settings reading shared-config.yaml + env vars.
+
+---
+
 ## 2026-05-13 — Day 2, PR 2 (Langfuse middleware)
 
 **Branch:** `session-2/langfuse-middleware` (off main with PR #22 merged + PR #24 B2 carve-out)
