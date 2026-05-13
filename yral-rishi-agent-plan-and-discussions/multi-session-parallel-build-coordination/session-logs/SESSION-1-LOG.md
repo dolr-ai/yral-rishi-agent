@@ -1,6 +1,65 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-13 — MILESTONE: Day 4 fix — swarm-state exact-match idempotency bug (PR #21)
+
+### Action
+Caught on the rishi-4 first swarm-init run today, right after PR #19
+(docker.sources idempotency fix) merged. The idempotency check in both
+`initialize_docker_swarm_on_first_manager_node` and
+`join_docker_swarm_as_manager_node` was:
+
+```bash
+if docker info --format '{{.Swarm.LocalNodeState}}' | grep --quiet active; then
+    return 0
+fi
+```
+
+Docker's possible Swarm states include `inactive` for an un-joined node.
+`grep active` is a substring match — and "inactive" contains "active" —
+so the check returned true on a node that was NOT yet in a Swarm. Script
+skipped `docker swarm init`, then `docker network create --driver overlay`
+errored with "This node is not a swarm manager" and `set -e` exited
+cleanly with no partial state on the box.
+
+Fix on branch `session-1/fix-swarm-state-exact-match`: capture state once
+into `swarm_local_node_state`, compare with `[[ ... == "active" ]]`
+exact equality. Added a role-comment in each spot explaining *why*
+exact-match (so future re-readers don't reintroduce the substring trap).
+Same low-risk pattern as PR #19.
+
+### Files touched
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/scripts/node-bootstrap.sh (+13 / -2, two functions)
+- yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-1-LOG.md (this entry)
+
+### Why
+A2.1 + the user's "if anything goes weird, STOP and ask" rule. Second
+script-idempotency bug Session 1 has caught against unexpected
+real-server state (PR #19 was the first). Both fixes followed the same
+pause-fix-merge-retry loop — no server damage, no over-engineered test
+harness, just tight diffs against the real failure mode.
+
+### Test evidence
+- `bash -n node-bootstrap.sh` → syntax OK.
+- `grep --quiet active` across the whole bootstrap folder → 0 remaining
+  matches. Sibling scripts (patroni-install, redis-sentinel-install,
+  langfuse-install, chaos tests) already use `[[ ... == "active" ]]`.
+- Behaviour matrix in the PR body covers the four LocalNodeState values
+  (inactive / active / pending|locked / error).
+- **No chaos run** — drafts only. State of rishi-4 right now: root-window
+  phase landed on the prior run (rishi-deploy + CI-key SSH verified =
+  Sunday deadline cleared), Docker + chrony + fail2ban + UFW + sshd
+  hardening done; Swarm itself still inactive (the next step after this
+  fix merges).
+
+### Blockers raised
+None. PR #21 is the only blocker on Day 4 re-run; once it merges I
+`git pull` in the worktree, re-run swarm-init on rishi-4, verify the
+3 overlays + placement labels + resync systemd unit, then STOP for
+Rishi green-light on rishi-5/6.
+
+---
+
 ## 2026-05-05 — MILESTONE: Day 3 chaos-test drafts (fill + partition + runner → PR B)
 
 ### Action
