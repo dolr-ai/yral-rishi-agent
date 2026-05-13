@@ -37,6 +37,11 @@
 # ║  - YRAL_NODE_NAME            rishi-4 | rishi-5 | rishi-6                  ║
 # ║  - YRAL_NODE_ROLE            edge | compute (drives placement labels)     ║
 # ║  - YRAL_BOOTSTRAP_PHASE      root-window | swarm-init | swarm-join         ║
+# ║  - YRAL_NODE_ADVERTISE_IPV4  IPv4 this node advertises to Swarm peers     ║
+# ║                              (REQUIRED for swarm-init + swarm-join). MUST║
+# ║                              be IPv4 — never IPv6 — because UFW peer    ║
+# ║                              rules + RISHI_N_PUBLIC_IPV4 secrets are     ║
+# ║                              IPv4-only.                                  ║
 # ║  - YRAL_RISHI_4_PUBLIC_IPV4  IPv4 of rishi-4 (used during swarm-join)     ║
 # ║  - YRAL_SWARM_JOIN_TOKEN     `docker swarm join-token manager` output     ║
 # ║                              from rishi-4 (used during swarm-join)        ║
@@ -195,6 +200,16 @@ confirm_required_environment_variables_present() {
         YRAL_BOOTSTRAP_PHASE
         YRAL_AUTHORIZED_SSH_KEYS
     )
+
+    # `swarm-init` and `swarm-join` both need this node's IPv4 to use as
+    # the `--advertise-addr` value. Required explicitly (not auto-derived)
+    # because `hostname --ip-address` returns IPv6 first on Hetzner
+    # Ubuntu boxes, and a value-less heuristic silently picks the wrong
+    # address — UFW peer rules + RISHI_N_PUBLIC_IPV4 secrets are
+    # IPv4-only, so an IPv6 advertise breaks cluster comms.
+    if [[ "${YRAL_BOOTSTRAP_PHASE:-}" == "swarm-init" || "${YRAL_BOOTSTRAP_PHASE:-}" == "swarm-join" ]]; then
+        required_environment_variables+=(YRAL_NODE_ADVERTISE_IPV4)
+    fi
 
     # `swarm-join` additionally needs the rishi-4 IP + join token.
     if [[ "${YRAL_BOOTSTRAP_PHASE:-}" == "swarm-join" ]]; then
@@ -422,7 +437,13 @@ initialize_docker_swarm_on_first_manager_node() {
         return 0
     fi
 
-    docker swarm init --advertise-addr "$(hostname --ip-address | awk '{print $1}')"
+    # IMPORTANT: use the caller-supplied IPv4 explicitly (not
+    # `hostname --ip-address | awk '{print $1}'`). On Hetzner Ubuntu the
+    # hostname helper returns IPv6 first; the awk-first heuristic
+    # silently advertised IPv6 to the cluster, which then fails on the
+    # first manager join because our UFW peer rules + RISHI_N_PUBLIC_IPV4
+    # secrets are IPv4-only. Required env var is asserted in pre-flight.
+    docker swarm init --advertise-addr "${YRAL_NODE_ADVERTISE_IPV4}"
 
     # Print the manager join token so the operator can copy it to the env
     # of the swarm-join run on rishi-5 and rishi-6.
@@ -446,9 +467,14 @@ join_docker_swarm_as_manager_node() {
         return 0
     fi
 
+    # See initialize_docker_swarm_on_first_manager_node's role-comment:
+    # advertise-addr MUST come from YRAL_NODE_ADVERTISE_IPV4 (IPv4 only),
+    # not from `hostname --ip-address`. The leader uses the advertised
+    # address to call back to verify the new manager; an IPv6 advertise
+    # times out under our IPv4-only UFW rules.
     docker swarm join \
         --token "${YRAL_SWARM_JOIN_TOKEN}" \
-        --advertise-addr "$(hostname --ip-address | awk '{print $1}')" \
+        --advertise-addr "${YRAL_NODE_ADVERTISE_IPV4}" \
         "${YRAL_RISHI_4_PUBLIC_IPV4}:${SWARM_CONTROL_PLANE_TCP_PORT}"
 }
 
