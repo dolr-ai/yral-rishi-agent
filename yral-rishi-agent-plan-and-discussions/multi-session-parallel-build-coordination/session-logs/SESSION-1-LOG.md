@@ -1,6 +1,197 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-13 — MILESTONE: Day 4 cluster bringup COMPLETE (3 nodes, 3 encrypted overlays, 5 script bugs caught + fixed)
+
+### Summary
+The v2 Docker Swarm cluster on rishi-4 / rishi-5 / rishi-6 is up. All
+three nodes are managers with IPv4 advertise addresses; the three
+intended encrypted overlays exist cluster-wide with `encrypted=true`
+confirmed on both an edge node and the compute node; placement labels
+match V2 §5 across all three; the H1 `yral-v2-swarm-resync.service`
+systemd unit is enabled on every node; rishi-deploy with the CI key
+works on every node (Sunday-deadline parity for permanent SSH
+independent of root achieved).
+
+### Final cluster state
+
+```
+$ docker node ls
+ID                              HOSTNAME   STATUS  AVAILABILITY   MANAGER STATUS
+eplqvaqurcf2ah7mzh01xs76s *     rishi-4    Ready   Active         Leader
+6jvpxdj9s27kzyp8qnfghh7p9       rishi-5    Ready   Active         Reachable
+aib9ppvtzid3ntntt32s54790       rishi-6    Ready   Active         Reachable
+```
+
+| Node | Advertise Addr | Labels | Role per V2 §5 |
+|---|---|---|---|
+| rishi-4 | `138.201.128.108:2377` | `node_role=edge, state_tier=primary` | edge + state primary |
+| rishi-5 | `88.99.160.251:2377` | `node_role=edge, observability_tier=primary` | edge mirror + observability |
+| rishi-6 | `162.55.88.112:2377` | `node_role=compute, langfuse_tier=primary` | compute + quorum + Langfuse |
+
+Three encrypted overlays, propagated cluster-wide, `encrypted=true`
+confirmed on rishi-4 (leader) and rishi-6 (compute, different host class):
+
+- `yral-agent-public-web-overlay`
+- `yral-agent-internal-service-to-service-overlay`
+- `yral-agent-data-plane-overlay`
+
+Systemd state: `yral-v2-swarm-resync.service` enabled on all 3 nodes
+(per CONSTRAINTS H1 reboot resilience). `chrony` + `fail2ban` +
+`unattended-upgrades` active on all 3.
+
+### Phase walkthrough per node
+
+**rishi-4 (138.201.128.108) — Swarm leader + state primary**
+- root-window phase: ran twice today. First run failed at apt-get-update
+  due to docker.sources idempotency miss (PR #19); second run after fix
+  merge succeeded. Installed Docker (already present), chrony, fail2ban,
+  unattended-upgrades, UFW rules, rishi-deploy + narrow sudoers + CI
+  pubkey, sshd hardened.
+- swarm-init phase: ran three times today. First run (with PR #19 fix)
+  failed because of swarm-state substring trap (`grep active` matched
+  `inactive`); PR #21 fix merged; second run created Swarm + 3 overlays
+  + labels + systemd unit, but overlays were silently unencrypted
+  (PR #23 root cause). After PR #23 + the narrow A1 carve-out for the
+  3 unencrypted overlays (Rishi YES'd, scope = exactly those 3 names,
+  zero containers attached at time of rm), third run finished with
+  `encrypted=true` everywhere — but rishi-4 was now advertising IPv6
+  (PR #29 root cause). After PR #29 merged, the A1-carve-out
+  `docker swarm leave --force` on rishi-4 (Rishi YES'd, scope =
+  rishi-4 only, cascade-destroys overlays + labels, preserves
+  rishi-deploy/UFW/systemd/etc.), then re-ran swarm-init with
+  `YRAL_NODE_ADVERTISE_IPV4=138.201.128.108`. Clean final state.
+
+**rishi-5 (88.99.160.251) — Swarm manager + edge mirror + observability**
+- root-window phase: ran cleanly on first try (PR #19 + #21 already
+  merged by then).
+- swarm-join phase: ran twice. First run (yesterday, pre-PR-#29)
+  advertised IPv6 → leader timed out trying to call back → join
+  failed → Docker rolled back BUT left a `Down` ghost node entry with
+  hostname `rishi-5` in the cluster membership list. Second run
+  (today, after PR #29 merge + re-scp of updated script) succeeded
+  with IPv4 advertise. BUT the script's hostname-based
+  `docker node update --label-add ... rishi-5` then errored with
+  "node rishi-5 is ambiguous (2 matches found)" because of the ghost.
+  Recovery: narrow A1 carve-out (Rishi YES'd, scope = exactly the
+  ghost's node ID `jvt7swmbe2yvlaouoh4nytczs`) — `docker node rm`
+  the ghost, then `docker node update --label-add ... 6jvpxdj9...`
+  by explicit ID. Hardening PR #33 makes this hostname-ambiguity
+  failure mode no longer possible.
+
+**rishi-6 (162.55.88.112) — Swarm manager + compute + Langfuse host**
+- root-window phase: ran cleanly on first try. Note: rishi-6's role is
+  `compute` (not `edge`), so the script correctly did NOT open
+  `ufw allow 443/tcp` — only rishi-4 + rishi-5 expose :443. Datacenter
+  observation: rishi-6's IPv6 subnet `2a01:4f8:271:17c1::/64` differs
+  from rishi-5's `2a01:4f8:10a:3116::/64`, consistent with the V2 §10
+  open question of rishi-6 possibly being in NBG1 vs rishi-5/4 in
+  FSN1. IPv4 cluster topology doesn't care, but worth noting for the
+  Patroni async-replica positioning planned for Day 5.
+- swarm-join phase: **single shot, ZERO bugs.** All script paths
+  executed cleanly. Labels applied first try because rishi-6 was a
+  fresh server with no prior Swarm history → no hostname ambiguity
+  possible by construction. The "1 bug per attempt" pattern that held
+  for the first four real-server attempts (rishi-4 root-window,
+  rishi-4 swarm-init, rishi-5 swarm-join, rishi-5 label-apply) broke
+  cleanly on the fifth.
+
+### The 5-bug arc (PR table)
+
+Each bug was a script check that worked against the "no edge case /
+fresh box" mental model and failed against real-server state. Pattern:
+pause-fix-merge-retry, single-concern PR, tight diff, no
+over-engineered test harnesses (per A2.1). All five caught cleanly
+with no server damage.
+
+| PR | Function | Bug |
+|---|---|---|
+| #19 | `add_docker_apt_repository_if_missing` | Checked only legacy `docker.list`; missed deb822-format `docker.sources` Hetzner uses, so a second apt source got added with a different Signed-By key path. `apt-get update` errored with `Conflicting values set for option Signed-By`. |
+| #21 | `initialize_docker_swarm_on_first_manager_node` + `join_docker_swarm_as_manager_node` | Used `grep active` (substring) to detect already-in-Swarm. Docker's `inactive` state contains `active` — naive grep matched, skipped `docker swarm init`, then `docker network create --driver overlay` errored with "This node is not a swarm manager". |
+| #23 | `create_encrypted_overlay_networks` | Used `--opt encrypted` (no value). Docker CLI parses as `encrypted=""`, `strconv.ParseBool("")` returns false, IPsec silently NOT enabled even though the option key appears in `docker network inspect`. **CONSTRAINTS C3 violation.** Fix added `=true` plus a defense-in-depth verifier on the existing-overlay-skip path. |
+| #29 | `initialize_docker_swarm_on_first_manager_node` + `join_docker_swarm_as_manager_node` | Used `hostname --ip-address | awk '{print $1}'` for `--advertise-addr`. On Hetzner Ubuntu, `hostname --ip-address` returns IPv6 first. Cluster ended up advertising IPv6 to itself, but UFW peer rules + `RISHI_N_PUBLIC_IPV4` secret scheme are IPv4-only → call-backs timed out → first swarm-join failed. Required a new `YRAL_NODE_ADVERTISE_IPV4` env var + the rishi-4 swarm-leave-and-re-init carve-out. |
+| #33 | `apply_placement_labels_to_this_node` | Addressed `docker node update --label-add ...` by hostname. A stale ghost entry sharing the hostname (left by PR #29's prior failed join) made the command ambiguous. Fix uses local Swarm NodeID (globally unique) via `docker info --format '{{.Swarm.NodeID}}'`. |
+
+### A1 deletion carve-outs Rishi typed YES on today
+All three were narrow, scope-bound, recovery-only:
+
+1. **`docker network rm`** of the 3 unencrypted overlays on rishi-4
+   (scope = exactly those 3 names, ALL had zero containers attached at
+   inspect time). Followed PR #23 merge.
+2. **`docker swarm leave --force`** on rishi-4 (scope = rishi-4 only).
+   Cascade-destroyed the (now-validated encrypted) overlays + placement
+   labels; preserved rishi-deploy + UFW + sshd + chrony + fail2ban +
+   `yral-v2-swarm-resync.service`. Required to re-init with IPv4 advertise
+   after PR #29 merged.
+3. **`docker node rm jvt7swmbe2yvlaouoh4nytczs`** — the `Down` ghost
+   rishi-5 left by PR #29's earlier failed IPv6 join (scope = exactly
+   that node ID, ghost had no `ManagerStatus` map at all so confidently
+   identifiable as the stale entry).
+
+### Operator note: IPsec XFRM policies are LAZY
+Verified during the rishi-4 post-fix verification: `ip xfrm policy`
+returns 0 lines on a single-manager Swarm even when the overlay's
+`Options.encrypted` is `"true"`. **This is not a bug — Docker creates
+XFRM policies lazily** when there's actual inter-node overlay traffic.
+With only one node in the Swarm at init time, no policies are needed
+yet. Policies populate cluster-wide once two or more nodes exchange
+overlay traffic (e.g., when the first Patroni replica replicates to
+its peer over the data-plane overlay on Day 5).
+
+If a future operator is debugging "Swarm says encrypted but `ip xfrm
+policy` is empty — is my overlay actually encrypted?", the answer is:
+yes, IF (a) `docker network inspect <name> -f '{{.Options.encrypted}}'`
+returns `"true"`, AND (b) actual cross-node service traffic is flowing
+through the overlay. Without (b), the policies haven't been needed
+yet, so they don't exist yet. The `--opt encrypted=true` setting is
+the configuration that *triggers* policy creation when traffic flows;
+the absence of policies pre-traffic is normal.
+
+### Files touched in this close-out PR
+- yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-1-LOG.md (this entry — single milestone block covering the full Day 4 arc)
+- yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-state/SESSION-1-STATE.md (set to "Day 4 done; idle pending Day 5 green-light")
+
+### Test evidence
+All Day 4 acceptance criteria verified directly from rishi-4 leader +
+rishi-6 compute (different host class for cross-check) in the runs
+captured during the bringup:
+- `docker node ls` → 3 Ready managers, IPv4 advertise on all three.
+- `docker network inspect <name> -f '{{index .Options "encrypted"}}'`
+  → `"true"` on all 3 overlays from both rishi-4 and rishi-6.
+- `docker node inspect <id> -f '{{.Spec.Labels}}'` → matches V2 §5
+  table on all 3 nodes.
+- `systemctl is-enabled yral-v2-swarm-resync.service` → `enabled` on
+  all 3 nodes.
+- `ssh -i ~/.ssh/rishi-hetzner-ci-key rishi-deploy@<each-IP>` →
+  succeeds on all 3 (Sunday-deadline parity for permanent SSH
+  independent of root).
+
+### Blockers raised
+None for Day 4. Day 4 is fully closed.
+
+### What's next: Day 5 (separate Rishi green-light required per A13)
+Day 5 = stateful core deployment onto the now-live cluster:
+- Patroni HA Postgres (`patroni-install.sh` + `patroni-stack.yml`)
+  across rishi-4 (sync) / rishi-5 (sync replica) / rishi-6 (async
+  replica) with sync commit per F3 + G3.
+- Redis Sentinel (`redis-sentinel-install.sh` +
+  `redis-sentinel-stack.yml`) with primary on rishi-4, replica on
+  rishi-5, sentinels per C11.
+- Langfuse self-hosted on rishi-6 (`langfuse-install.sh` +
+  `langfuse-stack.yml`) per D4.
+- Caddy as Swarm service on rishi-4/5 (`caddy-swarm-service.yml`)
+  per C10.
+- Chaos test runner (`run-all-chaos-tests.sh`) — H3 Phase 0 exit
+  criterion.
+
+All four scripts already drafted + merged on main (PRs #9 / #10 from
+the Days 1-2 work + PRs #12 / #13 from Day 3 chaos tests). The five
+fixes Day-4 surfaced are already in main, so the install scripts
+won't re-trip on the same idempotency / advertise / labels traps when
+they exercise the same Docker patterns.
+
+---
+
 ## 2026-05-13 — HARDENING: apply_placement_labels_to_this_node targets local NodeID (defense-in-depth follow-up to rishi-5 ghost incident)
 
 ### Action
