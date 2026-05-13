@@ -1,6 +1,91 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-13 — MILESTONE: Day 4 fix — overlay `--opt encrypted=true` (PR coming)
+
+### Action
+Caught on the rishi-4 verify-after-swarm-init step today, immediately
+after PR #21 (swarm-state exact-match) merged and swarm-init re-ran
+cleanly. The Swarm came up healthy with rishi-4 as leader; placement
+labels + resync systemd unit landed correctly. **But** the three named
+overlays (`yral-agent-public-web-overlay`,
+`yral-agent-internal-service-to-service-overlay`,
+`yral-agent-data-plane-overlay`) were created **without IPsec
+encryption** despite being intended-encrypted per CONSTRAINTS C3.
+
+Root cause: my `docker network create` invocation used the value-less
+flag form
+
+```bash
+docker network create --driver overlay --opt encrypted --attachable <name>
+```
+
+Docker CLI parses a value-less `--opt encrypted` as `encrypted=""`. The
+overlay driver then runs `strconv.ParseBool("")` which returns false,
+so IPsec is silently NOT enabled — even though `docker network inspect`
+shows the key. Three overlays sat on rishi-4 with `"encrypted":""` in
+their Options map (verified via `docker network inspect --format
+'{{json .Options}}'`).
+
+Fix on branch `session-1/fix-overlay-encrypted-flag`: change `--opt
+encrypted` → `--opt encrypted=true`. One-line code change. Expanded
+the function's role-comment to capture the trap (so future re-readers
+don't re-shorten back to the value-less form).
+
+Per the user's pre-authorised narrow A1 carve-out for this recovery:
+after PR merges I `docker network rm` the 3 unencrypted-but-named-
+correctly overlays on rishi-4 (scope strictly = the 3 names listed
+above, ONLY because they are minutes-old artifacts my own script
+just created with the wrong flag, and only after confirming zero
+attached services on each via `docker network inspect | jq
+'.[].Containers'`). Then re-run swarm-init phase; the script's
+existing idempotency on the Swarm itself preserves the cluster +
+leader + labels + resync systemd unit, while the overlay-create loop
+re-creates the 3 networks with `encrypted=true` properly applied.
+
+### Files touched
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/scripts/node-bootstrap.sh (+7 / -2)
+- yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-1-LOG.md (this entry)
+
+### Why
+A2.1 + the user's "if anything goes weird, STOP and ask" rule. Third
+script bug Session 1 has caught in production execution on rishi-4
+today (docker.sources path mismatch → swarm-state substring trap →
+this overlay encrypted-flag misuse). Pattern is holding: each bug
+caught cleanly, no server damage, tight single-concern fix PR, ~few
+hours total slowdown. Per A2.1 not over-engineering test harnesses —
+the pause-fix-merge-retry loop is the right cadence for a one-shot
+bootstrap touching real production-shape infra for the first time.
+
+CONSTRAINTS C3 explicitly mandates encrypted overlays; shipping the
+unencrypted ones would have been a real violation, not cosmetic. Worth
+the pause.
+
+### Test evidence
+- `bash -n node-bootstrap.sh` → syntax OK.
+- Diff: +7 / -2, single file, single function. Well under A2.1's
+  100-line trigger.
+- Verification step planned post-merge:
+  `docker network inspect <name> --format '{{.Options.encrypted}}'`
+  returns `"true"` (not empty string) for all 3 overlays.
+
+### State of rishi-4 right now
+- ✅ rishi-deploy + CI-key SSH (Sunday deadline cleared)
+- ✅ Docker + chrony + fail2ban + UFW + sshd hardening
+- ✅ Swarm: active, rishi-4 = leader/manager (1/3 nodes; 5+6 still
+       pending separate Rishi green-light)
+- ✅ Placement labels: `node_role=edge, state_tier=primary`
+- ✅ yral-v2-swarm-resync.service installed + enabled
+- ❌ 3 named overlays exist but ARE NOT encrypted — to be removed
+       after PR merges per the pre-authorised narrow A1 carve-out
+
+### Blockers raised
+None. PR (this one) is the only blocker on Day 4 re-verify; once it
+merges I rm the 3 unencrypted overlays, re-run swarm-init, verify
+encryption flag is `"true"`, STOP for Rishi green-light on rishi-5/6.
+
+---
+
 ## 2026-05-13 — MILESTONE: Day 4 fix — swarm-state exact-match idempotency bug (PR #21)
 
 ### Action

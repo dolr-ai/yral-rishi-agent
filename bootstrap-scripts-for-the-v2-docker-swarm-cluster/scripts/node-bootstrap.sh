@@ -454,12 +454,17 @@ join_docker_swarm_as_manager_node() {
 
 
 create_encrypted_overlay_networks() {
-    # WHAT:  create three Swarm overlay networks with --opt encrypted.
+    # WHAT:  create three Swarm overlay networks with --opt encrypted=true.
     # WHEN:  swarm-init phase only (overlays are cluster-wide, defined once).
     # WHY:   per CONSTRAINTS C3, all inter-service traffic rides Swarm
     #        overlays. The split into three (public-web / internal /
     #        data-plane) means a compromised public service cannot directly
     #        see Patroni or Redis on the data-plane overlay.
+    # The `=true` suffix is REQUIRED — `--opt encrypted` (no value) is
+    # parsed by Docker CLI as `encrypted=""`. The overlay driver then runs
+    # `strconv.ParseBool("")` which returns false, and IPsec is silently
+    # NOT enabled even though the option key appears in `docker network
+    # inspect`. Caught on rishi-4 first-run verification today.
     local existing_overlay_networks
     existing_overlay_networks="$(docker network ls --filter driver=overlay --format '{{.Name}}')"
 
@@ -475,7 +480,7 @@ create_encrypted_overlay_networks() {
         fi
         docker network create \
             --driver overlay \
-            --opt encrypted \
+            --opt encrypted=true \
             --attachable \
             "${overlay_network_name}"
     done
