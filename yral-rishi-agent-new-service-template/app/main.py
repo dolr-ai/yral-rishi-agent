@@ -32,10 +32,19 @@ from fastapi import FastAPI
 # import side-effect the template tolerates by design.
 from app.sentry_middleware import init_sentry
 
+# Langfuse follows the same module-load init pattern as Sentry for
+# uniformity. The flush helper is called from the lifespan shutdown
+# (below) so SIGTERM doesn't drop in-flight LLM traces.
+from app.langfuse_middleware import flush_langfuse, init_langfuse
+
 
 # Run Sentry init now, at module import time. After this line, every
 # unhandled exception below is shipped to sentry.rishi.yral.com (per A7).
 init_sentry()
+
+# Init Langfuse the same way. No-ops when LANGFUSE_TRACING_ENABLED is
+# false (the default in docker-compose.yml for local dev).
+init_langfuse()
 
 
 @asynccontextmanager
@@ -50,10 +59,13 @@ async def lifespan(_app: FastAPI):
           renaming anything or touching the signature.
     """
     # --- startup --------------------------------------------------------
-    # (intentionally empty in PR 1 — filled in by later Day-2 PRs)
+    # (filled in by later Day-2 PRs — database pool, redis client, etc.)
     yield
     # --- shutdown -------------------------------------------------------
-    # (intentionally empty in PR 1)
+    # Drain pending Langfuse traces so SIGTERM (Swarm rolling update,
+    # scale-down) doesn't lose seconds of in-flight LLM trace data.
+    # No-op when Langfuse is disabled.
+    flush_langfuse()
 
 
 # The module-level FastAPI instance uvicorn loads via `app.main:app`.
@@ -69,8 +81,9 @@ app = FastAPI(
 # ===========================================================================
 # RELATED FILES:
 #   __init__.py            — marks app/ as a Python package
-#   sentry_middleware.py   — init_sentry() called above
-#   pyproject.toml         — fastapi + uvicorn + sentry-sdk deps
+#   sentry_middleware.py   — init_sentry() called above (per A7)
+#   langfuse_middleware.py — init_langfuse() + flush_langfuse() (per D4)
+#   pyproject.toml         — fastapi + uvicorn + sentry-sdk + langfuse deps
 #   Dockerfile             — CMD ["uvicorn", "app.main:app", ...]
 #   docker-compose.yml     — local-dev runner with --reload
 # ===========================================================================

@@ -3,6 +3,35 @@
 
 ---
 
+## 2026-05-13 — Day 2, PR 2 (Langfuse middleware)
+
+**Branch:** `session-2/langfuse-middleware` (off main with PR #22 merged + PR #24 B2 carve-out)
+
+**Files added (1):**
+- `yral-rishi-agent-new-service-template/app/langfuse_middleware.py` — `init_langfuse()` + `get_langfuse()` + `flush_langfuse()`. Module-level singleton client `_client` (None until init). No-ops when `LANGFUSE_TRACING_ENABLED != "true"` OR when either of `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` is empty. Host from env with default `https://langfuse.rishi.yral.com` (per D4). 123 lines including full B7 doc structure.
+
+**Files modified (2):**
+- `yral-rishi-agent-new-service-template/app/main.py` — added module-load `init_langfuse()` call (mirrors Sentry pattern) + `flush_langfuse()` in lifespan shutdown so SIGTERM doesn't drop in-flight traces. ~17 lines added / ~4 modified.
+- `yral-rishi-agent-new-service-template/pyproject.toml` — added `langfuse==2.59.7` to runtime deps. 5 lines added.
+
+**Total diff ~145 lines**, well under <200 target.
+
+**Decisions made (worth recording):**
+- **init/get/flush trio, no auto-magic.** Langfuse is a client, not a hooked-in middleware — it only records when consumer code calls `client.trace(...)`. `get_langfuse()` is the only way LLM-client code (added later per A10) can fetch the singleton; without it, init does nothing useful. Not speculative.
+- **No-op when keys are empty.** Default-deny so a half-configured environment still runs (just without traces) rather than crashes at startup. Matches Sentry's empty-DSN handling for consistency.
+- **Default-deny on the LANGFUSE_TRACING_ENABLED flag.** Literal "true" required to enable; any typo (including "True", "TRUE", "1") evaluates to disabled. Safer than default-allow.
+- **`flush_langfuse()` runs in lifespan shutdown, not on signal handler.** FastAPI's lifespan shutdown is the official SIGTERM hook; rolling our own signal handler would duplicate machinery.
+
+**B7 compliance:** file carries the file header (with ⭐ START HERE), function WHAT/WHEN/WHY blocks for all three public functions, role-not-syntax comments, RELATED FILES footer.
+
+**Constraints honored:** A2.1 (no speculative API surface — just what consumers need), D4 (host = langfuse.rishi.yral.com), D8 (keys via secrets.yaml.template), F12 (Python 3.12 + asyncio-compatible client).
+
+**Carve-out used:** B2 + PR #24 — `app/` package name explicitly allowed.
+
+**Next:** PR 3 — `session-2/request-id-middleware`: per-request UUID propagation via X-Request-ID, threaded into Sentry + Langfuse contexts.
+
+---
+
 ## 2026-05-13 — Day 2, PR 1 (app/main.py + Sentry middleware)
 
 **Branch:** `session-2/sentry-middleware`
