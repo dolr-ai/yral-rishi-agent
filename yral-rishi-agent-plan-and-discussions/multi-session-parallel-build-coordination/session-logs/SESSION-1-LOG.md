@@ -1,6 +1,110 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-13 — MILESTONE: Day 4 fix — IPv4 `--advertise-addr` (4th script bug; caught on rishi-5 swarm-join)
+
+### Action
+Caught on the **rishi-5 first swarm-join attempt** today, in the swarm-join
+code path the user specifically flagged as having had less real-server
+testing than swarm-init.
+
+`docker swarm join` failed with:
+
+```
+Error response from daemon: manager stopped: can't initialize raft node:
+rpc error: code = DeadlineExceeded desc = could not connect to prospective
+new cluster member using its advertised address
+```
+
+Root cause: the script's `--advertise-addr` heuristic in both
+`initialize_docker_swarm_on_first_manager_node` and
+`join_docker_swarm_as_manager_node` was:
+
+```bash
+--advertise-addr "$(hostname --ip-address | awk '{print $1}')"
+```
+
+On Hetzner Ubuntu boxes, `hostname --ip-address` returns BOTH addresses
+with **IPv6 first**:
+
+```
+2a01:4f8:10a:3116::2 88.99.160.251
+```
+
+`awk '{print $1}'` picks the IPv6. rishi-5 advertised its IPv6 to the
+cluster; rishi-4 tried to connect back to verify; UFW on rishi-5
+(IPv4-only peer allow rules from `YRAL_CLUSTER_PEER_CIDRS`) dropped the
+IPv6 reply; the join timed out. Same bug exists on rishi-4 — it
+advertised IPv6 during the earlier swarm-init, but failure was masked
+because rishi-4 was alone in the cluster (no one needed to call back).
+
+Fix on branch `session-1/fix-advertise-ipv4`: require a new env var
+`YRAL_NODE_ADVERTISE_IPV4`, plumb it through `--advertise-addr` in both
+functions, add a role-comment in each spot explaining the IPv6-first
+trap. Pre-flight now asserts the env var for swarm-init + swarm-join
+phases. File-header `INPUTS` section updated to document the new var.
+
+### Files touched
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/scripts/node-bootstrap.sh (+28 / -2)
+- yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-1-LOG.md (this entry)
+
+### Why
+A2.1 + the user's "1 bug per attempt across rishi-4, pause-fix-merge-retry"
+protocol. 4th script bug Session 1 has caught in production execution
+on Day 4 (docker.sources → swarm-state substring → overlay encrypted
+flag → now advertise-addr IPv6-first). Pattern is holding: each bug
+caught cleanly, single-concern PR, tight diff, no over-engineered test
+harness per A2.1.
+
+This one is the most cluster-architecturally significant of the four:
+CONSTRAINTS C6 names the secrets `RISHI_N_PUBLIC_IPV4`, the UFW rules
+take IPv4 CIDRs, the cluster.hosts.yaml shape lists IPv4 — all of these
+are IPv4-only by intent. The script silently advertising IPv6 was the
+inverse of that design.
+
+### Test evidence
+- `bash -n node-bootstrap.sh` → syntax OK.
+- `grep -n "hostname --ip-address" node-bootstrap.sh` → 3 remaining matches,
+  all inside role-comments explaining why the heuristic was removed.
+  No live code path still uses the heuristic.
+- Pre-flight matrix:
+  - `YRAL_BOOTSTRAP_PHASE=root-window` (no IPv4 needed) — pre-flight OK.
+  - `swarm-init` without `YRAL_NODE_ADVERTISE_IPV4` → fails pre-flight.
+  - `swarm-join` without `YRAL_NODE_ADVERTISE_IPV4` → fails pre-flight.
+  - With env var set → docker swarm init/join uses it via
+    `--advertise-addr`.
+
+### Day-4 recovery flow after this PR merges (per the user's typed YES)
+1. `docker swarm leave --force` on rishi-4 (narrow A1 carve-out, scope =
+   rishi-4 only). Cascades: the 3 currently-validated encrypted=true
+   overlays are torn down, placement labels reset. rishi-deploy +
+   sudoers + UFW + sshd + chrony + fail2ban + resync systemd unit STAY.
+2. Re-run swarm-init phase on rishi-4 with
+   `YRAL_NODE_ADVERTISE_IPV4=138.201.128.108`. Script recreates the 3
+   overlays with `encrypted=true` (PR #23 fix), re-applies placement
+   labels, idempotent systemd no-op.
+3. Verify rishi-4 advertises 138.201.128.108:2377 (NOT IPv6 anymore).
+4. STOP. Ping before touching rishi-5.
+
+Then normal flow resumes: swarm-join rishi-5 with
+`YRAL_NODE_ADVERTISE_IPV4=88.99.160.251`, then rishi-6 with
+`YRAL_NODE_ADVERTISE_IPV4=162.55.88.112`.
+
+### State of rishi-5 right now
+- ✅ root-window phase fully landed (rishi-deploy + CI-key SSH verified,
+  Sunday-deadline parity with rishi-4 cleared)
+- ✅ Docker + chrony + fail2ban + UFW + sshd hardening intact
+- ✅ Swarm: `inactive` (Docker rolled back the failed join cleanly — no
+  partial state)
+- No cleanup needed on rishi-5; just retry swarm-join after the merge +
+  rishi-4 re-init.
+
+### Blockers raised
+None. PR (this one) + the typed A1 carve-out are the only blockers on
+finishing Day 4. Same pause-fix-merge-retry cadence as the prior 3 PRs.
+
+---
+
 ## 2026-05-13 — NOTE: PR #23 follow-up — defense-in-depth verify for existing overlays
 
 ### Action
