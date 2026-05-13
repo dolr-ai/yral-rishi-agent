@@ -1,5 +1,5 @@
 # Session 2 STATE — Template & Hello-World
-> Updated: 2026-05-13 — Day 1 PR 3 rebased onto main post-PR-#18-merge.
+> Updated: 2026-05-13 — Day 2, PR 1 commit.
 
 ## ⭐ START-OF-SESSION SUMMARY (read first when resuming)
 
@@ -7,29 +7,30 @@ I am Session 2. I own the v2 template (`yral-rishi-agent-new-service-template/`)
 
 ## LAST THING I DID
 
-Day 1 / PR 3 — added `project.config`, `shared-config.yaml`, `secrets.yaml.template` (5 inheritance secrets per D8), and `.env.example`. Raised DEP-003. Rebased twice onto main (after PR #17 merged, then after PR #18 merged).
+Day 2 / PR 1 — added `app/__init__.py`, `app/main.py` (minimal FastAPI app + no-op lifespan placeholder), `app/sentry_middleware.py` (init helper called at module-load before FastAPI object exists). Added `sentry-sdk[fastapi]==2.22.0` to pyproject.toml. ~187 lines total, under the <200 line target per coordinator.
 
 ## CURRENT TASK
 
-Force-pushing PR #20 after second rebase. Then idle until coordinator merges it.
+PR 1 pushed; opening PR. Then starting PR 2 (Langfuse middleware) on a fresh branch.
 
 ## NEXT 3 PLANNED ACTIONS
 
-After PR #20 merges:
+1. PR 2 — `session-2/langfuse-middleware`: `app/langfuse_middleware.py` + add `langfuse` to pyproject.toml. Init pattern mirrors Sentry's: module-load, no-op when keys empty.
+2. PR 3 — `session-2/request-id-middleware`: `app/request_id_middleware.py`. Generates UUID per request, propagates via X-Request-ID header, threads into Sentry + Langfuse contexts.
+3. PR 4 — `session-2/structured-logging`: `app/logging.py`. structlog + JSON output + PII-aware allowlist redaction per H6.
 
-1. Day 2 PR 4 — `session-2/template-app-layer-main-and-health`: `app/__init__.py`, `app/main.py` (FastAPI + lifespan), `app/health.py` (F9 three-tier health). With this PR, template becomes `docker compose up`-runnable.
-2. Day 2 PR 5 — `session-2/template-app-layer-database-and-redis`: `app/database.py` (asyncpg pool + statement_cache_size=0), `app/redis_client.py` (Sentinel-aware per C11).
-3. Day 2 PR 6 — `session-2/template-app-layer-sentry-and-langfuse`: middleware files + sentry-sdk + langfuse client added to pyproject.toml deps.
+(PR 5 = `session-2/config-loader`: `app/config.py` — typed pydantic settings reading shared-config.yaml + env vars.)
 
 ## BLOCKERS
 
-None hard. DEP-003 (Swarm overlay names) per coordinator resolves on Session 1's Day 4 swarm-init completion; not blocking Day 2.
+None. DEP-003 (Swarm overlay names) per coordinator resolves on Session 1's Day 4; not blocking middleware skeleton work.
 
 ## PENDING PRs (mine)
 
 - PR 1 — merged as PR #17.
 - PR 2 — merged as PR #18.
-- PR 3 (PR #20) — `session-2/template-skeleton-configs` — rebased onto post-#18 main, force-push pending.
+- PR 3 — merged as PR #20.
+- Day 2 PR 1 — `session-2/sentry-middleware` — opening now.
 
 ## CROSS-SESSION DEPS (mine)
 
@@ -38,21 +39,18 @@ None hard. DEP-003 (Swarm overlay names) per coordinator resolves on Session 1's
 ## CONFIRM TO RISHI (pre-written for resume)
 
 ```
-I'm Session 2, idle after rebasing PR #20 onto post-#18 main.
+I'm Session 2, Day 2 PR 1 opened.
 
 WORKTREE: /Users/rishichadha/Claude Projects/yral-rishi-agent-worktrees/session-2
 
-DONE today:
-  PR #17 merged: pyproject.toml + Dockerfile + .dockerignore
-  PR #18 merged: docker-compose.yml + docker-compose.swarm.yml
-  PR #20 rebased + force-pushed: configs + secrets manifest
+DONE: Day 1 (PRs #17 + #18 + #20 all merged).
+DONE: Day 2 PR 1 — minimal main.py + Sentry middleware (~187 lines).
 
-NEXT (waiting for coordinator merge of #20):
-  Day 2 PR 4: app/main.py + app/health.py (F9 three-tier health)
-  Day 2 PR 5: app/database.py + app/redis_client.py
-  Day 2 PR 6: sentry + langfuse middleware
-  Day 2 PR 7: auth + idempotency + pii + prompt-injection
-  Day 2 PR 8: llm_client + event_stream + feature_flags
+NEXT (small PRs in order, each <200 lines):
+  PR 2: Langfuse middleware
+  PR 3: Request-ID middleware
+  PR 4: Structured logging + PII redaction
+  PR 5: Config loader
 
-Ready to continue when you say "continue"?
+Continue?
 ```

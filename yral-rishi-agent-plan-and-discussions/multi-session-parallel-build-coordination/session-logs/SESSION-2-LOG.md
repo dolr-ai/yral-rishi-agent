@@ -3,6 +3,34 @@
 
 ---
 
+## 2026-05-13 — Day 2, PR 1 (app/main.py + Sentry middleware)
+
+**Branch:** `session-2/sentry-middleware`
+
+**Files added (3):**
+- `yral-rishi-agent-new-service-template/app/__init__.py` — package marker. 11 lines.
+- `yral-rishi-agent-new-service-template/app/main.py` — minimal FastAPI app with no-op lifespan placeholder. Calls `init_sentry()` at module-load time BEFORE the FastAPI object is built so Sentry's exception hooks are in place for app startup too. Title + version are template placeholders; new-service.sh overwrites at spawn time.
+- `yral-rishi-agent-new-service-template/app/sentry_middleware.py` — `init_sentry()` helper. Reads SENTRY_DSN + SENTRY_SERVICE_TAG + ENVIRONMENT env vars. No-ops when DSN is empty (local dev). traces_sample_rate=0.1 default. send_default_pii=False per H6.
+
+**Files modified (1):**
+- `yral-rishi-agent-new-service-template/pyproject.toml` — added `sentry-sdk[fastapi]==2.22.0` to runtime deps.
+
+**Total diff: ~187 lines.** Targeting <200 per coordinator's "Codex APPROVE-clean rather than truncation-fail-closed" guidance.
+
+**Decisions made (worth recording):**
+- **Sentry inits at module-load, not in lifespan.** The FastAPI integration hooks into Starlette's exception handlers at `sentry_sdk.init()` time. The hook must be in place before app startup so exceptions during startup (DB pool init, etc.) are captured. Lifespan runs after the app exists — too late.
+- **Empty DSN → no-op.** Local dev runs without a real Sentry project. Service still runs; we just don't report errors.
+- **Lifespan is a no-op placeholder.** Reserves the structure so PRs 2–5 can plug in without renaming or touching main.py's signature.
+- **Single module-level `app`, no factory.** uvicorn's `app.main:app` expects a module-level variable; factory pattern adds papercut without value.
+
+**B7 compliance:** every file carries the file header (with ⭐ START HERE), function WHAT/WHEN/WHY blocks, role-not-syntax comments, RELATED FILES footer.
+
+**Constraints honored:** A2.1 (lean — only the Sentry init helper, no speculative middleware classes/factories), A7 (DSN points at sentry.rishi.yral.com), D3 (service-tag stamping), F12 (Python 3.12 + FastAPI + asyncio), H6 (send_default_pii=False).
+
+**Next:** PR 2 — `app/langfuse_middleware.py` on branch `session-2/langfuse-middleware`. Adds langfuse SDK dep + init helper following the same pattern.
+
+---
+
 ## 2026-05-13 — Day 1, PR 3 (configs + secrets manifest) — rebased onto main after PR #18 merged
 
 **Branch:** `session-2/template-skeleton-configs`
