@@ -410,7 +410,14 @@ initialize_docker_swarm_on_first_manager_node() {
     # WHY:   Swarm needs ONE node to start the cluster; the other nodes join
     #        with the manager token printed below. Re-running is safe — we
     #        skip if the node is already in a Swarm.
-    if docker info --format '{{.Swarm.LocalNodeState}}' | grep --quiet active; then
+    # The idempotency check below uses an EXACT string equality (==), not a
+    # substring `grep active`. Docker's possible Swarm states include
+    # `inactive`, which contains the substring `active` — a naive `grep
+    # active` would mis-detect an un-joined node as already-in-Swarm and
+    # skip `docker swarm init`. Capture once + compare with `==`.
+    local swarm_local_node_state
+    swarm_local_node_state="$(docker info --format '{{.Swarm.LocalNodeState}}')"
+    if [[ "${swarm_local_node_state}" == "active" ]]; then
         echo "node-bootstrap: this node is already in a Swarm — skipping init"
         return 0
     fi
@@ -430,7 +437,11 @@ join_docker_swarm_as_manager_node() {
     # WHEN:  swarm-join phase, on rishi-5 and rishi-6.
     # WHY:   three-manager quorum tolerates one node down at a time — needed
     #        for Patroni leader failover and for chaos test exit criteria H3.
-    if docker info --format '{{.Swarm.LocalNodeState}}' | grep --quiet active; then
+    # Exact-match equality, same reason as initialize_docker_swarm_on_first_manager_node:
+    # Docker's `inactive` state contains the substring `active`.
+    local swarm_local_node_state
+    swarm_local_node_state="$(docker info --format '{{.Swarm.LocalNodeState}}')"
+    if [[ "${swarm_local_node_state}" == "active" ]]; then
         echo "node-bootstrap: this node is already in a Swarm — skipping join"
         return 0
     fi
