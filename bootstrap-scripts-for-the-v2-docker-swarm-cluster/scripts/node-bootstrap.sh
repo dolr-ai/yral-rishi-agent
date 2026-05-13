@@ -537,15 +537,30 @@ apply_placement_labels_to_this_node() {
     #        in patroni-install.sh, redis-sentinel-install.sh, langfuse-
     #        install.sh, and caddy-swarm-service.yml. Without labels, the
     #        scheduler cannot pin Langfuse to rishi-6 etc.
+    # Capture this node's Swarm-assigned NodeID and target `docker node
+    # update` by ID, not hostname. A stale ghost entry sharing the same
+    # hostname (e.g., left over from a prior failed swarm-join — happened
+    # on rishi-5 Day-4 swarm-join: a failed IPv6-advertise join created a
+    # Down ghost rishi-5 alongside the real one, and `docker node update
+    # --label-add ... rishi-5` errored with "node rishi-5 is ambiguous
+    # (2 matches found)") cannot make this command ambiguous when we
+    # address by ID.
+    local local_swarm_node_id
+    local_swarm_node_id="$(docker info --format '{{.Swarm.NodeID}}')"
+    if [[ -z "${local_swarm_node_id}" ]]; then
+        echo "ERROR node-bootstrap: could not read local Swarm NodeID — is this node in a Swarm yet?" >&2
+        exit 1
+    fi
+
     case "${YRAL_NODE_NAME}" in
         rishi-4)
-            docker node update --label-add node_role=edge --label-add state_tier=primary "${YRAL_NODE_NAME}"
+            docker node update --label-add node_role=edge --label-add state_tier=primary "${local_swarm_node_id}"
             ;;
         rishi-5)
-            docker node update --label-add node_role=edge --label-add observability_tier=primary "${YRAL_NODE_NAME}"
+            docker node update --label-add node_role=edge --label-add observability_tier=primary "${local_swarm_node_id}"
             ;;
         rishi-6)
-            docker node update --label-add node_role=compute --label-add langfuse_tier=primary "${YRAL_NODE_NAME}"
+            docker node update --label-add node_role=compute --label-add langfuse_tier=primary "${local_swarm_node_id}"
             ;;
         *)
             echo "ERROR node-bootstrap: unknown node name '${YRAL_NODE_NAME}' — cannot pick labels" >&2
