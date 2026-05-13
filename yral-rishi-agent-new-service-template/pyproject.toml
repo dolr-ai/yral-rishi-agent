@@ -110,6 +110,11 @@ dependencies = [
     # integrations that auto-capture unhandled exceptions in the
     # request path. Init lives in app/sentry_middleware.py.
     "sentry-sdk[fastapi]==2.22.0",
+
+    # langfuse — self-hosted LLM tracing client. Per D4: every LLM call
+    # from every v2 service traces to langfuse.rishi.yral.com. The
+    # singleton + getter + flush helper live in app/langfuse_middleware.py.
+    "langfuse==2.59.7",
 ]
 
 # ===========================================================================
