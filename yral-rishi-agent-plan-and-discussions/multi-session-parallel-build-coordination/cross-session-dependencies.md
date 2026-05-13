@@ -3,7 +3,51 @@
 
 ## OPEN
 
-<none — both Session 1 deps were resolved by coordinator PR #5 (commit `6093004`); see RESOLVED section>
+### DEP-003 — Session 2 needs Session 1 to confirm the three cluster overlay network names match the template's `docker-compose.swarm.yml`
+
+Raised: 2026-05-13 by Session 2
+
+What:    `yral-rishi-agent-new-service-template/docker-compose.swarm.yml`
+         (PR #18, branch `session-2/template-skeleton-compose`) declares
+         three `external: true` overlay networks the template's spawned
+         services attach to:
+
+         - `yral-v2-public-web`   (edge → service traffic)
+         - `yral-v2-internal`     (service → service RPC)
+         - `yral-v2-data-plane`   (service → Postgres/Redis/Langfuse)
+
+         These names come straight from CONSTRAINTS C3 (Saikat
+         directive 2026-04-23, captured in V2_TEMPLATE_AND_CLUSTER_PLAN
+         §1.7). I'm declaring them as `external: true` so the deploy
+         fails fast if they don't exist — but that means Session 1's
+         cluster-bootstrap stack MUST create them with exactly these
+         three names before any service spawned from the template can
+         deploy.
+
+         Asking Session 1 to (a) confirm the names are correct in their
+         bootstrap scripts, or (b) flag any drift so I can update the
+         template before Day 3 spawns hello-world against the cluster.
+
+Why:     Day 3 hello-world spawn-and-verify needs the cluster to have
+         these overlays ready. If the names don't match exactly,
+         `docker stack deploy` fails with an unhelpful
+         "network yral-v2-public-web not found" error. Better to
+         reconcile names before Day 3 than to debug it at deploy time.
+
+Blocks:  Day 3 hello-world deploy verification (per template-and-hello-
+         world role spec). NOT blocking template-folder PRs (PRs #17, #18,
+         and the upcoming PR #19 for configs); those just declare the
+         names and don't actually deploy.
+
+ETA needed: Before Day 3 hello-world spawn (~2-3 days from now).
+
+Suggested
+resolution: Session 1 grep their bootstrap-scripts-for-the-v2-docker-
+         swarm-cluster/ folder for these three overlay names and either
+         (a) reply RESOLVED with "names match", or (b) propose new
+         names + I update the template's swarm.yml + project.config.
+
+---
 
 ---
 
