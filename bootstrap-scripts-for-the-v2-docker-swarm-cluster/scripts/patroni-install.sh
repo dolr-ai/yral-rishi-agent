@@ -70,12 +70,18 @@
 # ║        install -d --owner=999 --group=999 --mode=0700 /data/patroni-data  ║
 # ║        install -d --owner=999 --group=999 --mode=0700 /data/redis-data    ║
 # ║        install -d --owner=999 --group=999 --mode=0700 /data/langfuse-data ║
+# ║        install -d --owner=999 --group=999 --mode=0700 /data/etcd-$(hostname) ║
 # ║        for stack in yral-v2-patroni yral-v2-redis yral-v2-langfuse; do    ║
 # ║          grep -q -x "$stack" /etc/yral-v2/stacks-to-resync.list \\        ║
 # ║            || echo "$stack" >> /etc/yral-v2/stacks-to-resync.list          ║
 # ║        done                                                                ║
 # ║      '                                                                     ║
 # ║    done                                                                    ║
+# ║                                                                              ║
+# ║  NOTE: `/data/etcd-$(hostname)` is per-node — only the directory for       ║
+# ║  THIS host's etcd member is created on each box (rishi-4 gets             ║
+# ║  /data/etcd-rishi-4 only). patroni-stack.yml pins each etcd container    ║
+# ║  to its named host so the bind mount is node-local.                      ║
 # ║                                                                              ║
 # ║  patroni-install.sh, redis-sentinel-install.sh, and langfuse-install.sh   ║
 # ║  then verify these prereqs and fail loud (with this exact remediation)    ║
@@ -123,6 +129,13 @@ SWARM_STACK_RESYNC_REGISTRY_PATH="/etc/yral-v2/stacks-to-resync.list"
 # The directory is created ONCE per fresh cluster by the operator running
 # the root-window batch from this file's header; this script only verifies.
 PATRONI_BIND_MOUNT_HOST_PATH="/data/patroni-data"
+
+# Per-node etcd data directories. patroni-stack.yml pins one etcd container
+# per host with a NODE-SPECIFIC bind mount (etcd-rishi-4 binds /data/etcd-
+# rishi-4 on rishi-4, etc.) so an etcd member's state stays on its own box
+# and survives a reschedule on the same node. Each path exists on exactly
+# one node (its own); checked + created by the same operator setup.
+PATRONI_ETCD_BIND_MOUNT_HOST_PATH_PREFIX="/data/etcd-"
 
 # Cluster node names — each node's public IPv4 comes in via
 # `YRAL_RISHI_<digit>_PUBLIC_IPV4`. SSH targets are built from those IPs
@@ -285,8 +298,14 @@ confirm_data_plane_overlay_exists() {
 
 
 confirm_patroni_bind_mount_directories_exist_on_each_node() {
-    # WHAT:  ssh to every node as rishi-deploy and verify that
-    #        ${PATRONI_BIND_MOUNT_HOST_PATH} exists with ownership 999:999.
+    # WHAT:  ssh to every node as rishi-deploy and verify that BOTH of the
+    #        bind-mount paths patroni-stack.yml expects exist with the
+    #        right ownership:
+    #          - ${PATRONI_BIND_MOUNT_HOST_PATH} — owned 999:999 (Patroni)
+    #          - ${PATRONI_ETCD_BIND_MOUNT_HOST_PATH_PREFIX}${node_name}
+    #            — owned 999:999 (etcd; container runs as root but matching
+    #            the Patroni ownership convention keeps the operator-setup
+    #            batch a single `install -d` line per dir)
     # WHEN:  fourth pre-flight (after Swarm + env + overlay checks).
     # WHY:   bind mounts (not Docker volumes) per V2 infra doc §7.2.
     #        Narrow sudoers per CONSTRAINTS C8 doesn't grant rishi-deploy
@@ -295,20 +314,30 @@ confirm_patroni_bind_mount_directories_exist_on_each_node() {
     #        root-window window for a fresh cluster; documented in this
     #        file's header). This function only VERIFIES the prereq and
     #        fails loud with the exact remediation command if missing.
+    #        First-run Day-5 deploy missed the etcd dirs because they
+    #        weren't in the original check — every etcd task entered
+    #        Rejected state with "invalid mount config for type 'bind':
+    #        bind source path does not exist". Now both paths are
+    #        verified up-front so the same surprise can't repeat.
     local cluster_node_name
     for cluster_node_name in "${CLUSTER_NODE_NAMES[@]}"; do
         local cluster_node_ipv4
         cluster_node_ipv4="$(get_public_ipv4_for_node "${cluster_node_name}")"
-        local actual_ownership
-        actual_ownership="$(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
-            "rishi-deploy@${cluster_node_ipv4}" \
-            "test -d ${PATRONI_BIND_MOUNT_HOST_PATH} && stat -c '%u:%g' ${PATRONI_BIND_MOUNT_HOST_PATH}" 2>/dev/null || echo "missing")"
-        if [[ "${actual_ownership}" != "999:999" ]]; then
-            echo "ERROR patroni-install: ${PATRONI_BIND_MOUNT_HOST_PATH} on ${cluster_node_name} is '${actual_ownership}', expected '999:999'" >&2
-            echo "  Operator one-time setup (run AS ROOT, while root SSH window is open):" >&2
-            echo "    ssh root@${cluster_node_ipv4} 'install -d --owner=999 --group=999 --mode=0700 ${PATRONI_BIND_MOUNT_HOST_PATH}'" >&2
-            exit 1
-        fi
+        local etcd_bind_mount_host_path="${PATRONI_ETCD_BIND_MOUNT_HOST_PATH_PREFIX}${cluster_node_name}"
+
+        local bind_mount_host_path
+        for bind_mount_host_path in "${PATRONI_BIND_MOUNT_HOST_PATH}" "${etcd_bind_mount_host_path}"; do
+            local actual_ownership
+            actual_ownership="$(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+                "rishi-deploy@${cluster_node_ipv4}" \
+                "test -d ${bind_mount_host_path} && stat -c '%u:%g' ${bind_mount_host_path}" 2>/dev/null || echo "missing")"
+            if [[ "${actual_ownership}" != "999:999" ]]; then
+                echo "ERROR patroni-install: ${bind_mount_host_path} on ${cluster_node_name} is '${actual_ownership}', expected '999:999'" >&2
+                echo "  Operator one-time setup (run AS ROOT, while root SSH window is open):" >&2
+                echo "    ssh root@${cluster_node_ipv4} 'install -d --owner=999 --group=999 --mode=0700 ${bind_mount_host_path}'" >&2
+                exit 1
+            fi
+        done
     done
 }
 

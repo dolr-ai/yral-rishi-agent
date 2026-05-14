@@ -1,6 +1,128 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-14 — FIX: patroni-stack.yml etcd bind-mount dirs missing from pre-flight + wrong pgbouncer image tag (Day-5 deploy bug #4)
+
+### Action
+Third live invocation of `patroni-install.sh` today (after PR #44 +
+PR #45 merged). All 5 secrets correctly skipped, render produced valid
+YAML, `docker stack deploy` returned 0 with all 7 services created.
+Then `docker stack ps yral-v2-patroni` revealed silent partial failure:
+
+```
+etcd-rishi-4 / -5 / -6  : Rejected  "invalid mount config for type 'bind':
+                                     bind source path does not exist:
+                                     /data/etcd-rishi-N"
+pgbouncer (2 replicas)  : Rejected  "No such image:
+                                     edoburu/pgbouncer:1.21.0"
+patroni-rishi-4         : Starting  (waiting on etcd consensus)
+patroni-rishi-5         : Preparing (waiting on etcd consensus)
+patroni-rishi-6         : Running   (waiting on etcd consensus, will stall)
+```
+
+(Note: `docker stack deploy` returned 0 despite Rejected services on the
+very next poll — same silent-success gap I flagged in the PR #45 follow-up.
+Rishi's instruction was to add the `confirm_stack_actually_deployed`
+verifier AFTER Step 6 succeeds; deferred per his earlier guidance.)
+
+Two distinct deploy-blocker bugs in the same stack:
+
+**Bug 4a — pre-flight + operator-setup missed the per-node etcd dirs.**
+`patroni-stack.yml` pins each etcd member to its named host
+(`etcd-rishi-4` on rishi-4, etc.) with a node-specific bind mount
+`/data/etcd-${node_name}`. `confirm_patroni_bind_mount_directories_
+exist_on_each_node` only checked `/data/patroni-data`. The
+operator-setup batch in the file header only listed `/data/{patroni,
+redis,langfuse}-data` — no etcd dirs. So on a fresh cluster the etcd
+bind mounts pointed at non-existent paths, and Swarm rejected every
+etcd task before it could even start.
+
+**Bug 4b — `edoburu/pgbouncer:1.21.0` is not a real Docker Hub tag.**
+edoburu publishes `<upstream>-p<image-patch>` tags (e.g. `1.21.0-p0`,
+`1.21.0-p1`, `1.21.0-p2`, then `v1.23.0-p0` etc. with a later v-prefix
+transition). Bare `1.21.0` was never tagged. PR #10 (Day 1-2) wrote
+the bare-version tag in the draft assuming Docker Hub's "latest minor"
+convention applied; it doesn't for this repo.
+
+### Fix
+- `patroni-install.sh`:
+  - Added `PATRONI_ETCD_BIND_MOUNT_HOST_PATH_PREFIX="/data/etcd-"`
+    constant near `PATRONI_BIND_MOUNT_HOST_PATH`.
+  - Extended `confirm_patroni_bind_mount_directories_exist_on_each_
+    node` with an inner loop verifying BOTH the shared
+    `/data/patroni-data` and the per-node `/data/etcd-${node_name}`.
+  - Expanded the operator-setup batch in the file header with the
+    per-node etcd `install -d`, using `$(hostname)` so each node only
+    creates its own dir (etcd binds are node-local by design).
+  - Role-comment captures the Day-5 first-attempt symptom for
+    future re-readers.
+- `patroni-stack.yml`: bumped pgbouncer image to
+  `edoburu/pgbouncer:1.21.0-p2` (latest image patch of upstream 1.21.0)
+  + inline comment recording the bare-`1.21.0`-tag-doesn't-exist trap.
+
+### Operator one-time setup needed after merge (root SSH window)
+Per CONSTRAINTS C8, the script can't `sudo install -d`. The new pre-
+flight will fail until the operator creates the 3 per-node etcd dirs
+once. I'll run it AS ROOT immediately after this PR merges (no fresh
+YES — same root-window pattern as Day-4 + the existing patroni-data /
+redis-data / langfuse-data dirs that I created earlier this week).
+
+```
+ssh root@138.201.128.108 'install -d --owner=999 --group=999 --mode=0700 /data/etcd-rishi-4'
+ssh root@88.99.160.251   'install -d --owner=999 --group=999 --mode=0700 /data/etcd-rishi-5'
+ssh root@162.55.88.112   'install -d --owner=999 --group=999 --mode=0700 /data/etcd-rishi-6'
+```
+
+### Behaviour after operator setup + retry
+- etcd services: same config as the currently-deployed (failed) stack;
+  Swarm auto-recovers them as soon as the bind paths exist, no
+  redeploy needed. But the retry will go through `docker stack deploy
+  --prune` anyway, which is idempotent.
+- pgbouncer service: image tag changed → Swarm sees the diff → pulls
+  `1.21.0-p2` + starts 2 replicas on the edge nodes.
+- patroni services: were stuck waiting on etcd consensus; will form
+  the HA cluster once etcd quorum is up.
+
+### State on rishi-4 after this failed third attempt
+- 7 services on `yral-v2-patroni` stack, mixed Rejected/Starting/
+  Running/Preparing.
+- 5 Swarm secrets unchanged (SHA-suffix idempotency).
+- 3 etcd containers in tight Rejected loop until dirs exist.
+- 2 pgbouncer containers in tight Rejected loop until image tag fixed.
+- 3 patroni containers waiting on etcd. No data corruption risk (no
+  Postgres process has come up).
+
+### Bug count tally for Day-5 Patroni deploy
+- Bug 1: rishi-5 missing resync systemd unit (fixed by re-running
+  swarm-join phase under Day-4 hardening — no PR needed).
+- Bug 2: S3-secret empty-stdin (PR #44).
+- Bug 3: resolved-secret-name not exported on skip-branch (PR #45).
+- Bug 4a + 4b: etcd bind dirs + pgbouncer image tag (this PR).
+
+5 bugs across 3 retry attempts. Above the "1-2 per attempt"
+prediction, but each fix has stayed under 50 lines of code, and the
+pattern (deploy → silent-or-loud failure → small fix-PR → merge →
+retry) is still serving us well. No over-engineered test harnesses
+introduced.
+
+### Bundling rationale
+Both bugs 4a + 4b block the same `docker stack ps` from going green,
+both live in the patroni-stack surface, neither can be verified in
+isolation (any retry needs both fixed). Per the established Day-4/
+Day-5 pattern, bundling these into one PR keeps the merge cycle tight
+without violating A2.1 — total diff is +52 / -13, single deploy
+surface, single concern when read as "make patroni-stack actually
+deployable on retry".
+
+### Constraints touched
+A2.1 (single deploy-surface concern, bundled cohesively), B7 (role-
+comments capture both traps), C8 (narrow sudoers preserved — script
+stays verify-only, operator does the install -d), F3 (Patroni HA sync
+commit unchanged), G3 (pgBouncer config unchanged; only image tag
+fixed), I11 (same-commit LOG entry).
+
+---
+
 ## 2026-05-14 — FIX: patroni-install.sh resolved-secret-name export missing from skip-branch (Day-5 deploy bug #3)
 
 ### Action
