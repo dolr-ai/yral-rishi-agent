@@ -451,26 +451,47 @@ render_patroni_stack_compose_file_to_temporary_path() {
         exit 1
     fi
 
-    # Expose Spilo's USE_WALG_BACKUP / USE_WALG_RESTORE toggle to envsubst.
-    # The stack file reads `${YRAL_PATRONI_USE_WALG}` in those slots so a
-    # single env-var flip enables / disables WAL-G end-to-end. When OFF, we
-    # also default the 5 S3 env vars to non-empty placeholder strings so
-    # envsubst does not leave literal `${YRAL_HETZNER_S3_*}` in the
-    # rendered YAML — Spilo never reads them when USE_WALG_*=false anyway.
-    # ACCESS_KEY_ID and SECRET_ACCESS_KEY must be non-empty because they
-    # back Swarm secrets created in create_or_rotate_swarm_secrets_with_
-    # sha8_suffix and `docker secret create - <stdin>` rejects 0-byte
-    # input. REGION and ENDPOINT only flow through envsubst into env vars
-    # Spilo reads, so empty strings are fine there.
+    # Expose Spilo's WAL/S3 toggles to envsubst. The stack file reads:
+    #   - ${YRAL_PATRONI_USE_WALG}                       — wal-g enable
+    #   - ${YRAL_PATRONI_WALG_S3_PREFIX_RENDERED}        — wal-g prefix or ""
+    #   - ${YRAL_PATRONI_S3_FORCE_PATH_STYLE_RENDERED}   — "true" or ""
+    #   - ${YRAL_HETZNER_S3_REGION} / ${YRAL_HETZNER_S3_ENDPOINT}
+    #   - ${YRAL_PATRONI_USE_WALE_S3_BACKUP_RENDERED}    — wal-e (older tool) on/off
+    #   - ${YRAL_PATRONI_USE_WALE_GS_BACKUP_RENDERED}    — wal-e GS on/off
+    #
+    # When WAL-G is OFF, ALL backup-related env vars in the rendered YAML are
+    # set to empty strings so Spilo's configure_spilo.py treats the
+    # configuration as "no backup engine" and skips both the wal-g and the
+    # wal-e standby-bootstrap paths. Day-5 deploy #7 caught the case where
+    # leaving `WALG_S3_PREFIX: s3://walg-disabled/yral-v2-postgres` populated
+    # caused Spilo's launcher to derive a wal-e config from it and then
+    # `wale_restore.sh` hung indefinitely on `wal-e backup-list` (urllib
+    # timing out against placeholder S3 credentials) before any replica
+    # could fall through to pg_basebackup.
+    #
+    # ACCESS_KEY_ID and SECRET_ACCESS_KEY still need NON-empty placeholder
+    # strings because they back Swarm secrets created in
+    # create_or_rotate_swarm_secrets_with_sha8_suffix and `docker secret
+    # create - <stdin>` rejects 0-byte input. Those placeholder credentials
+    # never get read because the env vars that point Spilo at them
+    # (WALG_S3_PREFIX, USE_WALG_*, USE_WALE_*) are all empty/false.
     if [[ "${YRAL_PATRONI_WAL_G_ENABLED:-false}" == "true" ]]; then
         export YRAL_PATRONI_USE_WALG="true"
+        export YRAL_PATRONI_WALG_S3_PREFIX_RENDERED="s3://${YRAL_HETZNER_S3_WAL_BUCKET_NAME}/yral-v2-postgres"
+        export YRAL_PATRONI_S3_FORCE_PATH_STYLE_RENDERED="true"
+        export YRAL_PATRONI_USE_WALE_S3_BACKUP_RENDERED="true"
+        export YRAL_PATRONI_USE_WALE_GS_BACKUP_RENDERED="false"
     else
         export YRAL_PATRONI_USE_WALG="false"
+        export YRAL_PATRONI_WALG_S3_PREFIX_RENDERED=""
+        export YRAL_PATRONI_S3_FORCE_PATH_STYLE_RENDERED=""
+        export YRAL_PATRONI_USE_WALE_S3_BACKUP_RENDERED="false"
+        export YRAL_PATRONI_USE_WALE_GS_BACKUP_RENDERED="false"
         export YRAL_HETZNER_S3_ACCESS_KEY_ID="${YRAL_HETZNER_S3_ACCESS_KEY_ID:-walg-disabled-placeholder}"
         export YRAL_HETZNER_S3_SECRET_ACCESS_KEY="${YRAL_HETZNER_S3_SECRET_ACCESS_KEY:-walg-disabled-placeholder}"
-        export YRAL_HETZNER_S3_WAL_BUCKET_NAME="${YRAL_HETZNER_S3_WAL_BUCKET_NAME:-walg-disabled}"
-        export YRAL_HETZNER_S3_REGION="${YRAL_HETZNER_S3_REGION:-}"
-        export YRAL_HETZNER_S3_ENDPOINT="${YRAL_HETZNER_S3_ENDPOINT:-}"
+        export YRAL_HETZNER_S3_WAL_BUCKET_NAME=""
+        export YRAL_HETZNER_S3_REGION=""
+        export YRAL_HETZNER_S3_ENDPOINT=""
     fi
 
     PATRONI_RENDERED_STACK_COMPOSE_FILE_PATH="$(mktemp /tmp/yral-v2-patroni-rendered-stack.XXXXXX.yml)"
