@@ -326,13 +326,16 @@ create_or_rotate_swarm_secrets_with_sha8_suffix() {
     # Map secret-base-name → environment-variable-name that holds its value.
     # All 5 secrets are ALWAYS created so the stack file's `external: true`
     # references always resolve. When WAL-G is disabled, the 2 S3 env vars
-    # default to empty strings (set at the top of this function), so the
-    # corresponding Swarm secrets contain empty content — harmless because
-    # Spilo skips reading them entirely when USE_WALG_BACKUP/RESTORE=false
-    # (set in the render step from YRAL_PATRONI_USE_WALG).
+    # default to the non-empty `walg-disabled-placeholder` string (NOT
+    # empty) because `docker secret create ... -` rejects 0-byte stdin
+    # with `error reading from STDIN: data is empty`. The placeholder
+    # content is harmless — Spilo never reads these secrets when
+    # USE_WALG_BACKUP/RESTORE=false (set in the render step from
+    # YRAL_PATRONI_USE_WALG). Matches the established pattern: WAL_BUCKET_
+    # NAME below already uses `walg-disabled` as its non-empty default.
     if [[ "${YRAL_PATRONI_WAL_G_ENABLED:-false}" != "true" ]]; then
-        export YRAL_HETZNER_S3_ACCESS_KEY_ID="${YRAL_HETZNER_S3_ACCESS_KEY_ID:-}"
-        export YRAL_HETZNER_S3_SECRET_ACCESS_KEY="${YRAL_HETZNER_S3_SECRET_ACCESS_KEY:-}"
+        export YRAL_HETZNER_S3_ACCESS_KEY_ID="${YRAL_HETZNER_S3_ACCESS_KEY_ID:-walg-disabled-placeholder}"
+        export YRAL_HETZNER_S3_SECRET_ACCESS_KEY="${YRAL_HETZNER_S3_SECRET_ACCESS_KEY:-walg-disabled-placeholder}"
     fi
     declare -A swarm_secret_to_environment_variable=(
         ["yral_v2_postgres_superuser_password"]="YRAL_POSTGRES_SUPERUSER_PASSWORD"
@@ -386,15 +389,20 @@ render_patroni_stack_compose_file_to_temporary_path() {
     # Expose Spilo's USE_WALG_BACKUP / USE_WALG_RESTORE toggle to envsubst.
     # The stack file reads `${YRAL_PATRONI_USE_WALG}` in those slots so a
     # single env-var flip enables / disables WAL-G end-to-end. When OFF, we
-    # also default the 5 S3 env vars to empty strings so envsubst does not
-    # leave literal `${YRAL_HETZNER_S3_*}` in the rendered YAML — Spilo
-    # never reads them when USE_WALG_*=false anyway.
+    # also default the 5 S3 env vars to non-empty placeholder strings so
+    # envsubst does not leave literal `${YRAL_HETZNER_S3_*}` in the
+    # rendered YAML — Spilo never reads them when USE_WALG_*=false anyway.
+    # ACCESS_KEY_ID and SECRET_ACCESS_KEY must be non-empty because they
+    # back Swarm secrets created in create_or_rotate_swarm_secrets_with_
+    # sha8_suffix and `docker secret create - <stdin>` rejects 0-byte
+    # input. REGION and ENDPOINT only flow through envsubst into env vars
+    # Spilo reads, so empty strings are fine there.
     if [[ "${YRAL_PATRONI_WAL_G_ENABLED:-false}" == "true" ]]; then
         export YRAL_PATRONI_USE_WALG="true"
     else
         export YRAL_PATRONI_USE_WALG="false"
-        export YRAL_HETZNER_S3_ACCESS_KEY_ID="${YRAL_HETZNER_S3_ACCESS_KEY_ID:-}"
-        export YRAL_HETZNER_S3_SECRET_ACCESS_KEY="${YRAL_HETZNER_S3_SECRET_ACCESS_KEY:-}"
+        export YRAL_HETZNER_S3_ACCESS_KEY_ID="${YRAL_HETZNER_S3_ACCESS_KEY_ID:-walg-disabled-placeholder}"
+        export YRAL_HETZNER_S3_SECRET_ACCESS_KEY="${YRAL_HETZNER_S3_SECRET_ACCESS_KEY:-walg-disabled-placeholder}"
         export YRAL_HETZNER_S3_WAL_BUCKET_NAME="${YRAL_HETZNER_S3_WAL_BUCKET_NAME:-walg-disabled}"
         export YRAL_HETZNER_S3_REGION="${YRAL_HETZNER_S3_REGION:-}"
         export YRAL_HETZNER_S3_ENDPOINT="${YRAL_HETZNER_S3_ENDPOINT:-}"
