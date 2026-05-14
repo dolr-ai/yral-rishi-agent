@@ -18,7 +18,7 @@
 # ║  - Deployed by patroni-install.sh; it renders ${YRAL_PATRONI_STACK_       ║
 # ║    RESOLVED_*} placeholders below with SHA-rotating Swarm secret names    ║
 # ║    per CONSTRAINTS H2.                                                     ║
-# ║  - Networks:    only yral-agent-data-plane-overlay — no public exposure   ║
+# ║  - Networks:    only yral-v2-data-plane — no public exposure   ║
 # ║                 per CONSTRAINTS C3.                                        ║
 # ║  - Storage:     /data/patroni-data per node, bind-mounted (V2 infra §7.2).║
 # ║                                                                              ║
@@ -32,7 +32,7 @@ version: "3.9"
 # resource limits, restart policy, and overlay attachment per service.
 x-yral-data-plane-defaults: &yral_data_plane_defaults
   networks:
-    - yral-agent-data-plane-overlay
+    - yral-v2-data-plane
   deploy:
     restart_policy:
       condition: any
@@ -355,7 +355,7 @@ secrets:
 
 # The data-plane overlay is created once by node-bootstrap.sh swarm-init.
 networks:
-  yral-agent-data-plane-overlay:
+  yral-v2-data-plane:
     external: true
 
 

@@ -1,6 +1,76 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-14 — DEP-003 RESOLVED: align overlay names with CONSTRAINTS C3 (rename across 5 files)
+
+### Action
+Day 5 green-light arrived this morning; resume protocol surfaced
+Session 2's DEP-003 (raised 2026-05-13) — Session 2's `docker-compose.
+swarm.yml` (PR #18) declared three `external: true` overlay networks
+matching **CONSTRAINTS C3 verbatim**:
+
+- `yral-v2-public-web`
+- `yral-v2-internal`
+- `yral-v2-data-plane`
+
+My Day-1-2 drafts (PR #9 + PR #10) had used different names taken
+from `V2_INFRASTRUCTURE_AND_CLUSTER_ARCHITECTURE_CURRENT.md`:
+
+- `yral-agent-public-web-overlay`
+- `yral-agent-internal-service-to-service-overlay`
+- `yral-agent-data-plane-overlay`
+
+Per the CURRENT-TRUTH.md authority chain CONSTRAINTS wins when it
+disagrees with the infra doc — which it did here. Session 2 was
+right; Session 1 needed to rename.
+
+Rishi typed YES on Option (a) this morning (typed-YES 2026-05-14)
+covering both the rename PR + a narrow A1 carve-out to remove the
+3 wrong-named overlays on the live cluster.
+
+### Files touched (this PR)
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/scripts/node-bootstrap.sh (constants + file-header doc + role-comment expanded to capture the doc-vs-CONSTRAINTS divergence for future re-readers)
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/scripts/patroni-stack.yml (data-plane overlay refs)
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/scripts/redis-sentinel-stack.yml (data-plane overlay refs)
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/scripts/langfuse-stack.yml (data-plane + internal overlay refs)
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/scripts/caddy-swarm-service.yml (public-web overlay refs)
+- yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/cross-session-dependencies.md (DEP-003 moved to RESOLVED)
+- yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-1-LOG.md (this entry)
+
+### Why
+Pre-condition for Day 5 stateful-core deploys + Session 2's Day 3
+hello-world spawn. Without this fix, Patroni / Redis Sentinel /
+Langfuse stacks Session 1 deploys would land on
+`yral-agent-data-plane-overlay`, and Session 2's template-spawned
+services would attempt to attach to `yral-v2-data-plane` (declared
+`external: true`) — fail-fast at deploy with "network not found".
+
+Per A2.1: pure mechanical rename, single concern, no new
+abstractions, no new dependencies. ~30-line diff total. Same shape
+as #19/#21/#23/#29/#33 small-fix pattern from Day 4.
+
+### Test evidence
+- `sed` substitution across 5 files (longest match first to avoid prefix-clobber).
+- `bash -n node-bootstrap.sh` → syntax OK.
+- `python3 -c "yaml.safe_load(...)"` against all 4 .yml stacks → all parse OK after placeholder substitution.
+- Active `yral-agent-*` references: 0 across the 5 files. The single remaining mention is in a fresh role-comment that REFERENCES the old name as context (so future readers know what the rename corrected).
+- New `yral-v2-{public-web,internal,data-plane}` reference counts per file: node-bootstrap.sh=4, patroni-stack.yml=3, redis-sentinel-stack.yml=3, langfuse-stack.yml=6, caddy-swarm-service.yml=4. Matches the original old-name counts.
+
+### Cluster-side recovery (post-merge, narrow A1 carve-out)
+After this PR merges I run a tight cleanup sequence per Rishi's typed-YES scope:
+
+1. On each of rishi-4/5/6: `docker network inspect <each-old-name> --format '{{json .Containers}}'` to confirm zero containers attached. If ANY shows containers, STOP and ping.
+2. `docker network rm yral-agent-public-web-overlay yral-agent-internal-service-to-service-overlay yral-agent-data-plane-overlay` — scope = exactly those 3 names.
+3. Re-run swarm-init phase on rishi-4 only. Script's idempotency on the Swarm itself skips re-init (cluster + leader + labels + resync systemd unit all preserved). Overlay-create loop creates the new CONSTRAINTS-correct names with `encrypted=true`.
+4. Verify `'{{index .Options "encrypted"}}'` returns `"true"` on all 3 new overlays on each of rishi-4/5/6.
+5. Confirm `docker network ls --filter driver=overlay` shows only `yral-v2-*` + the Swarm `ingress` (no `yral-agent-*` remnants).
+6. STOP. Ping with rename-cluster outcome before starting Day 5 Patroni.
+
+### Blockers raised
+None.
+
+---
+
 ## 2026-05-13 — MILESTONE: Day 4 cluster bringup COMPLETE (3 nodes, 3 encrypted overlays, 5 script bugs caught + fixed)
 
 ### Summary

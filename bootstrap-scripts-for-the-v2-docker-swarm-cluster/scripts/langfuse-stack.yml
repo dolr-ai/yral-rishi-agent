@@ -33,7 +33,7 @@ services:
     image: clickhouse/clickhouse-server:24.3-alpine
     hostname: langfuse-clickhouse
     networks:
-      - yral-agent-data-plane-overlay
+      - yral-v2-data-plane
     environment:
       CLICKHOUSE_DB: langfuse
       CLICKHOUSE_USER: langfuse
@@ -68,8 +68,8 @@ services:
     image: langfuse/langfuse:3
     hostname: langfuse-web
     networks:
-      - yral-agent-data-plane-overlay
-      - yral-agent-internal-service-to-service-overlay
+      - yral-v2-data-plane
+      - yral-v2-internal
     environment:
       # Postgres lives on the shared Patroni cluster, schema langfuse.
       DATABASE_HOST: pgbouncer
@@ -127,7 +127,7 @@ services:
     image: langfuse/langfuse-worker:3
     hostname: langfuse-worker
     networks:
-      - yral-agent-data-plane-overlay
+      - yral-v2-data-plane
     environment:
       DATABASE_HOST: pgbouncer
       DATABASE_PORT: "5432"
@@ -175,9 +175,9 @@ secrets:
 
 
 networks:
-  yral-agent-data-plane-overlay:
+  yral-v2-data-plane:
     external: true
-  yral-agent-internal-service-to-service-overlay:
+  yral-v2-internal:
     external: true
 
 

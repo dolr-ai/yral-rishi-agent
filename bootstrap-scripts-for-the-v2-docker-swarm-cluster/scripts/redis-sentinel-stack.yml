@@ -16,7 +16,7 @@
 # ║  🔗 HOW IT FITS                                                              ║
 # ║  - Deployed by redis-sentinel-install.sh (envsubst's the SHA-rotated      ║
 # ║    secret name).                                                           ║
-# ║  - Network:  yral-agent-data-plane-overlay only — no public exposure (C3).║
+# ║  - Network:  yral-v2-data-plane only — no public exposure (C3).║
 # ║  - Storage:  /data/redis-data on rishi-4 + rishi-5 (bind mount, V2 §7.2).║
 # ║                                                                              ║
 # ║  ⚠️ DRAFT — NO STACKS DEPLOYED YET (per agent spec + A13).                   ║
@@ -27,7 +27,7 @@ version: "3.9"
 
 x-yral-data-plane-defaults: &yral_data_plane_defaults
   networks:
-    - yral-agent-data-plane-overlay
+    - yral-v2-data-plane
   deploy:
     restart_policy:
       condition: any
@@ -229,7 +229,7 @@ secrets:
 
 
 networks:
-  yral-agent-data-plane-overlay:
+  yral-v2-data-plane:
     external: true
 
 

@@ -3,9 +3,17 @@
 
 ## OPEN
 
+<none — DEP-003 moved to RESOLVED below>
+
+---
+
+## RESOLVED
+
 ### DEP-003 — Session 2 needs Session 1 to confirm the three cluster overlay network names match the template's `docker-compose.swarm.yml`
 
 Raised: 2026-05-13 by Session 2
+Resolved: 2026-05-14 by Session 1 (PR `session-1/align-overlay-names-with-constraints-c3`, Rishi typed YES on Option (a) the same morning)
+Resolution: Session 2 was right — Session 1's Day-1-2 drafts (PR #9 + PR #10) used non-CONSTRAINTS overlay names pulled from `V2_INFRASTRUCTURE_AND_CLUSTER_ARCHITECTURE_CURRENT.md` (`yral-agent-public-web-overlay`, `yral-agent-internal-service-to-service-overlay`, `yral-agent-data-plane-overlay`). CONSTRAINTS C3 verbatim is `yral-v2-public-web`, `yral-v2-internal`, `yral-v2-data-plane`, and per the CURRENT-TRUTH.md authority chain CONSTRAINTS wins. Renamed across 5 files (`node-bootstrap.sh`, `patroni-stack.yml`, `redis-sentinel-stack.yml`, `langfuse-stack.yml`, `caddy-swarm-service.yml`) plus an in-script role-comment capturing the doc-vs-CONSTRAINTS divergence for future re-readers. The live cluster's wrong-named overlays on rishi-4/5/6 are removed under a narrow A1 carve-out (Rishi typed YES same morning; scope = exactly those 3 names, after verifying zero containers attached) and recreated with the CONSTRAINTS names + `encrypted=true` confirmed cluster-wide. Names now match Session 2's `docker-compose.swarm.yml` exactly; hello-world spawn unblocked.
 
 What:    `yral-rishi-agent-new-service-template/docker-compose.swarm.yml`
          (PR #18, branch `session-2/template-skeleton-compose`) declares
@@ -48,10 +56,6 @@ resolution: Session 1 grep their bootstrap-scripts-for-the-v2-docker-
          names + I update the template's swarm.yml + project.config.
 
 ---
-
----
-
-## RESOLVED
 
 ### DEP-001 — Session 1 needs scope-lint paths corrected to match real folder layout
 Raised: 2026-05-04 by Session 1

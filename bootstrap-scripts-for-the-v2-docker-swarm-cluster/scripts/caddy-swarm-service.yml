@@ -23,7 +23,7 @@
 # ║                  node-bootstrap.sh swarm-init has finished.                ║
 # ║  - Listens on:   :443 host port (Swarm ingress mode) — the only host port  ║
 # ║                  v2 exposes per CONSTRAINTS C3.                            ║
-# ║  - Routes into:  yral-agent-public-web-overlay — every v2 public service   ║
+# ║  - Routes into:  yral-v2-public-web — every v2 public service   ║
 # ║                  (public-api, hello-world, etc.) attaches here.            ║
 # ║  - Pairs with:   the rishi-1/2 Caddy snippet (added Day 7 via              ║
 # ║                  yral-rishi-hetzner-infra-template per A2 carve-out).      ║
@@ -130,7 +130,7 @@ services:
     networks:
       # Public web overlay only — Caddy must NOT see the internal or
       # data-plane overlays per CONSTRAINTS C3 isolation.
-      - yral-agent-public-web-overlay
+      - yral-v2-public-web
 
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:2019/config/"]
@@ -155,7 +155,7 @@ volumes:
 # reference it as `external: true` so the stack deploy does not try to
 # (re)create it.
 networks:
-  yral-agent-public-web-overlay:
+  yral-v2-public-web:
     external: true
 
 
@@ -171,7 +171,7 @@ configs:
 # RELATED FILES
 # ─────────────
 # - node-bootstrap.sh
-#       Creates yral-agent-public-web-overlay this stack attaches to.
+#       Creates yral-v2-public-web this stack attaches to.
 # - ../secrets-manifest.yaml
 #       Declares CADDY-related secrets (e.g. ACME account email if we ever
 #       move off `tls internal` to real Let's Encrypt on the v2 cluster).
