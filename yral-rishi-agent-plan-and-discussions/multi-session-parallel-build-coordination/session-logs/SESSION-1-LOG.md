@@ -1,6 +1,93 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-14 — FIX: patroni-install.sh S3-secret empty-stdin bug (Day-5 deploy bug #2)
+
+### Action
+Caught on the first live invocation of `patroni-install.sh` against
+rishi-4 today (Day-5 Step 3 first attempt). Pre-flight passed, the 3
+Patroni-password Swarm secrets were created cleanly, then the loop
+errored on the 4th secret (Hetzner S3 access key):
+
+```
+qhmad5vcd51blu7zjgzhnfbym
+m0ft40omgr1ifxj1lm6572qyc
+kl5zkba7qleudjaqpx1ghawf5
+error reading from STDIN: data is empty
+```
+
+Root cause: my PR #41 design defaulted the 2 S3 env vars to empty
+strings when WAL-G is off, then `printf '%s' "${secret_value}" |
+docker secret create ${name} -` chokes because the Docker CLI rejects
+0-byte stdin (`error reading from STDIN: data is empty`).
+
+Fix: change the 2 empty-default expansions in BOTH the create function
+AND the render function to the non-empty placeholder `walg-disabled-
+placeholder`. Matches the established pattern — `YRAL_HETZNER_S3_WAL_
+BUCKET_NAME` already used `walg-disabled` as its non-empty default
+(same reason — it flowed into Spilo env where empty would have been
+visually confusing, but the new bug is sharper because Docker actively
+rejects empty stdin). REGION + ENDPOINT keep empty defaults (they
+only flow through envsubst into Spilo env, not through `docker secret
+create`'s stdin).
+
+Role-comment in both spots expanded to capture the Docker CLI rejects-
+empty-stdin behaviour so future re-readers don't shorten back to empty.
+
+State on rishi-4 at the moment of the failure: 3 Swarm secrets
+already created (postgres-superuser, patroni-replication, patroni-
+rest-api). 2 S3 secrets not yet attempted, render never ran, stack
+never deployed. Safe partial state — re-running with this fix is
+idempotent (the create loop's SHA-suffix presence check detects + skips
+the 3 existing secrets, then creates the 2 missing ones with non-empty
+placeholder content).
+
+### Files touched
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/scripts/patroni-install.sh (+19 / -11, two function bodies — same role-comment block expanded twice for matching context)
+- yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-1-LOG.md (this entry)
+
+### Why
+Bug #2 of the predicted "1-2 per attempt" pattern for Day 5 first-
+deploy execution (bug #1 was rishi-5's missing resync systemd unit
+from Day 4's swarm-join partial state — fixed by re-running swarm-
+join phase under script idempotency without a PR). Per Rishi's same-
+day latitude grant (typed YES 2026-05-14): small fix-PRs for code
+bugs are operator-autonomous; Session 1 opens without surfacing.
+
+Per A2.1: 4-line code change (literal), no new abstractions, no new
+dependencies. Same low-risk shape as every Day-4 + Day-5 fix PR
+before (#19/#21/#23/#29/#33/#38/#41).
+
+### Test evidence
+- `bash -n patroni-install.sh` → syntax OK (rishi-4 has bash 5.2.21
+  so all `declare -A` etc. work).
+- Diff: +19 / -11 across two function bodies, mechanical placeholder
+  substitution with matching role-comment expansion.
+- Behaviour matrix when WAL-G is OFF (today's default):
+  - Old: ACCESS_KEY_ID empty → `docker secret create ... -` errors
+    with "data is empty" → script exits mid-loop ❌
+  - New: ACCESS_KEY_ID=`walg-disabled-placeholder` → `docker secret
+    create` accepts → Swarm secret exists → stack mount resolves →
+    Spilo never reads the secret content because USE_WALG_*=false ✓
+
+### Day-5 retry plan after merge
+1. scp updated `patroni-install.sh` to rishi-4 (no need to re-scp
+   patroni-stack.yml — unchanged).
+2. Re-run via the same `ssh -A root@138.201.128.108` invocation with
+   the same env vars (passwords pulled from Keychain, 3 IPv4 vars,
+   WAL-G off).
+3. Idempotent — the 3 existing Swarm secrets get skipped by the
+   `docker secret inspect` presence check; the 2 missing S3 secrets
+   get created with placeholder content; render + deploy proceeds.
+4. Verify `patronictl list` shows Leader + Sync Standby + Replica.
+5. Lightweight failover smoke.
+6. STOP + ping before Redis Sentinel (Day-5 Step 2).
+
+### Blockers raised
+None.
+
+---
+
 ## 2026-05-14 — ADDENDUM to PR #41: production-mode guard added (D2 compliance gate)
 
 ### Action
