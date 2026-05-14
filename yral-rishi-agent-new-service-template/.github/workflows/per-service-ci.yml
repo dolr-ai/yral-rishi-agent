@@ -103,6 +103,26 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  # -------------------------------------------------------------------------
+  # shell-tests — runs the D8 bridge-scripts test suite. Read-only against
+  # the fixtures in scripts/tests/fixtures/; no temp dirs created. Requires
+  # yq installed in the runner.
+  # -------------------------------------------------------------------------
+  shell-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Install yq
+        run: sudo snap install yq
+
+      - name: Run validate-secrets.sh test suite
+        run: bash scripts/tests/test_validate_secrets.sh
+
+      - name: Run gen-env-example.sh test suite
+        run: bash scripts/tests/test_gen_env_example.sh
+
 
 # ===========================================================================
 # RELATED FILES:

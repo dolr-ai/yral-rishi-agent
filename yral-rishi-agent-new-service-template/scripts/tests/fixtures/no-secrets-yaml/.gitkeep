@@ -1,0 +1,2 @@
+# Intentionally empty directory — fixture for the "no secrets.yaml at all"
+# pre-flight failure path. .gitkeep just makes git track the directory.
