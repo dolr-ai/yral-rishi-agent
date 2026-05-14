@@ -67,10 +67,18 @@
 # ║                                                                              ║
 # ║    for ip in <rishi-4 ip> <rishi-5 ip> <rishi-6 ip>; do                    ║
 # ║      ssh root@$ip 'set -e                                                  ║
-# ║        install -d --owner=999 --group=999 --mode=0700 /data/patroni-data  ║
+# ║        install -d --owner=101 --group=103 --mode=0700 /data/patroni-data  ║
 # ║        install -d --owner=999 --group=999 --mode=0700 /data/redis-data    ║
 # ║        install -d --owner=999 --group=999 --mode=0700 /data/langfuse-data ║
 # ║        install -d --owner=999 --group=999 --mode=0700 /data/etcd-$(hostname) ║
+# ║                                                                              ║
+# ║      # NOTE: /data/patroni-data uses uid 101 gid 103 because Spilo         ║
+# ║      # (ghcr.io/zalando/spilo-15:3.0-p1) is Debian-based and its postgres  ║
+# ║      # user is uid 101 / gid 103 — NOT the uid 999 used by the official    ║
+# ║      # `postgres:*` Docker image. Confirmed via `docker exec <patroni> id  ║
+# ║      # postgres` against the live container. Other stateful dirs stay at   ║
+# ║      # 999:999 because their containers either run as root (etcd) or use   ║
+# ║      # the standard `redis`/`langfuse` images which DO use uid 999.        ║
 # ║        for stack in yral-v2-patroni yral-v2-redis yral-v2-langfuse; do    ║
 # ║          grep -q -x "$stack" /etc/yral-v2/stacks-to-resync.list \\        ║
 # ║            || echo "$stack" >> /etc/yral-v2/stacks-to-resync.list          ║
@@ -301,11 +309,21 @@ confirm_patroni_bind_mount_directories_exist_on_each_node() {
     # WHAT:  ssh to every node as rishi-deploy and verify that BOTH of the
     #        bind-mount paths patroni-stack.yml expects exist with the
     #        right ownership:
-    #          - ${PATRONI_BIND_MOUNT_HOST_PATH} — owned 999:999 (Patroni)
+    #          - ${PATRONI_BIND_MOUNT_HOST_PATH} — owned 101:103 (Spilo's
+    #            postgres user; verified via `docker exec <patroni> id
+    #            postgres` against the live ghcr.io/zalando/spilo-15:3.0-p1
+    #            image, which is Debian-based and uses uid=101 gid=103 for
+    #            postgres — NOT uid 999 like the official `postgres:*`
+    #            Docker image; the first-attempt operator-setup used the
+    #            wrong uid and Patroni's initdb failed with
+    #            `could not access directory ".../pgdata/pgroot/data":
+    #            Permission denied` because mode 0700 owned by uid 999
+    #            blocks postgres uid 101 from traversing into the bind dir)
     #          - ${PATRONI_ETCD_BIND_MOUNT_HOST_PATH_PREFIX}${node_name}
-    #            — owned 999:999 (etcd; container runs as root but matching
-    #            the Patroni ownership convention keeps the operator-setup
-    #            batch a single `install -d` line per dir)
+    #            — owned 999:999 mode 0700 is fine here, the upstream
+    #            quay.io/coreos/etcd image has no USER directive so the
+    #            container runs as root inside, which has CAP_DAC_OVERRIDE
+    #            and can traverse 0700 dirs regardless of ownership.
     # WHEN:  fourth pre-flight (after Swarm + env + overlay checks).
     # WHY:   bind mounts (not Docker volumes) per V2 infra doc §7.2.
     #        Narrow sudoers per CONSTRAINTS C8 doesn't grant rishi-deploy
@@ -325,16 +343,29 @@ confirm_patroni_bind_mount_directories_exist_on_each_node() {
         cluster_node_ipv4="$(get_public_ipv4_for_node "${cluster_node_name}")"
         local etcd_bind_mount_host_path="${PATRONI_ETCD_BIND_MOUNT_HOST_PATH_PREFIX}${cluster_node_name}"
 
+        # Map each bind-mount path to its expected uid:gid. Different uids
+        # because Patroni's Spilo image and etcd's upstream image use
+        # different in-container users (see role-comment block above).
+        local -A bind_mount_path_to_expected_owner=(
+            ["${PATRONI_BIND_MOUNT_HOST_PATH}"]="101:103"
+            ["${etcd_bind_mount_host_path}"]="999:999"
+        )
+
         local bind_mount_host_path
-        for bind_mount_host_path in "${PATRONI_BIND_MOUNT_HOST_PATH}" "${etcd_bind_mount_host_path}"; do
+        for bind_mount_host_path in "${!bind_mount_path_to_expected_owner[@]}"; do
+            local expected_ownership="${bind_mount_path_to_expected_owner[${bind_mount_host_path}]}"
             local actual_ownership
             actual_ownership="$(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
                 "rishi-deploy@${cluster_node_ipv4}" \
                 "test -d ${bind_mount_host_path} && stat -c '%u:%g' ${bind_mount_host_path}" 2>/dev/null || echo "missing")"
-            if [[ "${actual_ownership}" != "999:999" ]]; then
-                echo "ERROR patroni-install: ${bind_mount_host_path} on ${cluster_node_name} is '${actual_ownership}', expected '999:999'" >&2
+            if [[ "${actual_ownership}" != "${expected_ownership}" ]]; then
+                local expected_uid="${expected_ownership%:*}"
+                local expected_gid="${expected_ownership#*:}"
+                echo "ERROR patroni-install: ${bind_mount_host_path} on ${cluster_node_name} is '${actual_ownership}', expected '${expected_ownership}'" >&2
                 echo "  Operator one-time setup (run AS ROOT, while root SSH window is open):" >&2
-                echo "    ssh root@${cluster_node_ipv4} 'install -d --owner=999 --group=999 --mode=0700 ${bind_mount_host_path}'" >&2
+                echo "    ssh root@${cluster_node_ipv4} 'install -d --owner=${expected_uid} --group=${expected_gid} --mode=0700 ${bind_mount_host_path}'" >&2
+                echo "  If the directory already exists with the wrong ownership (e.g. left over from an earlier attempt), chown it instead:" >&2
+                echo "    ssh root@${cluster_node_ipv4} 'chown -R ${expected_uid}:${expected_gid} ${bind_mount_host_path}'" >&2
                 exit 1
             fi
         done
