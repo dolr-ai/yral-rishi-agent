@@ -3,6 +3,38 @@
 
 ---
 
+## 2026-05-14 — Phase 0 CLOSED. Session 2 idle pending Phase 1.
+
+PR #42 merged. Phase 0 template work is complete. Recording the close + 3 outstanding follow-ups so future-me (and Sessions 3+4 when they spawn from the template) have a clean handoff.
+
+**Phase 0 final tally (Session 2):**
+- Day 1: template scaffold (compose + Dockerfile + pyproject + project.config + shared-config + secrets.yaml.template + .env.example).
+- Day 2: middleware skeleton (Sentry + Langfuse + request-ID + structured logging + config loader, plus `app/main.py` + `app/__init__.py`).
+- Day 3: per-service CI workflow template + F8 8-doc set (DEEP-DIVE / READING-ORDER / CLAUDE / RUNBOOK / SECURITY / WALKTHROUGH / GLOSSARY / WHEN-YOU-GET-LOST) + new-service.sh spawner + D8 bridge scripts (validate / sync / gen-env-example) + test suite + spawn yral-rishi-agent-hello-world end-to-end.
+
+**Merged PR chain:** #17, #18, #20, #22, #25, #27, #28, #30, #34, #36, #37, #40, #42. (PR #32 closed with audit-trail comment — wrong F8 doc names, superseded by #34.)
+
+**Lessons logged in CLAUDE.md (durable for future AI agents working here):**
+- Cross-check CONSTRAINTS.md row text on any coordinator citation BEFORE writing the code (the #32 redo lesson).
+- Avoid `rm` / `find -delete` in the spawner; prefer rsync `--exclude` + perl `-i` (the PR #37 A1 refactor).
+- Pass variable values to `perl -i -pe` via `@ARGV` + `splice` in `BEGIN`, NOT via shell-expansion into the perl source (the PR #42 recursion-explosion lesson).
+
+**Outstanding follow-ups (non-blocking, per coordinator note on PR #42):**
+1. Coordinator-scope: root `.github/workflows/<service>-ci.yml` staging for per-service workflows. Each spawned service has the workflow file inside its own folder; GitHub auto-discovers only the root. Coordinator's plan.
+2. Mine, trivial: `app/main.py` FastAPI `title="yral-rishi-agent service template"` hardcoded. Doesn't sub at spawn. One-line fix to parameterize via project.config / env. Can land before Sessions 3+4 OR they can fold a fix into their first PR.
+3. Mine, deferred: `sync-github-secrets.sh` live smoke needs yq-equipped operator. Documented in `scripts/tests/README.md` already; punt until someone hits it.
+
+**Reactive availability:**
+- If Sessions 3+4 (Public-API + Orchestrator/Soul-File) spawn from the template and find issues, will respond with follow-up template fixes.
+- If Rishi calls for the FastAPI-title fix, ~5-minute change.
+- If Rishi calls for Days 5-6 (real content in the 8 doc scaffolds), pick up there.
+
+**Worktree state at close:** clean, on `main` (after this STATE-update PR merges). Branch `session-2/phase-0-close-state-update` is the one this entry's commit lives on.
+
+**Phase 1 start:** when Rishi green-lights Sessions 3 + 4. Their first PRs will be the real integration test of the template they spawn from.
+
+---
+
 ## 2026-05-14 — Day 3, PR 5 (spawn yral-rishi-agent-hello-world end-to-end — Phase 0 close)
 
 **Branch:** `session-2/spawn-hello-world` (off main with PR #40 + Session 1's `c8bb688` patroni-install fix merged)
