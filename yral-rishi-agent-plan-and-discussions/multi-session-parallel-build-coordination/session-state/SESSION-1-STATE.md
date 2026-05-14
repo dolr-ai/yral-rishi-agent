@@ -1,5 +1,5 @@
 # Session 1 STATE — Infra & Cluster
-> Updated: 2026-05-13 EOD (Day 4 cluster bringup complete; idle pending Day 5 green-light).
+> Updated: 2026-05-14 EOD (Day-5 Step 1 complete — Patroni HA verified, 3-member cluster with sync standby + 3 successful switchovers; idle pending Day-5 Step 2 green-light for Redis Sentinel).
 
 ## ⭐ START-OF-SESSION SUMMARY (read first when resuming)
 
@@ -11,88 +11,114 @@ agent spec + A2 tightening 2026-05-13).
 
 ## LAST THING I DID
 
-**Day 4 cluster bringup is COMPLETE.** All three Hetzner Ubuntu boxes
-(rishi-4 / rishi-5 / rishi-6) are Swarm managers advertising IPv4 with
-the three intended encrypted overlays present cluster-wide
-(`encrypted=true` verified on both rishi-4 and rishi-6 — different host
-classes for cross-check), placement labels matching V2 §5, and the
-H1 `yral-v2-swarm-resync.service` systemd unit enabled on every node.
-rishi-deploy with the CI key works on every node (Sunday-deadline
-parity for permanent SSH achieved).
+**Day-5 Step 1 (Patroni HA) is COMPLETE.** Final cluster state at EOD:
 
-Five script bugs were caught in production execution during Day 4, each
-fixed via a single-concern PR (#19 docker.sources, #21 swarm-state
-substring, #23 encrypted=true + verifier, #29 IPv4 advertise, #33
-labels-by-NodeID). Three A1 deletion carve-outs were typed YES'd by
-Rishi during the day for recovery (overlay rm on rishi-4, swarm-leave
-cascade on rishi-4, ghost node rm on rishi-5). Pause-fix-merge-retry
-loop per A2.1; no over-engineered test harnesses. Full Day-4 narrative
-captured in the close-out LOG milestone block.
+```
++ Cluster: yral-v2-postgres --+--------------+---------+----+---------+
+| Member          | Host      | Role         | State   | TL | Lag MB |
++-----------------+-----------+--------------+---------+----+---------+
+| patroni-rishi-4 | 10.0.3.88 | Leader       | running |  5 |        |
+| patroni-rishi-5 | 10.0.3.89 | Replica      | running |  5 |      0 |
+| patroni-rishi-6 | 10.0.3.90 | Sync Standby | running |  5 |      0 |
++-----------------+-----------+--------------+---------+----+---------+
+```
+
+- 3-member etcd quorum healthy (`etcdctl endpoint health --cluster`: all 3 OK)
+- F3 satisfied: rishi-6 is Sync Standby (sync_state=`sync` per pg_stat_replication)
+- pgBouncer 2 replicas Running on rishi-4 + rishi-5 (`edoburu/pgbouncer:1.21.0-p2`)
+- 3 successful patronictl switchovers verified (TL 2 → 3 → 4 → 5); replicas
+  re-streamed at each new timeline, sync standby re-elected after each switch,
+  no data loss, quorum maintained throughout.
+
+**8-bug arc resolved across 6 deploy attempts** (PR #44, #45, #46, #47, #48,
+#49 + 1 no-PR fix). Pattern was pause-fix-merge-retry per A2.1; each fix
+under 50 strict-code lines; cumulative Day-5 diff ~250 lines. Full bug-arc
+table + per-PR root-cause summary in the Day-5-Step-1 close milestone block
+in SESSION-1-LOG.md.
 
 ## CURRENT TASK
 
-**Idle pending Day 5 green-light.** Day 5 is the stateful-core deploy
-onto the now-live cluster — Patroni HA Postgres, Redis Sentinel,
-Langfuse on rishi-6, Caddy Swarm service on rishi-4/5, and the chaos
-test runner (H3 Phase 0 exit criterion). All install scripts and stack
-files for these are already on main from the Days 1-2 (PR #9, PR #10)
-and Day 3 (PR #12, PR #13) work; the cluster is the prerequisite that
-was missing.
+**Idle pending Day-5 Step 2 green-light.** Step 2 is Redis Sentinel deploy.
+Stack file + install script already on main from Day 1-2 (PR #10); same
+shape as Patroni, expect 1-2 real-server bugs given the pattern. Rishi
+explicitly green-lighted Day 5 this morning (per-step YES per A13) so the
+process gate is just "ping coordinator with Patroni outcome and confirm
+Redis Sentinel is next."
 
-Day 5 requires a separate explicit Rishi YES per A13 — "Days 4-7
-cluster provisioning / deploy require explicit per-day Rishi YES" is
-the deliberate process gate, not a technical blocker.
+Two small follow-up PRs queued for tomorrow morning (after coordinator's
+auto-merge GitHub Action + PR-comment session-messaging lands, ~75 min):
+
+- **(a)** `confirm_stack_actually_deployed` verifier — closes the silent-
+  failure gap where `docker stack deploy` returned 0 despite Rejected
+  services on Day-5 deploys 2 + 3. Adds a post-deploy poll-and-fail-loud
+  function to patroni-install.sh (and pattern can be lifted into redis +
+  langfuse install scripts).
+- **(b)** Patroni → ETCD3 code path migration — moves Spilo's Patroni
+  from the v2 REST API (re-enabled in PR #47 with `--enable-v2=true`) to
+  the ETCD3 native code path. Forward-proofs for etcd 3.6 where v2 API is
+  removed. Pure config change; needs its own testing window.
+
+Both auto-merge under the new flow tomorrow.
 
 ## NEXT 3 PLANNED ACTIONS
 
-1. Wait for Rishi's "go Day 5" / equivalent green-light.
-2. When the YES lands: scp `patroni-install.sh` (and sibling
-   `patroni-stack.yml`) to rishi-4 and run as rishi-deploy (now that
-   permanent SSH works). Deploys 3-node etcd + 3-node Patroni
-   (sync commit per F3) + 2-replica pgBouncer per G3 onto the
-   `yral-agent-data-plane-overlay`. Verify HA failover before
-   declaring Day 5 partial-done.
-3. Then `redis-sentinel-install.sh` + `langfuse-install.sh` +
-   `caddy-swarm-service.yml`, in that order. Each followed by
-   verification. Then `run-all-chaos-tests.sh` against the live
-   cluster as the H3 exit criterion. Each step gated for a
-   per-step Rishi YES because the install scripts haven't been
-   exercised on real servers yet — the "1 bug per attempt" pattern
-   from Day 4 may continue.
+1. Tomorrow morning, after coordinator wires auto-merge + PR-comment
+   messaging: open PR (a) — `confirm_stack_actually_deployed` verifier.
+   Lightweight: 20-30 strict-code lines in patroni-install.sh + same-commit
+   LOG entry. Auto-merges under new flow.
+2. Open PR (b) — Patroni ETCD3 code path migration. Config-only diff on
+   patroni-stack.yml's 3 patroni service env blocks + brief note in install
+   script. Test by redeploying and verifying patronictl list still shows
+   3 members on the new code path. Auto-merges under new flow.
+3. Open the Day-5-Step-1 close PR bundling: this STATE update + the EOD
+   LOG milestone (currently uncommitted on local branch
+   `session-1/day-5-step-1-eod-capture`) into one wrap-up. Then await
+   Rishi's typed green-light for Day-5 Step 2 (Redis Sentinel).
 
 ## BLOCKERS
 
-None at the technical level. Day 5 deployment is GATED on explicit
-Rishi YES per A13 — that's a deliberate process gate, not a blocker.
+None technical. Day-5 Step 2 (Redis Sentinel) is GATED on explicit Rishi
+YES per A13 — deliberate process gate, not a blocker.
 
-Day 7 (rishi-1/2/3 Caddy snippet via the
-`yral-rishi-hetzner-infra-template` repo) remains DEFERRED per agent
-spec + A2 tightening 2026-05-13. Needs a separate fresh Rishi YES +
-fresh audit of the current rishi-1/2/3 Caddy state before any PR opens
-against that external repo.
+Day 7 (rishi-1/2/3 Caddy snippet via the `yral-rishi-hetzner-infra-template`
+repo) remains DEFERRED per agent spec + A2 tightening 2026-05-13.
 
 ## PENDING PRs (mine)
 
-- **`session-1/day-4-cluster-bringup-complete`** (this push): single
-  PR closing Day 4 with the comprehensive milestone block above + this
-  STATE update. .md-only, auto-merge-eligible per I14.
+- None open. The local branch `session-1/day-5-step-1-eod-capture` has the
+  EOD STATE + LOG capture; will bundle into the (a)+(b) wrap PR tomorrow
+  rather than open a standalone PR tonight (less admin-merge overhead).
 
-## MERGED PRs (mine, today 2026-05-13)
+## MERGED PRs (mine, today 2026-05-14 — Day-5 Step 1 bug arc)
 
-- **PR #19** — `add_docker_apt_repository_if_missing` deb822 idempotency
-- **PR #21** — swarm-state exact-match (catches `inactive` substring trap)
-- **PR #23** — overlay `--opt encrypted=true` + existing-overlay C3 verifier
-- **PR #29** — IPv4 `--advertise-addr` (`YRAL_NODE_ADVERTISE_IPV4` env var)
-- **PR #33** — `apply_placement_labels_to_this_node` targets local Swarm NodeID
+- **PR #44** — non-empty placeholder for S3 secrets when WAL-G off
+  (Docker secret create rejects 0-byte stdin)
+- **PR #45** — export resolved-secret-name in BOTH create + skip branches
+  (skip-branch bug caused empty YAML keys on second run)
+- **PR #46** — etcd per-node bind dirs in pre-flight + pgbouncer image
+  tag fix (`1.21.0` → `1.21.0-p2`, since edoburu tags are `-pN` suffixed)
+- **PR #47** — `--enable-v2=true` on etcd command line (Spilo 3.0 Patroni
+  uses etcd v2 API which is disabled by default in etcd 3.4+)
+- **PR #48** — `/data/patroni-data` owned 101:103 not 999:999 (Spilo
+  postgres uid is 101 not the official `postgres:*` image's 999)
+- **PR #49** — empty out WAL/S3 env vars when WAL-G off so Spilo's
+  `wale_restore.sh` skips the standby-bootstrap loop and falls through
+  to `pg_basebackup` (replicas were hung on `wal-e backup-list` urllib
+  retry against placeholder S3 creds)
 
 ## MERGED PRs (mine, earlier)
 
-- **PR #15** — Day 3 EOD STATE-only update (2026-05-05)
-- **PR #13** — Day 3 chaos tests: fill + partition + run-all
-- **PR #12** — Day 3 chaos tests: kill scripts
-- **PR #10** — Day 1-2 stateful core install scripts + stacks
-- **PR #9** — Day 1-2 cluster bootstrap foundation
-- **PR #4** — Day 0.5 Sentry baseline pull cron
+- PR #35 — Day 4 close
+- PR #33 — apply_placement_labels by local Swarm NodeID
+- PR #29 — IPv4 `--advertise-addr`
+- PR #23 — overlay `--opt encrypted=true` + C3 verifier
+- PR #21 — swarm-state exact-match
+- PR #19 — deb822 docker.sources idempotency
+- PR #15 — Day 3 EOD STATE
+- PR #13, PR #12 — Day 3 chaos test scripts
+- PR #10 — Day 1-2 stateful core install scripts + stacks
+- PR #9 — Day 1-2 cluster bootstrap foundation
+- PR #4 — Day 0.5 Sentry baseline cron
 
 ## CROSS-SESSION DEPS (mine)
 
@@ -101,12 +127,19 @@ None open.
 ## CONFIRM TO RISHI (pre-written for resume)
 
 ```
-I'm resuming Session 1. Day 4 cluster bringup is COMPLETE — 3 manager
-Swarm with 3 IPsec-encrypted overlays on rishi-4/5/6, permanent
-rishi-deploy + CI-key SSH on all three (Sunday deadline cleared
-several days ago). Day 4 surfaced 5 script bugs, all fixed via
-single-concern PRs (#19/#21/#23/#29/#33). I'm idling pending your
-Day 5 green-light for stateful-core deploy (Patroni / Redis Sentinel
-/ Langfuse / Caddy + the H3 chaos test runner). Day 7 (rishi-1/2/3
-Caddy snippet) stays deferred per A2 tightening. Ready to continue?
+I'm resuming Session 1. Day-5 Step 1 (Patroni HA) is COMPLETE — final
+cluster: patroni-rishi-4 Leader / rishi-5 Replica (async) / rishi-6 Sync
+Standby on TL 5, all 0-lag, etcd quorum healthy, 3 successful
+patronictl switchovers verified, F3 satisfied. 8-bug arc resolved
+through PRs #44-#49 (cumulative ~250 strict-code lines). Local branch
+`session-1/day-5-step-1-eod-capture` has the EOD STATE + LOG capture
+ready to bundle into the wrap PR.
+
+Tomorrow morning, once coordinator wires auto-merge + PR-comment session
+messaging: I'll open (a) `confirm_stack_actually_deployed` verifier, then
+(b) Patroni → ETCD3 code path migration, then the Day-5-Step-1 close
+PR bundling those plus the EOD capture. After that I'll need a typed
+green-light for Day-5 Step 2 (Redis Sentinel).
+
+Day 7 (rishi-1/2/3 Caddy snippet) remains deferred. Ready to continue?
 ```

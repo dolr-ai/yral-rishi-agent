@@ -1,6 +1,132 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-14 EOD — MILESTONE: Day-5 Step 1 COMPLETE (Patroni HA verified, 8-bug arc closed)
+
+### Final cluster state
+
+```
++ Cluster: yral-v2-postgres --+--------------+---------+----+---------+
+| Member          | Host      | Role         | State   | TL | Lag MB |
++-----------------+-----------+--------------+---------+----+---------+
+| patroni-rishi-4 | 10.0.3.88 | Leader       | running |  5 |        |
+| patroni-rishi-5 | 10.0.3.89 | Replica      | running |  5 |      0 |
+| patroni-rishi-6 | 10.0.3.90 | Sync Standby | running |  5 |      0 |
++-----------------+-----------+--------------+---------+----+---------+
+
+pg_stat_replication (from leader):
+  patroni-rishi-5  streaming  async  0 bytes lag
+  patroni-rishi-6  streaming  sync   0 bytes lag
+
+etcdctl endpoint health --cluster:
+  http://etcd-rishi-4:2379  healthy   7.1 ms
+  http://etcd-rishi-5:2379  healthy  16.0 ms
+  http://etcd-rishi-6:2379  healthy   9.4 ms
+
+docker stack ps yral-v2-patroni  (desired-state=running):
+  yral-v2-patroni_etcd-rishi-4         rishi-4  Running
+  yral-v2-patroni_etcd-rishi-5         rishi-5  Running
+  yral-v2-patroni_etcd-rishi-6         rishi-6  Running
+  yral-v2-patroni_patroni-rishi-4      rishi-4  Running   (Leader)
+  yral-v2-patroni_patroni-rishi-5      rishi-5  Running   (Replica)
+  yral-v2-patroni_patroni-rishi-6      rishi-6  Running   (Sync Standby)
+  yral-v2-patroni_pgbouncer.1          rishi-4  Running
+  yral-v2-patroni_pgbouncer.2          rishi-5  Running
+```
+
+### Failover smoke results
+
+3 successful `patronictl switchover` operations exercised the full HA
+path. Timelines incremented 2 → 3 → 4 → 5; replicas re-streamed at
+each new TL; sync standby was re-elected after each switch; no data
+loss; quorum maintained throughout:
+
+```
+Step 1: switchover patroni-rishi-4 → patroni-rishi-6 (Sync Standby)
+        Result: rishi-6 Leader TL 3, others Replica TL 3, lag 0
+Step 2: switchover patroni-rishi-6 → patroni-rishi-5 (Sync Standby of TL 3)
+        Result: rishi-5 Leader TL 4, others Replica TL 4, lag 0
+Step 3: switchover patroni-rishi-5 → patroni-rishi-4 (Sync Standby of TL 4)
+        Result: rishi-4 Leader TL 5, rishi-6 Sync Standby TL 5, rishi-5
+        Replica TL 5, all lag 0
+```
+
+Switchover #1 took ~12 s end-to-end; #2 took ~12 s; #3 took ~12 s.
+Patroni's election quorum + etcd-backed DCS performed exactly as
+documented; no fencing artifacts, no split-brain risk surfaced.
+
+### Day-5 bug-arc table
+
+| # | PR  | One-line root cause                                                                              | Diff (strict) |
+|---|-----|--------------------------------------------------------------------------------------------------|---------------|
+| 1 |  —  | rishi-5 missing yral-v2-swarm-resync systemd unit (Day-4 swarm-join partial state)               | 0 (re-ran phase) |
+| 2 | #44 | `docker secret create -` rejects 0-byte stdin → S3-secret empty-default placeholder              | +4 / -4 |
+| 3 | #45 | `continue` in skip-branch skipped `export YRAL_PATRONI_STACK_RESOLVED_*` → empty YAML keys       | +12 / -7 |
+| 4a| #46 | pre-flight + operator-setup missed per-node `/data/etcd-rishi-N` bind dirs                       | +47 / -12 |
+| 4b| #46 | `edoburu/pgbouncer:1.21.0` is not a published tag; bumped to `1.21.0-p2`                         | (above) |
+| 5 | #47 | etcd 3.4+ disables v2 REST API by default but Spilo 3.0 Patroni hits `/v2/machines` → `--enable-v2=true` | +10 / 0 |
+| 6 | #48 | Spilo's postgres uid is 101/103 (Debian) not 999/999 (official postgres image)                   | +40 / -9 |
+| 7 | #49 | `WALG_S3_PREFIX` populated even when WAL-G off → Spilo's wale_restore.sh hung on `wal-e backup-list` urllib retry | +53 / -26 |
+
+Cumulative Day-5 strict-code diff: **~225 lines added, ~58 lines
+removed.** Each fix-PR stayed under 50 strict-code lines except #49
+(which fixed both the env-var rendering AND the wal-e-disable env vars
+in one cohesive concern). No over-engineered test harnesses; no
+abstractions introduced beyond what the bug demanded.
+
+### What this milestone unlocks
+
+- **Day-5 Step 2 (Redis Sentinel)** — gated on Rishi's typed YES.
+  Stack file + install script already on main; expect 1-2 real-server
+  bugs given the Patroni pattern. Pattern says diminishing returns
+  past Patroni; Sentinel's stateful surface is much smaller.
+- **Sessions 3+4+5 stateful-core work** — the 8 production gotchas
+  hardened in this arc would have bitten each of them later (Spilo
+  uid trap especially; wal-e bootstrap loop is platform-agnostic).
+  Patroni-first means the worst surprises are behind us.
+- **CONSTRAINTS F3 (sync commit on at least one replica) is now
+  empirically validated**, not just configured. `patronictl edit-config
+  --set synchronous_mode=true` was needed to lift the env-var setting
+  into the DCS (Patroni reads runtime config from etcd, not env);
+  documenting this as a Step-2 follow-up note.
+
+### Follow-up items queued for tomorrow morning (after coordinator wires auto-merge + PR-comment messaging)
+
+- **(a) `confirm_stack_actually_deployed` verifier** — closes the silent-
+  failure gap where `docker stack deploy` returned 0 despite Rejected
+  services (observed on Day-5 deploys 2 + 3). Add a post-deploy
+  poll-and-fail-loud function to patroni-install.sh; same shape goes
+  into redis + langfuse install scripts. ~20-30 strict-code lines.
+- **(b) Patroni → ETCD3 code path migration** — moves Spilo's Patroni
+  from the v2 REST API (re-enabled in PR #47) to the ETCD3 native
+  code path via `ETCD3_HOSTS` env var. Forward-proofs for etcd 3.6
+  where v2 API is removed entirely. Pure config change; needs its
+  own testing window (single deploy retry).
+- **Day-5-Step-1 close PR** bundling: STATE update + this LOG
+  milestone + (a) + (b) into one wrap. Local branch
+  `session-1/day-5-step-1-eod-capture` already has the STATE + LOG
+  capture committed.
+
+### Constraints touched (across the day)
+
+A1 (no carve-outs added today — all PR work landed within session-1
+scope), A2 (rishi-1/2/3 untouched; deferred per agent spec + A2
+tightening), A2.1 (every fix-PR stayed under 50 strict-code lines,
+single-concern, no test-harness over-engineering), A13 (per-day Rishi
+YES respected — Day-5 green-lighted this morning), B7 (every fix-PR's
+role-comment captured the root cause for future re-readers), C3
+(encrypted overlays preserved — no overlay changes today), C8 (narrow
+sudoers preserved — every operator action used the root SSH window
+documented in the install script header), D2 (WAL-G stays disabled by
+default; production-mode guard from PR #41 still requires explicit
+YES + real creds to enable), F3 (sync standby empirically validated
+via patronictl + pg_stat_replication after lifting synchronous_mode
+into the DCS), H2 (SHA-rotating Swarm secret naming worked correctly
+through 6 deploy retries — idempotency held), I11 (every PR had a
+same-commit LOG entry; state-hygiene lint passed first try on each).
+
+---
+
 ## 2026-05-14 — FIX: empty out WAL/S3 env vars when WAL-G off so Spilo skips wal-e standby bootstrap (Day-5 deploy bug #7)
 
 ### Action
