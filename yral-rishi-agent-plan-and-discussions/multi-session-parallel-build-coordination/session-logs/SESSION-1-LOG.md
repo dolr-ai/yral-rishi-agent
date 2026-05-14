@@ -1,6 +1,101 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-14 — FIX: patroni-install.sh resolved-secret-name export missing from skip-branch (Day-5 deploy bug #3)
+
+### Action
+Second live invocation of `patroni-install.sh` against rishi-4 today,
+after PR #44 (the S3-empty-stdin fix) merged. Pre-flight passed, the 3
+existing Patroni-password secrets were correctly detected and skipped,
+the 2 missing S3 secrets were created cleanly with the `walg-disabled-
+placeholder` content — and then `docker stack deploy` errored with:
+
+```
+yaml: line 343: did not find expected key
+```
+
+Inspected the rendered stack file `/tmp/yral-v2-patroni-rendered-
+stack.YZt9Q4.yml` — its `secrets:` section had three entries with
+**empty map keys** (`:` instead of `<name>:` followed by `external: true`),
+followed by the 2 S3 secrets which DID have their names rendered:
+
+```
+secrets:
+  :
+    external: true
+  :
+    external: true
+  :
+    external: true
+  yral_v2_hetzner_s3_access_key_id_6d9d71d4:
+    external: true
+  yral_v2_hetzner_s3_secret_access_key_6d9d71d4:
+    external: true
+```
+
+Root cause: in `create_or_rotate_swarm_secrets_with_sha8_suffix`, the
+`continue` on the secret-already-exists branch (line 359) skipped past
+the `export YRAL_PATRONI_STACK_RESOLVED_*` lines (368-370). So the 3
+pre-existing secrets' resolved names never reached envsubst — empty
+expansion in the rendered stack YAML → invalid keys → deploy error.
+Only the 2 newly-created S3 secrets exported their names because they
+took the create-branch path.
+
+This was latent in the script from PR #10 (Day 1-2) but only surfaces
+on the SECOND or later run because the first run creates ALL secrets
+fresh and hits the export. Once any secret pre-exists, the bug triggers.
+
+Fix: lift the resolved-name export out of the create branch and run it
+BEFORE the if/skip/create decision. The resolved name is deterministic
+on inputs (`${base_name}_${content_sha8}`) which exist in both
+branches, so the lift is safe and idempotent. Role-comment expanded to
+capture the both-branches requirement so future re-readers don't
+collapse it back.
+
+### Bonus discovery (separate, NOT in this PR)
+`docker stack deploy --compose-file <bad-yaml>` returned exit code 0
+despite emitting `yaml: line 343: did not find expected key` to
+stderr. With the script's `set -euo pipefail`, that means a YAML-
+malformed stack file currently produces a silent-success path (script
+ran to completion, printed "✅ Patroni stack deployed", but no services
+exist). Bundling a post-deploy `confirm_stack_actually_deployed` check
+would catch any future render bug loudly — keeping that as a small
+follow-up PR rather than expanding scope here.
+
+### State on rishi-4 after this failed second run
+- All 5 Swarm secrets exist (3 from first run + 2 placeholder S3 from
+  the post-PR-#44 run) — SHA-suffix idempotency means the next run
+  detects + skips all 5 and proceeds straight to render + deploy.
+- No Patroni stack on `docker stack ls` (deploy never produced a
+  stack object).
+- No leftover containers, no leftover etcd state — clean retry surface.
+
+### Day-5 retry plan (after this PR lands)
+1. scp updated `patroni-install.sh` to rishi-4.
+2. Re-run via the same `ssh -A root@138.201.128.108 bash -s` invocation.
+3. Expect all 5 secrets skipped, render produces a fully-keyed
+   `secrets:` block, deploy succeeds.
+4. `docker exec <patroni-leader> patronictl list` → expect Leader +
+   Sync Standby + Replica.
+5. Lightweight failover smoke (pause + failover + resume).
+6. STOP + ping Rishi before moving to Day-5 Step 2 (Redis Sentinel).
+
+### Bug count tally for Day 5 Patroni deploy
+- Bug 1: rishi-5 missing resync systemd unit (fixed by re-running
+  swarm-join phase under PR #21/#33 hardening — no PR needed).
+- Bug 2: S3-secret empty-stdin (PR #44 merged earlier today).
+- Bug 3: resolved-secret-name not exported on skip-branch (this PR).
+
+3 bugs across 2 attempts — slightly above the "1-2 per attempt"
+prediction. Pause-fix-merge-retry loop holding. No over-engineered
+test harnesses introduced; each fix stays under 30 lines of code.
+
+### Constraints touched
+A2.1 single-concern fix, B7 role-comment captures both-branches
+invariant, I11 same-commit LOG entry, no A1 violations.
+
+---
+
 ## 2026-05-14 — FIX: patroni-install.sh S3-secret empty-stdin bug (Day-5 deploy bug #2)
 
 ### Action
