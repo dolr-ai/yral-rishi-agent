@@ -57,9 +57,9 @@ services:
       dockerfile: Dockerfile
 
     # A predictable container name makes `docker logs service` work without
-    # the auto-generated "yral-rishi-agent-new-service-template-service-1"
+    # the auto-generated "yral-rishi-agent-hello-world-service-1"
     # mouthful. Spawned services overwrite this via new-service.sh.
-    container_name: yral-rishi-agent-new-service-template
+    container_name: yral-rishi-agent-hello-world
 
     # Map host port 8000 to container port 8000 so the dev can hit
     # http://localhost:8000 from a browser. Production never publishes
@@ -128,7 +128,7 @@ services:
     # behavior on a dev's machine.
     image: postgres:17-alpine
 
-    container_name: yral-rishi-agent-new-service-template-postgres
+    container_name: yral-rishi-agent-hello-world-postgres
 
     # Map host port 5432 so a dev can `psql -h localhost` from outside
     # the compose network. Prod never exposes this; the cluster's
@@ -184,7 +184,7 @@ services:
     # and survives any future deprecation rename by the publisher.
     image: edoburu/pgbouncer@sha256:85d1e38593617af1b5f7f285e97d407e56c29939683cc7cfe4c8f6dc19f1268b
 
-    container_name: yral-rishi-agent-new-service-template-pgbouncer
+    container_name: yral-rishi-agent-hello-world-pgbouncer
 
     # Map host port 6432 so a dev can `psql -h localhost -p 6432`
     # against the bouncer (rather than reach the raw postgres on 5432).
@@ -227,7 +227,7 @@ services:
     # 7-alpine = Redis 7 (current major) on Alpine. Tiny image.
     image: redis:7-alpine
 
-    container_name: yral-rishi-agent-new-service-template-redis
+    container_name: yral-rishi-agent-hello-world-redis
 
     # Map host port 6379 for dev convenience (`redis-cli` from outside).
     ports:

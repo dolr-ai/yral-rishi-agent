@@ -1,0 +1,165 @@
+# ---------------------------------------------------------------------------
+# pyproject.toml — the SINGLE manifest of "what Python version + what
+# Python packages does this service need to run."
+#
+# ⭐ START HERE if you're new to the file:
+#   1. [project] block lists the service's name, version, and Python pin.
+#   2. [project.dependencies] lists every library the running service uses.
+#   3. [project.optional-dependencies.dev] lists test-only / dev-only libs.
+#   4. [build-system] tells `pip install .` HOW to package this folder.
+#
+# WHAT IS pyproject.toml?
+# A standard Python file (defined by PEP 517 + PEP 621) that replaces the
+# older `setup.py` + `requirements.txt` pair. Modern Python tooling — pip,
+# poetry, uv, hatchling — all read it. One file, one source of truth.
+#
+# WHO READS THIS FILE?
+#   - The Dockerfile (builder stage runs `pip install .` against it)
+#   - Local dev (`pip install -e ".[dev]"` after `python -m venv .venv`)
+#   - CI (installs the same way for tests + lints)
+#   - alembic (auto-discovered when the service runs migrations)
+#
+# IF A NEW SERVICE WANTS TO ADD A DEPENDENCY: edit the dependencies list
+# below. Do NOT add a `requirements.txt` file — we standardized on this
+# manifest so there's exactly one place to look.
+#
+# RELATED FILES (footer at the end of this file).
+# ---------------------------------------------------------------------------
+
+# ===========================================================================
+# [build-system] — how `pip install .` packages this folder into a wheel.
+# ===========================================================================
+#
+# Hatchling is the build backend (the thing that produces the .whl).
+# It's the modern default — small, fast, no plugins required for an app.
+# We pick it over setuptools because hatchling reads [project] natively
+# without extra config and over poetry-core because it doesn't lock us
+# into the poetry CLI.
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+# ===========================================================================
+# [project] — service metadata: name, version, Python pin, deps.
+# ===========================================================================
+[project]
+
+# `name` is the package name a spawned service uses. The new-service.sh
+# spawner overwrites this with the new service's name (e.g.
+# "yral-rishi-agent-public-api"). The literal value below is just the
+# template placeholder.
+name = "yral-rishi-agent-hello-world"
+
+# Bumped manually on each release. Spawned services start at 0.1.0.
+version = "0.1.0"
+
+# A one-line summary that Sentry + Langfuse + GHCR all display. Replaced
+# by new-service.sh with the spawned service's purpose.
+description = "v2 service template — every yral-rishi-agent-* service starts here"
+
+# Python pin. We standardized on 3.12 across all 13 v2 services (per
+# CONSTRAINTS F12: one language + one minor version = one mental model
+# for a non-programmer reader). 3.13 is excluded until we explicitly
+# test-and-bump cluster-wide.
+requires-python = ">=3.12,<3.13"
+
+# `dependencies` = every library the RUNNING service imports. Pinned to
+# exact versions (==) so every developer + every server runs the same
+# code. Without the pin, pip would install whatever's latest on the day
+# of the build — a recipe for "it broke today and we didn't change
+# anything" mysteries.
+dependencies = [
+    # FastAPI — the HTTP framework. Routes URLs to async Python functions
+    # and serializes the return values to JSON. Chosen for asyncio-native
+    # behavior + automatic OpenAPI docs.
+    "fastapi==0.115.12",
+
+    # Uvicorn — the ASGI web server that hosts FastAPI in production.
+    # The [standard] extra adds uvloop (faster event loop), httptools
+    # (faster HTTP parser), watchfiles (auto-reload in dev), and
+    # websockets (for any WebSocket endpoint we add later).
+    "uvicorn[standard]==0.34.0",
+
+    # asyncpg — the asyncio-native Postgres driver. Talks to Postgres
+    # without blocking the event loop, which keeps tail latencies low
+    # under concurrent load. Replaces psycopg2 from the legacy template.
+    "asyncpg==0.30.0",
+
+    # redis-py — the official Redis client. We use it for idempotency
+    # keys (per F10), feature flags (per F11), Sentinel-aware primary
+    # discovery (per C11), and Redis Streams between services.
+    "redis==5.2.1",
+
+    # httpx — async HTTP client. Outbound calls to other v2 services
+    # (auth, billing, llm-client) all go through httpx. Replaces
+    # `requests` from the legacy template (requests is sync-only).
+    "httpx==0.28.1",
+
+    # pydantic — request/response model validation + serialization.
+    # FastAPI uses it internally; we also use it for typed config
+    # objects.
+    "pydantic==2.10.5",
+
+    # pydantic-settings — env-driven typed config models. Used by
+    # app/config.py to build the Settings singleton; one parse of
+    # the env at startup, validated, then served to every callsite.
+    "pydantic-settings==2.7.1",
+
+    # alembic — schema migration tool. Generates + runs SQL migration
+    # files against Postgres. Per CONSTRAINTS H11, every migration PR
+    # is auto-tested against a WAL-restored snapshot before merge.
+    "alembic==1.14.0",
+
+    # sentry-sdk — error tracking shipped to sentry.rishi.yral.com per
+    # A7 + D3. The [fastapi] extra adds the FastAPI + Starlette
+    # integrations that auto-capture unhandled exceptions in the
+    # request path. Init lives in app/sentry_middleware.py.
+    "sentry-sdk[fastapi]==2.22.0",
+
+    # langfuse — self-hosted LLM tracing client. Per D4: every LLM call
+    # from every v2 service traces to langfuse.rishi.yral.com. The
+    # singleton + getter + flush helper live in app/langfuse_middleware.py.
+    "langfuse==2.59.7",
+
+    # structlog — structured (k=v / JSON) logging. Per H6 the template
+    # ships an allowlist-based redaction processor (in app/logging.py)
+    # that drops any field key not on a known-safe list.
+    "structlog==24.4.0",
+]
+
+# ===========================================================================
+# [project.optional-dependencies] — install groups beyond the runtime set.
+# ===========================================================================
+[project.optional-dependencies]
+
+# Installed via `pip install ".[dev]"`. These are the libs tests + lints
+# need but the running container does NOT (so they stay out of the
+# production image, keeping it small + reducing the attack surface).
+dev = [
+    # pytest — the test runner.
+    "pytest==8.3.4",
+
+    # pytest-asyncio — lets pytest run `async def test_*()` functions.
+    # Required because every endpoint in this template is async.
+    "pytest-asyncio==0.25.2",
+]
+
+# ===========================================================================
+# [tool.hatch.build.targets.wheel] — which folders end up in the wheel.
+# ===========================================================================
+#
+# We only ship the `app/` folder as the package. Tests + docs stay out
+# of the production wheel (smaller image + nothing test-related shipped
+# to prod).
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+
+# ===========================================================================
+# RELATED FILES (read these next to understand the full build flow):
+#   Dockerfile             — uses this manifest to build the prod image
+#   docker-compose.yml     — runs the image locally with Postgres + Redis
+#   .dockerignore          — controls what Dockerfile COPY sees
+#   project.config         — per-service runtime config (separate from deps)
+#   secrets.yaml.template  — per-service secret declarations (per D8)
+# ===========================================================================
