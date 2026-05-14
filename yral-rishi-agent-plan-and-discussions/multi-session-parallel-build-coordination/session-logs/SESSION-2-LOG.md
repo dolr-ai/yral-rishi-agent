@@ -3,6 +3,47 @@
 
 ---
 
+## 2026-05-14 — Day 3, PR 5 (spawn yral-rishi-agent-hello-world end-to-end — Phase 0 close)
+
+**Branch:** `session-2/spawn-hello-world` (off main with PR #40 + Session 1's `c8bb688` patroni-install fix merged)
+
+End-to-end integration test of everything Days 1-3 built. Ran `scripts/new-service.sh yral-rishi-agent-hello-world` against the template, verified the spawned service, smoke-tested `docker compose build` + `docker compose up` + `curl /openapi.json`, and committed the result. Phase 0 template work closes with this PR.
+
+**Files added (the spawned service, ~40 files, ~272 KB total):**
+- `yral-rishi-agent-hello-world/` — complete spawn from the template. All 8 F8 docs present (DEEP-DIVE / READING-ORDER / CLAUDE / RUNBOOK / SECURITY / WALKTHROUGH / GLOSSARY / WHEN-YOU-GET-LOST). All 5 `app/*.py` middleware modules. Both compose files. `secrets.yaml` (renamed from `.template`). D8 bridge scripts + test fixtures. `.github/workflows/per-service-ci.yml` with paths scoped to `yral-rishi-agent-hello-world/**`. Spawner itself correctly NOT present (rsync `--exclude` worked).
+- The two fixture `.env.local` files (in `scripts/tests/fixtures/{valid,env-local-incomplete}/`) committed via `git add -f` — same pattern as the template, per `fixtures/README.md`.
+
+**Files modified (3 — real template bugs surfaced by the integration test):**
+
+1. `scripts/new-service.sh` — **REAL BUG FOUND.** The perl substitution `s/\Q$PLACEHOLDER_VARIABLE\E/.../g` had `$PLACEHOLDER_VARIABLE` bash-expanded into the perl source as the literal string `${PROJECT_NAME}`. Perl then parsed `${PROJECT_NAME}` as a *perl* variable interpolation, resolved it to empty (no such perl var), leaving `\Q\E` as an EMPTY regex pattern. That matched between every character of every input file → exponential content bloat (`.dockerignore` went 3 KB → 94 KB on first spawn; `secrets.yaml` 6 KB → 265 KB). **Fix:** pass values via `@ARGV` + `splice @ARGV, 0, 5` in a `BEGIN` block. Values arrive as perl scalars that interpolate once + safely. Verified via a small `/tmp/perl-bug-test.txt` round-trip BEFORE re-spawning. Re-spawn produced correct file sizes + content.
+
+2. `docker-compose.yml` — **REAL BUG FOUND.** `bitnami/pgbouncer:1.23.1` does not exist on Docker Hub (Bitnami deprecated the image; `bitnami/pgbouncer:latest` also 404s). `docker compose up` failed at the pull step. **Fix:** swapped to `edoburu/pgbouncer@sha256:85d1e38593617af1b5f7f285e97d407e56c29939683cc7cfe4c8f6dc19f1268b` (popular community alternative, digest-pinned for reproducibility). Env vars renamed from bitnami's `POSTGRESQL_*` / `PGBOUNCER_*` to edoburu's `DB_*` / `LISTEN_PORT` / `AUTH_TYPE` / `POOL_MODE`. Added `LISTEN_PORT: 6432` so the bouncer listens on the production-aligned port the service expects in its DATABASE_URL.
+
+3. `project.config` — **GAP FOUND.** `PROJECT_DOMAIN=new-service-template.rishi.yral.com` was suffix-only (no `yral-rishi-agent-` prefix), so the spawner's `yral-rishi-agent-new-service-template` substitution didn't catch it. The spawned service would end up with `new-service-template.rishi.yral.com` (stale). **Fix:** prefixed it to `yral-rishi-agent-new-service-template.rishi.yral.com`. Spawn-time substitution now produces `yral-rishi-agent-hello-world.rishi.yral.com`. Trade-off: domain reads longer but is consistent with PROJECT_NAME everywhere else. (Alternative was adding a 4th substitution; rejected per A2.1.)
+
+**Deletion-report block per the relaxed A1 rule (PR #39):**
+- **Deleted:** None directly. The two corrupted spawn attempts were `mv`-ed to `/tmp/yral-corrupted-spawn-*` and `/tmp/yral-pre-pgbouncer-fix-*` (rename, not delete — folders still exist on disk under `/tmp`).
+- **Reason:** First spawn produced exponential-bloat output (the perl bug). Second spawn lacked the pgbouncer fix. Both relocated out of the worktree so the spawner could re-run without hitting its "refuse to overwrite" guard.
+- **Safety checks performed:** Confirmed both relocated folders are still on disk under `/tmp` (`ls /tmp/yral-*`). Both directories are pure session-internal artifacts I created myself — no project state was discarded.
+- **References checked:** Neither folder was tracked by git (untracked spawn attempts). No commits, no PRs, no docs reference them.
+- **Why this was safe:** `mv` to `/tmp` is a rename, not a deletion. Filesystem still has the data. macOS clears `/tmp` on its own cadence.
+- **Tests/builds run:** the freshly-spawned `yral-rishi-agent-hello-world/` was built (`docker compose build` → image built successfully) and run (`docker compose up -d` → 4 containers healthy) and smoke-tested (`curl /openapi.json` → HTTP 200 with FastAPI metadata). `docker compose down` torn down cleanly.
+- **Rollback plan:** if the relocated folders are needed, they're recoverable from `/tmp` via `mv` back into the worktree until macOS clears the temp directory.
+
+**Manual smoke of sync-github-secrets.sh** (the test deferred from PR 4): authenticated via `gh auth status` (logged in as `rishichadha30`). Running the script inside the spawned hello-world reaches the yq pre-flight (yq not installed locally on the dev mac) and exits cleanly with the documented "yq not installed" error. The interactive Secret-set path is exercised only in CI (which `sudo snap install`s yq) + when an operator with yq runs it locally; not testable today on this machine without installing yq. Documented in fixtures/README.md.
+
+**Known minor cosmetic gap (not blocking):** `app/main.py` has hardcoded `title="yral-rishi-agent service template"` (spaces, no hyphens — doesn't match my substitution patterns). The spawned hello-world's FastAPI OpenAPI title still reads "yral-rishi-agent service template". Future cleanup: parameterize the title from project.config or env. Filing follow-up for Days 5-6.
+
+**Constraints honored:** A1 (no `rm` in the spawner; bug fixes were file modifications), A2.1 (3 small bug fixes in scope of the integration test, no scope creep beyond), B1 (every change reads as English), B7 (commit messages cite the constraints), F1 (1-command spawn proven end-to-end), F16 (monorepo subfolder, not new repo).
+
+**Carve-outs used:** B2 PR #31 (`ci`), PR #26 (`init`), PR #24 (`app`).
+
+**Phase 0 close.** With PR 5 merged, every yral-rishi-agent-* service can spawn from the template in 1 command, build cleanly via `docker compose build`, run locally via `docker compose up`, and ships with the full F8 8-doc set + D8 secrets manifest + per-service CI workflow template. Phase 1 (Sessions 3+4) starts next, spawning Public-API + Orchestrator from this template.
+
+**Next:** idle. Day 4 = optional Tier-0 browser debug page; Days 5-6 = real content for the 8 docs. Coordinator drives.
+
+---
+
 ## 2026-05-14 — Day 3, PR 4 (D8 bridge scripts + tests + CI job + stale-comment fix)
 
 **Branch:** `session-2/d8-bridge-scripts` (off main with PR #37 merged + PR #39 A1 relaxation)

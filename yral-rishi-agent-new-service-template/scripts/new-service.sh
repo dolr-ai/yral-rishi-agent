@@ -204,16 +204,28 @@ rsync -a --exclude='scripts/new-service.sh' "$TEMPLATE_PATH/" "$TARGET_PATH/"
 #      anywhere (sed's `-i` flag differs between GNU and BSD; the
 #      portable `-i.bak` form leaves backups we'd then need to `rm`,
 #      which violates A1 spirit even at "small blast radius").
-#   2. `\Q...\E` wraps the placeholder so perl treats it as a literal
-#      string — important because PLACEHOLDER_VARIABLE contains `$`
-#      and `{}` which perl would otherwise interpret as variable
-#      references / regex metacharacters.
+#   2. Values are passed via @ARGV + shifted off in BEGIN — NOT
+#      shell-expanded into the perl source. Reason: if we expanded
+#      PLACEHOLDER_VARIABLE (literal `${PROJECT_NAME}`) directly into
+#      the perl script, perl would parse it as a perl variable
+#      reference at regex-compile time, resolve `$PROJECT_NAME` to
+#      empty (perl has no such var), leaving `\Q\E` as an EMPTY
+#      pattern that matches between every character → exponential
+#      content bloat. Passing as @ARGV data + interpolating from a
+#      perl scalar in `\Q$var\E` is one-pass + safe (verified at
+#      integration test time, PR 5).
 find "$TARGET_PATH" -type f -print0 | while IFS= read -r -d '' file; do
-    perl -i -pe "
-        s|\Q$PLACEHOLDER_HYPHENATED\E|$TARGET_NAME|g;
-        s|\Q$PLACEHOLDER_UNDERSCORED\E|$TARGET_SUFFIX_UNDERSCORED|g;
-        s|\Q$PLACEHOLDER_VARIABLE\E|$TARGET_NAME|g;
-    " "$file"
+    perl -i -pe '
+        BEGIN {
+            ($ph_hyphenated, $ph_underscored, $ph_variable,
+             $tgt_name, $tgt_suffix) = splice @ARGV, 0, 5;
+        }
+        s/\Q$ph_hyphenated\E/$tgt_name/g;
+        s/\Q$ph_underscored\E/$tgt_suffix/g;
+        s/\Q$ph_variable\E/$tgt_name/g;
+    ' "$PLACEHOLDER_HYPHENATED" "$PLACEHOLDER_UNDERSCORED" "$PLACEHOLDER_VARIABLE" \
+      "$TARGET_NAME" "$TARGET_SUFFIX_UNDERSCORED" \
+      "$file"
 done
 
 # Step 5: rename the secrets manifest from `.template` form to the
