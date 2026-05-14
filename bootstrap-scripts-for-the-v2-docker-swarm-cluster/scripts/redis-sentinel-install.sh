@@ -19,7 +19,7 @@
 # ║  - Runs on:   rishi-4 (manager) AFTER node-bootstrap.sh swarm-init/join.  ║
 # ║  - Reads:     ../secrets-manifest.yaml + GitHub Secret REDIS_PRIMARY_     ║
 # ║               PASSWORD (surfaced as YRAL_REDIS_PRIMARY_PASSWORD env var). ║
-# ║  - Deploys:   redis-sentinel-stack.yml on yral-agent-data-plane-overlay.  ║
+# ║  - Deploys:   redis-sentinel-stack.yml on yral-v2-data-plane.  ║
 # ║  - Followed by: langfuse-install.sh; per-service apps connect via         ║
 # ║               redis-sentinel:26379 (Sentinel discovery).                  ║
 # ║                                                                              ║
@@ -94,8 +94,8 @@ confirm_data_plane_overlay_exists() {
     # WHAT:  check the encrypted data-plane overlay node-bootstrap.sh creates.
     # WHEN:  third pre-flight.
     # WHY:   stack file references it as external; missing = deploy fails.
-    if ! docker network ls --format '{{.Name}}' | grep --quiet --line-regexp yral-agent-data-plane-overlay; then
-        echo "ERROR redis-sentinel-install: yral-agent-data-plane-overlay missing — run node-bootstrap.sh first" >&2
+    if ! docker network ls --format '{{.Name}}' | grep --quiet --line-regexp yral-v2-data-plane; then
+        echo "ERROR redis-sentinel-install: yral-v2-data-plane missing — run node-bootstrap.sh first" >&2
         exit 1
     fi
 }

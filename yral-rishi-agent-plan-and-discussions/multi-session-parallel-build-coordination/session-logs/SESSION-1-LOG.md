@@ -1,6 +1,115 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-14 — FIX: patroni-install.sh real-server prerequisite alignment (SSH-by-IP + verify-only bind-mount/registry + WAL-G optional)
+
+### Action
+Pre-deploy code-read of `patroni-install.sh` (Day 5 step 1 prep)
+surfaced three classes of real-server bugs that would have crashed
+the install at first run. Per A2.1 + Day-4's pause-fix-merge-retry
+pattern, fixed all three in this PR before invoking the install
+script against the cluster.
+
+**Issue 1 — SSH-by-hostname doesn't work from operator's laptop.**
+The script SSHes `rishi-deploy@rishi-{4,5,6}` but the operator's
+laptop has no DNS / `~/.ssh/config` alias for the short names
+(verified: `ssh rishi-deploy@rishi-4 echo ok` → "Could not resolve
+hostname"). Same lesson as PR #29's IPv4-advertise fix. Resolution:
+introduce required `YRAL_RISHI_4_PUBLIC_IPV4` / `YRAL_RISHI_5_PUBLIC_IPV4`
+/ `YRAL_RISHI_6_PUBLIC_IPV4` env vars + `get_public_ipv4_for_node()`
+helper that maps node name → IP via indirect ref. All SSH targets
+now use IPs.
+
+**Issue 2 — narrow sudoers per CONSTRAINTS C8 doesn't allow `sudo
+install -d /data/patroni-data` or `sudo tee --append /etc/yral-v2/
+stacks-to-resync.list`.** The script's old `create_patroni_bind_mount_
+directories_on_each_node` and `register_stack_with_swarm_resync_
+service` both relied on those (would prompt for password under
+`BatchMode=yes` → fail). Resolution: rename both to `confirm_*_exist_
+on_each_node` / `confirm_stack_registered_with_swarm_resync_service`,
+do `ssh "rishi-deploy@IP" "test -d ... && stat ..."` + `grep
+--quiet --line-regexp` for verify-only. Fail loud with the exact
+`ssh root@<IP> 'install -d ...'` / `'echo "${STACK_NAME}" >> ...'`
+remediation command if missing. Move the creation step into a
+one-time operator-setup batch documented in the file header — covers
+all 3 stateful services (Patroni + Redis + Langfuse) so the operator
+runs it ONCE while root SSH is still open, never again.
+
+**Issue 3 — 5 Hetzner S3 env vars hardcoded as required for WAL-G
+L2 backup.** Rishi may not have Hetzner Object Storage provisioned
+yet. Resolution: new env var `YRAL_PATRONI_WAL_G_ENABLED` (default
+**false**, per Rishi's inverted-default decision 2026-05-14). When
+false, pre-flight skips the 5 S3 var requirements + the render step
+sets `USE_WALG_BACKUP/RESTORE=false` in Spilo's env + the 5 S3 env
+vars default to empty strings so envsubst doesn't leave literal
+`${VAR}` in the rendered YAML. The 2 Hetzner-S3 Swarm secrets are
+ALWAYS created (with empty content when WAL-G off) because the
+stack file's `external: true` references must always resolve;
+empty content is harmless because Spilo skips reading them entirely
+when `USE_WALG_*=false`. When the flag is `true` (post Day-5b
+Hetzner Object Storage provisioning + dedicated bucket creation),
+all 5 vars are required + WAL-G archive/restore is on.
+
+**Bonus: rolled in PR #38's sed miss across all 3 install scripts.**
+PR #38 renamed the overlay names in 5 files but only `*-stack.yml` +
+`node-bootstrap.sh` + `caddy-swarm-service.yml`. The 3 `*-install.sh`
+scripts (patroni / redis-sentinel / langfuse) still had 4+3+3 = 10
+stale `yral-agent-data-plane-overlay` / `yral-agent-internal-...`
+references. Fixed in the same PR — pure mechanical, saves an admin-
+merge cycle, prevents the same trap from biting on Redis/Langfuse
+deploy.
+
+### Files touched
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/scripts/patroni-install.sh (+159 / -45)
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/scripts/patroni-stack.yml (+6 / -6, USE_WALG_* placeholders × 3 services × 2 envs)
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/scripts/redis-sentinel-install.sh (+3 / -3, stale overlay refs)
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/scripts/langfuse-install.sh (+3 / -3, stale overlay refs)
+- yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-1-LOG.md (this entry)
+
+### Why
+Day 5 step 1 (Patroni HA) blocks without these. Rishi typed YES on
+all 3 issues this morning (Option B for IP env vars, Option (a)
+docs+verify with scope expansion for the operator-setup batch,
+WAL-G optional with inverted default false).
+
+Per A2.1: single concern (real-server prerequisite alignment),
+small targeted changes, no new abstractions, no new dependencies.
+Bigger diff than the Day-4 fix PRs because the operator-setup
+batch in the file header is intentionally verbose (~25 lines of
+ASCII-box doc) so the operator can copy-paste it; strict-code
+diff is ~70 lines, well under A2.1's 100-line trigger.
+
+### Test evidence
+- `bash -n` on all 3 install scripts → syntax OK.
+- `python3 -c "yaml.safe_load(...)"` on patroni-stack.yml after
+  placeholder substitution → parse OK.
+- `grep -c "yral-agent-" *-install.sh *-stack.yml *.sh *.yml` →
+  0 across all 8 files. The single intentional historical-reference
+  in `node-bootstrap.sh` (from PR #38 + PR #33 role-comment context)
+  is the only `yral-agent-*` mention left, and it's inside a comment
+  documenting the PR-#38 rename — not an active code reference.
+
+### Day-5 deploy plan (post-merge, no fresh YES needed beyond this morning's Day-5 green-light)
+1. Operator (or me using root SSH window) runs the one-time setup
+   batch from the file header on all 3 nodes — creates the 3 bind-
+   mount dirs + appends 3 stack names to the resync registry.
+2. Generate strong-random values for the 3 Patroni passwords
+   (`YRAL_POSTGRES_SUPERUSER_PASSWORD`, `YRAL_PATRONI_REPLICATION_
+   PASSWORD`, `YRAL_PATRONI_REST_API_PASSWORD`) and store in
+   macOS Keychain per D1.
+3. From operator's laptop with the 3 password env vars + 3
+   `YRAL_RISHI_<N>_PUBLIC_IPV4` env vars set (WAL-G OFF by default):
+   ssh root@rishi-4 and run `bash /tmp/patroni-install.sh`.
+4. Verify Patroni leader election + sync replication via
+   `patronictl list` (expects Leader, Sync Standby, Replica).
+5. Smoke test: `patronictl failover` lightweight check.
+6. STOP + ping Rishi before Redis Sentinel (step 2 of Day 5).
+
+### Blockers raised
+None.
+
+---
+
 ## 2026-05-14 — DEP-003 RESOLVED: align overlay names with CONSTRAINTS C3 (rename across 5 files)
 
 ### Action

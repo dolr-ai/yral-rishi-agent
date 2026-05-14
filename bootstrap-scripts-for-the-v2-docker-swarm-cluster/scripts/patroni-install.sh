@@ -28,7 +28,7 @@
 # ║                Secret VALUES come from GitHub Secrets at deploy time, NOT  ║
 # ║                from the manifest (per CONSTRAINTS D1).                     ║
 # ║  - Deploys:    patroni-stack.yml (sibling file) into the                   ║
-# ║                yral-agent-data-plane-overlay overlay network.              ║
+# ║                yral-v2-data-plane overlay network.                         ║
 # ║  - Followed by: redis-sentinel-install.sh + langfuse-install.sh; per-      ║
 # ║                service alembic migrations come later, run by each service.║
 # ║                                                                              ║
@@ -36,11 +36,40 @@
 # ║  - YRAL_POSTGRES_SUPERUSER_PASSWORD     (from GitHub Secret)               ║
 # ║  - YRAL_PATRONI_REPLICATION_PASSWORD    (from GitHub Secret)               ║
 # ║  - YRAL_PATRONI_REST_API_PASSWORD       (from GitHub Secret)               ║
-# ║  - YRAL_HETZNER_S3_ACCESS_KEY_ID        (from GitHub Secret, for WAL-G)    ║
-# ║  - YRAL_HETZNER_S3_SECRET_ACCESS_KEY    (from GitHub Secret, for WAL-G)    ║
-# ║  - YRAL_HETZNER_S3_WAL_BUCKET_NAME      (e.g. rishi-yral-wal-archive)      ║
-# ║  - YRAL_HETZNER_S3_REGION               (e.g. fsn1)                        ║
-# ║  - YRAL_HETZNER_S3_ENDPOINT             (e.g. https://fsn1.your-objectstorage.com) ║
+# ║  - YRAL_RISHI_4_PUBLIC_IPV4             IPv4 of rishi-4 (used for SSH)    ║
+# ║  - YRAL_RISHI_5_PUBLIC_IPV4             IPv4 of rishi-5 (used for SSH)    ║
+# ║  - YRAL_RISHI_6_PUBLIC_IPV4             IPv4 of rishi-6 (used for SSH)    ║
+# ║  - YRAL_PATRONI_WAL_G_ENABLED           "true"|"false" (default false).   ║
+# ║                                          When true, the 5 S3 env vars   ║
+# ║                                          below are required + Spilo's   ║
+# ║                                          WAL-G archive/restore is on.    ║
+# ║  - YRAL_HETZNER_S3_ACCESS_KEY_ID        REQUIRED iff WAL_G_ENABLED=true  ║
+# ║  - YRAL_HETZNER_S3_SECRET_ACCESS_KEY    REQUIRED iff WAL_G_ENABLED=true  ║
+# ║  - YRAL_HETZNER_S3_WAL_BUCKET_NAME      REQUIRED iff WAL_G_ENABLED=true  ║
+# ║  - YRAL_HETZNER_S3_REGION               REQUIRED iff WAL_G_ENABLED=true  ║
+# ║  - YRAL_HETZNER_S3_ENDPOINT             REQUIRED iff WAL_G_ENABLED=true  ║
+# ║                                                                              ║
+# ║  🛠️ ONE-TIME OPERATOR SETUP (run AS ROOT, while root SSH window is open)    ║
+# ║  Narrow sudoers per CONSTRAINTS C8 doesn't grant `sudo install -d` /       ║
+# ║  `sudo tee --append` to rishi-deploy, so the script CANNOT create the     ║
+# ║  bind-mount directories or append to the resync registry by itself. Run    ║
+# ║  this batch once per fresh cluster, covers all three stateful services:   ║
+# ║                                                                              ║
+# ║    for ip in <rishi-4 ip> <rishi-5 ip> <rishi-6 ip>; do                    ║
+# ║      ssh root@$ip 'set -e                                                  ║
+# ║        install -d --owner=999 --group=999 --mode=0700 /data/patroni-data  ║
+# ║        install -d --owner=999 --group=999 --mode=0700 /data/redis-data    ║
+# ║        install -d --owner=999 --group=999 --mode=0700 /data/langfuse-data ║
+# ║        for stack in yral-v2-patroni yral-v2-redis yral-v2-langfuse; do    ║
+# ║          grep -q -x "$stack" /etc/yral-v2/stacks-to-resync.list \\        ║
+# ║            || echo "$stack" >> /etc/yral-v2/stacks-to-resync.list          ║
+# ║        done                                                                ║
+# ║      '                                                                     ║
+# ║    done                                                                    ║
+# ║                                                                              ║
+# ║  patroni-install.sh, redis-sentinel-install.sh, and langfuse-install.sh   ║
+# ║  then verify these prereqs and fail loud (with this exact remediation)    ║
+# ║  if missing.                                                               ║
 # ║                                                                              ║
 # ║  📤 OUTPUTS / SIDE EFFECTS                                                   ║
 # ║  - 3 etcd Swarm services pinned to rishi-4/5/6 via placement constraints.  ║
@@ -81,7 +110,15 @@ SWARM_STACK_RESYNC_REGISTRY_PATH="/etc/yral-v2/stacks-to-resync.list"
 
 # Bind-mount root for Patroni's PGDATA — survives `docker system prune` per
 # the V2 infra doc §7.2 (Docker volumes for Patroni were a known pain point).
+# The directory is created ONCE per fresh cluster by the operator running
+# the root-window batch from this file's header; this script only verifies.
 PATRONI_BIND_MOUNT_HOST_PATH="/data/patroni-data"
+
+# Cluster node names — each node's public IPv4 comes in via
+# `YRAL_RISHI_<digit>_PUBLIC_IPV4`. SSH targets are built from those IPs
+# (not from hostnames) because the operator's laptop has no DNS / SSH
+# config for these short names — same lesson as PR #29 advertise-addr.
+CLUSTER_NODE_NAMES=(rishi-4 rishi-5 rishi-6)
 
 # Names of every Swarm secret this stack consumes. Each one gets created
 # (or rotated) by this script; the corresponding SHA-suffixed name is
@@ -102,13 +139,28 @@ main() {
     confirm_running_in_swarm_manager_context
     confirm_required_environment_variables_present
     confirm_data_plane_overlay_exists
+    confirm_patroni_bind_mount_directories_exist_on_each_node
 
-    create_patroni_bind_mount_directories_on_each_node
     create_or_rotate_swarm_secrets_with_sha8_suffix
     render_patroni_stack_compose_file_to_temporary_path
     deploy_patroni_stack_into_swarm
-    register_stack_with_swarm_resync_service
+    confirm_stack_registered_with_swarm_resync_service
     print_post_install_summary
+}
+
+
+# WHAT: return the public IPv4 for ${1} (a node name like 'rishi-4').
+# WHEN: called everywhere the script SSHes to a cluster node.
+# WHY:  the operator's laptop has no DNS / SSH config alias for the short
+#       hostnames; the cluster.hosts.yaml shape promises IPv4 via the
+#       YRAL_RISHI_<digit>_PUBLIC_IPV4 env vars and pre-flight asserts they
+#       exist. Centralising the lookup avoids repeating the indirect-ref
+#       dance at every SSH call site.
+get_public_ipv4_for_node() {
+    local node_name="$1"
+    local node_digit="${node_name##rishi-}"
+    local ip_environment_variable_name="YRAL_RISHI_${node_digit}_PUBLIC_IPV4"
+    printf '%s' "${!ip_environment_variable_name}"
 }
 
 
@@ -144,12 +196,24 @@ confirm_required_environment_variables_present() {
         YRAL_POSTGRES_SUPERUSER_PASSWORD
         YRAL_PATRONI_REPLICATION_PASSWORD
         YRAL_PATRONI_REST_API_PASSWORD
-        YRAL_HETZNER_S3_ACCESS_KEY_ID
-        YRAL_HETZNER_S3_SECRET_ACCESS_KEY
-        YRAL_HETZNER_S3_WAL_BUCKET_NAME
-        YRAL_HETZNER_S3_REGION
-        YRAL_HETZNER_S3_ENDPOINT
+        YRAL_RISHI_4_PUBLIC_IPV4
+        YRAL_RISHI_5_PUBLIC_IPV4
+        YRAL_RISHI_6_PUBLIC_IPV4
     )
+    # The 5 Hetzner S3 vars are only required when WAL-G archive is enabled.
+    # Default (WAL_G_ENABLED unset or "false") deploys Patroni HA without
+    # WAL-G — L1 sync replication still gives RPO 0 within the cluster;
+    # adding L2 PITR is a separate Day-5b iteration once the Hetzner Object
+    # Storage bucket is provisioned. Per Rishi 2026-05-14.
+    if [[ "${YRAL_PATRONI_WAL_G_ENABLED:-false}" == "true" ]]; then
+        required_environment_variables+=(
+            YRAL_HETZNER_S3_ACCESS_KEY_ID
+            YRAL_HETZNER_S3_SECRET_ACCESS_KEY
+            YRAL_HETZNER_S3_WAL_BUCKET_NAME
+            YRAL_HETZNER_S3_REGION
+            YRAL_HETZNER_S3_ENDPOINT
+        )
+    fi
 
     local missing_count=0
     for environment_variable_name in "${required_environment_variables[@]}"; do
@@ -168,13 +232,13 @@ confirm_required_environment_variables_present() {
 
 confirm_data_plane_overlay_exists() {
     # WHAT:  check that node-bootstrap.sh's swarm-init phase already created
-    #        yral-agent-data-plane-overlay.
+    #        yral-v2-data-plane (CONSTRAINTS C3).
     # WHEN:  third pre-flight.
     # WHY:   the stack file references this overlay as `external: true`. If
     #        it's missing, `docker stack deploy` would error mid-way. Better
     #        to fail with a clear pointer to node-bootstrap.sh first.
-    if ! docker network ls --format '{{.Name}}' | grep --quiet --line-regexp yral-agent-data-plane-overlay; then
-        echo "ERROR patroni-install: yral-agent-data-plane-overlay missing — run node-bootstrap.sh swarm-init first" >&2
+    if ! docker network ls --format '{{.Name}}' | grep --quiet --line-regexp yral-v2-data-plane; then
+        echo "ERROR patroni-install: yral-v2-data-plane overlay missing — run node-bootstrap.sh swarm-init first" >&2
         exit 1
     fi
 }
@@ -183,18 +247,31 @@ confirm_data_plane_overlay_exists() {
 # ──────────────────── Pre-deploy setup ──────────────────────────────────────
 
 
-create_patroni_bind_mount_directories_on_each_node() {
-    # WHAT:  ssh to every node and `mkdir -p /data/patroni-data`, then chown
-    #        to UID 999 (the Postgres uid inside the official Patroni image).
-    # WHEN:  before deploy — Patroni containers cannot start if the host
-    #        path is missing or unwritable.
-    # WHY:   bind mounts (not Docker volumes) per V2 infra doc §7.2 — they
-    #        survive `docker system prune` and let WAL-G read PGDATA from
-    #        a sidecar without bind-mount-into-bind-mount weirdness.
-    local cluster_node_hostname
-    for cluster_node_hostname in rishi-4 rishi-5 rishi-6; do
-        ssh -o StrictHostKeyChecking=accept-new "rishi-deploy@${cluster_node_hostname}" \
-            "sudo install --owner=999 --group=999 --mode=0700 --directory ${PATRONI_BIND_MOUNT_HOST_PATH}"
+confirm_patroni_bind_mount_directories_exist_on_each_node() {
+    # WHAT:  ssh to every node as rishi-deploy and verify that
+    #        ${PATRONI_BIND_MOUNT_HOST_PATH} exists with ownership 999:999.
+    # WHEN:  fourth pre-flight (after Swarm + env + overlay checks).
+    # WHY:   bind mounts (not Docker volumes) per V2 infra doc §7.2.
+    #        Narrow sudoers per CONSTRAINTS C8 doesn't grant rishi-deploy
+    #        permission to `sudo install -d` — so creating the directory
+    #        is a one-time operator setup that runs AS ROOT (during the
+    #        root-window window for a fresh cluster; documented in this
+    #        file's header). This function only VERIFIES the prereq and
+    #        fails loud with the exact remediation command if missing.
+    local cluster_node_name
+    for cluster_node_name in "${CLUSTER_NODE_NAMES[@]}"; do
+        local cluster_node_ipv4
+        cluster_node_ipv4="$(get_public_ipv4_for_node "${cluster_node_name}")"
+        local actual_ownership
+        actual_ownership="$(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+            "rishi-deploy@${cluster_node_ipv4}" \
+            "test -d ${PATRONI_BIND_MOUNT_HOST_PATH} && stat -c '%u:%g' ${PATRONI_BIND_MOUNT_HOST_PATH}" 2>/dev/null || echo "missing")"
+        if [[ "${actual_ownership}" != "999:999" ]]; then
+            echo "ERROR patroni-install: ${PATRONI_BIND_MOUNT_HOST_PATH} on ${cluster_node_name} is '${actual_ownership}', expected '999:999'" >&2
+            echo "  Operator one-time setup (run AS ROOT, while root SSH window is open):" >&2
+            echo "    ssh root@${cluster_node_ipv4} 'install -d --owner=999 --group=999 --mode=0700 ${PATRONI_BIND_MOUNT_HOST_PATH}'" >&2
+            exit 1
+        fi
     done
 }
 
@@ -210,6 +287,16 @@ create_or_rotate_swarm_secrets_with_sha8_suffix() {
     #        pruned by a separate cleanup workflow (not in this script).
 
     # Map secret-base-name → environment-variable-name that holds its value.
+    # All 5 secrets are ALWAYS created so the stack file's `external: true`
+    # references always resolve. When WAL-G is disabled, the 2 S3 env vars
+    # default to empty strings (set at the top of this function), so the
+    # corresponding Swarm secrets contain empty content — harmless because
+    # Spilo skips reading them entirely when USE_WALG_BACKUP/RESTORE=false
+    # (set in the render step from YRAL_PATRONI_USE_WALG).
+    if [[ "${YRAL_PATRONI_WAL_G_ENABLED:-false}" != "true" ]]; then
+        export YRAL_HETZNER_S3_ACCESS_KEY_ID="${YRAL_HETZNER_S3_ACCESS_KEY_ID:-}"
+        export YRAL_HETZNER_S3_SECRET_ACCESS_KEY="${YRAL_HETZNER_S3_SECRET_ACCESS_KEY:-}"
+    fi
     declare -A swarm_secret_to_environment_variable=(
         ["yral_v2_postgres_superuser_password"]="YRAL_POSTGRES_SUPERUSER_PASSWORD"
         ["yral_v2_patroni_replication_password"]="YRAL_PATRONI_REPLICATION_PASSWORD"
@@ -259,6 +346,23 @@ render_patroni_stack_compose_file_to_temporary_path() {
         exit 1
     fi
 
+    # Expose Spilo's USE_WALG_BACKUP / USE_WALG_RESTORE toggle to envsubst.
+    # The stack file reads `${YRAL_PATRONI_USE_WALG}` in those slots so a
+    # single env-var flip enables / disables WAL-G end-to-end. When OFF, we
+    # also default the 5 S3 env vars to empty strings so envsubst does not
+    # leave literal `${YRAL_HETZNER_S3_*}` in the rendered YAML — Spilo
+    # never reads them when USE_WALG_*=false anyway.
+    if [[ "${YRAL_PATRONI_WAL_G_ENABLED:-false}" == "true" ]]; then
+        export YRAL_PATRONI_USE_WALG="true"
+    else
+        export YRAL_PATRONI_USE_WALG="false"
+        export YRAL_HETZNER_S3_ACCESS_KEY_ID="${YRAL_HETZNER_S3_ACCESS_KEY_ID:-}"
+        export YRAL_HETZNER_S3_SECRET_ACCESS_KEY="${YRAL_HETZNER_S3_SECRET_ACCESS_KEY:-}"
+        export YRAL_HETZNER_S3_WAL_BUCKET_NAME="${YRAL_HETZNER_S3_WAL_BUCKET_NAME:-walg-disabled}"
+        export YRAL_HETZNER_S3_REGION="${YRAL_HETZNER_S3_REGION:-}"
+        export YRAL_HETZNER_S3_ENDPOINT="${YRAL_HETZNER_S3_ENDPOINT:-}"
+    fi
+
     PATRONI_RENDERED_STACK_COMPOSE_FILE_PATH="$(mktemp /tmp/yral-v2-patroni-rendered-stack.XXXXXX.yml)"
     envsubst < "${PATRONI_STACK_COMPOSE_FILE_PATH}" > "${PATRONI_RENDERED_STACK_COMPOSE_FILE_PATH}"
     export PATRONI_RENDERED_STACK_COMPOSE_FILE_PATH
@@ -279,18 +383,28 @@ deploy_patroni_stack_into_swarm() {
 }
 
 
-register_stack_with_swarm_resync_service() {
-    # WHAT:  append the stack name to /etc/yral-v2/stacks-to-resync.list if
-    #        not already present, on every cluster node.
-    # WHEN:  after deploy.
+confirm_stack_registered_with_swarm_resync_service() {
+    # WHAT:  verify ${PATRONI_STACK_NAME} appears in
+    #        ${SWARM_STACK_RESYNC_REGISTRY_PATH} on every cluster node.
+    # WHEN:  after deploy, last pre-completion check.
     # WHY:   per CONSTRAINTS H1, the boot-time resync service iterates this
-    #        list and re-deploys each stack. Without registration, this
-    #        stack would not survive a reboot.
-    local cluster_node_hostname
-    for cluster_node_hostname in rishi-4 rishi-5 rishi-6; do
-        ssh "rishi-deploy@${cluster_node_hostname}" \
-            "grep --quiet --line-regexp ${PATRONI_STACK_NAME} ${SWARM_STACK_RESYNC_REGISTRY_PATH} \
-                || echo ${PATRONI_STACK_NAME} | sudo tee --append ${SWARM_STACK_RESYNC_REGISTRY_PATH} >/dev/null"
+    #        list and re-deploys each stack on reboot. Narrow sudoers per
+    #        CONSTRAINTS C8 doesn't grant rishi-deploy `sudo tee --append`,
+    #        so adding the line is a one-time operator setup that runs
+    #        AS ROOT (documented in this file's header). This function
+    #        only VERIFIES the prereq and fails loud with the exact
+    #        remediation command if missing.
+    local cluster_node_name
+    for cluster_node_name in "${CLUSTER_NODE_NAMES[@]}"; do
+        local cluster_node_ipv4
+        cluster_node_ipv4="$(get_public_ipv4_for_node "${cluster_node_name}")"
+        if ! ssh -o BatchMode=yes "rishi-deploy@${cluster_node_ipv4}" \
+            "grep --quiet --line-regexp ${PATRONI_STACK_NAME} ${SWARM_STACK_RESYNC_REGISTRY_PATH}" 2>/dev/null; then
+            echo "ERROR patroni-install: ${PATRONI_STACK_NAME} not registered in ${SWARM_STACK_RESYNC_REGISTRY_PATH} on ${cluster_node_name}" >&2
+            echo "  Operator one-time setup (run AS ROOT, while root SSH window is open):" >&2
+            echo "    ssh root@${cluster_node_ipv4} 'grep -q -x \"${PATRONI_STACK_NAME}\" ${SWARM_STACK_RESYNC_REGISTRY_PATH} || echo \"${PATRONI_STACK_NAME}\" >> ${SWARM_STACK_RESYNC_REGISTRY_PATH}'" >&2
+            exit 1
+        fi
     done
 }
 
