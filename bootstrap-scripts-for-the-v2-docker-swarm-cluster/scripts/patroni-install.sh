@@ -39,6 +39,16 @@
 # ║  - YRAL_RISHI_4_PUBLIC_IPV4             IPv4 of rishi-4 (used for SSH)    ║
 # ║  - YRAL_RISHI_5_PUBLIC_IPV4             IPv4 of rishi-5 (used for SSH)    ║
 # ║  - YRAL_RISHI_6_PUBLIC_IPV4             IPv4 of rishi-6 (used for SSH)    ║
+# ║  - YRAL_PATRONI_PRODUCTION_MODE         "true"|"false" (default false).   ║
+# ║                                          When true, the script REFUSES   ║
+# ║                                          to deploy unless WAL-G is also  ║
+# ║                                          enabled — codifies CONSTRAINTS  ║
+# ║                                          D2 (3-layer backup; L2 = WAL-G  ║
+# ║                                          PITR). Today's HA-only deploy   ║
+# ║                                          leaves this unset (default      ║
+# ║                                          false). Day-5b WAL-G            ║
+# ║                                          enablement PR flips both to    ║
+# ║                                          true together.                  ║
 # ║  - YRAL_PATRONI_WAL_G_ENABLED           "true"|"false" (default false).   ║
 # ║                                          When true, the 5 S3 env vars   ║
 # ║                                          below are required + Spilo's   ║
@@ -138,6 +148,7 @@ PATRONI_SWARM_SECRET_NAMES=(
 main() {
     confirm_running_in_swarm_manager_context
     confirm_required_environment_variables_present
+    confirm_production_mode_requires_wal_g
     confirm_data_plane_overlay_exists
     confirm_patroni_bind_mount_directories_exist_on_each_node
 
@@ -225,6 +236,32 @@ confirm_required_environment_variables_present() {
 
     if [[ "${missing_count}" -gt 0 ]]; then
         echo "ERROR patroni-install: ${missing_count} required environment variable(s) missing" >&2
+        exit 1
+    fi
+}
+
+
+confirm_production_mode_requires_wal_g() {
+    # WHAT:  refuse to deploy when YRAL_PATRONI_PRODUCTION_MODE=true unless
+    #        YRAL_PATRONI_WAL_G_ENABLED=true also.
+    # WHEN:  pre-flight, immediately after env-var-presence check.
+    # WHY:   CONSTRAINTS D2 mandates 3-layer backup (L1 HA + L2 WAL-G PITR
+    #        + L3 offsite). HA without L2 PITR is a real-but-narrow
+    #        configuration acceptable for dev/staging + day-of HA testing,
+    #        but a production deploy without WAL-G violates D2. This
+    #        guard codifies the spirit of D2 without blocking today's HA
+    #        smoke test (Rishi typed YES on the inverted default + this
+    #        production-mode gate on 2026-05-14 — see PR #39 audit trail
+    #        + this PR's body for full reasoning). The default is false
+    #        on both flags; Day-5b's Hetzner Object Storage provisioning
+    #        PR flips them both true together.
+    local production_mode="${YRAL_PATRONI_PRODUCTION_MODE:-false}"
+    local wal_g_enabled="${YRAL_PATRONI_WAL_G_ENABLED:-false}"
+    if [[ "${production_mode}" == "true" && "${wal_g_enabled}" != "true" ]]; then
+        echo "ERROR patroni-install: YRAL_PATRONI_PRODUCTION_MODE=true requires YRAL_PATRONI_WAL_G_ENABLED=true (CONSTRAINTS D2 — WAL-G is the L2 backup requirement)." >&2
+        echo "  Either:" >&2
+        echo "    - Set YRAL_PATRONI_WAL_G_ENABLED=true and provide the 5 S3 env vars, OR" >&2
+        echo "    - Run with YRAL_PATRONI_PRODUCTION_MODE=false (dev/staging / day-of HA testing only)." >&2
         exit 1
     fi
 }

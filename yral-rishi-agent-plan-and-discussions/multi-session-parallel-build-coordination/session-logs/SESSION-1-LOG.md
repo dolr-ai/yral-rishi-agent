@@ -1,6 +1,56 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-14 — ADDENDUM to PR #41: production-mode guard added (D2 compliance gate)
+
+### Action
+Coordinator + Rishi typed YES on adding a production-mode guard to
+PR #41 before merge — codifies CONSTRAINTS D2's "3-layer backup is
+mandatory" spirit without blocking today's HA-only smoke test.
+
+Added to `patroni-install.sh`:
+- New env var `YRAL_PATRONI_PRODUCTION_MODE` (default false). Documented
+  in the file-header INPUTS section.
+- New pre-flight function `confirm_production_mode_requires_wal_g`
+  called immediately after `confirm_required_environment_variables_
+  present`. When `YRAL_PATRONI_PRODUCTION_MODE=true` AND
+  `YRAL_PATRONI_WAL_G_ENABLED!=true`, the script fails loud with
+  D2-citing error + two-option remediation hint and exits 1.
+- Role-comment block in the new function references CONSTRAINTS D2
+  + PR #39 audit trail + the 2026-05-14 typed YES.
+
+### Files touched (additive on top of PR #41's existing diff)
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/scripts/patroni-install.sh
+  (~30 line additions: INPUTS doc + new function + main() wire-up)
+- this LOG entry
+
+### Why
+HA without L2 PITR is acceptable for dev/staging + day-of HA testing
+but not for production. The guard prevents a future operator from
+accidentally deploying production Patroni without WAL-G — without
+blocking today's HA smoke test (which leaves both flags unset → both
+default false → no guard fires). Day-5b's Hetzner Object Storage
+provisioning PR flips both flags true together.
+
+Per A2.1: ~30-line additive change, single concern (cross-flag
+consistency check), no new abstractions, no new dependencies.
+
+### Test evidence
+- `bash -n patroni-install.sh` → syntax OK (re-checked).
+- Behaviour matrix:
+  | PRODUCTION_MODE | WAL_G_ENABLED | Result |
+  |---|---|---|
+  | unset / false | unset / false | proceed (today's HA-only deploy) |
+  | unset / false | true | proceed (WAL-G enabled for dev/staging) |
+  | true | true | proceed (production-eventual posture) |
+  | **true** | **unset / false** | **EXIT 1 with D2-citing error** |
+
+### Day-5 deploy plan unchanged
+Today's invocation leaves both flags unset (default false on each) —
+the guard does NOT fire. Step-by-step plan from PR #41's body holds.
+
+---
+
 ## 2026-05-14 — FIX: patroni-install.sh real-server prerequisite alignment (SSH-by-IP + verify-only bind-mount/registry + WAL-G optional)
 
 ### Action
