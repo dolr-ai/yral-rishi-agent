@@ -3,6 +3,57 @@
 
 ---
 
+## 2026-05-14 — Day 3, PR 4 (D8 bridge scripts + tests + CI job + stale-comment fix)
+
+**Branch:** `session-2/d8-bridge-scripts` (off main with PR #37 merged + PR #39 A1 relaxation)
+
+Closes the D8 bridge-script trio. Plus folds in the Codex NIT on PR #37's stale "removes itself" wording.
+
+**Files added (3 scripts + 7 fixtures/tests):**
+
+Bridge scripts in `yral-rishi-agent-new-service-template/scripts/`:
+- `validate-secrets.sh` — reads `secrets.yaml`, verifies every declared secret has a value in every `required_in` env. `local` → check `.env.local` for non-empty key. `ci` / `production` → check `gh secret list`. Exits 0 on full compliance, 1 on missing value, 2 on tooling error. ~170 lines.
+- `sync-github-secrets.sh` — interactively populates missing GitHub Secrets via `gh secret set`. Hidden-input prompt. Re-running is idempotent (never overwrites existing Secrets). User-aborts on empty input. NEVER deletes anything (per A1 + coordinator's 2026-05-14 hard-stop on Secret deletion). ~155 lines.
+- `gen-env-example.sh` — reads `secrets.yaml` + 3 non-secret env vars (ENVIRONMENT / LOG_LEVEL / LANGFUSE_TRACING_ENABLED), regenerates `.env.example`. Default mode WRITES; `--check` mode diffs would-be vs existing and exits 1 on drift (CI gate). ~165 lines.
+
+Tests in `scripts/tests/`:
+- `fixtures/valid/{secrets.yaml,.env.local}` — happy-path fixture.
+- `fixtures/missing-env-local/secrets.yaml` — failure: secrets.yaml exists, .env.local doesn't.
+- `fixtures/env-local-incomplete/{secrets.yaml,.env.local}` — failure: one value blank.
+- `fixtures/malformed-yaml/secrets.yaml` — failure: invalid YAML.
+- `fixtures/no-secrets-yaml/.gitkeep` — failure: empty dir.
+- `test_validate_secrets.sh` — 5 cases. Read-only against fixtures; no temp dirs.
+- `test_gen_env_example.sh` — 5 cases (3 exit-code, 2 output-structure assertions).
+- `README.md` — how to run + coverage matrix + why sync-github-secrets has no auto-test (defer to manual + PR 5 live smoke).
+
+**Files modified (2):**
+- `scripts/new-service.sh` — stale-comment fix per Codex NIT on PR #37. Header now reads "rsync-copies… (excluding the spawner itself via `--exclude`, so it never lands in the spawned service in the first place — no removal needed per A1 spirit), perl-substitutes…" instead of the old "removes itself" wording.
+- `.github/workflows/per-service-ci.yml` — added `shell-tests` job. Installs `yq` via snap, runs both test scripts. Per coordinator's "add a job for that in this PR OR document in RUNBOOK" — chose the job since shell tests are J1-J6 territory and CI enforcement closes the loop.
+
+**Total diff: ~860 lines.** Big PR. Tight against Codex's truncation threshold but I structured each file under ~170 lines with clear section headers so the review can chunk naturally. Coordinator's PR-4-bundle direction made this size implicit.
+
+**Deletion-report block — N/A.** None of the three bridge scripts perform deletions. Verified via grep across all new scripts: zero `rm`, zero `find -delete`. Pre-flight failures use `exit` (no cleanup needed). `gen-env-example.sh` overwrites `.env.example` via `>` redirect (file modification, A1-clean — never a `rm` call).
+
+**Decisions made (worth recording):**
+- **yq for YAML parsing**, not pyyaml-via-python. Smaller dep surface; existing D8 docs already cite yq. CI installs via `sudo snap install yq` (standard on `ubuntu-latest` runners). Local devs need `brew install yq` once.
+- **Tests use read-only fixtures**, not mktemp + cleanup. Per A1 spirit: never delete what you don't have to create. Fixture dirs live in `scripts/tests/fixtures/` and are committed.
+- **Fixtures use `required_in: [local]` only.** Keeps tests self-contained — no `gh` CLI auth required. The `gh secret list` integration path gets exercised manually in PR 5 (hello-world spawn) + in live CI.
+- **`sync-github-secrets.sh` has no automated test.** Interactive + writes real Secrets. Pre-flight + idempotency documented in the script header; live smoke at PR 5.
+- **`gen-env-example.sh` overwrites via `>`** rather than tmp-file + atomic-mv. Standard, simpler, equivalent semantic (file modification not deletion). A1-clean.
+- **CI `shell-tests` job runs both test scripts.** `validate-secrets.sh` + `gen-env-example.sh` covered. Failure exits the workflow.
+
+**B7 compliance:** every script + test carries file header (⭐ START HERE + WHAT-IT-DOES-NOT-DO + DEPENDENCIES + RELATED FILES preview), section headers per phase, role-not-syntax comments, RELATED FILES footer.
+
+**Constraints honored:** A1 (zero `rm`, zero `find -delete`), A2.1 (3 single-concern scripts, test suite + CI job are the bare minimum for J1-J6 gate), B1 (every name reads as English), B7 (3-tier doc structure throughout), D1 + D8 (manifest-driven; never overwrite Secrets; never reads values from manifest), I9 (workflow file stays under the template folder; root install is coordinator's).
+
+**Carve-outs used:** B2 PR #31 (`ci`), PR #26 (`init`), PR #24 (`app`).
+
+**DEP-003 update:** Session 1 finished cluster bringup + caught the overlay-name drift via their own resume protocol; rename PR + cluster reset incoming on their side. Coordinator owns the RESOLVED transition on cross-session-deps.
+
+**Next:** PR 5 — `session-2/spawn-hello-world`: actually run new-service.sh against the template, commit the spawned `yral-rishi-agent-hello-world/`. Integration test of the whole Day-1-through-4 work. Closes Day 3 + the template-and-hello-world milestone in the role spec.
+
+---
+
 ## 2026-05-14 — Day 3, PR 3 ADDENDUM (A1-spirit refactor: rsync + perl, no rm)
 
 Codex flagged the `rm -f $TARGET/scripts/new-service.sh` line as an A1 surface; coordinator found a second one I missed (`find -name '*.bak' -delete` after sed). Refactored both away.

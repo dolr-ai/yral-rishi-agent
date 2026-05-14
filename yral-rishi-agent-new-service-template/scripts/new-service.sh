@@ -2,11 +2,12 @@
 # ---------------------------------------------------------------------------
 # new-service.sh — 1-command spawner for a new yral-rishi-agent-* service.
 #
-# ⭐ START HERE: this script copies the template folder to a sibling
-# `yral-rishi-agent-<purpose>/` folder, sed-substitutes the placeholder
-# names, renames `secrets.yaml.template` to `secrets.yaml`, and removes
-# itself from the spawned service so each spawned service doesn't carry
-# a vestigial copy of the spawner.
+# ⭐ START HERE: this script rsync-copies the template folder to a
+# sibling `yral-rishi-agent-<purpose>/` folder (excluding the spawner
+# itself via `--exclude`, so it never lands in the spawned service in
+# the first place — no removal needed per A1 spirit), perl-substitutes
+# the placeholder names in every file, and renames
+# `secrets.yaml.template` to `secrets.yaml`.
 #
 # WHY ONE-COMMAND?
 # Per F1 + F16 — adding a new service should be friction-free. The
