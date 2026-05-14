@@ -21,8 +21,8 @@
 # ║  - Reads:     GitHub Secrets LANGFUSE_NEXTAUTH_SECRET +                   ║
 # ║               LANGFUSE_ENCRYPTION_KEY + POSTGRES_SUPERUSER_PASSWORD      ║
 # ║               (for the langfuse schema bootstrap).                        ║
-# ║  - Deploys:   langfuse-stack.yml on yral-agent-data-plane-overlay +      ║
-# ║               yral-agent-internal-service-to-service-overlay (so v2      ║
+# ║  - Deploys:   langfuse-stack.yml on yral-v2-data-plane +      ║
+# ║               yral-v2-internal (so v2      ║
 # ║               services can POST traces).                                  ║
 # ║  - Followed by: per-service apps post traces to                          ║
 # ║               http://langfuse-web:3000 via the langfuse-python SDK.      ║
@@ -117,7 +117,7 @@ confirm_required_overlays_exist() {
     # WHEN:  pre-flight.
     # WHY:   missing overlays = deploy fails with a confusing error mid-way.
     local overlay_network_name
-    for overlay_network_name in yral-agent-data-plane-overlay yral-agent-internal-service-to-service-overlay; do
+    for overlay_network_name in yral-v2-data-plane yral-v2-internal; do
         if ! docker network ls --format '{{.Name}}' | grep --quiet --line-regexp "${overlay_network_name}"; then
             echo "ERROR langfuse-install: overlay ${overlay_network_name} missing — run node-bootstrap.sh swarm-init first" >&2
             exit 1

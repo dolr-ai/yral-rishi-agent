@@ -162,8 +162,8 @@ services:
       AWS_S3_FORCE_PATH_STYLE: "true"
       AWS_REGION: ${YRAL_HETZNER_S3_REGION}
       AWS_ENDPOINT: ${YRAL_HETZNER_S3_ENDPOINT}
-      USE_WALG_BACKUP: "true"
-      USE_WALG_RESTORE: "true"
+      USE_WALG_BACKUP: "${YRAL_PATRONI_USE_WALG}"
+      USE_WALG_RESTORE: "${YRAL_PATRONI_USE_WALG}"
     secrets:
       - source: ${YRAL_PATRONI_STACK_RESOLVED_YRAL_V2_POSTGRES_SUPERUSER_PASSWORD}
         target: postgres-superuser-password
@@ -218,8 +218,8 @@ services:
       AWS_S3_FORCE_PATH_STYLE: "true"
       AWS_REGION: ${YRAL_HETZNER_S3_REGION}
       AWS_ENDPOINT: ${YRAL_HETZNER_S3_ENDPOINT}
-      USE_WALG_BACKUP: "true"
-      USE_WALG_RESTORE: "true"
+      USE_WALG_BACKUP: "${YRAL_PATRONI_USE_WALG}"
+      USE_WALG_RESTORE: "${YRAL_PATRONI_USE_WALG}"
     secrets:
       - source: ${YRAL_PATRONI_STACK_RESOLVED_YRAL_V2_POSTGRES_SUPERUSER_PASSWORD}
         target: postgres-superuser-password
@@ -272,8 +272,8 @@ services:
       AWS_S3_FORCE_PATH_STYLE: "true"
       AWS_REGION: ${YRAL_HETZNER_S3_REGION}
       AWS_ENDPOINT: ${YRAL_HETZNER_S3_ENDPOINT}
-      USE_WALG_BACKUP: "true"
-      USE_WALG_RESTORE: "true"
+      USE_WALG_BACKUP: "${YRAL_PATRONI_USE_WALG}"
+      USE_WALG_RESTORE: "${YRAL_PATRONI_USE_WALG}"
     secrets:
       - source: ${YRAL_PATRONI_STACK_RESOLVED_YRAL_V2_POSTGRES_SUPERUSER_PASSWORD}
         target: postgres-superuser-password
