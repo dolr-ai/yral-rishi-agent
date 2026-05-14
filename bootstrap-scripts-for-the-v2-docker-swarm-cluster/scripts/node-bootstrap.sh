@@ -54,9 +54,8 @@
 # ║  - UFW configured per CONSTRAINTS C3 (only 22 from known IPs, 443 on      ║
 # ║    edge nodes, Swarm ports between cluster members, default deny)          ║
 # ║  - Swarm initialised (rishi-4) or joined (rishi-5, rishi-6)                ║
-# ║  - Three encrypted overlay networks created (yral-agent-public-web-       ║
-# ║    overlay, yral-agent-internal-service-to-service-overlay, yral-agent-   ║
-# ║    data-plane-overlay)                                                      ║
+# ║  - Three encrypted overlay networks created per CONSTRAINTS C3:           ║
+# ║    yral-v2-public-web, yral-v2-internal, yral-v2-data-plane                ║
 # ║  - Placement labels applied per cluster.hosts.yaml shape                   ║
 # ║  - yral-v2-swarm-resync.service installed and enabled                      ║
 # ║                                                                              ║
@@ -78,11 +77,15 @@ set -euo pipefail
 
 # ───────────────────────────── Constants ────────────────────────────────────
 
-# Three encrypted Swarm overlay networks, per CONSTRAINTS C3. Names follow
-# the V2 infra doc — never abbreviated to "public", "internal", "data" alone.
-PUBLIC_WEB_OVERLAY_NAME="yral-agent-public-web-overlay"
-INTERNAL_SERVICE_OVERLAY_NAME="yral-agent-internal-service-to-service-overlay"
-DATA_PLANE_OVERLAY_NAME="yral-agent-data-plane-overlay"
+# Three encrypted Swarm overlay networks. Names come VERBATIM from
+# CONSTRAINTS C3 (Saikat directive 2026-04-23). When CONSTRAINTS C3 and
+# V2_INFRASTRUCTURE_AND_CLUSTER_ARCHITECTURE_CURRENT.md disagreed (the
+# infra doc used `yral-agent-*-overlay`), CONSTRAINTS won per the
+# CURRENT-TRUTH.md authority chain — fix landed via PR aligning all
+# Session-1 stack files to the CONSTRAINTS C3 names + DEP-003 resolved.
+PUBLIC_WEB_OVERLAY_NAME="yral-v2-public-web"
+INTERNAL_SERVICE_OVERLAY_NAME="yral-v2-internal"
+DATA_PLANE_OVERLAY_NAME="yral-v2-data-plane"
 
 # Ubuntu base packages we install once during the root window. chrony is
 # REQUIRED — Patroni's leader election depends on synchronised clocks, and
