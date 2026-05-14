@@ -3,6 +3,43 @@
 
 ---
 
+## 2026-05-14 — Day 3, PR 3 (scripts/new-service.sh — 1-command spawner)
+
+**Branch:** `session-2/new-service-spawner` (resumed from yesterday's stash; rebased to current main with PR #36 + Session 1's Day 4 cluster bringup merged)
+
+**Files added (1):**
+- `yral-rishi-agent-new-service-template/scripts/new-service.sh` — 235-line bash script. Single concern: copy the template folder to `yral-rishi-agent-<purpose>/`, sed-substitute three placeholder forms, rename `secrets.yaml.template` → `secrets.yaml`, remove the spawner from the spawned service. Executable (mode 0755).
+
+**Total diff: 235 lines** (single new file). Over <200 target but bash scripts with B7 comments naturally run line-heavy; well under Codex truncation.
+
+**Validation tested manually (resume-day smoke):**
+- `--dry-run` against `yral-rishi-agent-hello-world` → prints the 6-step plan correctly.
+- Bad name (`bad-name`, no prefix) → exits 1 with B3 regex hint.
+- Name >63 chars → exits 1 with Swarm limit message + character count.
+- No args → exits 1 with full usage.
+
+**Decisions made (worth recording):**
+- **Three placeholder substitutions, not two.** Hyphenated (`yral-rishi-agent-new-service-template`) for service-name references, underscored (`new_service_template`) for Postgres-friendly identifiers in project.config, AND literal `${PROJECT_NAME}` for the secrets.yaml.template's `service:` line. Tested all three via dry-run.
+- **B3 regex `^yral-rishi-agent-[a-z][a-z0-9-]*[a-z0-9]$`.** Enforces prefix + lowercase + ends-with-letter-or-digit. Swarm 63-char limit checked separately.
+- **`set -euo pipefail`** as the standard Bash safety net.
+- **`find ... -print0 | while read -r -d '' ...`** for NUL-safe filename handling.
+- **`sed -i.bak` + `find -name '*.bak' -delete`** for portable in-place edit across GNU sed (Linux CI) + BSD sed (macOS dev).
+- **Refuses to overwrite existing target** (per A1 — "no deletions without explicit YES"; the inverse holds for overwrites too).
+- **Single concern.** Does NOT bundle validate-secrets / sync-github-secrets / gen-env-example (PR 4) or the root `.github/workflows/` install (coordinator scope per I9). Documented in the file header's "WHAT THIS SCRIPT DOES NOT DO" section.
+- **Removes itself from spawned services.** Spawned services don't need a vestigial copy of the spawner. The D8 bridge scripts (PR 4) stay because they're per-service tools.
+
+**B7 compliance:** file header (with ⭐ START HERE + USAGE + WHAT-IT-DOES-NOT-DO + RELATED FILES preview), section headers per phase (constants / helpers / arg parsing / validation / paths / dry-run / actual spawn / success message), role-not-syntax comments per line of meaningful logic, RELATED FILES footer.
+
+**Constraints honored:** A2.1 (single concern, no bundling), B1 (every name reads as English: `print_usage_and_exit`, `TARGET_NAME`, `PLACEHOLDER_HYPHENATED`, `SWARM_NAME_LIMIT`, etc.), B3 (enforces the service-name pattern + Swarm 63-char limit at the validation gate), B5 (script var/function names readable), B7 (3-tier doc structure), F1 (1-command UX), F16 (creates subfolder not new repo).
+
+**Carve-outs used:** B2 PR #31 (`ci`), PR #26 (`init`), PR #24 (`app`).
+
+**Session 1 update spotted (good news):** their Day 4 commit `4031077` shipped "cluster bringup complete (3 nodes, 3 encrypted overlays, 5 script bugs caught + fixed)". That likely resolves DEP-003 (overlay name match); coordinator will move it to RESOLVED. Leaving the entry as-is in cross-session-deps.md (coordinator owns the RESOLVED transitions per I11).
+
+**Next:** PR 4 — `session-2/d8-bridge-scripts`: `validate-secrets.sh` + `sync-github-secrets.sh` + `gen-env-example.sh`. J1-J6 testing pyramid kicks in here per coordinator. After PR 4: PR 5 (spawn yral-rishi-agent-hello-world end-to-end).
+
+---
+
 ## 2026-05-13 — Day 3, PR 2b (3 B7-new doc scaffolds)
 
 **Branch:** `session-2/f8-walkthrough-glossary-lost-docs` (off main with PR #34 merged)
