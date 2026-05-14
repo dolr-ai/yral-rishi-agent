@@ -60,6 +60,14 @@ services:
       - --initial-cluster=etcd-rishi-4=http://etcd-rishi-4:2380,etcd-rishi-5=http://etcd-rishi-5:2380,etcd-rishi-6=http://etcd-rishi-6:2380
       - --initial-cluster-state=new
       - --initial-cluster-token=yral-v2-etcd-cluster
+      # etcd 3.4+ disables the v2 REST API by default, but the bundled Patroni
+      # in ghcr.io/zalando/spilo-15:3.0-p1 still hits `/v2/machines` for
+      # discovery — the v2 API is the Spilo 3.0 default and the ETCD3 config
+      # path is a separate code path. First Day-5 deploy looped on
+      # "Failed to get list of machines from http://etcd-rishi-N:2379/v2:
+      # Bad response: 404 page not found". `--enable-v2=true` brings the v2
+      # API back; etcd 3.5.13 still supports it (was removed only in 3.6).
+      - --enable-v2=true
     deploy:
       mode: replicated
       replicas: 1
@@ -88,6 +96,7 @@ services:
       - --initial-cluster=etcd-rishi-4=http://etcd-rishi-4:2380,etcd-rishi-5=http://etcd-rishi-5:2380,etcd-rishi-6=http://etcd-rishi-6:2380
       - --initial-cluster-state=new
       - --initial-cluster-token=yral-v2-etcd-cluster
+      - --enable-v2=true  # see etcd-rishi-4 comment block above for full context
     deploy:
       mode: replicated
       replicas: 1
@@ -116,6 +125,7 @@ services:
       - --initial-cluster=etcd-rishi-4=http://etcd-rishi-4:2380,etcd-rishi-5=http://etcd-rishi-5:2380,etcd-rishi-6=http://etcd-rishi-6:2380
       - --initial-cluster-state=new
       - --initial-cluster-token=yral-v2-etcd-cluster
+      - --enable-v2=true  # see etcd-rishi-4 comment block above for full context
     deploy:
       mode: replicated
       replicas: 1

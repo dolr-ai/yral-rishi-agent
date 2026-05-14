@@ -1,6 +1,97 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-14 — FIX: etcd v2 REST API disabled by default but Spilo's Patroni needs it (Day-5 deploy bug #5)
+
+### Action
+Fourth live invocation of `patroni-install.sh` today (after PR #46
+merged + operator-setup ran the 3 `install -d /data/etcd-rishi-N`
+lines as root). Stack updated cleanly — all 7 services with new
+config, pgbouncer pulled the `1.21.0-p2` image successfully, etcd
+auto-healed once the bind dirs existed. Then:
+
+- 3/3 etcd: Running ✓ (rishi-4 is raft leader, 3-member quorum)
+- 2/2 pgbouncer (new tag): Running ✓
+- 3/3 patroni: containers running BUT Patroni daemon inside is stuck
+  in a tight retry loop, container restart every 187s when runit
+  times out the inner Patroni process.
+
+The patroni logs across all 3 containers showed identical:
+
+```
+ERROR: Failed to get list of machines from http://etcd-rishi-4:2379/v2: EtcdException('Bad response : 404 page not found\n')
+ERROR: Failed to get list of machines from http://etcd-rishi-5:2379/v2: EtcdException('Bad response : 404 page not found\n')
+ERROR: Failed to get list of machines from http://etcd-rishi-6:2379/v2: EtcdException('Bad response : 404 page not found\n')
+INFO: waiting on etcd
+```
+
+Root cause: etcd 3.4+ disables the v2 REST API by default, but
+ghcr.io/zalando/spilo-15:3.0-p1 ships Patroni hitting `/v2/machines`
+for discovery (the v2 API is the Spilo 3.0 default; the ETCD3 code
+path requires explicit Patroni config). etcd 3.5.13 still supports
+v2 API — it was only removed in etcd 3.6 — but the flag
+`--enable-v2=true` is required to expose it.
+
+Etcd v3 API confirmed healthy independently via `etcdctl member list`
++ `endpoint status`: 3 members started, rishi-4 is leader, RAFT
+TERM 2, no errors. So the issue is purely the v2 endpoint being
+disabled; the underlying cluster is fine.
+
+### Fix
+- `patroni-stack.yml`: add `--enable-v2=true` to each of the 3 etcd
+  `command:` blocks. Inline docstring on the rishi-4 block captures
+  the full root cause + version history (etcd 3.4 deprecated default,
+  3.6 will remove entirely, Spilo 3.0 still defaults to v2). The
+  rishi-5/6 blocks get a one-line cross-reference comment to keep
+  the diff readable.
+
+Future-proofing note: a separate follow-up should migrate Patroni to
+the ETCD3 code path (Spilo `ETCD3_HOSTS` env var instead of
+`ETCD_HOSTS`) so we're not depending on a deprecated etcd v2 API in
+etcd 3.6+. Not in this PR — pure config migration that wants its own
+testing window. Keeping this PR A2.1-tight.
+
+### Behaviour after merge + retry
+- `docker stack deploy --prune` updates the 3 etcd services with the
+  new flag → Swarm rolls each etcd container (container_id changes).
+- Important consideration: re-rolling etcd with `--initial-cluster-
+  state=new` does NOT wipe data (etcd reads the on-disk state from
+  /data/etcd-rishi-N first; `--initial-cluster-state` is just the
+  bootstrap mode), but rolling the cluster one node at a time keeps
+  quorum throughout.
+- Once etcd v2 endpoint is up, Patroni containers should connect on
+  their next 5s retry tick and bootstrap Postgres.
+
+### State on rishi-4 right now
+- 7 services on `yral-v2-patroni`, all "Running" per `docker stack
+  ps` BUT 3/3 patroni containers stuck looping on the v2 API. No
+  Postgres process has come up on any node → no data corruption
+  risk; clean retry surface.
+- etcd v3 cluster healthy with 3-member quorum.
+
+### Bug count tally for Day-5 Patroni deploy
+- Bug 1: rishi-5 missing resync systemd unit (no PR).
+- Bug 2: PR #44 (S3-secret empty-stdin).
+- Bug 3: PR #45 (resolved-secret-name skip-branch).
+- Bug 4a + 4b: PR #46 (etcd bind dirs + pgbouncer image tag).
+- Bug 5: this PR (etcd v2 API disabled).
+
+**6 bugs across 4 retry attempts.** Above the "1-2 per attempt"
+prediction. Each fix stays under 50 strict-code lines; this one is
+the smallest yet (+10 / 0 strict-code). Real-server first-deploy of
+a complex 3-tier stateful stack (etcd quorum + Patroni HA + pgbouncer
+pool) is surfacing exactly the kind of edge cases the pause-fix-
+merge-retry pattern is designed to handle. No over-engineered test
+harnesses introduced.
+
+### Constraints touched
+A2.1 (smallest fix-PR yet), B7 (docstring captures the v2/v3
+deprecation history), F3 (Patroni HA sync commit unaffected — sync
+commit is configured via spilo env vars, not etcd), I11 (same-commit
+LOG entry).
+
+---
+
 ## 2026-05-14 — FIX: patroni-stack.yml etcd bind-mount dirs missing from pre-flight + wrong pgbouncer image tag (Day-5 deploy bug #4)
 
 ### Action
