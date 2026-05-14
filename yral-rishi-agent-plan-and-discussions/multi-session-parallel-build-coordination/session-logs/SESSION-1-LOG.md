@@ -1,6 +1,135 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-14 — FIX: /data/patroni-data must be owned 101:103 (Spilo's postgres uid), not 999:999 (Day-5 deploy bug #6)
+
+### Action
+Fifth live invocation of `patroni-install.sh` today (after PR #47
+merged + the rolling etcd update applied `--enable-v2=true`). The
+v2 endpoint connectivity check now succeeds:
+
+```
+$ docker exec <patroni> curl -sf http://etcd-rishi-4:2379/v2/machines
+http://etcd-rishi-4:2379, http://etcd-rishi-5:2379, http://etcd-rishi-6:2379
+```
+
+But Patroni daemon now fails at bootstrap with:
+
+```
+2026-05-14 11:40:36,149 INFO: trying to bootstrap a new cluster
+initdb: error: could not access directory "/home/postgres/pgdata/pgroot/data": Permission denied
+pg_ctl: database system initialization failed
+INFO: removing initialize key after failed attempt to bootstrap the cluster
+patroni.exceptions.PatroniFatalException: 'Failed to bootstrap cluster'
+```
+
+Followed by an infinite restart loop (runit sleeps 30/60/90s
+between attempts, each time the same Permission denied error).
+
+Root cause: ownership mismatch between the host bind dir and the
+in-container postgres uid.
+
+Inspection of the live Spilo container:
+
+```
+$ docker exec <patroni-rishi-4> id postgres
+uid=101(postgres) gid=103(postgres) groups=103(postgres),0(root),102(ssl-cert)
+```
+
+Spilo (`ghcr.io/zalando/spilo-15:3.0-p1`) is Debian-based and uses
+postgres **uid 101 / gid 103** — NOT uid 999 like the official
+`postgres:*` Docker image. Our operator-setup batch created
+`/data/patroni-data` with `--owner=999 --group=999 --mode=0700`,
+which means postgres uid 101 cannot even traverse INTO the bind dir
+(mode 0700 + non-owning uid = EACCES on path-component search). Root
+inside the container DID manage to create `/data/patroni-data/pgroot`
+as 101:103 (root has CAP_DAC_OVERRIDE), but initdb running as
+postgres then can't reach it through the locked parent dir.
+
+Why etcd dirs are unaffected: the upstream `quay.io/coreos/etcd`
+image has no USER directive → etcd runs as root in container → root's
+CAP_DAC_OVERRIDE lets it traverse 0700-owned-by-999:999 dirs fine.
+
+Where the 999:999 came from: probably my earlier draft confused
+Spilo's postgres uid with the official `postgres:*` Docker image's
+uid (which IS 999). Operator-setup got drafted with the wrong uid
+and the gap wasn't visible until initdb actually ran.
+
+### Fix
+- `patroni-install.sh` operator-setup batch in header: change
+  `/data/patroni-data` line to `--owner=101 --group=103`. Add an
+  inline NOTE block explaining why this dir is different from the
+  other 3 (etcd container runs as root; redis/langfuse images use
+  the standard uid-999 postgres convention).
+- `patroni-install.sh` pre-flight check (`confirm_patroni_bind_
+  mount_directories_exist_on_each_node`): switch from
+  hardcoded-999:999 comparison to a per-path expected-owner map.
+  Patroni-data gets 101:103, etcd dirs keep 999:999. Error message
+  now prints BOTH the create command (for fresh dirs) AND the chown
+  command (for left-over dirs from earlier attempts).
+- Role-comment expanded to capture the Spilo-vs-official-postgres
+  uid trap.
+
+### Operator one-time fix needed after merge (root SSH window)
+The 3 existing `/data/patroni-data` dirs on rishi-4/5/6 are 999:999;
+they need to be chown'd to 101:103 (recursive, so the pre-existing
+`pgroot/` and contents come along — that subdir is ALREADY 101:103
+inside, so the chown is mostly a no-op for the contents but fixes
+the parent permissions).
+
+```
+ssh root@138.201.128.108 'chown -R 101:103 /data/patroni-data'
+ssh root@88.99.160.251   'chown -R 101:103 /data/patroni-data'
+ssh root@162.55.88.112   'chown -R 101:103 /data/patroni-data'
+```
+
+After chown, the Patroni runit loop will retry on its next 30-90s
+tick and bootstrap should succeed (no install script re-run needed —
+the deploy spec hasn't changed, only the underlying bind-dir state).
+
+### Behaviour after fix
+- Each Patroni container's runit retries Patroni every 30-90s.
+- After chown, the next retry: postgres uid 101 can traverse into
+  `/home/postgres/pgdata`, initdb succeeds, one container wins the
+  Patroni election → Leader, the others bootstrap as Replicas
+  (one Sync Standby per F3, one async).
+- pgBouncer's `DB_HOST=patroni-rishi-4` env keeps it pointing at
+  rishi-4 as the connection target; if rishi-4 doesn't win election,
+  this will become a future failover gap. NOT in scope here — the
+  current target is to get HA Postgres up.
+
+### State on rishi-4 right now (before merge)
+- 7 services on `yral-v2-patroni`, Swarm view all Running.
+- Patroni daemon inside each container in tight bootstrap-fail loop
+  (initdb Permission denied).
+- No Postgres process ever came up → no data corruption risk;
+  clean retry surface.
+- etcd v3 cluster + v2 API healthy.
+
+### Bug count tally for Day-5 Patroni deploy
+- Bug 1: rishi-5 missing resync systemd unit (no PR).
+- Bug 2: PR #44 (S3-secret empty-stdin).
+- Bug 3: PR #45 (resolved-secret-name skip-branch).
+- Bug 4a + 4b: PR #46 (etcd bind dirs + pgbouncer image tag).
+- Bug 5: PR #47 (etcd v2 API disabled).
+- Bug 6: this PR (Patroni bind dir ownership 999 vs 101).
+
+**7 bugs across 5 retry attempts.** The pause-fix-merge-retry pattern
+is doing its job — each bug surfaces, gets a small targeted fix, and
+the cluster moves one step closer to working. No over-engineered
+test harnesses introduced; total Day-5 code change across all 6
+fix-PRs is under 200 lines.
+
+### Constraints touched
+A2.1 (single-concern fix; redis/langfuse uid checks deferred to
+their own install scripts), B7 (role-comment captures Spilo uid
+trap + the CAP_DAC_OVERRIDE asymmetry between root-running and
+postgres-running containers), C8 (operator-setup batch still uses
+root SSH window; rishi-deploy can't chown), I11 (same-commit LOG
+entry).
+
+---
+
 ## 2026-05-14 — FIX: etcd v2 REST API disabled by default but Spilo's Patroni needs it (Day-5 deploy bug #5)
 
 ### Action
