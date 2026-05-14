@@ -354,6 +354,18 @@ create_or_rotate_swarm_secrets_with_sha8_suffix() {
         content_sha8="$(printf '%s' "${secret_value}" | sha256sum | cut --characters=1-8)"
         local fully_qualified_secret_name="${swarm_secret_base_name}_${content_sha8}"
 
+        # Export the resolved name into a script-scoped environment variable so
+        # render_patroni_stack_compose_file_to_temporary_path can substitute
+        # ${YRAL_PATRONI_STACK_RESOLVED_<UPPERCASED_BASE_NAME>}. MUST run in
+        # BOTH the create-new and skip-existing branches — otherwise envsubst
+        # writes an empty key into the rendered stack YAML, breaking
+        # `docker stack deploy` with "yaml: line N: did not find expected key"
+        # on every re-run after the first (because secrets are idempotent and
+        # the second run hits the `continue` path for every existing secret).
+        local resolved_export_name
+        resolved_export_name="YRAL_PATRONI_STACK_RESOLVED_$(echo "${swarm_secret_base_name}" | tr '[:lower:]' '[:upper:]')"
+        export "${resolved_export_name}=${fully_qualified_secret_name}"
+
         if docker secret inspect "${fully_qualified_secret_name}" >/dev/null 2>&1; then
             echo "patroni-install: secret ${fully_qualified_secret_name} already exists — skipping"
             continue
@@ -361,13 +373,6 @@ create_or_rotate_swarm_secrets_with_sha8_suffix() {
 
         printf '%s' "${secret_value}" \
             | docker secret create "${fully_qualified_secret_name}" -
-
-        # Export the resolved name into a script-scoped environment variable so
-        # render_patroni_stack_compose_file_to_temporary_path can substitute
-        # ${YRAL_PATRONI_STACK_RESOLVED_<UPPERCASED_BASE_NAME>}.
-        local resolved_export_name
-        resolved_export_name="YRAL_PATRONI_STACK_RESOLVED_$(echo "${swarm_secret_base_name}" | tr '[:lower:]' '[:upper:]')"
-        export "${resolved_export_name}=${fully_qualified_secret_name}"
     done
 }
 
