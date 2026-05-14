@@ -1,6 +1,119 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-14 — FIX: empty out WAL/S3 env vars when WAL-G off so Spilo skips wal-e standby bootstrap (Day-5 deploy bug #7)
+
+### Action
+After PR #48's chown + force-restart of patroni-rishi-5/6, all 3
+Patroni members registered in `patronictl list`:
+
+```
+| patroni-rishi-4 | Leader  | running          | TL 1 |
+| patroni-rishi-5 | Replica | creating replica | --   | unknown |
+| patroni-rishi-6 | Replica | creating replica | --   | unknown |
+```
+
+Leader is healthy and serving. Replicas stuck in "creating replica"
+for 6+ minutes. Leader's `pg_stat_replication` shows ZERO connections
+from the replicas. Replica logs just show:
+
+```
+INFO: Lock owner: patroni-rishi-4; I am patroni-rishi-5
+INFO: bootstrap from leader 'patroni-rishi-4' in progress
+```
+
+every 10s with no progress.
+
+Process tree on rishi-5:
+
+```
+postgres /scripts/wale_restore.sh ... (parent)
+postgres /scripts/wale_restore.sh ... (child)
+postgres /usr/local/bin/wal-e backup-list
+postgres sed / sort / tail / awk / sed (pipeline)
+```
+
+Direct test confirmed root cause:
+
+```
+$ docker exec <patroni> su postgres -c 'envdir /run/etc/wal-e.d/env wal-e backup-list'
+File "/usr/lib/python3.10/urllib/request.py", line 1351, in do_open
+    raise URLError(err)
+urllib.error.URLError: <urlopen error timed out>
+```
+
+Root cause: Spilo's standby bootstrap runs `wale_restore.sh` BEFORE
+falling back to pg_basebackup. The rendered stack file was leaving:
+
+```
+WALG_S3_PREFIX: s3://walg-disabled/yral-v2-postgres
+```
+
+populated even when WAL-G is OFF. Spilo's `configure_spilo.py` sees a
+non-empty `WALG_S3_PREFIX`, derives a wal-e config from it, and the
+standby-bootstrap loop calls `wal-e backup-list`. The placeholder
+credentials don't authenticate against any real S3, urllib times out
+indefinitely, wal-e retries with exponential backoff, the loop never
+falls through to pg_basebackup.
+
+Why etcd v3 / Patroni election / leader bootstrap weren't affected:
+those paths don't touch wal-e. Wal-e only runs on STANDBY bootstrap.
+
+### Fix
+- `patroni-stack.yml` (3 patroni service blocks): replace
+  `WALG_S3_PREFIX: s3://${BUCKET}/yral-v2-postgres` (literal s3://
+  prefix) with `WALG_S3_PREFIX: "${YRAL_PATRONI_WALG_S3_PREFIX_
+  RENDERED}"` (full value as a render var, so it can be empty when
+  WAL-G is off). Same pattern for `AWS_S3_FORCE_PATH_STYLE`. Add
+  `USE_WALE_S3_BACKUP` and `USE_WALE_GS_BACKUP` explicit env vars
+  for belt-and-suspenders disable of the older wal-e path.
+- `patroni-install.sh` render function: set all 5 WAL/S3 render-
+  vars based on `YRAL_PATRONI_WAL_G_ENABLED`. When ON, render the
+  full s3:// prefix + "true" toggles. When OFF, render empty strings
+  + "false" toggles. Role-comment expanded with the full Day-5
+  deploy #7 root cause for future re-readers.
+
+### Operator action after merge (force re-render + Swarm rolling update)
+1. scp updated `patroni-install.sh` + `patroni-stack.yml` to rishi-4.
+2. Re-run install (idempotent — secrets skip, render produces empty
+   WAL env block, `docker stack deploy --prune` rolls the 3 patroni
+   services with the new env, Swarm sequentially restarts them).
+3. The 2 hung replicas (rishi-5/6) get re-rolled fresh; wal-e bootstrap
+   path is now disabled at the env-var level; wale_restore.sh's
+   internal `if [ -n "$WALE_S3_PREFIX" ]` check will short-circuit;
+   bootstrap falls through to pg_basebackup; replicas join cluster.
+
+### State on rishi-4 right now (before merge)
+- patronictl shows 1 Leader + 2 Replicas-in-creating-replica.
+- Leader's Postgres is up and accepting connections.
+- Replicas have empty PGDATA, wal-e processes hung in urllib retry.
+- Container restart limits NOT yet hit (we force-restarted in PR #48
+  follow-up, so they have a fresh 5-restart budget).
+- No data corruption risk on either node.
+
+### Bug count tally for Day-5 Patroni deploy
+- Bug 1: rishi-5 missing resync systemd unit (no PR).
+- Bug 2: PR #44 (S3-secret empty-stdin).
+- Bug 3: PR #45 (resolved-secret-name skip-branch).
+- Bug 4a + 4b: PR #46 (etcd bind dirs + pgbouncer image tag).
+- Bug 5: PR #47 (etcd v2 API disabled).
+- Bug 6: PR #48 (Patroni bind dir ownership 999 vs 101).
+- Bug 7: this PR (wal-e bootstrap loop when WAL-G off).
+
+**8 bugs across 6 retry attempts.** Pattern still holding even with
+the higher count. Each fix is targeted, the cluster moves one step
+closer each time. Total Day-5 fix-PR diff still under 250 lines of
+code; no over-engineered abstractions.
+
+### Constraints touched
+A2.1 (single-concern: disable wal-e path when WAL-G off), B7 (role-
+comment captures full wal-e/configure_spilo.py interaction trap),
+D2 (WAL-G stays disabled by default — production_mode guard from
+PR #41 still requires explicit YES + real creds to enable), I11
+(same-commit LOG entry).
+
+---
+
 ## 2026-05-14 — FIX: /data/patroni-data must be owned 101:103 (Spilo's postgres uid), not 999:999 (Day-5 deploy bug #6)
 
 ### Action
