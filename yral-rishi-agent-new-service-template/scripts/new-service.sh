@@ -24,6 +24,11 @@
 #     `.github/workflows/` (coordinator-only per I9). The spawned service
 #     carries its own copy at `.github/workflows/per-service-ci.yml`;
 #     coordinator stages it at root.
+#   - It does NOT `rm` ANYTHING — per A1 spirit ("never delete without
+#     explicit YES"), even our own transient artifacts. The script avoids
+#     CREATING anything it would need to clean up: rsync's `--exclude`
+#     keeps the spawner from landing in the spawned service in the first
+#     place; `perl -i` does in-place edits without `.bak` backups.
 #
 # USAGE:
 #   bash yral-rishi-agent-new-service-template/scripts/new-service.sh \
@@ -160,14 +165,15 @@ fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
     echo "DRY RUN — would perform:"
-    echo "  1. Copy $TEMPLATE_PATH → $TARGET_PATH"
+    echo "  1. rsync $TEMPLATE_PATH/ → $TARGET_PATH/ (excluding scripts/new-service.sh)"
     echo "  2. Substitute '$PLACEHOLDER_HYPHENATED' → '$TARGET_NAME' in every file"
     echo "  3. Substitute '$PLACEHOLDER_UNDERSCORED' → '$TARGET_SUFFIX_UNDERSCORED' in every file"
     echo "  4. Substitute '$PLACEHOLDER_VARIABLE' → '$TARGET_NAME' in every file"
     echo "  5. Rename $TARGET_PATH/secrets.yaml.template → secrets.yaml"
-    echo "  6. Remove $TARGET_PATH/scripts/new-service.sh (don't ship spawner inside spawned services)"
     echo ""
     echo "No changes written. Re-run without --dry-run to actually create."
+    echo "(A1 spirit — this script never 'rm's anything; rsync --exclude keeps"
+    echo " the spawner out of the spawned service so no cleanup is needed.)"
     exit 0
 fi
 
@@ -178,31 +184,41 @@ fi
 
 echo "Spawning $TARGET_NAME from $TEMPLATE_FOLDER..."
 
-# Step 1: copy the whole template folder.
-cp -R "$TEMPLATE_PATH" "$TARGET_PATH"
+# Step 1: copy the template folder via rsync, EXCLUDING the spawner.
+# Per A1 spirit ("never delete"), the spawner is kept OUT of the
+# spawned service in the first place — we never have to clean it up.
+# The D8 bridge scripts (validate-secrets.sh / sync-github-secrets.sh /
+# gen-env-example.sh, PR 4) are NOT excluded; they're per-service tools.
+#
+# Trailing slashes matter: `$TEMPLATE_PATH/` copies CONTENTS of the
+# folder into `$TARGET_PATH/` (which rsync creates if absent).
+# `-a` = archive mode (recursive + permissions + timestamps + symlinks).
+rsync -a --exclude='scripts/new-service.sh' "$TEMPLATE_PATH/" "$TARGET_PATH/"
 
-# Step 2-4: sed-substitute the three placeholder strings across every
-# regular file in the target. The `-i.bak` form is portable across
-# GNU sed and BSD sed (macOS); we delete the .bak files immediately
-# after to avoid cluttering the spawned service.
+# Steps 2-4: substitute the three placeholder strings across every
+# regular file in the target.
+#
+# perl -i (NOT sed) for two reasons:
+#   1. `perl -i` does in-place edits WITHOUT leaving `.bak` files
+#      anywhere (sed's `-i` flag differs between GNU and BSD; the
+#      portable `-i.bak` form leaves backups we'd then need to `rm`,
+#      which violates A1 spirit even at "small blast radius").
+#   2. `\Q...\E` wraps the placeholder so perl treats it as a literal
+#      string — important because PLACEHOLDER_VARIABLE contains `$`
+#      and `{}` which perl would otherwise interpret as variable
+#      references / regex metacharacters.
 find "$TARGET_PATH" -type f -print0 | while IFS= read -r -d '' file; do
-    sed -i.bak \
-        -e "s|$PLACEHOLDER_HYPHENATED|$TARGET_NAME|g" \
-        -e "s|$PLACEHOLDER_UNDERSCORED|$TARGET_SUFFIX_UNDERSCORED|g" \
-        -e "s|$PLACEHOLDER_VARIABLE|$TARGET_NAME|g" \
-        "$file"
+    perl -i -pe "
+        s|\Q$PLACEHOLDER_HYPHENATED\E|$TARGET_NAME|g;
+        s|\Q$PLACEHOLDER_UNDERSCORED\E|$TARGET_SUFFIX_UNDERSCORED|g;
+        s|\Q$PLACEHOLDER_VARIABLE\E|$TARGET_NAME|g;
+    " "$file"
 done
-find "$TARGET_PATH" -name '*.bak' -delete
 
 # Step 5: rename the secrets manifest from `.template` form to the
-# spawned-service form.
+# spawned-service form. `mv` is fine — it RENAMES a tracked file, it
+# does NOT delete anything (A1 spirit preserved).
 mv "$TARGET_PATH/secrets.yaml.template" "$TARGET_PATH/secrets.yaml"
-
-# Step 6: remove the spawner itself from the spawned service. Each
-# service shouldn't carry a copy of the tool that creates services.
-# The D8 bridge scripts (validate-secrets.sh / sync-github-secrets.sh /
-# gen-env-example.sh, PR 4) stay because they're per-service tools.
-rm -f "$TARGET_PATH/scripts/new-service.sh"
 
 
 # ===========================================================================
@@ -229,7 +245,13 @@ echo "     at the repo root .github/workflows/$TARGET_NAME-ci.yml (per I9 — co
 #   ../README.md + docs            — substituted (service name everywhere)
 #   ../.github/workflows/per-service-ci.yml
 #                                  — substituted (path-scope + workflow name)
-#   validate-secrets.sh            — D8 bridge script (PR 4)
-#   sync-github-secrets.sh         — D8 bridge script (PR 4)
-#   gen-env-example.sh             — D8 bridge script (PR 4)
+#   validate-secrets.sh            — D8 bridge script (PR 4) — kept by rsync
+#   sync-github-secrets.sh         — D8 bridge script (PR 4) — kept by rsync
+#   gen-env-example.sh             — D8 bridge script (PR 4) — kept by rsync
+#
+# A1 SPIRIT: this script intentionally contains NO `rm` and NO
+# `find -delete` calls. The rsync --exclude pattern keeps the spawner
+# out of the spawned service in the first place; perl -i avoids the
+# `.bak` files sed would leave behind. Never delete what you don't
+# have to create.
 # ===========================================================================

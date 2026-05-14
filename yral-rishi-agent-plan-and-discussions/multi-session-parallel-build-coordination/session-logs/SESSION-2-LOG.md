@@ -3,6 +3,27 @@
 
 ---
 
+## 2026-05-14 — Day 3, PR 3 ADDENDUM (A1-spirit refactor: rsync + perl, no rm)
+
+Codex flagged the `rm -f $TARGET/scripts/new-service.sh` line as an A1 surface; coordinator found a second one I missed (`find -name '*.bak' -delete` after sed). Refactored both away.
+
+**Two changes:**
+- `cp -R "$TEMPLATE_PATH" "$TARGET_PATH"` → `rsync -a --exclude='scripts/new-service.sh' "$TEMPLATE_PATH/" "$TARGET_PATH/"`. The spawner never lands in the spawned service in the first place; no `rm` needed.
+- `sed -i.bak ... ; find -name '*.bak' -delete` → `perl -i -pe "s|\Q$PLACEHOLDER\E|$VALUE|g; ..." "$file"`. `perl -i` does in-place edits without `.bak` files; `\Q...\E` quote-meta wraps the placeholder so the `${PROJECT_NAME}` literal isn't interpreted as a perl variable reference or regex metasequence.
+
+**Net result:**
+- Zero `rm` calls in the script (verified via grep — the 5 remaining matches are all in comments/echo strings, intentional A1 references).
+- Zero `find -delete` calls.
+- Script grew from 235 → 257 lines (added rationale comments + the A1 SPIRIT footer block).
+- Dry-run now lists 5 steps (no longer 6 — the spawner-self-remove step is gone).
+- `mv secrets.yaml.template → secrets.yaml` kept; `mv` RENAMES rather than deletes, A1-clean.
+
+**Lesson captured in the file header + RELATED FILES footer:** "Never delete what you don't have to create." Future-me reading this script gets the A1-spirit reasoning inline so the `rm` pattern doesn't drift back in via a careless edit.
+
+**Side note on Codex truncation:** Codex caught the line-205 `rm` but missed the line-195 `find -delete` because truncation hit before that section in the diff. Coordinator caught the second one. Pattern reinforces "small PRs = APPROVE-clean" + "always cross-check Codex against the actual diff per CLAUDE.md".
+
+---
+
 ## 2026-05-14 — Day 3, PR 3 (scripts/new-service.sh — 1-command spawner)
 
 **Branch:** `session-2/new-service-spawner` (resumed from yesterday's stash; rebased to current main with PR #36 + Session 1's Day 4 cluster bringup merged)
