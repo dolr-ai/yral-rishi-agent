@@ -1,0 +1,294 @@
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║  WORKFLOW: auto-merge-small-session-fix-prs.yml                          ║
+# ║                                                                          ║
+# ║  ⭐ THIS FILE IN ONE SENTENCE                                            ║
+# ║  Auto-merges small Session-N fix-PRs once all required linters pass,    ║
+# ║  so the coordinator (Rishi) does not have to admin-merge each one        ║
+# ║  manually.                                                               ║
+# ║                                                                          ║
+# ║  📖 EXPLAINED FOR A NON-PROGRAMMER                                       ║
+# ║  Yesterday, Rishi spent a lot of time pasting "PR #N merged, retry"      ║
+# ║  between the coordinator chat and Session 1's terminal. Most of those    ║
+# ║  PRs were small (<200 lines), single-concern bug fixes from Session 1    ║
+# ║  on the cluster scripts. They all passed the same three linters          ║
+# ║  (scope, naming, log-hygiene). They were safe to merge automatically.    ║
+# ║                                                                          ║
+# ║  This workflow watches every PR. When a PR matches the "small Session    ║
+# ║  fix" pattern AND the three required linters all pass, it admin-merges   ║
+# ║  the PR with a clear audit-trail commit message + a PR comment           ║
+# ║  explaining WHY it was auto-merged. Rishi sees the result, not the       ║
+# ║  manual cycle.                                                           ║
+# ║                                                                          ║
+# ║  Conservative on purpose: anything outside Session-N branches            ║
+# ║  (coordinator/*, anyone else) still requires manual review. Anything     ║
+# ║  with the `coordinator-review-needed` label is skipped (escape hatch).   ║
+# ║  Anything over the size cap is skipped (large PRs deserve eyes).         ║
+# ║                                                                          ║
+# ║  🔗 HOW IT FITS                                                          ║
+# ║  - Triggered: check_suite.completed (after all CI checks for a SHA      ║
+# ║    finish) AND pull_request events (so newly-labelled PRs re-evaluate). ║
+# ║  - Reads: PR metadata via gh CLI (size, branch, labels, check results). ║
+# ║  - Defends: I14 (auto-merge low-risk PRs) — codifies the policy.        ║
+# ║  - Replaces: Rishi's manual "ping coordinator → wait for admin-merge"   ║
+# ║    cycle on the ~80% of Session-N fix-PRs that fit the safe pattern.    ║
+# ║                                                                          ║
+# ║  📥 INPUTS                                                                ║
+# ║  - PR branch (must match ^session-[0-9]+/)                              ║
+# ║  - PR size (additions + deletions < AUTO_MERGE_MAX_DIFF_LINES)          ║
+# ║  - All required lints PASS (scope, naming, state-hygiene)              ║
+# ║  - PR is OPEN + mergeable (no conflicts)                                ║
+# ║  - PR does NOT carry `coordinator-review-needed` label                  ║
+# ║                                                                          ║
+# ║  📤 OUTPUTS / SIDE EFFECTS                                                ║
+# ║  - PR merged via `gh pr merge --squash` with audit-trail commit body.   ║
+# ║  - PR comment posted explaining auto-merge decision + gate results.     ║
+# ║                                                                          ║
+# ║  ⭐ START HERE                                                           ║
+# ║  Read evaluate_and_merge job's "Evaluate auto-merge eligibility" step.  ║
+# ║  That is the entire decision logic.                                     ║
+# ║                                                                          ║
+# ║  RELATED FILES                                                           ║
+# ║  - lint-scope-violations.yml         — gate 1 (must PASS)                ║
+# ║  - lint-naming-and-comments.yml      — gate 2 (must PASS)                ║
+# ║  - lint-state-hygiene.yml            — gate 3 (must PASS)                ║
+# ║  - pr-codex-review.yml               — informational only; not gated     ║
+# ║                                       on (truncation false positives    ║
+# ║                                       on small diffs are too common)    ║
+# ║  - CONSTRAINTS.md I14                — policy this workflow codifies    ║
+# ╚══════════════════════════════════════════════════════════════════════╝
+
+name: Auto-Merge Small Session Fix PRs
+
+on:
+  # Fires after every check (linter, Codex, etc.) completes for a SHA.
+  # This is the natural moment to re-evaluate whether a PR is now mergeable.
+  check_suite:
+    types: [completed]
+
+  # Also fire on PR events so newly-labelled / newly-opened PRs get an
+  # immediate eligibility check without waiting for the next check_suite.
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+
+jobs:
+  evaluate-and-merge:
+    name: Evaluate auto-merge eligibility + admin-merge if safe
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    # Hard cap on per-PR strict-code diff size. PRs over this are too big
+    # to auto-merge safely — coordinator eyes required. Total `additions +
+    # deletions` counted (NOT one-sided), so LOG entries (typically 50-150
+    # lines) plus strict code (typically 5-30 lines) fits comfortably.
+    env:
+      AUTO_MERGE_MAX_DIFF_LINES: 400
+
+    steps:
+      - name: Resolve PR number from trigger event
+        id: resolve_pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # The event payload differs between pull_request and check_suite.
+          # pull_request: github.event.pull_request.number is the PR number.
+          # check_suite:  github.event.check_suite.pull_requests[0].number,
+          #               but ONLY if the check_suite was for a PR head SHA
+          #               (check_suites also fire for default-branch pushes
+          #               which have no associated PR).
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            PR_NUMBER="${{ github.event.pull_request.number }}"
+          else
+            # check_suite event. The pull_requests array is sometimes empty
+            # (push-to-default, or fork PRs from a different repo). Look up
+            # any open PR for this head SHA via the API as a fallback.
+            HEAD_SHA="${{ github.event.check_suite.head_sha }}"
+            PR_NUMBER="$(gh api repos/${{ github.repository }}/commits/${HEAD_SHA}/pulls \
+              --jq '.[] | select(.state=="open") | .number' | head -n1)"
+          fi
+
+          if [ -z "$PR_NUMBER" ]; then
+            echo "No open PR resolves from this event — exiting cleanly."
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "Resolved PR #$PR_NUMBER"
+            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Evaluate auto-merge eligibility
+        if: steps.resolve_pr.outputs.skip != 'true'
+        id: evaluate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.resolve_pr.outputs.pr_number }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Pull the PR's full state in one API round-trip. --repo is
+          # required because the workflow runs without a checkout (the
+          # whole point is to be lightweight), so gh CLI can't infer
+          # the repo from a local .git directory.
+          PR_JSON="$(gh pr view "$PR_NUMBER" --repo "$GH_REPO" \
+            --json state,headRefName,additions,deletions,mergeable,labels,statusCheckRollup,isDraft)"
+
+          STATE="$(echo "$PR_JSON" | jq -r '.state')"
+          BRANCH="$(echo "$PR_JSON" | jq -r '.headRefName')"
+          ADDITIONS="$(echo "$PR_JSON" | jq -r '.additions')"
+          DELETIONS="$(echo "$PR_JSON" | jq -r '.deletions')"
+          MERGEABLE="$(echo "$PR_JSON" | jq -r '.mergeable')"
+          IS_DRAFT="$(echo "$PR_JSON" | jq -r '.isDraft')"
+          TOTAL_DIFF=$((ADDITIONS + DELETIONS))
+
+          # Print a snapshot for the workflow log (audit value).
+          echo "PR #$PR_NUMBER"
+          echo "  state=$STATE  branch=$BRANCH  draft=$IS_DRAFT"
+          echo "  additions=$ADDITIONS  deletions=$DELETIONS  total=$TOTAL_DIFF  mergeable=$MERGEABLE"
+
+          # Gate 1: PR must be open + not draft + mergeable.
+          if [ "$STATE" != "OPEN" ] || [ "$IS_DRAFT" = "true" ]; then
+            echo "GATE: PR not eligible (state=$STATE, draft=$IS_DRAFT). Skipping."
+            echo "eligible=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          if [ "$MERGEABLE" != "MERGEABLE" ]; then
+            echo "GATE: PR not mergeable (mergeable=$MERGEABLE — likely conflicts or pending checks). Skipping for now; next trigger will re-evaluate."
+            echo "eligible=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Gate 2: Branch must match session-N pattern. Coordinator
+          # branches still require manual review.
+          if [[ ! "$BRANCH" =~ ^session-[0-9]+/ ]]; then
+            echo "GATE: Branch '$BRANCH' is not a session-N branch. Skipping."
+            echo "eligible=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Gate 3: Diff size cap.
+          if [ "$TOTAL_DIFF" -gt "$AUTO_MERGE_MAX_DIFF_LINES" ]; then
+            echo "GATE: Diff $TOTAL_DIFF lines exceeds cap of $AUTO_MERGE_MAX_DIFF_LINES. Skipping — coordinator review needed for large PRs."
+            echo "eligible=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Gate 4: Escape hatch — anyone (Codex bot, coordinator, Rishi)
+          # can add the `coordinator-review-needed` label to force a
+          # manual review path.
+          if echo "$PR_JSON" | jq -e '.labels[] | select(.name=="coordinator-review-needed")' > /dev/null; then
+            echo "GATE: PR has 'coordinator-review-needed' label. Skipping (manual review path)."
+            echo "eligible=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Gate 5: All required linters must have completed SUCCESSFULLY.
+          # Required = the 3 hard-gate workflows. Codex is NOT in the
+          # required set because its truncation false-positives on small
+          # diffs would block the very PRs this workflow is designed for.
+          REQUIRED_CHECK_NAMES=(
+            "Verify PR stays in owning session's scope"
+            "Verify explicit English naming + B7 doc standard"
+            "Verify SESSION-N-LOG was updated"
+          )
+
+          ALL_REQUIRED_PASS=true
+          for required in "${REQUIRED_CHECK_NAMES[@]}"; do
+            conclusion="$(echo "$PR_JSON" | jq -r --arg name "$required" \
+              '.statusCheckRollup[] | select(.name == $name) | .conclusion')"
+            if [ -z "$conclusion" ]; then
+              echo "GATE: Required check '$required' not yet present — waiting for it. Skipping."
+              ALL_REQUIRED_PASS=false
+              break
+            fi
+            if [ "$conclusion" != "SUCCESS" ]; then
+              echo "GATE: Required check '$required' conclusion='$conclusion' (need SUCCESS). Skipping."
+              ALL_REQUIRED_PASS=false
+              break
+            fi
+            echo "  ✓ $required → $conclusion"
+          done
+
+          if [ "$ALL_REQUIRED_PASS" != "true" ]; then
+            echo "eligible=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # All gates passed. Note Codex's result for the audit trail
+          # (may be SUCCESS, FAILURE-from-truncation, or still RUNNING —
+          # we proceed regardless since Codex is non-gating).
+          CODEX_CONCLUSION="$(echo "$PR_JSON" | jq -r \
+            '.statusCheckRollup[] | select(.name == "Codex independent review") | .conclusion // "ABSENT"')"
+          echo "  (Codex non-gating result: $CODEX_CONCLUSION)"
+
+          echo "ALL GATES PASSED — proceeding to admin-merge."
+          echo "eligible=true" >> $GITHUB_OUTPUT
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+          echo "total_diff=$TOTAL_DIFF" >> $GITHUB_OUTPUT
+          echo "codex_conclusion=$CODEX_CONCLUSION" >> $GITHUB_OUTPUT
+
+      - name: Admin-merge eligible PR with audit trail
+        if: steps.evaluate.outputs.eligible == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.resolve_pr.outputs.pr_number }}
+          BRANCH: ${{ steps.evaluate.outputs.branch }}
+          TOTAL_DIFF: ${{ steps.evaluate.outputs.total_diff }}
+          CODEX_CONCLUSION: ${{ steps.evaluate.outputs.codex_conclusion }}
+        run: |
+          set -euo pipefail
+
+          # Audit-trail commit message body explains every gate result so
+          # `git log` for the merge commit shows WHY this auto-merged.
+          # Same shape as the manual admin-merge audit blocks the
+          # coordinator has been writing by hand all week.
+          MERGE_BODY="$(cat <<EOF
+          Auto-merged by .github/workflows/auto-merge-small-session-fix-prs.yml
+          per CONSTRAINTS I14 (auto-merge low-risk PRs).
+
+          Eligibility snapshot:
+          - Branch: $BRANCH (matches session-N/ pattern ✓)
+          - Total diff: $TOTAL_DIFF lines (under cap)
+          - Required lints all PASS:
+            - Verify PR stays in owning session's scope
+            - Verify explicit English naming + B7 doc standard
+            - Verify SESSION-N-LOG was updated
+          - No 'coordinator-review-needed' label
+          - Codex non-gating result: $CODEX_CONCLUSION
+
+          Manual coordinator review remains required for:
+          - PRs over $AUTO_MERGE_MAX_DIFF_LINES total diff lines
+          - PRs on coordinator/* branches
+          - PRs labelled 'coordinator-review-needed'
+          - PRs touching the A1 hard-stop list (escalated separately)
+          EOF
+          )"
+
+          # Squash-merge with the audit body. --squash keeps main history
+          # linear; default merge would create a noisy merge-commit chain.
+          gh pr merge "$PR_NUMBER" --repo "$GH_REPO" --squash --body "$MERGE_BODY"
+
+          # Post a PR comment so the audit trail is visible in the
+          # GitHub UI (commit body is harder to find).
+          gh pr comment "$PR_NUMBER" --repo "$GH_REPO" --body "$(cat <<EOF
+          🤖 **Auto-merged** by \`auto-merge-small-session-fix-prs.yml\` (per I14).
+
+          | Gate | Result |
+          |---|---|
+          | Branch matches \`session-N/\` | ✓ \`$BRANCH\` |
+          | Total diff $TOTAL_DIFF lines ≤ $AUTO_MERGE_MAX_DIFF_LINES | ✓ |
+          | Scope lint | ✓ |
+          | Naming + B7 lint | ✓ |
+          | State-hygiene lint | ✓ |
+          | \`coordinator-review-needed\` label | not present |
+          | Codex (non-gating, informational) | $CODEX_CONCLUSION |
+
+          To force manual review on future similar PRs: add the
+          \`coordinator-review-needed\` label before all lints finish.
+          EOF
+          )"
