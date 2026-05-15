@@ -126,11 +126,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ steps.resolve_pr.outputs.pr_number }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
-          # Pull the PR's full state in one API round-trip.
-          PR_JSON="$(gh pr view "$PR_NUMBER" \
+          # Pull the PR's full state in one API round-trip. --repo is
+          # required because the workflow runs without a checkout (the
+          # whole point is to be lightweight), so gh CLI can't infer
+          # the repo from a local .git directory.
+          PR_JSON="$(gh pr view "$PR_NUMBER" --repo "$GH_REPO" \
             --json state,headRefName,additions,deletions,mergeable,labels,statusCheckRollup,isDraft)"
 
           STATE="$(echo "$PR_JSON" | jq -r '.state')"
@@ -231,6 +235,7 @@ jobs:
         if: steps.evaluate.outputs.eligible == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ steps.resolve_pr.outputs.pr_number }}
           BRANCH: ${{ steps.evaluate.outputs.branch }}
           TOTAL_DIFF: ${{ steps.evaluate.outputs.total_diff }}
@@ -266,11 +271,11 @@ jobs:
 
           # Squash-merge with the audit body. --squash keeps main history
           # linear; default merge would create a noisy merge-commit chain.
-          gh pr merge "$PR_NUMBER" --squash --body "$MERGE_BODY"
+          gh pr merge "$PR_NUMBER" --repo "$GH_REPO" --squash --body "$MERGE_BODY"
 
           # Post a PR comment so the audit trail is visible in the
           # GitHub UI (commit body is harder to find).
-          gh pr comment "$PR_NUMBER" --body "$(cat <<EOF
+          gh pr comment "$PR_NUMBER" --repo "$GH_REPO" --body "$(cat <<EOF
           🤖 **Auto-merged** by \`auto-merge-small-session-fix-prs.yml\` (per I14).
 
           | Gate | Result |
