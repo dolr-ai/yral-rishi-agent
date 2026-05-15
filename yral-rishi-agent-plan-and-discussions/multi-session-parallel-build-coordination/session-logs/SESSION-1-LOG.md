@@ -1,6 +1,51 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-15 — NEW: `confirm_stack_actually_deployed` post-deploy verifier (closes Day-5 silent-failure gap)
+
+### Action
+Yesterday's Day-5 Patroni HA arc surfaced a recurring trap: `docker
+stack deploy` returns exit 0 as soon as the spec lands in Swarm's raft
+DCS, NOT when tasks actually start. Deploys 2 and 3 yesterday both
+left the script printing "✅ patroni-install finished" while every
+etcd / pgbouncer task was looping in Rejected state (bind dir missing,
+wrong image tag). Caught those by hand running `docker stack ps`
+afterward — closing that gap so the next bug surfaces loud.
+
+### Fix
+Added `confirm_stack_actually_deployed` to `patroni-install.sh`. Runs
+right after `deploy_patroni_stack_into_swarm` in `main()`. Polls
+`docker stack ps --filter desired-state=running` for 30s (5s ticks),
+fails loud if any task is in `Rejected` or `Failed` state, prints the
+full stack ps for context. Legitimate in-progress states (`Preparing`,
+`Starting`, `Pending`, `Running`) are NOT failures — they're how new
+deploys look. Two new constants are configurable via env
+(`PATRONI_DEPLOY_VERIFY_TIMEOUT_SECONDS`, `_POLL_SECONDS`) for future
+overrides.
+
+Same shape will port to `redis-sentinel-install.sh` and
+`langfuse-install.sh` in follow-up PRs; kept local to patroni for
+now per A2.1 single-concern.
+
+### Constraints touched
+A2.1 (single-concern, 58 strict-code lines), B7 (role-comment captures
+why we picked `Rejected|Failed` specifically and what we DON'T fail
+on), I11 (same-commit LOG entry), I14 (under 400 diff lines, no
+coordinator-review-needed label → auto-merge-eligible under PR #50's
+new flow).
+
+### Diff size
++58 / 0 in `patroni-install.sh` + this LOG entry. Well under the
+400-line auto-merge gate.
+
+### What this is NOT
+Not a "wait for everything to reach Running" check. That'd be wrong
+for Patroni — replicas legitimately spend minutes in `Preparing` /
+`Starting` while basebackup runs. The verifier only catches
+**terminally-bad** task states inside a tight window.
+
+---
+
 ## 2026-05-14 — FIX: empty out WAL/S3 env vars when WAL-G off so Spilo skips wal-e standby bootstrap (Day-5 deploy bug #7)
 
 ### Action

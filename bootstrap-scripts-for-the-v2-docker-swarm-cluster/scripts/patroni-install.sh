@@ -128,6 +128,17 @@ PATRONI_STACK_COMPOSE_FILE_PATH="${THIS_SCRIPT_DIRECTORY}/patroni-stack.yml"
 # resync systemd service. The registry lists stack names one per line.
 SWARM_STACK_RESYNC_REGISTRY_PATH="/etc/yral-v2/stacks-to-resync.list"
 
+# Post-deploy verifier window. `docker stack deploy` returns 0 as soon as
+# the spec is in DCS — NOT when tasks are actually running. If any task
+# is Rejected (bad image, missing bind dir, missing constraint, etc.),
+# Swarm keeps retrying it every few seconds while the script would have
+# already printed "✅ patroni-install finished". Day-5 deploys 2 + 3
+# bit us with exactly this silent-success mode (bind-dir-missing +
+# wrong pgbouncer image tag). We now poll docker stack ps for a brief
+# window and fail loud if anything lands in Rejected/Failed.
+PATRONI_DEPLOY_VERIFY_TIMEOUT_SECONDS="${PATRONI_DEPLOY_VERIFY_TIMEOUT_SECONDS:-30}"
+PATRONI_DEPLOY_VERIFY_POLL_SECONDS="${PATRONI_DEPLOY_VERIFY_POLL_SECONDS:-5}"
+
 # Per CONSTRAINTS H2, every Swarm secret name is suffixed with the SHA8 of
 # its content so a content change creates a new secret + we can prune the
 # old one after the consuming services roll over.
@@ -176,6 +187,7 @@ main() {
     create_or_rotate_swarm_secrets_with_sha8_suffix
     render_patroni_stack_compose_file_to_temporary_path
     deploy_patroni_stack_into_swarm
+    confirm_stack_actually_deployed
     confirm_stack_registered_with_swarm_resync_service
     print_post_install_summary
 }
@@ -511,6 +523,52 @@ deploy_patroni_stack_into_swarm() {
         --with-registry-auth \
         --prune \
         "${PATRONI_STACK_NAME}"
+}
+
+
+confirm_stack_actually_deployed() {
+    # WHAT:  poll `docker stack ps ${PATRONI_STACK_NAME}` for up to
+    #        ${PATRONI_DEPLOY_VERIFY_TIMEOUT_SECONDS}; fail loud if ANY
+    #        task whose desired-state is `running` is currently in
+    #        `Rejected` or `Failed` state.
+    # WHEN:  immediately after deploy_patroni_stack_into_swarm.
+    # WHY:   `docker stack deploy` exits 0 as soon as the spec is in the
+    #        Swarm raft DCS — it does NOT wait for tasks to actually
+    #        schedule, pull images, or transition to Running. Day-5
+    #        deploys 2 + 3 surfaced bugs where Swarm Rejected every task
+    #        (missing bind dir, missing image tag) yet `docker stack
+    #        deploy` returned 0 and the script printed
+    #        "✅ patroni-install finished" anyway. Rejected tasks loop
+    #        every ~5s, so any scheduling failure surfaces inside our
+    #        30-second window. Tasks that are still `Preparing` /
+    #        `Starting` / `Pending` are LEGITIMATE in-progress states
+    #        (image pull, container init) and are NOT failures — we
+    #        only fail on the two terminal-bad states.
+    #
+    # NOTE:  same shape will port to redis-sentinel-install.sh and
+    #        langfuse-install.sh in follow-up PRs; kept local to
+    #        patroni-install.sh for now per A2.1 single-concern.
+    local deadline_epoch=$(($(date +%s) + PATRONI_DEPLOY_VERIFY_TIMEOUT_SECONDS))
+    local rejected_or_failed_tasks=""
+    while [[ "$(date +%s)" -lt "${deadline_epoch}" ]]; do
+        rejected_or_failed_tasks="$(
+            docker stack ps "${PATRONI_STACK_NAME}" \
+                --filter desired-state=running \
+                --format '{{.Name}}	{{.CurrentState}}	{{.Error}}' \
+                2>/dev/null \
+                | awk -F'	' '$2 ~ /^(Rejected|Failed)/ {print}'
+        )"
+        if [[ -n "${rejected_or_failed_tasks}" ]]; then
+            echo "ERROR patroni-install: ${PATRONI_STACK_NAME} has Rejected/Failed tasks (docker stack deploy returned 0 anyway):" >&2
+            echo "${rejected_or_failed_tasks}" >&2
+            echo "" >&2
+            echo "Full stack ps for debugging:" >&2
+            docker stack ps "${PATRONI_STACK_NAME}" --no-trunc >&2 || true
+            exit 1
+        fi
+        sleep "${PATRONI_DEPLOY_VERIFY_POLL_SECONDS}"
+    done
+    echo "patroni-install: post-deploy verifier — no Rejected/Failed tasks in ${PATRONI_STACK_NAME} after ${PATRONI_DEPLOY_VERIFY_TIMEOUT_SECONDS}s"
 }
 
 
