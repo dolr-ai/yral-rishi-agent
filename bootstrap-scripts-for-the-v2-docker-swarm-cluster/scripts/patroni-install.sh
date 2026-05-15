@@ -128,14 +128,20 @@ PATRONI_STACK_COMPOSE_FILE_PATH="${THIS_SCRIPT_DIRECTORY}/patroni-stack.yml"
 # resync systemd service. The registry lists stack names one per line.
 SWARM_STACK_RESYNC_REGISTRY_PATH="/etc/yral-v2/stacks-to-resync.list"
 
-# Post-deploy verifier window. `docker stack deploy` returns 0 as soon as
-# the spec is in DCS — NOT when tasks are actually running. If any task
-# is Rejected (bad image, missing bind dir, missing constraint, etc.),
-# Swarm keeps retrying it every few seconds while the script would have
-# already printed "✅ patroni-install finished". Day-5 deploys 2 + 3
-# bit us with exactly this silent-success mode (bind-dir-missing +
+# Post-deploy verifier window. `docker stack deploy` returns 0 as soon
+# as the spec has been written to Docker Swarm's internal raft cluster
+# store (the consensus store that tracks the desired state of every
+# service) — NOT when tasks are actually running. If any task is
+# Rejected (bad image, missing bind dir, missing constraint, etc.),
+# Swarm keeps retrying it every few seconds while the script would
+# have already printed "✅ patroni-install finished". Day-5 deploys 2
+# + 3 bit us with exactly this silent-success mode (bind-dir-missing +
 # wrong pgbouncer image tag). We now poll docker stack ps for a brief
-# window and fail loud if anything lands in Rejected/Failed.
+# window and fail loud if anything lands in Rejected/Failed, and at
+# the end of the window we also cross-check `docker stack services`
+# to make sure each service has at least one replica scheduled
+# (catches the "Swarm could not schedule ANY task on any node" case
+# that wouldn't show as Rejected because no task got created at all).
 PATRONI_DEPLOY_VERIFY_TIMEOUT_SECONDS="${PATRONI_DEPLOY_VERIFY_TIMEOUT_SECONDS:-30}"
 PATRONI_DEPLOY_VERIFY_POLL_SECONDS="${PATRONI_DEPLOY_VERIFY_POLL_SECONDS:-5}"
 
@@ -527,24 +533,37 @@ deploy_patroni_stack_into_swarm() {
 
 
 confirm_stack_actually_deployed() {
-    # WHAT:  poll `docker stack ps ${PATRONI_STACK_NAME}` for up to
-    #        ${PATRONI_DEPLOY_VERIFY_TIMEOUT_SECONDS}; fail loud if ANY
-    #        task whose desired-state is `running` is currently in
-    #        `Rejected` or `Failed` state.
+    # WHAT:  two-layer post-deploy verifier.
+    #        Layer 1 (loop, ${PATRONI_DEPLOY_VERIFY_TIMEOUT_SECONDS}s
+    #          total at ${PATRONI_DEPLOY_VERIFY_POLL_SECONDS}s ticks):
+    #          fail loud if ANY task whose desired-state is `running`
+    #          is currently in `Rejected` or `Failed` state. This
+    #          catches the Day-5 deploys-2+3 bug class — tasks Swarm
+    #          tries to start but can't because of bad image / bad
+    #          mount / unsatisfiable constraint. Such tasks loop every
+    #          ~5s so they always surface inside the 30s window.
+    #        Layer 2 (single check at end of the window):
+    #          fail loud if ANY service in the stack has 0 running
+    #          replicas. This catches the "Swarm could not place ANY
+    #          task on any node" case where no `docker stack ps` row
+    #          would even exist (e.g. placement constraint matches no
+    #          node, or all nodes drained).
     # WHEN:  immediately after deploy_patroni_stack_into_swarm.
-    # WHY:   `docker stack deploy` exits 0 as soon as the spec is in the
-    #        Swarm raft DCS — it does NOT wait for tasks to actually
-    #        schedule, pull images, or transition to Running. Day-5
-    #        deploys 2 + 3 surfaced bugs where Swarm Rejected every task
-    #        (missing bind dir, missing image tag) yet `docker stack
-    #        deploy` returned 0 and the script printed
-    #        "✅ patroni-install finished" anyway. Rejected tasks loop
-    #        every ~5s, so any scheduling failure surfaces inside our
-    #        30-second window. Tasks that are still `Preparing` /
-    #        `Starting` / `Pending` are LEGITIMATE in-progress states
-    #        (image pull, container init) and are NOT failures — we
-    #        only fail on the two terminal-bad states.
-    #
+    # WHY:   `docker stack deploy` exits 0 as soon as the spec is in
+    #        Docker Swarm's internal raft cluster store — it does NOT
+    #        wait for tasks to actually schedule, pull images, or
+    #        transition to Running. Day-5 deploys 2 + 3 surfaced bugs
+    #        where Swarm Rejected every task (missing bind dir,
+    #        missing image tag) yet `docker stack deploy` returned 0
+    #        and the script printed "✅ patroni-install finished"
+    #        anyway.
+    # WHAT WE DELIBERATELY DON'T DO:
+    #        We do NOT wait for all replicas to reach Running. That
+    #        would be wrong for Patroni — replicas legitimately spend
+    #        several minutes in `Preparing` / `Starting` while
+    #        `pg_basebackup` from the leader runs. Codex's review
+    #        suggested making success require N/N replicas; that's
+    #        the right shape for stateless services but wrong here.
     # NOTE:  same shape will port to redis-sentinel-install.sh and
     #        langfuse-install.sh in follow-up PRs; kept local to
     #        patroni-install.sh for now per A2.1 single-concern.
@@ -568,7 +587,43 @@ confirm_stack_actually_deployed() {
         fi
         sleep "${PATRONI_DEPLOY_VERIFY_POLL_SECONDS}"
     done
-    echo "patroni-install: post-deploy verifier — no Rejected/Failed tasks in ${PATRONI_STACK_NAME} after ${PATRONI_DEPLOY_VERIFY_TIMEOUT_SECONDS}s"
+
+    # Layer 2: check that Swarm at least scheduled SOMETHING for every
+    # service. `docker stack services` reports replicas as `R/D` where
+    # R is currently-running and D is desired. We tolerate `0/N` only
+    # if we never saw a Rejected/Failed task above (which would mean
+    # tasks ARE being created and are in early lifecycle); a service
+    # with 0/N AND no scheduling attempts visible in stack ps is the
+    # "placement matches no node" failure mode.
+    local zero_replica_services
+    zero_replica_services="$(
+        docker stack services "${PATRONI_STACK_NAME}" \
+            --format '{{.Name}}	{{.Replicas}}' \
+            2>/dev/null \
+            | awk -F'	' '$2 ~ /^0\// {print}'
+    )"
+    if [[ -n "${zero_replica_services}" ]]; then
+        # Cross-check: is there ANY task in stack ps for these services?
+        # If not, it's the placement-matches-no-node case; fail loud.
+        local service_name first_field placed_count=0
+        while IFS=$'\t' read -r service_name first_field; do
+            placed_count="$(
+                docker stack ps "${PATRONI_STACK_NAME}" \
+                    --filter "name=${service_name}" \
+                    --format '{{.ID}}' 2>/dev/null \
+                    | wc -l | tr -d ' '
+            )"
+            if [[ "${placed_count}" == "0" ]]; then
+                echo "ERROR patroni-install: service ${service_name} has 0 replicas and Swarm never created any task — likely an unsatisfiable placement constraint." >&2
+                echo "" >&2
+                echo "Full stack services for debugging:" >&2
+                docker stack services "${PATRONI_STACK_NAME}" >&2 || true
+                exit 1
+            fi
+        done <<< "${zero_replica_services}"
+    fi
+
+    echo "patroni-install: post-deploy verifier — no Rejected/Failed tasks and every service has at least one task placed, after ${PATRONI_DEPLOY_VERIFY_TIMEOUT_SECONDS}s"
 }
 
 
