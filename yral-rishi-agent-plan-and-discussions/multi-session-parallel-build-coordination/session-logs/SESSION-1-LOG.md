@@ -1,6 +1,60 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-16 — FIX: langfuse-stack `CLICKHOUSE_PASSWORD_FILE` → `CLICKHOUSE_PASSWORD` inline (Langfuse 3 no _FILE variant for clickhouse pw) (Day-5 Step 3 deploy bug #7)
+
+### Action
+PR #66 (`CLICKHOUSE_MIGRATION_URL`) landed + I re-scp'd the updated files (the previous deploy attempt used a stale stack file) + restarted pgbouncer (to release stale Postgres advisory locks from Prisma migration retries). The web container now reports:
+
+```
+No pending migrations to apply.
+Error: CLICKHOUSE_PASSWORD is not set.
+Applying clickhouse migrations failed.
+```
+
+Postgres migrations succeeded (`No pending migrations to apply` — already done in the earlier successful run) — confirms pgbouncer auth + PR #61/#65 stack are validated. New failure on next init step.
+
+### Root cause
+Same Langfuse-3-no-_FILE-variant pattern as DATABASE_URL (PR #61) and CLICKHOUSE_MIGRATION_URL (PR #66): the stack had `CLICKHOUSE_PASSWORD_FILE: /run/secrets/...` thinking Langfuse's migration tool would read it, but the migration CLI only checks `CLICKHOUSE_PASSWORD` directly. Discrete `*_FILE` variant in Langfuse 3 covers the runtime client only, not the migration CLI.
+
+### Fix
+- `langfuse-stack.yml`: in BOTH `langfuse-web` and `langfuse-worker` env blocks, replace `CLICKHOUSE_PASSWORD_FILE: /run/secrets/langfuse-clickhouse-password` with `CLICKHOUSE_PASSWORD: ${YRAL_LANGFUSE_CLICKHOUSE_PASSWORD_RENDERED}`. Reuses the existing envsubst-whitelist placeholder I added in PR #66 — no install-script change needed.
+- Web's inline comment captures the Langfuse-3-no-_FILE distinction + the attempt #7 symptom. Worker cross-references.
+
+The `langfuse-clickhouse-password` Swarm secret stays declared in the top-level `secrets:` block; clickhouse-server's own service still reads it via `/run/secrets/...` (clickhouse image DOES support the _FILE convention for its own auth). Only web + worker's mount becomes unused.
+
+### Verification (local)
+Empirical render with test passwords:
+```
+web CLICKHOUSE_PASSWORD: chpw
+worker CLICKHOUSE_PASSWORD: chpw
+web has CLICKHOUSE_PASSWORD_FILE? False
+worker has CLICKHOUSE_PASSWORD_FILE? False
+remaining ${...} placeholders: 0
+```
+
+### Constraints touched
+A2.1 (single concern: clickhouse password inline for web+worker), B7 (role-comment captures the third Langfuse-3-no-_FILE instance, completing the pattern), D1 (same security tradeoff as the other inline secrets per PR #61/#66), I11 (same-commit LOG entry), I14 (auto-merge-eligible).
+
+### Diff size
++10 / -2 in stack file + this LOG entry. Tiny.
+
+### Bug count tally for Day-5 Step 3 (running total)
+- Pre-emptively closed (PR #60): 5
+- Surfaced at deploy time, unique classes:
+  - DATABASE_URL format (PR #61)
+  - pgbouncer auth gap, 3 config missteps + image bump fix (PR #62/#63/#64/#65)
+  - CLICKHOUSE_MIGRATION_URL missing (PR #66)
+  - **CLICKHOUSE_PASSWORD vs _FILE (this PR)**
+
+6 unique classes. The DATABASE_URL + CLICKHOUSE_* (3 vars) pattern is consistent — Langfuse 3 uniformly demands direct env vars for credentials in its CLI / migration code paths. If we'd known this from the start, all 3 fixes could have shipped in one PR. Pattern note for any future Langfuse work: **Langfuse 3 needs `DATABASE_URL` + `CLICKHOUSE_MIGRATION_URL` + `CLICKHOUSE_PASSWORD` as inline env vars; _FILE variants don't cover migrations.**
+
+### Deferred follow-ups (separate concerns, NOT bundled)
+- `session-1/codify-keychain-to-spilo-password-flow` — operator-state password reset outside the PR audit trail
+- Possible: investigate Prisma advisory-lock timeouts when running through pgbouncer-transaction. Workaround needed (DIRECT_URL?) if this comes back.
+
+---
+
 ## 2026-05-16 — FIX: langfuse-stack add `CLICKHOUSE_MIGRATION_URL` (Langfuse 3 migration CLI needs the native-port URL) (Day-5 Step 3 deploy bug #6)
 
 ### Action

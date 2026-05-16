@@ -102,7 +102,14 @@ services:
       CLICKHOUSE_URL: http://langfuse-clickhouse:8123
       CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse:${YRAL_LANGFUSE_CLICKHOUSE_PASSWORD_RENDERED}@langfuse-clickhouse:9000
       CLICKHOUSE_USER: langfuse
-      CLICKHOUSE_PASSWORD_FILE: /run/secrets/langfuse-clickhouse-password
+      # Langfuse 3's migration CLI errored with `Error: CLICKHOUSE_PASSWORD
+      # is not set` on Day-5-Step-3 attempt #7 even with CLICKHOUSE_PASSWORD_
+      # FILE pointing at the mounted secret — same Langfuse-3-no-_FILE-
+      # variant pattern as DATABASE_URL. Switch to inline CLICKHOUSE_
+      # PASSWORD rendered via envsubst (reuses the existing whitelist
+      # placeholder). The CLICKHOUSE_PASSWORD_FILE mount is no longer
+      # needed for web/worker since the env-var is now direct.
+      CLICKHOUSE_PASSWORD: ${YRAL_LANGFUSE_CLICKHOUSE_PASSWORD_RENDERED}
       CLICKHOUSE_DB: langfuse
       # Redis (shared cluster Sentinel) for background queues.
       REDIS_HOST: redis-sentinel-rishi-4
@@ -151,7 +158,8 @@ services:
       ENCRYPTION_KEY_FILE: /run/secrets/langfuse-encryption-key
       CLICKHOUSE_URL: http://langfuse-clickhouse:8123
       CLICKHOUSE_USER: langfuse
-      CLICKHOUSE_PASSWORD_FILE: /run/secrets/langfuse-clickhouse-password
+      # See langfuse-web's CLICKHOUSE_PASSWORD comment block above.
+      CLICKHOUSE_PASSWORD: ${YRAL_LANGFUSE_CLICKHOUSE_PASSWORD_RENDERED}
       CLICKHOUSE_DB: langfuse
       REDIS_HOST: redis-sentinel-rishi-4
       REDIS_PORT: "26379"
