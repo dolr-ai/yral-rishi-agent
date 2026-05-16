@@ -87,7 +87,20 @@ services:
       NEXTAUTH_SECRET_FILE: /run/secrets/langfuse-nextauth-secret
       ENCRYPTION_KEY_FILE: /run/secrets/langfuse-encryption-key
       # ClickHouse for traces.
+      # CLICKHOUSE_URL is used at runtime (HTTP, port 8123).
+      # CLICKHOUSE_MIGRATION_URL is used by Langfuse 3's `langfuse-cli`
+      # at container start to apply ClickHouse migrations. It MUST be
+      # a `clickhouse://` URL on the native protocol port (9000) with
+      # credentials embedded — Langfuse 3 has no `*_FILE` variant for
+      # this URL and the discrete fields (`CLICKHOUSE_USER` +
+      # `CLICKHOUSE_PASSWORD_FILE`) only cover the runtime HTTP
+      # client. Day-5-Step-3 deploy attempt #6 errored:
+      #   "Error: CLICKHOUSE_MIGRATION_URL is not configured.
+      #    Please set CLICKHOUSE_MIGRATION_URL in your env variables.
+      #    Applying clickhouse migrations failed."
+      # Same render-via-envsubst pattern as DATABASE_URL (PR #61).
       CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+      CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse:${YRAL_LANGFUSE_CLICKHOUSE_PASSWORD_RENDERED}@langfuse-clickhouse:9000
       CLICKHOUSE_USER: langfuse
       CLICKHOUSE_PASSWORD_FILE: /run/secrets/langfuse-clickhouse-password
       CLICKHOUSE_DB: langfuse
