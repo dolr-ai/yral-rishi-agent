@@ -83,6 +83,22 @@ services:
       # Base64url password chars [a-zA-Z0-9_-] are all unreserved in
       # RFC 3986 userinfo so no URL-encoding is needed.
       DATABASE_URL: postgresql://langfuse:${YRAL_LANGFUSE_POSTGRES_PASSWORD_RENDERED}@pgbouncer:5432/postgres?schema=langfuse
+      # DIRECT_URL bypasses pgbouncer and connects straight to the
+      # Patroni leader on port 5432. Prisma migrations use it because:
+      # pgbouncer is configured `POOL_MODE: transaction`, which
+      # multiplexes upstream connections across client transactions.
+      # Prisma migrations rely on `pg_advisory_lock()` — session-scoped
+      # locks. When a migration container dies through transaction-
+      # pooled pgbouncer, the upstream session that held the lock may
+      # be returned to pgbouncer's pool with the lock still held;
+      # subsequent migrations time out with
+      # `Context: Timed out trying to acquire a postgres advisory
+      # lock (SELECT pg_advisory_lock(72707369))`. Day-5-Step-3 deploy
+      # attempts #6-#8 surfaced this repeatedly. Industry-standard fix
+      # per Prisma docs (https://pris.ly/d/migrate-advisory-locking):
+      # set DIRECT_URL to bypass the connection pooler for migrations
+      # while DATABASE_URL stays pooled for fast runtime queries.
+      DIRECT_URL: postgresql://langfuse:${YRAL_LANGFUSE_POSTGRES_PASSWORD_RENDERED}@patroni-rishi-4:5432/postgres?schema=langfuse
       NEXTAUTH_URL: https://langfuse.rishi.yral.com
       NEXTAUTH_SECRET_FILE: /run/secrets/langfuse-nextauth-secret
       ENCRYPTION_KEY_FILE: /run/secrets/langfuse-encryption-key
@@ -116,6 +132,20 @@ services:
       REDIS_PORT: "26379"
       LANGFUSE_DEFAULT_PROJECT_ID: yral-v2-default
       TELEMETRY_ENABLED: "false"
+      # Langfuse 3 REQUIRES this even when no real S3 backend is set
+      # up yet — the shared zod env validator in @langfuse/shared/dist/
+      # src/env.js:166 declares it as a non-optional string. Without
+      # this, the WORKER container crashes at startup with
+      # `Invalid input: expected string, received undefined` (web hits
+      # migration errors before the validator runs, so the gap only
+      # surfaced on worker — Day-5-Step-3 deploy attempt #8). We use a
+      # placeholder bucket name; real S3 (MinIO sidecar or Hetzner
+      # Object Storage) is deferred. Optional siblings
+      # (REGION/ENDPOINT/ACCESS_KEY_ID/SECRET_ACCESS_KEY) stay unset
+      # — Langfuse will fail any actual event-upload attempt, but the
+      # container starts. Sufficient for Day-5 Step 3 to close + lets
+      # services come up so we can verify auth/migrations/queues.
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: yral-v2-langfuse-events-placeholder-no-real-s3-yet
     secrets:
       - source: ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_NEXTAUTH_SECRET}
         target: langfuse-nextauth-secret
@@ -163,6 +193,12 @@ services:
       CLICKHOUSE_DB: langfuse
       REDIS_HOST: redis-sentinel-rishi-4
       REDIS_PORT: "26379"
+      # The worker's zod env validator is the SAME shared schema as
+      # web's (@langfuse/shared/dist/src/env.js). It enforces this
+      # as a required string. Without it, worker crashes at startup
+      # with `Invalid input: expected string, received undefined`.
+      # See langfuse-web for the placeholder rationale.
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: yral-v2-langfuse-events-placeholder-no-real-s3-yet
     secrets:
       - source: ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_ENCRYPTION_KEY}
         target: langfuse-encryption-key
