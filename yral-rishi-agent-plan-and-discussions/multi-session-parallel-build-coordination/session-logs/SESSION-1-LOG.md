@@ -1,6 +1,56 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-16 — FIX: redis-sentinel-stack.yml needs `$$$$REDIS_PASSWORD` for two-layer escape (Day-5 Step 2 deploy bug #1)
+
+### Action
+First live invocation of the hardened `redis-sentinel-install.sh` (PR #55) against rishi-4 today. Password Swarm secret created cleanly, render produced a temp file, then `docker stack deploy` errored with:
+
+```
+invalid interpolation format for services.redis-sentinel-rishi-4.command.[]:
+  "... sentinel auth-pass yral-v2-redis-primary $ ..."
+you may need to escape any $ with another $
+```
+
+The lone `$` is what Compose interpolation saw AFTER envsubst had already collapsed `$$` → `$` during the render step.
+
+### Root cause
+Two substitution layers run on the stack before the container shell sees `$REDIS_PASSWORD`:
+1. `envsubst` (in `redis-sentinel-install.sh`'s render step) — substitutes `${...}` placeholders AND collapses `$$` → `$`.
+2. `docker stack deploy` reads the rendered file, performs Compose-spec variable interpolation — ALSO treats `$$` as the escape for a literal `$`.
+
+The committed stack had `$$REDIS_PASSWORD`. After envsubst that became `$REDIS_PASSWORD`. Compose then tried to interpolate `REDIS_PASSWORD` from its own env (intentionally unset) and refused.
+
+Patroni's stack file doesn't hit this because it never uses `$$` patterns — Spilo handles its own auth internally. Redis is the first stack we ship where the in-container shell needs to expand a runtime env-var-from-secret-file.
+
+### Fix
+Single file change in `redis-sentinel-stack.yml`: replace all 7 occurrences of `$$REDIS_PASSWORD` with `$$$$REDIS_PASSWORD`. The math:
+- Source has `$$$$REDIS_PASSWORD`.
+- envsubst: `$$$$` → `$$`.
+- Compose interpolation: `$$` → literal `$`.
+- Runtime: container's `sh -c '... export REDIS_PASSWORD=$(cat /run/secrets/...); redis-server --requirepass "$REDIS_PASSWORD"'` expands the env var as intended.
+
+Added a 17-line NOTE block at the top of `services:` documenting the four-dollar convention so a future re-reader doesn't collapse it back. (The same trap would catch us on every fresh deploy if not documented inline.)
+
+### Constraints touched
+A2.1 (single concern: escape-layer count fix), B7 (NOTE block captures the two-substitution-layer reasoning + the Day-5-Step-2-deploy-attempt-1 symptom that motivated it), I11 (same-commit LOG entry), I14 (32-line diff, way under 400-line auto-merge gate).
+
+### State on rishi-4 before fix
+- Redis Swarm secret `yral_v2_redis_primary_password_<sha8>` created (idempotent — will be skipped on retry).
+- No stack deployed (docker stack deploy errored before creating any service).
+- Clean retry surface; no live containers to roll back.
+
+### Diff size
++25 / -7 = 32 total lines. Easily under the 400-line auto-merge gate.
+
+### Bug count tally for Day-5 Step 2 (Redis Sentinel)
+- Pre-emptively closed via PR #55: 5 bug shapes (sudoers verify-only, SSH-by-IPv4, resync-registry verify-only, post-deploy verifier, skip-branch export).
+- Surfaced at deploy time: 1 (this PR — escape-layer math).
+
+Bug count so far: 1. Rishi's prediction was "2-4 range, not 8." Holding tight.
+
+---
+
 ## 2026-05-16 — HARDENING: port patroni-install.sh patterns into redis-sentinel-install.sh (pre-Day-5-Step-2 deploy)
 
 ### Action
