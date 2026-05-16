@@ -347,7 +347,22 @@ services:
       RESERVE_POOL_SIZE: "5"
       RESERVE_POOL_TIMEOUT: "3"
       POOL_MODE: transaction
-      AUTH_TYPE: md5
+      # Patroni/Spilo on PG 15 stores role passwords in pg_authid using
+      # SCRAM-SHA-256 (the PG 14+ default; superseded the older md5
+      # method). pgbouncer's AUTH_TYPE must match the upstream's stored
+      # hash type for both directions:
+      #   - server-side: pgbouncer authenticates to upstream Patroni
+      #     as DB_USER; PG demands SCRAM, md5 yields "cannot do SCRAM
+      #     authentication: wrong password type".
+      #   - client-side: pgbouncer challenges clients; SCRAM negotiates
+      #     against the plain password edoburu wrote into userlist.txt
+      #     when AUTH_TYPE=scram-sha-256 (vs. md5 which uses an md5
+      #     hash format).
+      # Day-5-Step-3 deploy attempt #4 surfaced this: pgbouncer logs
+      # showed `cannot do SCRAM authentication: wrong password type`
+      # against patroni-rishi-4 even though DB_PASSWORD was correct
+      # (sha256 of the password matched the Swarm secret content).
+      AUTH_TYPE: scram-sha-256
       ADMIN_USERS: postgres,admin
       # Connect to upstream Patroni as `postgres` superuser. edoburu's
       # entrypoint reads DB_USER + DB_PASSWORD (NOT _FILE — verified

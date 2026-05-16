@@ -1,6 +1,52 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-16 — FIX: pgbouncer AUTH_TYPE md5 → scram-sha-256 (PG 15 stores SCRAM hashes) (Day-5 Step 3 deploy bug #4)
+
+### Action
+PR #63 fixed the userlist.txt population — `cat /etc/pgbouncer/userlist.txt` now correctly shows `"postgres" "md5c6cd83..."`. But client connections through pgbouncer still timeout with `query_wait_timeout`. pgbouncer logs show why pgbouncer can't authenticate to UPSTREAM:
+
+```
+2026-05-16 13:59:31 [1] ERROR S-0x...: postgres/postgres@10.0.3.132:5432
+  cannot do SCRAM authentication: wrong password type
+2026-05-16 13:59:31 [1] LOG closing because: failed to answer authreq
+```
+
+DB_PASSWORD verified correct (sha256 hash matches the Swarm secret content). The password is right; the auth method is wrong.
+
+### Root cause
+Patroni/Spilo on PG 15 stores role passwords in `pg_authid` using **SCRAM-SHA-256** — the PG 14+ default that superseded the older md5 method. pgbouncer's `AUTH_TYPE=md5` means it tries to authenticate to upstream using an md5 password hash, but the stored hash on the server is SCRAM. Postgres rejects with "wrong password type."
+
+This affects BOTH directions:
+- server-side: pgbouncer→Patroni auth fails (the actual error in the logs)
+- client-side: pgbouncer would also fail to validate scram-hashed users in `auth_query` results because edoburu's `md5` mode expects md5 hashes back from pg_shadow
+
+### Fix
+`patroni-stack.yml` pgbouncer service: change `AUTH_TYPE: md5` → `AUTH_TYPE: scram-sha-256`. Inline comment block explains:
+- PG 14+ default switched from md5 to scram-sha-256
+- Both directions (client→pgbouncer auth, pgbouncer→Patroni auth) need to match the upstream stored hash type
+- edoburu's entrypoint writes a PLAIN password into userlist.txt when `AUTH_TYPE=scram-sha-256` (line 51: `if [ "$AUTH_TYPE" == "plain" ] || [ "$AUTH_TYPE" == "scram-sha-256" ]; then pass="$DB_PASSWORD"`)
+
+### Verification
+After roll, pgbouncer should auth to upstream successfully + auth_query against pg_shadow should return scram hashes for client validation.
+
+### Constraints touched
+A2.1 (single concern: AUTH_TYPE match), B7 (role-comment captures the SCRAM vs md5 distinction + edoburu's userlist format change), D1 (security improvement actually — SCRAM is stronger than md5), I11 (same-commit LOG entry), I14 (auto-merge-eligible).
+
+### Diff size
++16 / -1 = 17 lines in patroni-stack.yml + this LOG entry. Tiny.
+
+### Bug count tally for Day-5 Step 3
+- Pre-emptively closed (PR #60): 5
+- Surfaced at deploy time, unique classes (compressing pgbouncer-auth-gap missteps):
+  - DATABASE_URL format (PR #61)
+  - pgbouncer auth gap (PR #62 + #63 + this PR — three missteps before getting it right; counts as 1 class)
+  - = 2 total unique classes
+
+Rishi's prediction was "≤2, possibly 0." Hitting exactly 2 unique classes after compressing missteps.
+
+---
+
 ## 2026-05-16 — FIX: pgbouncer `DB_PASSWORD` inline instead of `DB_PASSWORD_FILE` (edoburu doesn't support _FILE convention) (Day-5 Step 3 deploy bug #3)
 
 ### Action
