@@ -73,21 +73,29 @@ services:
     image: redis:7.2-alpine
     hostname: redis-primary
     # Read password from /run/secrets at start; AOF + RDB persistence enabled.
-    command: >
-      sh -c '
-        export REDIS_PASSWORD="$$(cat /run/secrets/redis-primary-password)";
-        exec redis-server
-          --requirepass "$$REDIS_PASSWORD"
-          --masterauth "$$REDIS_PASSWORD"
-          --appendonly yes
-          --appendfsync everysec
-          --save 900 1
-          --save 300 10
-          --maxmemory 8gb
-          --maxmemory-policy allkeys-lru
-          --bind 0.0.0.0
+    # Uses the list form `command: [sh, -c, |...]` + explicit `\` line
+    # continuations on every redis-server arg line. The `command: >` folded
+    # form we tried first bit us: YAML's `>` folds line BREAKS but PRESERVES
+    # leading whitespace on more-indented body lines, so `exec redis-server`
+    # ended up on its own line and ran with NO args (default config, no
+    # auth, no persistence, no replication). The list-form + `|` literal +
+    # `\` matches what the sentinel command blocks already do.
+    command:
+      - sh
+      - -c
+      - |
+        export REDIS_PASSWORD="$$(cat /run/secrets/redis-primary-password)"
+        exec redis-server \
+          --requirepass "$$REDIS_PASSWORD" \
+          --masterauth "$$REDIS_PASSWORD" \
+          --appendonly yes \
+          --appendfsync everysec \
+          --save 900 1 \
+          --save 300 10 \
+          --maxmemory 8gb \
+          --maxmemory-policy allkeys-lru \
+          --bind 0.0.0.0 \
           --protected-mode yes
-      '
     secrets:
       - source: ${YRAL_REDIS_STACK_RESOLVED_REDIS_PRIMARY_PASSWORD}
         target: redis-primary-password
@@ -117,21 +125,23 @@ services:
     <<: *yral_data_plane_defaults
     image: redis:7.2-alpine
     hostname: redis-replica
-    command: >
-      sh -c '
-        export REDIS_PASSWORD="$$(cat /run/secrets/redis-primary-password)";
-        exec redis-server
-          --requirepass "$$REDIS_PASSWORD"
-          --masterauth "$$REDIS_PASSWORD"
-          --replicaof redis-primary 6379
-          --replica-read-only yes
-          --appendonly yes
-          --appendfsync everysec
-          --maxmemory 8gb
-          --maxmemory-policy allkeys-lru
-          --bind 0.0.0.0
+    # See redis-primary above for the YAML-folded-vs-literal command form rationale.
+    command:
+      - sh
+      - -c
+      - |
+        export REDIS_PASSWORD="$$(cat /run/secrets/redis-primary-password)"
+        exec redis-server \
+          --requirepass "$$REDIS_PASSWORD" \
+          --masterauth "$$REDIS_PASSWORD" \
+          --replicaof redis-primary 6379 \
+          --replica-read-only yes \
+          --appendonly yes \
+          --appendfsync everysec \
+          --maxmemory 8gb \
+          --maxmemory-policy allkeys-lru \
+          --bind 0.0.0.0 \
           --protected-mode yes
-      '
     secrets:
       - source: ${YRAL_REDIS_STACK_RESOLVED_REDIS_PRIMARY_PASSWORD}
         target: redis-primary-password

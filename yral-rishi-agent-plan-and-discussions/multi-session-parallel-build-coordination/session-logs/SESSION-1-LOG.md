@@ -1,6 +1,103 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-16 — FIX: redis-primary + redis-replica `command:` form (folded scalar → list-with-`|`-literal) (Day-5 Step 2 deploy bug #4)
+
+### Action
+Day-5 Step 2 deploy retry 4 (after PR #58) — `docker stack deploy` returned 0, `confirm_stack_actually_deployed` passed, all 5 services Running. But verification showed:
+
+```
+===Primary INFO replication===
+role:master
+connected_slaves:0
+```
+
+Zero connected replicas. Replica logs revealed why:
+
+```
+1:C 16 May 2026 07:52:19.291 # Warning: no config file specified, using the default config.
+1:M 16 May 2026 07:52:19.292 * Running mode=standalone, port=6379.
+```
+
+**Both `redis-primary` and `redis-replica` containers are running with redis's DEFAULT config — no `--requirepass`, no `--masterauth`, no `--replicaof`, no `--appendonly`. The flags we wrote in the stack file never reached the redis-server binary.**
+
+### Root cause
+YAML's `>` folded scalar collapses line breaks between non-empty lines into single spaces — but only for lines AT the base indent. More-indented body lines preserve their indentation AND newlines, so the folded result is multi-line for the indented body.
+
+When this folded multi-line script reaches bash inside `sh -c '...'`, bash parses it as multiple separate commands:
+1. `export REDIS_PASSWORD="..."` ✓ — executes
+2. `exec redis-server` — `exec` replaces the bash process with `redis-server` (no args)
+3. `--requirepass "$REDIS_PASSWORD"` and following — **NEVER REACHED**
+
+redis-server starts with zero args → default config → no auth, no persistence, no replication.
+
+The sentinels already use the correct `command: [sh, -c, |...]` list form with `|` literal scalar. Each sentinel's script uses a heredoc to define sentinel.conf in one statement, so the newline issue doesn't bite them. The primary/replica forms had the YAML form fall over because their script tried to spread `exec redis-server` + args across multiple lines.
+
+### Fix
+Convert `redis-primary` and `redis-replica` from:
+
+```yaml
+command: >
+  sh -c '
+    export REDIS_PASSWORD="$$(cat /run/secrets/...)";
+    exec redis-server
+      --requirepass "$$REDIS_PASSWORD"
+      ...
+  '
+```
+
+to the list form (mirroring the sentinels' working pattern), with explicit `\` line continuations on every `redis-server` flag line:
+
+```yaml
+command:
+  - sh
+  - -c
+  - |
+    export REDIS_PASSWORD="$$(cat /run/secrets/redis-primary-password)"
+    exec redis-server \
+      --requirepass "$$REDIS_PASSWORD" \
+      --masterauth "$$REDIS_PASSWORD" \
+      ...
+```
+
+The `|` block scalar preserves newlines verbatim. Each `\` at end-of-line makes bash treat the following line as a continuation of the same command. Result: `exec redis-server` gets all the args before exec'ing.
+
+Inline comment captures the YAML-folded-vs-literal trap so a future re-reader doesn't re-introduce the bug.
+
+### Verification
+- Local `bash -n` on the Compose-rendered script body → PASS.
+- YAML parses as expected: `docs[0]['services']['redis-primary']['command']` is a list with 3 elements `[sh, -c, <multi-line-body>]`. Body literal-scalar preserves newlines + `\` continuations correctly.
+
+### Constraints touched
+A2.1 (single concern: same `command:` parsing surface, both services), B7 (inline role-comment captures the YAML-folded-vs-literal trap + the symptom that surfaced it), I11 (same-commit LOG entry), I14 (auto-merge-eligible).
+
+### Diff size
++38 / -28 = 66 total lines in redis-sentinel-stack.yml + this LOG entry. Far under 400-line gate.
+
+### State on rishi-4 before fix
+- All 5 services Running, BUT redis-primary + redis-replica are using default config (no auth, no persistence, no replication).
+- Sentinels are running their custom config correctly (because their list-form `command:` was correct from the start).
+- Primary discovery via Sentinel returns `redis-primary:6379` (correct).
+- Replica is NOT replicating from primary (different config layer entirely).
+- No data has been written (no auth means clients can't even connect for a write).
+
+### After fix
+A redeploy via `redis-sentinel-install.sh` rolls the primary + replica services with the corrected command form. Sentinels are unchanged so they continue running. The auth + replica config takes effect; replica connects to primary; sentinels reconcile.
+
+### Bug count tally for Day-5 Step 2
+
+| Phase                                        | Count |
+|----------------------------------------------|-------|
+| Pre-emptively closed (PR #55)                | 5     |
+| Surfaced at deploy time, unique classes      | 3     |
+|   PR #57 (envsubst whitelist + `$$VAR` escape) |     |
+|   PR #58 (Compose `$$(cmd)` escape consistency) |    |
+|   This PR (YAML folded scalar → list form)   |       |
+
+Rishi's prediction was "2-4 range." At 3 now — close to the upper bound.
+
+---
+
 ## 2026-05-16 — FIX: escape `$(cat /run/secrets/...)` in redis-sentinel-stack.yml command blocks (Day-5 Step 2 deploy bug #3)
 
 ### Action
