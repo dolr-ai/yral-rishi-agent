@@ -71,14 +71,18 @@ services:
       - yral-v2-data-plane
       - yral-v2-internal
     environment:
-      # Postgres lives on the shared Patroni cluster, schema langfuse.
-      DATABASE_HOST: pgbouncer
-      DATABASE_PORT: "5432"
-      DATABASE_NAME: postgres
-      DATABASE_USERNAME: langfuse
-      DATABASE_SCHEMA_NAME: langfuse
-      # File-based auth: read from /run/secrets at startup.
-      DATABASE_PASSWORD_FILE: /run/secrets/langfuse-postgres-password
+      # Langfuse 3 ONLY supports DATABASE_URL — not the discrete
+      # DATABASE_HOST/PORT/NAME/USERNAME + DATABASE_PASSWORD_FILE form
+      # that Langfuse 2 accepted. First Day-5-Step-3 deploy bit us
+      # with the discrete form and an explicit error:
+      #   "Required database environment variables are not set.
+      #    Provide a postgres url for DATABASE_URL."
+      # The password is rendered inline by envsubst (whitelisted in
+      # langfuse-install.sh's render step). Postgres lives on the
+      # shared Patroni cluster behind pgbouncer; schema `langfuse`.
+      # Base64url password chars [a-zA-Z0-9_-] are all unreserved in
+      # RFC 3986 userinfo so no URL-encoding is needed.
+      DATABASE_URL: postgresql://langfuse:${YRAL_LANGFUSE_POSTGRES_PASSWORD_RENDERED}@pgbouncer:5432/postgres?schema=langfuse
       NEXTAUTH_URL: https://langfuse.rishi.yral.com
       NEXTAUTH_SECRET_FILE: /run/secrets/langfuse-nextauth-secret
       ENCRYPTION_KEY_FILE: /run/secrets/langfuse-encryption-key
@@ -129,12 +133,8 @@ services:
     networks:
       - yral-v2-data-plane
     environment:
-      DATABASE_HOST: pgbouncer
-      DATABASE_PORT: "5432"
-      DATABASE_NAME: postgres
-      DATABASE_USERNAME: langfuse
-      DATABASE_SCHEMA_NAME: langfuse
-      DATABASE_PASSWORD_FILE: /run/secrets/langfuse-postgres-password
+      # See langfuse-web's DATABASE_URL comment block above for full rationale.
+      DATABASE_URL: postgresql://langfuse:${YRAL_LANGFUSE_POSTGRES_PASSWORD_RENDERED}@pgbouncer:5432/postgres?schema=langfuse
       ENCRYPTION_KEY_FILE: /run/secrets/langfuse-encryption-key
       CLICKHOUSE_URL: http://langfuse-clickhouse:8123
       CLICKHOUSE_USER: langfuse
