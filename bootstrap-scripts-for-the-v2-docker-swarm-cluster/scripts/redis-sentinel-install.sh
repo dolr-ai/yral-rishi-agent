@@ -241,15 +241,29 @@ create_or_rotate_redis_password_swarm_secret() {
 
 
 render_redis_stack_compose_file_to_temporary_path() {
-    # WHAT:  envsubst the stack file with the resolved secret name.
+    # WHAT:  envsubst the stack file with the resolved secret name. We pass
+    #        envsubst an EXPLICIT WHITELIST of placeholder variable names
+    #        so it ONLY substitutes the ones we intend — every other `$VAR`
+    #        token in the stack (e.g. `$REDIS_PASSWORD` inside container
+    #        `command:` blocks) passes through untouched.
     # WHEN:  after secret creation.
-    # WHY:   keeps the committed YAML free of SHA-suffixed names.
+    # WHY:   keeps the committed YAML free of SHA-suffixed names AND lets
+    #        the stack contain `$VAR` tokens that the container shell
+    #        should expand at runtime (which envsubst would otherwise
+    #        eat). Day-5-Step-2 deploy attempt #2 hit this trap — the
+    #        stack file's `$$REDIS_PASSWORD` got `$REDIS_PASSWORD`
+    #        consumed by un-scoped envsubst, leaving stray `$` for
+    #        Compose to choke on. The whitelist makes envsubst do exactly
+    #        what `${YRAL_REDIS_STACK_RESOLVED_REDIS_PRIMARY_PASSWORD}`
+    #        rendering needs and nothing else.
     if [[ ! -f "${REDIS_STACK_COMPOSE_FILE_PATH}" ]]; then
         echo "ERROR redis-sentinel-install: stack file not found" >&2
         exit 1
     fi
     REDIS_RENDERED_STACK_COMPOSE_FILE_PATH="$(mktemp /tmp/yral-v2-redis-rendered-stack.XXXXXX.yml)"
-    envsubst < "${REDIS_STACK_COMPOSE_FILE_PATH}" > "${REDIS_RENDERED_STACK_COMPOSE_FILE_PATH}"
+    envsubst '${YRAL_REDIS_STACK_RESOLVED_REDIS_PRIMARY_PASSWORD}' \
+        < "${REDIS_STACK_COMPOSE_FILE_PATH}" \
+        > "${REDIS_RENDERED_STACK_COMPOSE_FILE_PATH}"
     export REDIS_RENDERED_STACK_COMPOSE_FILE_PATH
 }
 
