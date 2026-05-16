@@ -1,6 +1,53 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-16 — FIX: escape `$(cat /run/secrets/...)` in redis-sentinel-stack.yml command blocks (Day-5 Step 2 deploy bug #3)
+
+### Action
+Day-5 Step 2 deploy retry 3 (after PR #57's whitelist fix + `$$REDIS_PASSWORD` revert) errored on a NEW Compose-interpolation surface:
+
+```
+invalid interpolation format for services.redis-primary.command:
+  "sh -c '\n  export REDIS_PASSWORD=\"$(cat /run/secrets/redis-primary-password)\";\n  ..."
+```
+
+So `$$REDIS_PASSWORD` is now flowing through correctly (no longer the error), but Compose's strict interpolation parser ALSO rejects `$(cat ...)` because `$` followed by `(` isn't a valid `$VAR` start, isn't a `$$` escape, and isn't a `${VAR}` form. Compose calls it an "invalid interpolation format."
+
+### Root cause
+Inconsistent escaping across the file:
+- `healthcheck.test` line was already `$$(cat /run/secrets/...)` (original author had it right)
+- 5 `command:` lines had `$(cat /run/secrets/...)` (missing one `$`)
+
+The convention WAS established in the file (via the healthcheck) but not applied uniformly. Compose's parser surfaces this at deploy time regardless of where the `$(` sits.
+
+### Fix
+- `redis-sentinel-stack.yml`: 5 lines changed `$(cat /run/secrets/...)` → `$$(cat /run/secrets/...)` (one per redis-primary, redis-replica, redis-sentinel-rishi-{4,5,6} `command:` block). Healthcheck unchanged.
+- NOTE block at top of `services:` expanded to cover BOTH `$$VAR` AND `$$(cmd)` escape patterns, with a unified statement of the rule: "any runtime container-shell token we want to keep literal through both passes: prefix with a single `$$`." Day-5-Step-2-attempt-#3 symptom captured inline for future re-readers.
+
+### Constraints touched
+A2.1 (single concern: same Compose-interpolation surface), B7 (NOTE block now covers both escape patterns with unified rule + 3-attempt failure cycle history), I11 (same-commit LOG entry), I14 (auto-merge-eligible).
+
+### Diff size
++27 / -22 = 49 total lines (all in redis-sentinel-stack.yml) + this LOG entry. Far under 400-line gate.
+
+### State on rishi-4 before retry
+- Redis Swarm secret still present (idempotent skip on retry).
+- No services deployed yet (Compose errored before any service started).
+- Pre-flight all passing.
+
+### Bug count tally for Day-5 Step 2
+
+| Phase                                        | Count |
+|----------------------------------------------|-------|
+| Pre-emptively closed (PR #55)                | 5     |
+| Surfaced at deploy time                      | 2 unique classes |
+|   #1 (PR #56 wrong, PR #57 correct): envsubst whitelist + Compose `$$VAR` escape  |       |
+|   #2 (this PR): Compose `$$(cmd)` escape     |       |
+
+Rishi's prediction was "2-4 unique deploy-time bugs." Now at 2 with hopefully nothing else to surface on retry #4.
+
+---
+
 ## 2026-05-16 — FIX: envsubst whitelist in redis-sentinel-install.sh + revert stack to `$$REDIS_PASSWORD` (Day-5 Step 2 deploy bug #2 — supersedes #1's wrong fix)
 
 ### Action

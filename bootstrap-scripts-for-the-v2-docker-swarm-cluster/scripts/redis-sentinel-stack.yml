@@ -38,28 +38,33 @@ x-yral-data-plane-defaults: &yral_data_plane_defaults
 
 services:
 
-  # NOTE on `$$REDIS_PASSWORD` escaping below.
+  # NOTE on `$$` escape prefixes below.
   # Two substitution passes touch this file before the container shell
-  # sees `$REDIS_PASSWORD`:
+  # sees the runtime tokens (`$REDIS_PASSWORD`, `$(cat /run/secrets/...)`):
   #   1. envsubst in redis-sentinel-install.sh's render step — but we
   #      call it with an EXPLICIT WHITELIST of variable names (only the
   #      resolved-secret-name placeholder), so envsubst leaves every
-  #      other `$VAR` token untouched. Without the whitelist, envsubst
-  #      would expand `$REDIS_PASSWORD` to the empty string (since the
-  #      install script never exports REDIS_PASSWORD) and break the
-  #      stack. Day-5-Step-2 deploy attempt #1 was a `$$` → `$` source
-  #      (one Compose escape), attempt #2 was a `$$$$` → `$$$` source
-  #      with envsubst eating the trailing `$REDIS_PASSWORD` literal.
-  #      The whitelist makes the count one-and-done.
+  #      other `$VAR` and `$(...)` token untouched. Without the
+  #      whitelist, envsubst would expand `$REDIS_PASSWORD` to the
+  #      empty string (since the install script never exports
+  #      REDIS_PASSWORD) and break the stack. Day-5-Step-2 deploy
+  #      attempt #1 was a `$$` → `$` source (one Compose escape only),
+  #      attempt #2 was a `$$$$` → `$$$` source with un-scoped envsubst
+  #      eating the trailing `$REDIS_PASSWORD` literal.
   #   2. docker stack deploy applies Compose-spec interpolation, which
-  #      treats `$$` as the literal-dollar escape (`$$` → `$`).
-  # Starting from `$$REDIS_PASSWORD`: envsubst leaves it unchanged
-  # (whitelist excludes REDIS_PASSWORD); Compose yields the literal
-  # `$REDIS_PASSWORD`; the container's `sh -c '... export REDIS_
-  # PASSWORD=...; redis-server --requirepass "$REDIS_PASSWORD"'` then
-  # shell-expands it at runtime against the env var set from the secret
-  # file. Do NOT change `$$` to `$` (Compose would try to interpolate)
-  # or to `$$$$` (Compose would emit `$$` which the shell reads as $PID).
+  #      treats `$$` as the literal-dollar escape (`$$` → `$`). This
+  #      applies to BOTH `$$REDIS_PASSWORD` (Compose-level `$VAR` form)
+  #      AND `$$(cat /run/secrets/...)` (which Compose's strict parser
+  #      otherwise refuses as "invalid interpolation format"). Day-5-
+  #      Step-2 attempt #3 surfaced the `$(...)` half — only the
+  #      healthcheck below had the `$$` prefix originally; the
+  #      command: blocks didn't.
+  # So the rule for any runtime container-shell token we want to keep
+  # literal through both passes: prefix with a single `$$`. Result
+  # after envsubst (whitelisted) + Compose ($$ → $) = the bare `$VAR`
+  # or `$(...)` the shell expects. Do NOT collapse `$$` to `$`
+  # (Compose would try to interpolate) or to `$$$$` (Compose would
+  # emit `$$` which the shell reads as $PID).
 
   # ───────────────── Redis primary (rishi-4) ──────────────────────────────
 
@@ -70,7 +75,7 @@ services:
     # Read password from /run/secrets at start; AOF + RDB persistence enabled.
     command: >
       sh -c '
-        export REDIS_PASSWORD="$(cat /run/secrets/redis-primary-password)";
+        export REDIS_PASSWORD="$$(cat /run/secrets/redis-primary-password)";
         exec redis-server
           --requirepass "$$REDIS_PASSWORD"
           --masterauth "$$REDIS_PASSWORD"
@@ -114,7 +119,7 @@ services:
     hostname: redis-replica
     command: >
       sh -c '
-        export REDIS_PASSWORD="$(cat /run/secrets/redis-primary-password)";
+        export REDIS_PASSWORD="$$(cat /run/secrets/redis-primary-password)";
         exec redis-server
           --requirepass "$$REDIS_PASSWORD"
           --masterauth "$$REDIS_PASSWORD"
@@ -157,7 +162,7 @@ services:
       - sh
       - -c
       - |
-        export REDIS_PASSWORD="$(cat /run/secrets/redis-primary-password)"
+        export REDIS_PASSWORD="$$(cat /run/secrets/redis-primary-password)"
         cat > /tmp/sentinel.conf <<SENTINEL_CONF
         port 26379
         sentinel monitor yral-v2-redis-primary redis-primary 6379 2
@@ -189,7 +194,7 @@ services:
       - sh
       - -c
       - |
-        export REDIS_PASSWORD="$(cat /run/secrets/redis-primary-password)"
+        export REDIS_PASSWORD="$$(cat /run/secrets/redis-primary-password)"
         cat > /tmp/sentinel.conf <<SENTINEL_CONF
         port 26379
         sentinel monitor yral-v2-redis-primary redis-primary 6379 2
@@ -221,7 +226,7 @@ services:
       - sh
       - -c
       - |
-        export REDIS_PASSWORD="$(cat /run/secrets/redis-primary-password)"
+        export REDIS_PASSWORD="$$(cat /run/secrets/redis-primary-password)"
         cat > /tmp/sentinel.conf <<SENTINEL_CONF
         port 26379
         sentinel monitor yral-v2-redis-primary redis-primary 6379 2
