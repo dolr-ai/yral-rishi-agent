@@ -152,7 +152,17 @@ services:
     environment:
       SCOPE: yral-v2-postgres
       PGVERSION: "15"
-      ETCD_HOSTS: etcd-rishi-4:2379,etcd-rishi-5:2379,etcd-rishi-6:2379
+      # Use Spilo's ETCD3_HOSTS (native v3 gRPC) instead of the legacy
+      # ETCD_HOSTS (v2 REST). PR #47 had to enable etcd's v2 REST API
+      # endpoint (`--enable-v2=true` on the etcd command line, see the
+      # etcd-rishi-4 service block above) because Spilo's default code
+      # path hits /v2/machines for discovery and etcd 3.4+ disables that
+      # endpoint by default. etcd 3.6 will REMOVE the v2 endpoint
+      # entirely — so we forward-proof by moving Patroni to the v3
+      # native code path now. The --enable-v2=true flag on etcd stays
+      # for safety on 3.5; that flag can be retired in a separate
+      # cleanup PR once this migration is verified in the live cluster.
+      ETCD3_HOSTS: etcd-rishi-4:2379,etcd-rishi-5:2379,etcd-rishi-6:2379
       PATRONI_NAME: patroni-rishi-4
       PATRONI_RESTAPI_LISTEN: 0.0.0.0:8008
       PATRONI_RESTAPI_CONNECT_ADDRESS: patroni-rishi-4:8008
@@ -213,7 +223,7 @@ services:
     environment:
       SCOPE: yral-v2-postgres
       PGVERSION: "15"
-      ETCD_HOSTS: etcd-rishi-4:2379,etcd-rishi-5:2379,etcd-rishi-6:2379
+      ETCD3_HOSTS: etcd-rishi-4:2379,etcd-rishi-5:2379,etcd-rishi-6:2379  # see patroni-rishi-4 comment block above for full ETCD3 migration rationale
       PATRONI_NAME: patroni-rishi-5
       PATRONI_RESTAPI_LISTEN: 0.0.0.0:8008
       PATRONI_RESTAPI_CONNECT_ADDRESS: patroni-rishi-5:8008
@@ -265,7 +275,7 @@ services:
     environment:
       SCOPE: yral-v2-postgres
       PGVERSION: "15"
-      ETCD_HOSTS: etcd-rishi-4:2379,etcd-rishi-5:2379,etcd-rishi-6:2379
+      ETCD3_HOSTS: etcd-rishi-4:2379,etcd-rishi-5:2379,etcd-rishi-6:2379  # see patroni-rishi-4 comment block above for full ETCD3 migration rationale
       PATRONI_NAME: patroni-rishi-6
       PATRONI_RESTAPI_LISTEN: 0.0.0.0:8008
       PATRONI_RESTAPI_CONNECT_ADDRESS: patroni-rishi-6:8008
