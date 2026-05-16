@@ -39,6 +39,74 @@ services:
       CLICKHOUSE_USER: langfuse
       CLICKHOUSE_PASSWORD_FILE: /run/secrets/langfuse-clickhouse-password
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    # Langfuse 3's ClickHouse migrations emit `CREATE TABLE ... ON CLUSTER
+    # ${CLICKHOUSE_CLUSTER_NAME}` (defaults to "default") for distributed
+    # coordination. Single-node ClickHouse has NO clusters defined out of
+    # the box — the migration fails with `code: 139, message: There is no
+    # Zookeeper configuration in server config` (Day-5-Step-3 deploy bug #9).
+    #
+    # The `command:` block below writes a 1-node ClickHouse config to
+    # /etc/clickhouse-server/config.d/cluster.xml at container start,
+    # then exec's the standard /entrypoint.sh. The config:
+    #   - Enables embedded ClickHouse Keeper (server_id=1) on tcp 9181
+    #   - Points the <zookeeper> client at localhost:9181 (self-keeper)
+    #   - Defines a 1-shard 1-replica cluster named `default` over
+    #     localhost:9000 so `ON CLUSTER default` resolves
+    #   - Sets macros so {shard} {replica} templating works in migrations
+    # Coordination state (raft log + snapshots) goes to /var/lib/clickhouse/
+    # coordination/ which is on the host bind mount (/data/clickhouse-data
+    # owned 101:101 per operator setup) so it survives container restarts.
+    # List-form `command:` + `|` literal scalar avoids the YAML folded-
+    # scalar trap fixed in Day-5-Step-2 PR (redis-primary command:).
+    command:
+      - sh
+      - -c
+      - |
+        cat > /etc/clickhouse-server/config.d/cluster.xml <<'CFG'
+        <clickhouse>
+          <listen_host>0.0.0.0</listen_host>
+          <keeper_server>
+            <tcp_port>9181</tcp_port>
+            <server_id>1</server_id>
+            <log_storage_path>/var/lib/clickhouse/coordination/log</log_storage_path>
+            <snapshot_storage_path>/var/lib/clickhouse/coordination/snapshots</snapshot_storage_path>
+            <coordination_settings>
+              <operation_timeout_ms>10000</operation_timeout_ms>
+              <session_timeout_ms>30000</session_timeout_ms>
+              <raft_logs_level>warning</raft_logs_level>
+            </coordination_settings>
+            <raft_configuration>
+              <server>
+                <id>1</id>
+                <hostname>localhost</hostname>
+                <port>9234</port>
+              </server>
+            </raft_configuration>
+          </keeper_server>
+          <zookeeper>
+            <node>
+              <host>localhost</host>
+              <port>9181</port>
+            </node>
+          </zookeeper>
+          <macros>
+            <shard>shard1</shard>
+            <replica>replica1</replica>
+          </macros>
+          <remote_servers>
+            <default>
+              <shard>
+                <internal_replication>false</internal_replication>
+                <replica>
+                  <host>localhost</host>
+                  <port>9000</port>
+                </replica>
+              </shard>
+            </default>
+          </remote_servers>
+        </clickhouse>
+        CFG
+        exec /entrypoint.sh
     secrets:
       - source: ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_CLICKHOUSE_PASSWORD}
         target: langfuse-clickhouse-password

@@ -1,6 +1,56 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-17 — FIX: single-node ClickHouse Keeper + `default` cluster so Langfuse `ON CLUSTER` migrations resolve (Day-5 Step 3 deploy bug #9)
+
+### Action
+PR #68 (DIRECT_URL + LANGFUSE_S3_EVENT_UPLOAD_BUCKET) RESOLVED the previous two failure modes (advisory lock cycle + worker zod). Worker stays Running. Postgres migrations land clean via DIRECT_URL: `394 migrations found in prisma/migrations / No pending migrations to apply.` Then web fails on ClickHouse migration:
+
+```
+error: failed to open database: code: 139, message: There is no Zookeeper configuration in server config in line 0:
+    CREATE TABLE schema_migrations ON CLUSTER default (
+```
+
+### Root cause + Option B check
+Per coordinator direction, first checked Langfuse source for an `ON CLUSTER` disable toggle. The shared env schema has `CLICKHOUSE_CLUSTER_NAME: z.string().default("default")` at `@langfuse/shared/dist/src/env.js:76` — Langfuse always emits `ON CLUSTER ${CLICKHOUSE_CLUSTER_NAME}` in its migrations. The name is configurable but the CLAUSE ITSELF cannot be skipped. **Option B (env var override) doesn't exist**; pivoted to **Option A** (configure ClickHouse with a single-node `default` cluster + embedded Keeper).
+
+### Fix
+Override the `langfuse-clickhouse` service's `command:` to write a 1-node ClickHouse config to `/etc/clickhouse-server/config.d/cluster.xml` at container start, then exec the standard entrypoint. The XML config:
+- Enables ClickHouse Keeper embedded mode (server_id=1, tcp 9181, raft 9234)
+- `<zookeeper>` block points at `localhost:9181` (self-keeper)
+- `<remote_servers><default>...</default></remote_servers>` defines a 1-shard 1-replica cluster named `default` over `localhost:9000`, so `ON CLUSTER default` resolves
+- `<macros>` so `{shard}` / `{replica}` templating in migrations works
+- Coordination state lives at `/var/lib/clickhouse/coordination/{log,snapshots}` — on the host bind mount `/data/clickhouse-data` (owned 101:101 per operator-setup) so raft state survives container restarts
+
+Uses list-form `command: [sh, -c, |...]` per the YAML-folded-scalar lesson from Day-5 Step 2 (redis-primary `command:` form, PR #59).
+
+### Constraints touched
+A2.1 (single concern: enable ON CLUSTER on the single-node ClickHouse so Langfuse migrations resolve), B7 (inline comment captures the bug-#9 root cause + per-element rationale + cross-reference to the YAML-folded-scalar trap), I11 (same-commit LOG entry), I14 (auto-merge-eligible).
+
+### Diff size
++68 / 0 in `langfuse-stack.yml` + this LOG entry. Well under 400-line auto-merge gate.
+
+### Operator action after merge
+1. scp updated `langfuse-stack.yml` to rishi-4.
+2. Re-run `langfuse-install.sh` — Swarm rolls the ClickHouse service. First start may take ~5-10s longer (Keeper bootstrap + raft init).
+3. Force-restart `langfuse-web` so it re-runs ClickHouse migrations against the now-configured cluster.
+4. Verify `docker stack ps yral-v2-langfuse` shows ALL 3 services Running.
+
+### Bug-count tally for Day-5 Step 3
+Now 9 unique deploy-time classes. PR #68 LOG already captured the first 8 + insights. Adding #9:
+
+| # | Class                                                                                  | PR             |
+|---|----------------------------------------------------------------------------------------|----------------|
+| 9 | Langfuse 3 ClickHouse migration uses `ON CLUSTER default` requiring Keeper + cluster def — single-node ClickHouse needs embedded Keeper + 1-node default cluster XML config | this PR (#69)  |
+
+New captured insight (4th):
+- **Langfuse 3 ClickHouse migrations always use `ON CLUSTER ${CLICKHOUSE_CLUSTER_NAME}`** — there's no toggle to skip the clause. Single-node ClickHouse deployments must define a cluster of that name + provide Zookeeper/Keeper for DDL coordination. Embedded Keeper (single-node) is sufficient; cluster XML lives in `/etc/clickhouse-server/config.d/`.
+
+### Escape clause restated
+If this PR doesn't resolve web's restart loop, STOP and ping coordinator. Don't open PR #N+1 (#70) for another new bug class.
+
+---
+
 ## 2026-05-16 — BUNDLED FIX: Prisma DIRECT_URL + worker env parity (LANGFUSE_S3_EVENT_UPLOAD_BUCKET) — Day-5 Step 3 deploy bug class #9 (final attempt)
 
 ### Action
