@@ -512,6 +512,19 @@ render_patroni_stack_compose_file_to_temporary_path() {
         export YRAL_HETZNER_S3_ENDPOINT=""
     fi
 
+    # Expose the literal postgres superuser password for pgbouncer's
+    # DB_PASSWORD field. edoburu/pgbouncer's entrypoint reads DB_USER +
+    # DB_PASSWORD (NOT *_FILE — verified against the image's
+    # entrypoint.sh on rishi-4) to populate userlist.txt with the
+    # postgres user's md5 hash, which lets pgbouncer authenticate to
+    # upstream Patroni + run AUTH_QUERY for arbitrary client users.
+    # The rendered file under /tmp on rishi-4 holds the password
+    # (root mode 0600); we keep this short-lived but DON'T currently
+    # rm it after deploy because other parts of patroni-install.sh
+    # may re-read it. If we ever add a cleanup, do it AFTER
+    # confirm_stack_actually_deployed + confirm_stack_registered.
+    export YRAL_PATRONI_POSTGRES_SUPERUSER_PASSWORD_RENDERED="${YRAL_POSTGRES_SUPERUSER_PASSWORD}"
+
     PATRONI_RENDERED_STACK_COMPOSE_FILE_PATH="$(mktemp /tmp/yral-v2-patroni-rendered-stack.XXXXXX.yml)"
     envsubst < "${PATRONI_STACK_COMPOSE_FILE_PATH}" > "${PATRONI_RENDERED_STACK_COMPOSE_FILE_PATH}"
     export PATRONI_RENDERED_STACK_COMPOSE_FILE_PATH

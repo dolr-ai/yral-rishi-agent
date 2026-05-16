@@ -1,6 +1,68 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-16 — FIX: pgbouncer `DB_PASSWORD` inline instead of `DB_PASSWORD_FILE` (edoburu doesn't support _FILE convention) (Day-5 Step 3 deploy bug #3)
+
+### Action
+PR #62 added pgbouncer auth_query + `DB_PASSWORD_FILE`. Roll completed; new pgbouncer.ini correctly shows `auth_user = postgres` + `auth_query = SELECT usename, passwd FROM pg_shadow WHERE usename=$1`. But Langfuse auth via pgbouncer still fails:
+
+```
+pgbouncer logs:
+  C-0x...: (nodb)/langfuse@... pooler error: password authentication failed
+  WARNING server login failed: FATAL password authentication failed for user "postgres"
+  S-0x...: postgres/postgres@10.0.3.21:5432 closing because: login failed
+
+Empty userlist.txt:
+  $ docker exec <pgbouncer> wc -c /etc/pgbouncer/userlist.txt
+  0
+```
+
+So pgbouncer is rolling with the new config but failing to authenticate to upstream Patroni as `postgres`. The `userlist.txt` is empty — edoburu's entrypoint should have populated it with `"postgres" "md5<hash>"` from `DB_PASSWORD_FILE` but didn't.
+
+Inspection of `/entrypoint.sh` inside the live pgbouncer image:
+
+```sh
+# Line 20: DB_PASSWORD="$(echo $userpass | grep : | cut -d: -f2)"  ← extracts from DATABASE_URL
+# Line 50: if [ -n "$DB_USER" -a -n "$DB_PASSWORD" -a -e "${_AUTH_FILE}" ] ...
+# Line 54:   pass="md5$(echo -n "$DB_PASSWORD$DB_USER" | md5sum | cut -f 1 -d ' ')"
+# Line 56:   echo "\"$DB_USER\" \"$pass\"" >> ${PG_CONFIG_DIR}/userlist.txt
+```
+
+**edoburu's entrypoint reads `DB_PASSWORD` (or extracts from `DATABASE_URL`), NOT `DB_PASSWORD_FILE`.** The Docker-secrets `_FILE` convention isn't supported by this image version. So PR #62's `DB_PASSWORD_FILE` was silently ignored, `DB_PASSWORD` stayed empty, line-50's condition `[ -n "$DB_PASSWORD" ]` was false, and userlist.txt stayed empty.
+
+### Fix
+- `patroni-stack.yml`: replace `DB_PASSWORD_FILE: /run/secrets/postgres-superuser-password` with `DB_PASSWORD: ${YRAL_PATRONI_POSTGRES_SUPERUSER_PASSWORD_RENDERED}`. Same render-via-envsubst pattern as the Langfuse DATABASE_URL fix from PR #61.
+- `patroni-install.sh` render function: `export YRAL_PATRONI_POSTGRES_SUPERUSER_PASSWORD_RENDERED="${YRAL_POSTGRES_SUPERUSER_PASSWORD}"` so envsubst can fill the placeholder.
+
+The `postgres-superuser-password` Swarm secret stays mounted at `/run/secrets/postgres-superuser-password` — other consumers of that secret (Patroni itself for replication setup) read it directly. pgbouncer just doesn't.
+
+Inline comment block captures the symptom + the edoburu-entrypoint-source evidence + the security tradeoff (password in container env + rendered /tmp file on rishi-4, same exposure level as PR #61's Langfuse DATABASE_URL fix).
+
+### Verification (local)
+- `bash -n patroni-install.sh` → OK.
+- `python3 yaml.safe_load_all(patroni-stack.yml)` → YAML valid.
+- Empirical render check: envsubst with `YRAL_PATRONI_POSTGRES_SUPERUSER_PASSWORD_RENDERED` env set produces the expected `DB_PASSWORD: <password>` line, no remaining `${...}` placeholders in that block.
+
+### Operator action after merge
+Re-run `patroni-install.sh` against the live cluster — Swarm sees the pgbouncer service spec diff (DB_PASSWORD_FILE → DB_PASSWORD) and rolls the 2 pgbouncer replicas. Existing Patroni services untouched. Then retry Langfuse deploy.
+
+### Constraints touched
+A2.1 (single concern: correct pgbouncer auth env var), B7 (role-comment captures the edoburu-doesn't-support-_FILE-convention finding + security tradeoff), D1 (password remains in mounted secret AND in container env — superset of previous state but consistent with PR #61's tradeoff), I11 (same-commit LOG entry), I14 (auto-merge-eligible).
+
+### Diff size
++13 in patroni-install.sh + 25 in patroni-stack.yml = 38 lines net + this LOG entry. Well under 400-line gate.
+
+### Bug count tally for Day-5 Step 3
+- Pre-emptively closed (PR #60): 5
+- Surfaced at deploy time, unique classes:
+  - #1 (PR #61): Langfuse-3 DATABASE_URL format
+  - #2 (PR #62): pgbouncer auth_query gap (correct concept, wrong env var)
+  - #3 (this PR): pgbouncer `DB_PASSWORD` vs `_FILE` (edoburu doesn't support _FILE)
+
+Now at 3 unique classes; arguably bugs #2 and #3 are the same surface (pgbouncer auth) with two missteps before getting it right — would compress to 2 in a "lessons learned" view. Rishi's prediction was "≤2, possibly 0"; we're hitting the upper-mid range.
+
+---
+
 ## 2026-05-16 — FIX: pgbouncer auth_query + DB_USER/DB_PASSWORD_FILE — clients couldn't auth through pgbouncer (Day-5 Step 3 deploy bug #2)
 
 ### Action
