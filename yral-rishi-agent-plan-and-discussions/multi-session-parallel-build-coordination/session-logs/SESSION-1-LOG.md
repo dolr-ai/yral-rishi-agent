@@ -1,6 +1,86 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-16 — BUNDLED FIX: Prisma DIRECT_URL + worker env parity (LANGFUSE_S3_EVENT_UPLOAD_BUCKET) — Day-5 Step 3 deploy bug class #9 (final attempt)
+
+### Action
+Per Rishi's bundled-fix direction. Two known-remaining concerns rolled into one PR rather than two:
+1. Prisma advisory-lock timeout — needs `DIRECT_URL` bypassing pgbouncer
+2. Worker `Invalid input: expected string, received undefined` zod failure — needs whatever required env var is missing
+
+For (2), I extracted Langfuse's shared zod schema from the live worker container:
+
+```
+$ docker cp <worker>:/app/.../@langfuse/shared/dist/src/env.js /tmp/
+$ python3 (parse the EnvSchema, find non-optional entries) ...
+=== REQUIRED env vars (no .optional/.nullish/.default/.nullable): 4 ===
+  CLICKHOUSE_URL
+  CLICKHOUSE_USER
+  CLICKHOUSE_PASSWORD            ← already added in PR #67
+  LANGFUSE_S3_EVENT_UPLOAD_BUCKET ← MISSING (the worker crash cause)
+```
+
+Only `LANGFUSE_S3_EVENT_UPLOAD_BUCKET` is unaccounted for. All S3 siblings (REGION/ENDPOINT/ACCESS_KEY_ID/SECRET_ACCESS_KEY) are `.optional()` — we can leave them unset for the placeholder phase.
+
+Web hit migration errors first because Prisma migrate runs BEFORE the zod env validator at container start. Worker has nothing pre-migration so the validator fires immediately.
+
+### Fix
+- `langfuse-stack.yml` (one file, two bundled concerns):
+  - **(1) DIRECT_URL for web**: `DIRECT_URL: postgresql://langfuse:${YRAL_LANGFUSE_POSTGRES_PASSWORD_RENDERED}@patroni-rishi-4:5432/postgres?schema=langfuse`. Bypasses pgbouncer; Prisma migrations get a session-mode direct connection where advisory locks work as designed. Reuses the existing `YRAL_LANGFUSE_POSTGRES_PASSWORD_RENDERED` envsubst placeholder (no install-script change). Worker doesn't run Prisma migrations; not added there.
+  - **(2) LANGFUSE_S3_EVENT_UPLOAD_BUCKET for web + worker**: `yral-v2-langfuse-events-placeholder-no-real-s3-yet`. Placeholder bucket name so the zod validator passes; actual S3 backend (MinIO sidecar or Hetzner Object Storage) is deferred as a Day-6+ follow-up. Trace event ingestion will fail when first exercised — acceptable for closing Step 3 since the goal here is "stack comes up".
+
+Inline comments on both env vars capture:
+- The specific failure mode that motivated each
+- Why DIRECT_URL is at `patroni-rishi-4:5432` (direct), not `pgbouncer:5432` (pooled)
+- Why the placeholder bucket is OK for now + what's deferred
+
+### Day-5 Step 3 — full bug-arc table
+
+| # | Class                                                                                | PR(s)              | Captured insight |
+|---|--------------------------------------------------------------------------------------|--------------------|------------------|
+| 1 | Langfuse 3 only accepts DATABASE_URL inline, not discrete DATABASE_HOST + _FILE      | #61                | Langfuse 3.x deployment shape diverges from 2.x docs |
+| 2 | pgbouncer needs DB_USER + AUTH_USER + AUTH_QUERY for dynamic user lookup             | #62                | pgbouncer-auth gap latent since PR #10, only surfaced when Langfuse became first real client |
+| 3 | edoburu/pgbouncer ignores `_FILE` env var convention (no Docker-secrets passthrough) | #63                | The `_FILE` Docker-secrets convention is image-specific; never assume |
+| 4 | pgbouncer `AUTH_TYPE=md5` rejects upstream's SCRAM-SHA-256 stored hashes             | #64                | PG 14+ default switched md5→scram-sha-256 |
+| 5 | pgbouncer 1.21.0-p2 internal crash on scram + auth_query (`put_in_order: found existing elem`) | #65          | Image-version bugs are real; v1.23.x has multiple scram + auth_query fixes upstream |
+| 6 | Langfuse 3 needs CLICKHOUSE_MIGRATION_URL (native protocol, port 9000) — separate from CLICKHOUSE_URL (HTTP, 8123) | #66 | Langfuse 3 splits migration vs runtime URLs |
+| 7 | Langfuse 3 migration CLI needs CLICKHOUSE_PASSWORD inline, not _FILE                 | #67                | `_FILE` covers runtime, not migration tooling |
+| 8 | Prisma advisory_lock timeout via pgbouncer-transaction-mode + worker zod env failure (bundled) | this PR (#68) | (a) Prisma + pgbouncer-transaction needs DIRECT_URL bypass for session-scoped advisory locks; (b) worker's zod env schema is the SAME shared schema as web — strict in different ways |
+
+Plus 1 deferred operator-action gap (Spilo password-flow — operator-state outside PR audit trail).
+
+**8 unique deploy-time bug classes resolved across 8 PRs** (#61 to this PR), plus the deferred follow-up.
+
+### Captured insights (future reference)
+
+1. **Langfuse 3.x deployment shape differs materially from upstream docs that assume 2.x.** The 2.x docs reference discrete `DATABASE_HOST` / `DATABASE_PASSWORD_FILE` etc.; 3.x requires `DATABASE_URL` + `DIRECT_URL` inline. ClickHouse is similarly split (`CLICKHOUSE_URL` HTTP runtime + `CLICKHOUSE_MIGRATION_URL` native-protocol migrations). Migration tooling does not honor `_FILE` env var variants (only runtime code paths do).
+
+2. **Prisma + pgbouncer-transaction-mode needs DIRECT_URL bypass for session-scoped advisory locks.** This is documented at https://pris.ly/d/migrate-advisory-locking but easy to miss. pg_advisory_lock() is session-scoped; pgbouncer-transaction multiplexes upstream sessions across client transactions, so a migration session that dies leaves the lock orphaned on an upstream connection that pgbouncer returns to its pool. Next migration timeout cycle: 10s → fail. DIRECT_URL gives Prisma a dedicated session-mode direct connection; DATABASE_URL stays pooled for runtime app queries.
+
+3. **Worker container's zod env schema is the SAME shared schema as web's.** Both use `@langfuse/shared/dist/src/env.js`. Web hits Prisma migration errors first (before validator), so the validator failure manifests only on worker startup as `Invalid input: expected string, received undefined` until the missing env var is supplied. For Langfuse 3 Step 3 of deployment, ALL the non-optional schema entries (`CLICKHOUSE_URL`, `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`, `LANGFUSE_S3_EVENT_UPLOAD_BUCKET`) must be set on BOTH web and worker.
+
+### Deferred follow-ups (NOT bundled in this PR)
+
+- `session-1/codify-keychain-to-spilo-password-flow` — bug #5 process gap. Open after Day-5 Step 3 closes.
+- App-level health verifier extensions — flagged in PR #59 (Patroni stack) and PR #61 (Langfuse stack) follow-up queue.
+- Real S3 backend for `LANGFUSE_S3_EVENT_UPLOAD_BUCKET` (provision MinIO sidecar OR Hetzner Object Storage). Trace event ingestion currently disabled by placeholder.
+
+### Constraints touched
+A2.1 (single bundled concern: "final remaining Langfuse-3 deployment-shape items"; the two items both touch the same env-vars section of the same file, both Langfuse-3-deployment-shape, separating would be artificial), B7 (inline comments capture both fixes' rationale + symptoms + the broader Langfuse-3 deployment-shape insight), D1 (DIRECT_URL inherits the same envsubst-rendered-inline-password tradeoff established by DATABASE_URL in PR #61), I11 (same-commit LOG entry — this entry), I14 (auto-merge-eligible).
+
+### Diff size
++36 / 0 in langfuse-stack.yml + this LOG entry. Well under 400-line gate.
+
+### Operator action after merge
+1. scp updated `langfuse-stack.yml` to rishi-4.
+2. Re-run langfuse-install.sh. Swarm rolls web + worker. The new DIRECT_URL gives Prisma direct access for migrations (advisory locks now work properly); LANGFUSE_S3_EVENT_UPLOAD_BUCKET satisfies the zod validator on worker startup.
+3. Verify: docker stack ps yral-v2-langfuse should show ALL 3 services Running.
+
+### Escape clause acknowledged
+Per Rishi's direction: if this bundled fix doesn't resolve the restart loops, STOP and ping. Don't open PR #N+1 for another new bug class. Re-evaluate Option B (design doc) vs Option C (defer Langfuse).
+
+---
+
 ## 2026-05-16 — FIX: langfuse-stack `CLICKHOUSE_PASSWORD_FILE` → `CLICKHOUSE_PASSWORD` inline (Langfuse 3 no _FILE variant for clickhouse pw) (Day-5 Step 3 deploy bug #7)
 
 ### Action
