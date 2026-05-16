@@ -60,13 +60,24 @@
 name: Auto-Merge Small Session Fix PRs
 
 on:
-  # Fires after every check (linter, Codex, etc.) completes for a SHA.
-  # This is the natural moment to re-evaluate whether a PR is now mergeable.
-  check_suite:
+  # Re-evaluate every time one of the 3 required linter workflows
+  # completes. This is the reliable equivalent of "fire when CI checks
+  # finish for a PR head SHA" — `check_suite` proved unreliable on PR
+  # branches (GitHub quirk: check_suite events only fire for the default
+  # branch in many configurations, so they never reached this workflow
+  # for PRs on session-N/* branches; first PR #51 test bit us with this
+  # 2026-05-15).
+  workflow_run:
+    workflows:
+      - "Lint Scope Violations"
+      - "Lint Naming and Comments"
+      - "Lint State Hygiene"
     types: [completed]
 
-  # Also fire on PR events so newly-labelled / newly-opened PRs get an
-  # immediate eligibility check without waiting for the next check_suite.
+  # Also fire on PR events for the initial evaluation + label changes.
+  # This usually fires BEFORE the linters complete, so the first run
+  # exits at the "required check not yet present" gate and the
+  # workflow_run triggers above pick it up once the linters land.
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
 
@@ -94,24 +105,30 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # The event payload differs between pull_request and check_suite.
+          # The event payload differs by trigger type:
           # pull_request: github.event.pull_request.number is the PR number.
-          # check_suite:  github.event.check_suite.pull_requests[0].number,
-          #               but ONLY if the check_suite was for a PR head SHA
-          #               (check_suites also fire for default-branch pushes
-          #               which have no associated PR).
+          # workflow_run: github.event.workflow_run.pull_requests[0].number
+          #               OR fall back to head_sha lookup if the
+          #               pull_requests array is empty (which it often is
+          #               for workflow_run events fired from PRs — GitHub
+          #               only populates pull_requests when the upstream
+          #               workflow was triggered by the SAME branch as the
+          #               PR, which is the case for our pull_request-
+          #               triggered linters but worth a fallback).
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             PR_NUMBER="${{ github.event.pull_request.number }}"
           else
-            # check_suite event. The pull_requests array is sometimes empty
-            # (push-to-default, or fork PRs from a different repo). Look up
-            # any open PR for this head SHA via the API as a fallback.
-            HEAD_SHA="${{ github.event.check_suite.head_sha }}"
-            PR_NUMBER="$(gh api repos/${{ github.repository }}/commits/${HEAD_SHA}/pulls \
-              --jq '.[] | select(.state=="open") | .number' | head -n1)"
+            # workflow_run event. Try the pull_requests array first.
+            PR_NUMBER="${{ github.event.workflow_run.pull_requests[0].number }}"
+            if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
+              # Fallback: lookup open PR by the upstream workflow's head SHA.
+              HEAD_SHA="${{ github.event.workflow_run.head_sha }}"
+              PR_NUMBER="$(gh api repos/${{ github.repository }}/commits/${HEAD_SHA}/pulls \
+                --jq '.[] | select(.state=="open") | .number' | head -n1)"
+            fi
           fi
 
-          if [ -z "$PR_NUMBER" ]; then
+          if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
             echo "No open PR resolves from this event — exiting cleanly."
             echo "skip=true" >> $GITHUB_OUTPUT
           else
