@@ -1,6 +1,105 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-16 — HARDENING: port patroni/redis patterns into langfuse-install.sh (pre-Day-5-Step-3 deploy)
+
+### Action
+Rishi typed YES for Day-5 Step 3 (Langfuse on rishi-6). Same first move
+as Step 2: read the existing `langfuse-install.sh`, find it carries the
+pre-hardening shape (sudo-as-rishi-deploy, SSH-by-hostname, missing
+post-deploy verifier, no envsubst whitelist), bundle the hardening
+into a single PR before deploying.
+
+### Pre-existing bugs in `langfuse-install.sh` (all ported from
+patroni-install.sh / redis-sentinel-install.sh)
+
+1. **`create_clickhouse_bind_mount_directory_on_rishi_6` calls `sudo
+   install -d`** as rishi-deploy. Narrow sudoers per CONSTRAINTS C8
+   doesn't grant this. Same shape patroni PR #41 + redis PR #55 fixed
+   as verify-only.
+2. **SSH-by-hostname** (`rishi-deploy@rishi-6` for bind dir, plus
+   `rishi-deploy@rishi-{4,5,6}` for resync registry). Doesn't resolve
+   from operator laptop. Same shape PR #41 + #55 fixed via
+   `YRAL_RISHI_<N>_PUBLIC_IPV4` env vars + `get_public_ipv4_for_node`
+   helper.
+3. **`register_stack_with_swarm_resync_service` uses `sudo tee
+   --append`** on the registry file. Same C8 issue.
+4. **No `confirm_stack_actually_deployed` post-deploy verifier** —
+   would let the script print "✅ langfuse-install finished" while
+   Swarm silently failed to schedule a task.
+5. **No envsubst whitelist** on the render step. The Langfuse stack
+   has no `$VAR` patterns that conflict today, but the whitelist is
+   cheap defense-in-depth (and protects against future `$VAR` tokens
+   in container `command:` blocks).
+
+### Fix shape
+Single-file rewrite of `langfuse-install.sh` (no stack file changes).
+All hardening patterns ported verbatim from the post-PR-#55 redis +
+post-PR-#51 patroni shape, renamed for langfuse. New constants:
+`CLUSTER_NODE_NAMES`, `LANGFUSE_PLACEMENT_NODE_NAME=rishi-6`,
+`LANGFUSE_DEPLOY_VERIFY_*`. New helper: `get_public_ipv4_for_node`.
+Required env vars list expanded with 3 `YRAL_RISHI_<N>_PUBLIC_IPV4`.
+Envsubst whitelist passes all 4 Langfuse-secret placeholders.
+
+### What this PR explicitly does NOT do (deferred — likely to surface
+at deploy time per established pattern)
+
+- **Postgres role + schema bootstrap.** Langfuse needs a `langfuse`
+  role on the shared Patroni cluster with `CREATE` on `postgres`
+  database. The original install-script header claimed this would be
+  bootstrapped, but no function exists for it. I've expanded the
+  operator-setup section in the header with the exact `psql` command
+  to run via the Patroni leader, but the script doesn't pre-flight
+  this yet — Langfuse web/worker containers will start, try to
+  authenticate against pgbouncer, and fail loudly when the role
+  doesn't exist. That'll be Day-5 Step 3 deploy bug #1 if it surfaces
+  (almost certain), fixed as a tight follow-up adding a verify-only
+  `confirm_langfuse_postgres_role_exists` pre-flight (+ operator runs
+  the psql once).
+- **Caddy snippet for langfuse.rishi.yral.com.** Edge Caddy on
+  rishi-1/2 stays deferred per A2 tightening 2026-05-13 (Day 7).
+
+### Operator state pre-deploy (per Rishi's confirmation + my own audit)
+- `/data/langfuse-data` on all 3 nodes from yesterday's Patroni batch
+  — **ORPHANED** (stack file actually uses `/data/clickhouse-data`).
+  Will leave it; cleanup is Day-6+ housekeeping.
+- `/data/clickhouse-data` on rishi-6 with uid 101:101 mode 0750 —
+  **MISSING**. Will surface in the new pre-flight; operator runs the
+  `install -d` from header once and retries.
+- `yral-v2-data-plane` + `yral-v2-internal` overlays exist with
+  `encrypted=true` ✓.
+- `yral-v2-langfuse` in resync registry on all 3 nodes — **MISSING**
+  (was not in yesterday's Patroni batch — that batch only included
+  yral-v2-patroni + yral-v2-redis + yral-v2-langfuse, but in fact
+  looking at patroni-install.sh:75 the batch DOES list yral-v2-
+  langfuse). I'll verify on the live cluster as part of the new
+  pre-flight; if missing, operator appends in one shot.
+
+### Diff size
++242 / -27 = 269 total lines in `langfuse-install.sh` + this LOG entry.
+Under PR #50's 400-line auto-merge gate.
+
+### Constraints touched
+A2.1 (single concern: "port hardening patterns into langfuse";
+Postgres role bootstrap deferred to its own pre-flight in a follow-up
+fix-PR), B7 (every new function's role-comment cross-references the
+patroni / redis PR that closed the same trap), C8 (script is now
+fully verify-only — no `sudo install -d` / `sudo tee --append`),
+F3 (Patroni HA sync commit unaffected), H2 (SHA-rotating Swarm
+secret pattern preserved with both-branches export already correct
+in the original), I11 (same-commit LOG entry), I14 (under 400 diff
+lines + no `coordinator-review-needed` → auto-merge-eligible).
+
+### Bug-count prediction for Day-5 Step 3 deploy
+Per Rishi's framing: "Expect ≤2 bugs, possibly 0 since Langfuse is a
+standard upstream image without redis-style escape acrobatics." My
+counter-prediction: 1 surface guaranteed (Postgres role bootstrap),
+plus the standard "1-2 real-server gotchas per first deploy." Total
+2-3 estimated. Each will get the small fix-PR / auto-merge / retry
+treatment.
+
+---
+
 ## 2026-05-16 — FIX: redis-primary + redis-replica `command:` form (folded scalar → list-with-`|`-literal) (Day-5 Step 2 deploy bug #4)
 
 ### Action
