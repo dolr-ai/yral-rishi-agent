@@ -1,6 +1,65 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-16 — FIX: pgbouncer image bump 1.21.0-p2 → v1.23.1-p3 (1.21.x scram+auth_query internal crash) (Day-5 Step 3 deploy bug #5)
+
+### Action
+After PR #64 rolled pgbouncer with `AUTH_TYPE=scram-sha-256` + I manually reset the `postgres` and `langfuse` role passwords on Patroni to match the Keychain values (Spilo's bootstrap had stored different passwords — see deferred-followup `session-1/codify-keychain-to-spilo-password-flow`), pgbouncer immediately crashed on first upstream connection:
+
+```
+2026-05-16 14:09:33.620 [1] LOG listening on 0.0.0.0:5432
+2026-05-16 14:09:33.987 [1] LOG S-0x...: postgres/postgres@10.0.3.132:5432 SSL established
+2026-05-16 14:09:34.013 [1] FATAL @src/objects.c:412 in function put_in_order():
+                                put_in_order: found existing elem
+```
+
+`task: non-zero exit (1)`. pgbouncer died ~400 ms after upstream SSL handshake — before any client query could be routed.
+
+### Root cause
+This is a pgbouncer **internal crash**, not a config issue. After 3 config-PR iterations (PR #62/#63/#64) we got the auth setup architecturally correct, then hit a version-specific bug in 1.21.0-p2's `auth_query` + `scram-sha-256` interaction. The `put_in_order` assert is pgbouncer's internal sorted-list invariant check — fires when a duplicate entry is being inserted, almost certainly because the `AUTH_USER` (=`postgres`) is in BOTH `userlist.txt` (written by edoburu's entrypoint) AND in `auth_query`'s pg_shadow result, and 1.21's reconciliation logic conflates them.
+
+### Fix
+Bump pgbouncer image: `edoburu/pgbouncer:1.21.0-p2` → `edoburu/pgbouncer:v1.23.1-p3` (latest stable on the 1.23.x line per upstream tag list). Note the `v` prefix transition: 1.21/1.22 tags are bare (`1.21.0-p2`), 1.23+ have the v prefix (`v1.23.1-p3`). The 1.23.x line has had multiple fixes in the scram + auth_query area per upstream changelog.
+
+Inline comment block rewritten with:
+- The tag-convention v-prefix change
+- The 1.21.x crash symptom + line reference
+- Why 1.23.x is expected to fix it (upstream changelog)
+
+### Operator action after merge
+Re-run `patroni-install.sh` — Swarm rolls the 2 pgbouncer replicas pulling the new image. Verify by testing `langfuse` client auth through pgbouncer.
+
+### Verification plan
+- pgbouncer's `userlist.txt` populates with `"postgres" "<plain>"` (scram mode behavior is the same across versions)
+- pgbouncer does NOT crash on first upstream SCRAM auth
+- A test psql `-U langfuse` through pgbouncer succeeds
+
+### If this doesn't fix it (Option 2 fallback per Rishi)
+Open a separate PR (`session-1/pgbouncer-dedicated-auth-role`) that:
+1. Creates a dedicated low-privilege `pgbouncer_auth` role on the Patroni cluster
+2. Defines a SECURITY DEFINER function `user_lookup(username text)` that returns `(username, passwd)` from pg_authid, owned by postgres, callable by pgbouncer_auth
+3. Changes pgbouncer's `AUTH_USER` from `postgres` to `pgbouncer_auth` and `AUTH_QUERY` to call the function
+4. Eliminates the AUTH_USER ↔ userlist.txt overlap that's the likely trigger
+
+### Constraints touched
+A2.1 (single concern: image version bump as cheapest experiment), B7 (role-comment captures v-prefix convention + 1.21 crash symptom + 1.23.x rationale), I11 (same-commit LOG entry), I14 (auto-merge-eligible).
+
+### Diff size
++16 / -5 = 21 lines in patroni-stack.yml + this LOG entry. Tiny.
+
+### Bug count tally for Day-5 Step 3 (running total)
+- Pre-emptively closed (PR #60): 5
+- Surfaced at deploy time:
+  - DATABASE_URL format (PR #61)
+  - pgbouncer auth gap, 3 missteps: PR #62 (auth_query concept) + PR #63 (DB_PASSWORD inline vs _FILE) + PR #64 (AUTH_TYPE scram)
+  - **pgbouncer 1.21.x internal crash + image bump (this PR #65 test)**
+  - Possible **dedicated auth role follow-up (PR #66)** if image bump doesn't fix
+
+Operator-action gap surfaced separately + deferred:
+- `session-1/codify-keychain-to-spilo-password-flow` — Spilo's bootstrap stored different `postgres` + `langfuse` role passwords than the Keychain values. I manual-reset both via peer auth (outside the PR audit trail). Investigation needed: does Spilo (a) ignore env-var passwords once initialized, (b) hit a Swarm-secret timing race during bootstrap, or (c) generate randoms + overwrite back-channel? Deferred per Rishi's "don't bundle separate concerns" guidance.
+
+---
+
 ## 2026-05-16 — FIX: pgbouncer AUTH_TYPE md5 → scram-sha-256 (PG 15 stores SCRAM hashes) (Day-5 Step 3 deploy bug #4)
 
 ### Action

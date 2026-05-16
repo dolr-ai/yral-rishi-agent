@@ -332,11 +332,22 @@ services:
 
   pgbouncer:
     <<: *yral_data_plane_defaults
-    # edoburu/pgbouncer publishes tags as `<upstream-version>-p<image-patch>`
-    # (e.g. 1.21.0-p2, 1.22.0-p0). Bare `1.21.0` is NOT a published tag — the
-    # first Day-5 deploy got `Rejected ... No such image: edoburu/pgbouncer:1.21.0`.
-    # `1.21.0-p2` is the latest image patch of upstream 1.21.0.
-    image: edoburu/pgbouncer:1.21.0-p2
+    # edoburu/pgbouncer tagging convention: pre-1.23 tags are bare
+    # `<upstream-version>-p<image-patch>` (e.g. 1.21.0-p2, 1.22.1-p0).
+    # Starting with 1.23.0, the upstream switched to a `v`-prefix
+    # (e.g. v1.23.1-p3, v1.24.1-p1). Bare `1.21.0` is NOT a published
+    # tag — the first Day-5 deploy got `Rejected ... No such image:
+    # edoburu/pgbouncer:1.21.0`.
+    #
+    # Bumped from 1.21.0-p2 to v1.23.1-p3 (latest 1.23.x stable patch
+    # as of Day-5-Step-3) because 1.21.0-p2 crashes with
+    # `FATAL @src/objects.c:412 in function put_in_order(): found
+    # existing elem` on first upstream connection when AUTH_TYPE=
+    # scram-sha-256 + AUTH_USER + AUTH_QUERY are all set. Almost
+    # certainly a pgbouncer internal bug in the 1.21 line's scram +
+    # auth_query interaction. 1.23.x has had multiple fixes in this
+    # area per the upstream changelog.
+    image: edoburu/pgbouncer:v1.23.1-p3
     hostname: pgbouncer
     environment:
       DB_HOST: patroni-rishi-4
