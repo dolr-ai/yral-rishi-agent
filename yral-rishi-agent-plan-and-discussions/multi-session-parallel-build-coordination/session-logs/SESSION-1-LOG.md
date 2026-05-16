@@ -1,6 +1,111 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-16 — HARDENING: port patroni-install.sh patterns into redis-sentinel-install.sh (pre-Day-5-Step-2 deploy)
+
+### Action
+Rishi typed YES for Day-5 Step 2 (Redis Sentinel HA deploy). Natural
+first move per his guidance: port `confirm_stack_actually_deployed`
+from `patroni-install.sh` into `redis-sentinel-install.sh`. Reading
+the existing redis-sentinel script revealed it was still in its
+pre-Day-5-Patroni-arc shape — i.e. it had multiple bugs of the same
+shapes that bit patroni-install.sh in the 8-bug arc on 2026-05-14.
+Per Rishi's "fold in obvious pre-flight extensions is a reasonable
+single concern" framing, bundling all of them into one PR rather
+than running the same pause-fix-merge-retry loop on redis at deploy
+time.
+
+### Pre-existing bugs in redis-sentinel-install.sh (fixed in this PR)
+
+1. **`create_redis_bind_mount_directories_on_persistence_nodes` called
+   `sudo install -d` as rishi-deploy.** Narrow sudoers per CONSTRAINTS
+   C8 doesn't grant this. Same shape as patroni-install.sh's original
+   bug → fixed in PR #41 as verify-only + operator-setup batch in
+   header. Now ported here as `confirm_redis_bind_mount_directories_
+   exist_on_persistence_nodes`.
+
+2. **SSH-by-hostname `rishi-deploy@rishi-4`** in both the bind-mount
+   creation and the resync-registry append. Doesn't resolve from the
+   operator laptop (no SSH config alias for the short hostnames). Same
+   shape as the patroni bug fixed in PR #41 → now uses
+   `YRAL_RISHI_<N>_PUBLIC_IPV4` env vars + `get_public_ipv4_for_node`
+   helper.
+
+3. **`register_stack_with_swarm_resync_service` used `sudo tee --append`**
+   on the registry file. Same C8 issue. Now ported as verify-only
+   `confirm_stack_registered_with_swarm_resync_service` — matching the
+   patroni shape exactly.
+
+4. **No `confirm_stack_actually_deployed` post-deploy verifier** — the
+   silent-success gap PR #51 closed on patroni. Ported here as a
+   verbatim two-layer implementation with renamed constants
+   (`REDIS_DEPLOY_VERIFY_TIMEOUT_SECONDS`, `..._POLL_SECONDS`).
+
+5. **`create_or_rotate_redis_password_swarm_secret` had the resolved-
+   name export only on the create branch** (same shape as patroni's
+   PR #45 skip-branch bug). Re-runs after the first would write empty
+   `secrets:` block keys into the rendered YAML. Hoisted the export
+   above the if/skip/create decision.
+
+### Fix shape
+
+Single-file rewrite of `redis-sentinel-install.sh` (no stack file
+changes). All functions ported verbatim from patroni-install.sh's
+post-PR-#51 shape, renamed for redis. Header expanded with operator-
+setup excerpt + cross-reference to the canonical batch in
+patroni-install.sh's header. Two new env-tunable constants
+(`REDIS_DEPLOY_VERIFY_TIMEOUT_SECONDS`, `_POLL_SECONDS`).
+
+### Operator state pre-deploy (already in place per Rishi's confirmation)
+
+- `/data/redis-data` bind dir on all 3 nodes (created during
+  yesterday's Patroni operator batch). The new verify-only pre-flight
+  passes; no chown needed.
+- `yral-v2-data-plane` overlay exists with `encrypted=true`. Pre-flight
+  passes.
+- `yral-v2-redis` registered in `/etc/yral-v2/stacks-to-resync.list` on
+  all 3 nodes (created during yesterday's Patroni operator batch).
+  Pre-flight passes.
+- rishi-deploy + CI-key SSH operational on all 3 nodes. SSH-by-IPv4
+  pre-flight passes.
+
+### Deploy plan after merge
+1. scp updated `redis-sentinel-install.sh` to rishi-4.
+2. Run via `ssh -A root@138.201.128.108 bash -s <<REMOTE` with env vars:
+   `YRAL_REDIS_PRIMARY_PASSWORD` (from macOS Keychain),
+   `YRAL_RISHI_{4,5,6}_PUBLIC_IPV4`.
+3. New post-deploy verifier catches any Rejected/Failed task within
+   30s window.
+4. After deploy stabilises: `redis-cli SENTINEL get-master-addr-by-name`
+   should return rishi-4 primary's address; Sentinel quorum at 2/3.
+5. Failover smoke (kill primary or `SLAVEOF NO ONE` on replica;
+   Sentinel elects new primary; replica catches up).
+
+### Constraints touched
+A2.1 (single concern: "port patroni's hardening into redis"; 272-line
+diff, well under 400-line auto-merge gate), B7 (every new function's
+role-comment captures the cross-reference to which patroni PR closed
+the same trap), C8 (narrow sudoers preserved — script is now fully
+verify-only), H2 (SHA-rotating Swarm secret pattern preserved with
+both-branches export fix from PR #45), I11 (same-commit LOG entry),
+I14 (under 400 diff lines + no `coordinator-review-needed` label →
+auto-merge-eligible under PR #50's flow).
+
+### Diff size
++237 / -35 = 272 total lines in `redis-sentinel-install.sh` + this
+LOG entry. Under the 400-line auto-merge gate with headroom.
+
+### Bug-count prediction for Day-5 Step 2 deploy
+Rishi's framing: "Sentinel's stateful surface IS smaller than
+Patroni's. Bug-count ceiling should be in the 2-4 range, not 8."
+With these 5 hardening fixes landing pre-deploy, the at-deploy bug
+budget should drop further — most of the Patroni bug shapes that
+bit us yesterday (S3 secret stdin, skip-branch export, bind dirs,
+ownership, wal-e, image tag) are either redis-irrelevant or
+already pre-emptively closed in this PR.
+
+---
+
 ## 2026-05-16 — MILESTONE: Day-5 Step 1 close (Patroni HA verified + post-deploy verifier + ETCD3 migration all landed; auto-merge regime live)
 
 ### Final live-cluster state (snapshot from 2026-05-14 EOD; unchanged since — no redeploy has run)
