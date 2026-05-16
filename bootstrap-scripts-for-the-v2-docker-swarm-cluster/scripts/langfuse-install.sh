@@ -300,13 +300,18 @@ render_langfuse_stack_compose_file_to_temporary_path() {
     if [[ ! -f "${LANGFUSE_STACK_COMPOSE_FILE_PATH}" ]]; then
         echo "ERROR langfuse-install: stack file not found" >&2; exit 1
     fi
-    # Expose the literal postgres password for DATABASE_URL interpolation.
-    # Base64url password chars [a-zA-Z0-9_-] are all unreserved in RFC
-    # 3986 userinfo so no URL-encoding is needed here. If we ever switch
-    # the password generator to a wider char set this needs revisiting.
+    # Expose the literal postgres + clickhouse passwords for inline
+    # DATABASE_URL + CLICKHOUSE_MIGRATION_URL interpolation. Base64url
+    # password chars [a-zA-Z0-9_-] are all unreserved in RFC 3986
+    # userinfo so no URL-encoding is needed. If we ever switch the
+    # password generator to a wider char set this needs revisiting.
+    # CLICKHOUSE_MIGRATION_URL exists because Langfuse 3's
+    # langfuse-cli migration tool runs at container start and has no
+    # `*_FILE` variant — same rendering pattern as DATABASE_URL.
     export YRAL_LANGFUSE_POSTGRES_PASSWORD_RENDERED="${YRAL_LANGFUSE_POSTGRES_PASSWORD}"
+    export YRAL_LANGFUSE_CLICKHOUSE_PASSWORD_RENDERED="${YRAL_LANGFUSE_CLICKHOUSE_PASSWORD}"
     LANGFUSE_RENDERED_STACK_COMPOSE_FILE_PATH="$(mktemp /tmp/yral-v2-langfuse-rendered-stack.XXXXXX.yml)"
-    envsubst '${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_NEXTAUTH_SECRET} ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_ENCRYPTION_KEY} ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_POSTGRES_PASSWORD} ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_CLICKHOUSE_PASSWORD} ${YRAL_LANGFUSE_POSTGRES_PASSWORD_RENDERED}' \
+    envsubst '${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_NEXTAUTH_SECRET} ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_ENCRYPTION_KEY} ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_POSTGRES_PASSWORD} ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_CLICKHOUSE_PASSWORD} ${YRAL_LANGFUSE_POSTGRES_PASSWORD_RENDERED} ${YRAL_LANGFUSE_CLICKHOUSE_PASSWORD_RENDERED}' \
         < "${LANGFUSE_STACK_COMPOSE_FILE_PATH}" \
         > "${LANGFUSE_RENDERED_STACK_COMPOSE_FILE_PATH}"
     export LANGFUSE_RENDERED_STACK_COMPOSE_FILE_PATH

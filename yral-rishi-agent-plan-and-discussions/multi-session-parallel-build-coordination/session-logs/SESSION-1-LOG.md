@@ -1,6 +1,75 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-16 — FIX: langfuse-stack add `CLICKHOUSE_MIGRATION_URL` (Langfuse 3 migration CLI needs the native-port URL) (Day-5 Step 3 deploy bug #6)
+
+### Action
+PR #65 (pgbouncer image bump v1.21.0-p2 → v1.23.1-p3) **WORKED** — first sign of progress:
+- pgbouncer no longer crashes on first upstream SSL handshake
+- `psql -U langfuse` through pgbouncer succeeds, returns `langfuse | PostgreSQL 15.2 ...`
+- Langfuse web container started, ran Prisma migrations successfully: `All migrations have been successfully applied.`
+
+But Langfuse then failed on the NEXT initialization step:
+
+```
+Error: CLICKHOUSE_MIGRATION_URL is not configured.
+Please set CLICKHOUSE_MIGRATION_URL in your environment variables.
+Applying clickhouse migrations failed. Common causes:
+  1. The database is unavailable or unreachable.
+```
+
+### Root cause
+Langfuse 3's split storage runs TWO migration steps at first startup:
+1. Postgres (Prisma) migrations — uses `DATABASE_URL` ✓ (worked)
+2. ClickHouse migrations — uses a SEPARATE env var `CLICKHOUSE_MIGRATION_URL` ✗ (not set)
+
+`CLICKHOUSE_URL` (port 8123, HTTP) is for runtime queries; `CLICKHOUSE_MIGRATION_URL` is for the migration CLI which uses the native ClickHouse protocol (port 9000) + `clickhouse://` URL scheme. Langfuse 3 has no `*_FILE` variant for this URL — it expects the password embedded inline.
+
+### Fix
+- `langfuse-stack.yml`: add `CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse:${YRAL_LANGFUSE_CLICKHOUSE_PASSWORD_RENDERED}@langfuse-clickhouse:9000` to `langfuse-web` env. (Worker doesn't run migrations; not added there.)
+- `langfuse-install.sh`'s render function:
+  - Export `YRAL_LANGFUSE_CLICKHOUSE_PASSWORD_RENDERED` (a new sibling of the existing `YRAL_LANGFUSE_POSTGRES_PASSWORD_RENDERED` introduced in PR #61).
+  - Add the new placeholder to the envsubst whitelist (now 6 placeholders).
+
+Inline comment on `langfuse-web` captures the symptom + the Langfuse-3-needs-both-CLICKHOUSE_URL-AND-CLICKHOUSE_MIGRATION_URL split + the port-8123-vs-9000 distinction.
+
+### Verification (local)
+Empirical envsubst test with test passwords containing URL-safe special chars:
+
+```
+CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse:chpw_with_chars-3_4@langfuse-clickhouse:9000
+DATABASE_URL: postgresql://langfuse:pgpw_with_chars-1_2@pgbouncer:5432/postgres?schema=langfuse
+remaining placeholders: 0
+```
+
+Both URLs render correctly; YAML stays valid.
+
+### Operator action after merge
+Re-run `langfuse-install.sh` — Swarm rolls the langfuse-web service with the new env. ClickHouse migrations should now run via the native-protocol URL on port 9000.
+
+### Constraints touched
+A2.1 (single concern: add the ClickHouse migration env var), B7 (role-comment captures the Langfuse-3-runtime-vs-migration distinction + symptom + escape pattern), D1 (clickhouse password rendered inline, same exposure tradeoff as DATABASE_URL per PR #61), I11 (same-commit LOG entry), I14 (auto-merge-eligible).
+
+### Diff size
++13 in stack file + 8 in install script = 21 lines net + this LOG entry. Tiny.
+
+### Major progress callback
+PR #65 (image bump) was the cheapest experiment per Rishi's direction, and it FIXED the pgbouncer crash. The 3-config-iteration arc (PR #62/#63/#64) is fully validated by the successful psql + Langfuse Prisma migrations. The "Option 2 fallback" (dedicated `pgbouncer_auth` role + SECURITY DEFINER function) is NOT needed.
+
+### Bug count tally for Day-5 Step 3 (running total)
+- Pre-emptively closed (PR #60): 5
+- Surfaced at deploy time:
+  - DATABASE_URL format (PR #61)
+  - pgbouncer auth gap, 3 config missteps → image bump fix: PR #62 + #63 + #64 + #65 (image bump WORKED; no PR #66 needed)
+  - **CLICKHOUSE_MIGRATION_URL missing (this PR — bug #6)**
+
+If this PR fixes things end-to-end, Day-5 Step 3 closes after the redeploy verification.
+
+### Deferred follow-up (separate concern — NOT bundled)
+`session-1/codify-keychain-to-spilo-password-flow` — operator-state password reset that fell outside the PR audit trail. Investigation needed re: Spilo bootstrap precedence vs Swarm-secret timing.
+
+---
+
 ## 2026-05-16 — FIX: pgbouncer image bump 1.21.0-p2 → v1.23.1-p3 (1.21.x scram+auth_query internal crash) (Day-5 Step 3 deploy bug #5)
 
 ### Action
