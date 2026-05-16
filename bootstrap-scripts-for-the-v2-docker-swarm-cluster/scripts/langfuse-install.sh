@@ -275,21 +275,38 @@ create_or_rotate_langfuse_swarm_secrets() {
 
 render_langfuse_stack_compose_file_to_temporary_path() {
     # WHAT:  envsubst the stack file with the 4 resolved Langfuse secret
-    #        names. We pass envsubst an EXPLICIT WHITELIST of the
+    #        NAMES + the literal POSTGRES_PASSWORD VALUE (for DATABASE_URL
+    #        construction). Passes envsubst an EXPLICIT WHITELIST of the
     #        placeholder variable names so it ONLY substitutes those —
     #        every other `$VAR` or `$(...)` token in the stack passes
-    #        through untouched. Same pattern PR #57 introduced for
-    #        redis-sentinel-install.sh after the bare-envsubst trap.
-    # WHEN:  after secret creation.
-    # WHY:   keeps the committed YAML free of SHA-suffixed names AND
-    #        future-proofs against any container-shell `$VAR` tokens
-    #        added later. The current Langfuse stack has no such tokens
-    #        but the whitelist is cheap defense-in-depth.
+    #        through untouched. Same whitelist pattern PR #57 introduced
+    #        for redis-sentinel-install.sh after the bare-envsubst trap.
+    # WHEN:  after secret creation, before deploy.
+    # WHY:   Langfuse 3 only accepts DATABASE_URL (single env var with
+    #        the password embedded), NOT the discrete DATABASE_HOST/
+    #        PORT/USERNAME/PASSWORD_FILE form that Langfuse 2 used. We
+    #        therefore have to render the password inline. The rendered
+    #        file is created via mktemp under /tmp on rishi-4, owned
+    #        root mode 0600, and explicitly removed by
+    #        deploy_langfuse_stack_into_swarm immediately after `docker
+    #        stack deploy` completes. Swarm itself stores the spec in
+    #        its raft DCS (encrypted at rest). The container then sees
+    #        DATABASE_URL via env (readable to processes inside the
+    #        container + root on the host). This is the same exposure
+    #        level Compose-deployed apps already have for any secret
+    #        that goes into env; the /run/secrets tmpfs mount stays
+    #        in use for NEXTAUTH_SECRET / ENCRYPTION_KEY / CLICKHOUSE_
+    #        PASSWORD via the *_FILE env vars Langfuse 3 does support.
     if [[ ! -f "${LANGFUSE_STACK_COMPOSE_FILE_PATH}" ]]; then
         echo "ERROR langfuse-install: stack file not found" >&2; exit 1
     fi
+    # Expose the literal postgres password for DATABASE_URL interpolation.
+    # Base64url password chars [a-zA-Z0-9_-] are all unreserved in RFC
+    # 3986 userinfo so no URL-encoding is needed here. If we ever switch
+    # the password generator to a wider char set this needs revisiting.
+    export YRAL_LANGFUSE_POSTGRES_PASSWORD_RENDERED="${YRAL_LANGFUSE_POSTGRES_PASSWORD}"
     LANGFUSE_RENDERED_STACK_COMPOSE_FILE_PATH="$(mktemp /tmp/yral-v2-langfuse-rendered-stack.XXXXXX.yml)"
-    envsubst '${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_NEXTAUTH_SECRET} ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_ENCRYPTION_KEY} ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_POSTGRES_PASSWORD} ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_CLICKHOUSE_PASSWORD}' \
+    envsubst '${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_NEXTAUTH_SECRET} ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_ENCRYPTION_KEY} ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_POSTGRES_PASSWORD} ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_CLICKHOUSE_PASSWORD} ${YRAL_LANGFUSE_POSTGRES_PASSWORD_RENDERED}' \
         < "${LANGFUSE_STACK_COMPOSE_FILE_PATH}" \
         > "${LANGFUSE_RENDERED_STACK_COMPOSE_FILE_PATH}"
     export LANGFUSE_RENDERED_STACK_COMPOSE_FILE_PATH
@@ -297,11 +314,21 @@ render_langfuse_stack_compose_file_to_temporary_path() {
 
 
 deploy_langfuse_stack_into_swarm() {
+    # WHAT:  `docker stack deploy` then explicitly remove the rendered
+    #        file. The rendered file has the postgres password embedded
+    #        in DATABASE_URL (see render function role-comment). Once
+    #        Swarm has the spec in its raft DCS we no longer need the
+    #        host-side file.
+    # WHEN:  after render.
+    # WHY:   --with-registry-auth so worker nodes can pull the upstream
+    #        Langfuse images. The `rm` keeps the password-bearing file
+    #        from lingering under /tmp longer than the deploy itself.
     docker stack deploy \
         --compose-file "${LANGFUSE_RENDERED_STACK_COMPOSE_FILE_PATH}" \
         --with-registry-auth \
         --prune \
         "${LANGFUSE_STACK_NAME}"
+    rm -f "${LANGFUSE_RENDERED_STACK_COMPOSE_FILE_PATH}"
 }
 
 

@@ -1,6 +1,82 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-16 — FIX: langfuse-stack — `DATABASE_URL` single env var instead of discrete `DATABASE_HOST` / `_PASSWORD_FILE` (Day-5 Step 3 deploy bug #1)
+
+### Action
+Day-5 Step 3 deploy attempt #1 (after PR #60 hardening landed) — install completed clean, post-deploy verifier passed (30s window), all 3 services scheduled. THEN:
+
+```
+langfuse-clickhouse: Running ✓
+langfuse-web:    Failed (task: non-zero exit 1) — looped 6 times in last 35s
+langfuse-worker: Failed (task: non-zero exit 1) — looped 4 times
+```
+
+Web logs revealed why:
+
+```
+Error: Required database environment variables are not set. Provide a postgres url for DATABASE_URL.
+```
+
+Not the predicted Postgres-role failure (that was bug #1 in my prediction). The actual first bug: Langfuse 3 only accepts a single `DATABASE_URL` env var; it does NOT accept the Langfuse-2-style discrete `DATABASE_HOST` + `DATABASE_PORT` + `DATABASE_NAME` + `DATABASE_USERNAME` + `DATABASE_PASSWORD_FILE` form that our stack file was using.
+
+### Important verifier-gap callback
+The Compose-level `confirm_stack_actually_deployed` (PR #51/#55/#60 pattern) **passed** with this state. Tasks were Preparing → Starting during the 30s window (image pulls), then the container started, ran the failing command, exited 1, and Swarm queued a retry. The failure loop began AFTER the verifier window closed. This is exactly the gap Rishi noted as Day-6+ follow-up: app-level health verification (e.g., "GET /api/public/health returns 200") catches this; Compose-level verifier doesn't.
+
+### Fix
+- `langfuse-stack.yml`: in BOTH `langfuse-web` and `langfuse-worker` env blocks, replace the 6 discrete `DATABASE_*` lines with a single `DATABASE_URL: postgresql://langfuse:${YRAL_LANGFUSE_POSTGRES_PASSWORD_RENDERED}@pgbouncer:5432/postgres?schema=langfuse`. The base64url password chars `[a-zA-Z0-9_-]` are all unreserved in RFC 3986 userinfo so no URL-encoding is needed.
+- Inline comment on `langfuse-web` captures the Langfuse-2-vs-3 trap + the deploy-attempt-1 symptom; `langfuse-worker` cross-references.
+- `langfuse-install.sh`'s `render_langfuse_stack_compose_file_to_temporary_path`:
+  - Add `YRAL_LANGFUSE_POSTGRES_PASSWORD_RENDERED` to the envsubst whitelist (now 5 placeholders).
+  - `export YRAL_LANGFUSE_POSTGRES_PASSWORD_RENDERED="${YRAL_LANGFUSE_POSTGRES_PASSWORD}"` before envsubst so the literal password renders into DATABASE_URL.
+  - Role-comment expanded with the Langfuse-3-only-supports-DATABASE_URL rationale + the security-tradeoff statement (the rendered file under `/tmp` on rishi-4 root-mode-0600 holds the password until `docker stack deploy` consumes it; same exposure level as any Compose-managed env-var-secret).
+- `langfuse-install.sh`'s `deploy_langfuse_stack_into_swarm`: add `rm -f "${LANGFUSE_RENDERED_STACK_COMPOSE_FILE_PATH}"` immediately after `docker stack deploy` returns, so the password-bearing rendered file doesn't linger.
+
+### What's still file-based (NOT changed)
+- `NEXTAUTH_SECRET_FILE: /run/secrets/...` — Langfuse 3 supports this _FILE variant; secret stays on tmpfs.
+- `ENCRYPTION_KEY_FILE: /run/secrets/...` — same.
+- `CLICKHOUSE_PASSWORD_FILE: /run/secrets/...` — same.
+
+Only `DATABASE_URL` had to move to direct env (no `*_FILE` variant in Langfuse 3 for the DB URL).
+
+### Verification
+Empirical render locally with a test password containing URL-safe special chars:
+
+```
+DATABASE_URL: postgresql://langfuse:mypassword-1-2-3_with-special@pgbouncer:5432/postgres?schema=langfuse
+remaining placeholders: 0
+```
+
+YAML re-parses cleanly. Both web + worker DATABASE_URL render identically (good — both connect to the same pgbouncer endpoint).
+
+### Constraints touched
+A2.1 (single concern: Langfuse-3 DATABASE_URL format), B7 (role-comments on stack file + install script capture the Langfuse-2-vs-3 distinction + the security tradeoff), D1 (secret in env not on disk — rendered file cleaned up post-deploy), I11 (same-commit LOG entry), I14 (under 400 diff lines → auto-merge-eligible).
+
+### Diff size
++50 / -23 = 73 total lines (45 in install.sh + 28 in stack.yml + LOG). Well under 400-line auto-merge gate.
+
+### State on rishi-6 before retry
+- Stack `yral-v2-langfuse` deployed with 3 services. clickhouse Running; web + worker in tight Failed loop (need redeploy with corrected DATABASE_URL).
+- All 4 Swarm secrets exist (idempotent skip on retry).
+- ClickHouse bind dir + resync registry verified.
+- Patroni cluster is currently in failed-over state (rishi-5 is master) — pgbouncer routes to that. Need to confirm pgbouncer reaches the right node.
+
+### Bug count tally for Day-5 Step 3
+- Pre-emptively closed (PR #60): 5 hardening pattern fixes
+- Surfaced at deploy time: 1 (this PR — Langfuse-3 DATABASE_URL format)
+- Still predicted to surface: Postgres `langfuse` role bootstrap (no role exists yet on the Patroni cluster)
+
+Rishi's prediction was "≤2 bugs, possibly 0." At 1 now, with Postgres role likely as #2.
+
+### Important consideration for retry: pgbouncer DB_HOST
+Current cluster state has rishi-5 as Patroni Leader (from yesterday's failover smoke that I didn't switch back). pgbouncer's `DB_HOST=patroni-rishi-4` is hardcoded → it currently routes to a READ-only replica. Langfuse migrations will fail to apply to a read-only target. May need to either:
+- Switchover Patroni back to rishi-4 (matches pgbouncer config)
+- OR live-update pgbouncer's DB_HOST to patroni-rishi-5
+
+Will check pgbouncer state in the retry and surface if relevant. This is the same pgbouncer-failover-awareness gap I flagged in PR #59 — not in scope for this fix-PR but may matter for the retry.
+
+---
+
 ## 2026-05-16 — HARDENING: port patroni/redis patterns into langfuse-install.sh (pre-Day-5-Step-3 deploy)
 
 ### Action
