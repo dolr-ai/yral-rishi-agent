@@ -1,6 +1,63 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-16 — FIX: envsubst whitelist in redis-sentinel-install.sh + revert stack to `$$REDIS_PASSWORD` (Day-5 Step 2 deploy bug #2 — supersedes #1's wrong fix)
+
+### Action
+PR #56's fix ($$ → $$$$ in the stack file) was based on a wrong model of envsubst's behavior. Empirical test:
+
+```
+$ echo 'auth-pass $$$$REDIS_PASSWORD' | envsubst
+auth-pass $$$
+$ echo 'auth-pass $$REDIS_PASSWORD' | envsubst
+auth-pass $
+```
+
+envsubst does NOT treat `$$` as a literal-dollar escape. It simply scans left-to-right and substitutes any `$VAR` it finds (to empty string if VAR is unset). So `$$$$REDIS_PASSWORD` had the trailing `$REDIS_PASSWORD` consumed and substituted to empty, leaving `$$$`. Compose then choked on the stray `$$$`.
+
+### Root cause (correctly understood now)
+Only ONE substitution layer needs to escape: docker stack deploy's Compose-spec interpolation. envsubst should be told NOT to touch `$REDIS_PASSWORD` (and any other runtime container-shell variables) by giving it an explicit whitelist of placeholder names.
+
+GNU envsubst supports this via a positional argument: `envsubst 'WHITELIST_STRING' < input > output`. The WHITELIST_STRING contains the `${VAR}` patterns envsubst is allowed to substitute; everything else passes through.
+
+### Fix
+- `redis-sentinel-install.sh`'s `render_redis_stack_compose_file_to_temporary_path`: change `envsubst < ... > ...` to `envsubst '${YRAL_REDIS_STACK_RESOLVED_REDIS_PRIMARY_PASSWORD}' < ... > ...`. Now envsubst ONLY substitutes the resolved-secret-name placeholder; every other `$VAR` token in the stack passes through untouched.
+- `redis-sentinel-stack.yml`: revert all 7 `$$$$REDIS_PASSWORD` back to `$$REDIS_PASSWORD` (PR #56's stack change was wrong). The single `$$` is now the right count — Compose's `$$` → `$` is the only layer that needs to fire.
+- NOTE block at top of `services:` rewritten to reflect the correct two-pass model: envsubst whitelist (resolved-name only) + Compose interpolation (`$$` escape).
+
+### Verification
+Empirical confirmation locally before pushing:
+
+```
+$ YRAL_REDIS_STACK_RESOLVED_REDIS_PRIMARY_PASSWORD=yral_v2_redis_primary_password_test1234 \
+  echo 'auth-pass: $$REDIS_PASSWORD / source: ${YRAL_REDIS_STACK_RESOLVED_REDIS_PRIMARY_PASSWORD}' \
+  | envsubst '${YRAL_REDIS_STACK_RESOLVED_REDIS_PRIMARY_PASSWORD}'
+auth-pass: $$REDIS_PASSWORD / source: yral_v2_redis_primary_password_test1234
+```
+
+`$$REDIS_PASSWORD` passes through; the whitelisted placeholder substitutes. Exactly what we need.
+
+### Constraints touched
+A2.1 (single concern: correct the escape-layer math), B7 (NOTE block + install-script role-comment both rewritten to capture the empirical-verified envsubst semantics + the failure-cycle history so future re-readers don't simplify back), I11 (same-commit LOG entry), I14 (auto-merge-eligible).
+
+### Diff size
++30 / -22 across redis-sentinel-stack.yml + redis-sentinel-install.sh. Net ≈ 52 lines. Far under the 400-line gate.
+
+### State on rishi-4 before retry
+- Redis Swarm secret `yral_v2_redis_primary_password_4e2b8cf4` still exists from attempts 1+2 (idempotent skip on retry).
+- No services deployed yet (docker stack deploy errored on both attempts).
+- Pre-flight checks all passing.
+
+### Bug count tally for Day-5 Step 2
+- Pre-emptively closed (PR #55): 5
+- Surfaced at deploy time:
+  - #1: stack `$$` → `$$$$` PR #56 — WRONG fix, superseded by this PR
+  - #2: this PR (envsubst whitelist + stack revert)
+
+Net unique bugs to-date: 1 (the same escape-math issue; the first fix was wrong but the SAME bug class). Rishi's prediction of "2-4 range" still holds with room to spare.
+
+---
+
 ## 2026-05-16 — FIX: redis-sentinel-stack.yml needs `$$$$REDIS_PASSWORD` for two-layer escape (Day-5 Step 2 deploy bug #1)
 
 ### Action

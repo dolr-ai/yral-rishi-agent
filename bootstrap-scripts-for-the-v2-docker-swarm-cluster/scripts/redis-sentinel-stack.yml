@@ -38,23 +38,28 @@ x-yral-data-plane-defaults: &yral_data_plane_defaults
 
 services:
 
-  # NOTE on `$$$$REDIS_PASSWORD` four-dollar escaping below.
-  # Two layers of substitution run on this file before the container shell
-  # ever sees the password variable:
-  #   1. envsubst (inside redis-sentinel-install.sh's render step) replaces
-  #      ${...} placeholders and collapses `$$` → `$`.
-  #   2. docker stack deploy then performs its own Compose-spec variable
-  #      interpolation, which ALSO treats `$$` as the escape for a literal
-  #      `$` and would otherwise try to substitute `$REDIS_PASSWORD` from
-  #      its own env (where the variable is intentionally unset).
-  # Starting from `$$$$REDIS_PASSWORD` in this committed file: envsubst
-  # yields `$$REDIS_PASSWORD`, Compose yields the literal `$REDIS_PASSWORD`,
-  # the container's `sh -c '... export REDIS_PASSWORD=...; redis-server
-  # --requirepass "$REDIS_PASSWORD"'` then expands it at runtime against
-  # the env var set from the secret file. Day-5-Step-2 deploy attempt #1
-  # bit us with only `$$` — envsubst correctly yielded `$` but Compose
-  # then refused with "invalid interpolation format for command.[]". Do
-  # NOT collapse this back to `$$`.
+  # NOTE on `$$REDIS_PASSWORD` escaping below.
+  # Two substitution passes touch this file before the container shell
+  # sees `$REDIS_PASSWORD`:
+  #   1. envsubst in redis-sentinel-install.sh's render step — but we
+  #      call it with an EXPLICIT WHITELIST of variable names (only the
+  #      resolved-secret-name placeholder), so envsubst leaves every
+  #      other `$VAR` token untouched. Without the whitelist, envsubst
+  #      would expand `$REDIS_PASSWORD` to the empty string (since the
+  #      install script never exports REDIS_PASSWORD) and break the
+  #      stack. Day-5-Step-2 deploy attempt #1 was a `$$` → `$` source
+  #      (one Compose escape), attempt #2 was a `$$$$` → `$$$` source
+  #      with envsubst eating the trailing `$REDIS_PASSWORD` literal.
+  #      The whitelist makes the count one-and-done.
+  #   2. docker stack deploy applies Compose-spec interpolation, which
+  #      treats `$$` as the literal-dollar escape (`$$` → `$`).
+  # Starting from `$$REDIS_PASSWORD`: envsubst leaves it unchanged
+  # (whitelist excludes REDIS_PASSWORD); Compose yields the literal
+  # `$REDIS_PASSWORD`; the container's `sh -c '... export REDIS_
+  # PASSWORD=...; redis-server --requirepass "$REDIS_PASSWORD"'` then
+  # shell-expands it at runtime against the env var set from the secret
+  # file. Do NOT change `$$` to `$` (Compose would try to interpolate)
+  # or to `$$$$` (Compose would emit `$$` which the shell reads as $PID).
 
   # ───────────────── Redis primary (rishi-4) ──────────────────────────────
 
@@ -67,8 +72,8 @@ services:
       sh -c '
         export REDIS_PASSWORD="$(cat /run/secrets/redis-primary-password)";
         exec redis-server
-          --requirepass "$$$$REDIS_PASSWORD"
-          --masterauth "$$$$REDIS_PASSWORD"
+          --requirepass "$$REDIS_PASSWORD"
+          --masterauth "$$REDIS_PASSWORD"
           --appendonly yes
           --appendfsync everysec
           --save 900 1
@@ -111,8 +116,8 @@ services:
       sh -c '
         export REDIS_PASSWORD="$(cat /run/secrets/redis-primary-password)";
         exec redis-server
-          --requirepass "$$$$REDIS_PASSWORD"
-          --masterauth "$$$$REDIS_PASSWORD"
+          --requirepass "$$REDIS_PASSWORD"
+          --masterauth "$$REDIS_PASSWORD"
           --replicaof redis-primary 6379
           --replica-read-only yes
           --appendonly yes
@@ -156,7 +161,7 @@ services:
         cat > /tmp/sentinel.conf <<SENTINEL_CONF
         port 26379
         sentinel monitor yral-v2-redis-primary redis-primary 6379 2
-        sentinel auth-pass yral-v2-redis-primary $$$$REDIS_PASSWORD
+        sentinel auth-pass yral-v2-redis-primary $$REDIS_PASSWORD
         sentinel down-after-milliseconds yral-v2-redis-primary 5000
         sentinel failover-timeout yral-v2-redis-primary 30000
         sentinel parallel-syncs yral-v2-redis-primary 1
@@ -188,7 +193,7 @@ services:
         cat > /tmp/sentinel.conf <<SENTINEL_CONF
         port 26379
         sentinel monitor yral-v2-redis-primary redis-primary 6379 2
-        sentinel auth-pass yral-v2-redis-primary $$$$REDIS_PASSWORD
+        sentinel auth-pass yral-v2-redis-primary $$REDIS_PASSWORD
         sentinel down-after-milliseconds yral-v2-redis-primary 5000
         sentinel failover-timeout yral-v2-redis-primary 30000
         sentinel parallel-syncs yral-v2-redis-primary 1
@@ -220,7 +225,7 @@ services:
         cat > /tmp/sentinel.conf <<SENTINEL_CONF
         port 26379
         sentinel monitor yral-v2-redis-primary redis-primary 6379 2
-        sentinel auth-pass yral-v2-redis-primary $$$$REDIS_PASSWORD
+        sentinel auth-pass yral-v2-redis-primary $$REDIS_PASSWORD
         sentinel down-after-milliseconds yral-v2-redis-primary 5000
         sentinel failover-timeout yral-v2-redis-primary 30000
         sentinel parallel-syncs yral-v2-redis-primary 1
