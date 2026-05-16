@@ -1,6 +1,80 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-16 — FIX: pgbouncer auth_query + DB_USER/DB_PASSWORD_FILE — clients couldn't auth through pgbouncer (Day-5 Step 3 deploy bug #2)
+
+### Action
+Day-5 Step 3 deploy attempt #2 (after PR #61's DATABASE_URL fix + manual bootstrap of the `langfuse` Postgres role on Patroni). Web + worker now reach pgbouncer instead of refusing the env var format — but auth fails:
+
+```
+Error: Schema engine error:
+FATAL: password authentication failed
+Applying database migrations failed.
+```
+
+The `langfuse` role exists on Patroni (verified via `su postgres -c psql` ON the leader: `langfuse|t`). Direct PG connection as langfuse with the password works. But via pgbouncer it fails.
+
+Inspection of the live pgbouncer container revealed the actual gap:
+
+```
+$ docker exec <pgbouncer> cat /etc/pgbouncer/userlist.txt
+(empty)
+
+$ docker exec <pgbouncer> env | grep -iE 'PG|DB|AUTH|POSTGRES'
+ADMIN_USERS=postgres,admin
+AUTH_TYPE=md5
+DB_HOST=patroni-rishi-4
+DB_PORT=5432
+HOME=/var/lib/postgresql
+HOSTNAME=pgbouncer
+```
+
+No DB_USER, no DB_PASSWORD_FILE, no AUTH_USER, no AUTH_QUERY. The userlist is empty. The original draft's comment block on this section said:
+> "PGBOUNCER_USER + PGBOUNCER_PASSWORD will be wired in once we have a dedicated pgbouncer auth role; for the draft, edoburu's image falls back to passthrough auth against Patroni."
+
+There's no such "passthrough auth" fallback in edoburu's image. The draft was wrong about that. The gap has been latent since PR #10 — Patroni HA verification used direct psql connections, not pgbouncer, so the pgbouncer-auth gap never bit us until Langfuse became the first real client.
+
+### Root cause
+pgbouncer needs either:
+- A pre-populated `userlist.txt` with every client user's md5 hash, OR
+- `AUTH_USER` + `AUTH_QUERY` so it looks up users in `pg_shadow` on demand
+
+Plus pgbouncer itself needs to authenticate to upstream Patroni, which requires `DB_USER` + `DB_PASSWORD_FILE` so edoburu's entrypoint can write a userlist.txt entry for the upstream connection.
+
+### Fix
+`patroni-stack.yml` pgbouncer service env block, add 4 lines:
+- `DB_USER: postgres` — username for the [databases] upstream connection
+- `DB_PASSWORD_FILE: /run/secrets/postgres-superuser-password` — entrypoint reads this + populates `userlist.txt` for the `postgres` user. The secret is already mounted to the container; this just tells edoburu's entrypoint where to read it.
+- `AUTH_USER: postgres` — pgbouncer connects to Patroni as `postgres` to run AUTH_QUERY against `pg_shadow`
+- `AUTH_QUERY: SELECT usename, passwd FROM pg_shadow WHERE usename=$$1` — the SQL pgbouncer runs to look up arbitrary client users. The `$$1` is a two-layer escape: envsubst leaves `$$1` unchanged (no env var matches), Compose then collapses `$$ → $`, pgbouncer parses the final `$1` as its parameter placeholder.
+
+Inline comment block on the env section captures the Day-5-Step-3-attempt-#2 symptom + the rationale for each of the 4 new vars + the `$$1` two-layer escape so a future re-reader doesn't simplify.
+
+### Verification (local)
+- `python3 -c "import yaml; list(yaml.safe_load_all(...))"` → YAML valid.
+- `echo 'AUTH_QUERY: ... usename=$$1' | envsubst` → `$$1` preserved (envsubst doesn't substitute `$$` and `$1` isn't a valid env var name). Then Compose's `$$` → `$` yields the literal `$1` pgbouncer expects. ✓
+
+### Constraints touched
+A2.1 (single concern: pgbouncer auth config; bigger pgbouncer-failover-aware DB_HOST routing stays deferred), B7 (env block role-comment captures the symptom + escape math + per-var rationale), C8 (no new sudoers — pure stack config change), D1 (password stays in /run/secrets tmpfs; only AUTH_USER's connection password is read from there by edoburu's entrypoint into the userlist file inside the container's filesystem), I11 (same-commit LOG entry), I14 (under 400 diff lines → auto-merge-eligible).
+
+### Diff size
++25 / -3 = 28 total lines in patroni-stack.yml + this LOG entry. Well under 400-line gate.
+
+### Operator action after merge
+Re-run `patroni-install.sh` against the live cluster — Swarm sees the pgbouncer service spec diff (new env vars) and rolls the 2 pgbouncer replicas. Existing Patroni services (etcd, patroni-rishi-{4,5,6}) are untouched. Then retry Langfuse deploy — web/worker should auth through pgbouncer via AUTH_QUERY.
+
+The new `confirm_stack_actually_deployed` verifier catches any Rejected pgbouncer task. App-level "is Langfuse actually serving?" stays a Day-6+ follow-up.
+
+### Bug count tally for Day-5 Step 3
+- Pre-emptively closed (PR #60): 5 hardening pattern fixes.
+- Surfaced at deploy time, unique classes:
+  - #1 (PR #61): Langfuse-3 DATABASE_URL format
+  - #2 (this PR): pgbouncer auth_query gap
+
+Net at 2 deploy-time bugs. Rishi's prediction was "≤2, possibly 0." Hit the upper bound exactly — pgbouncer auth is a latent issue from the original Patroni draft, not really a Langfuse-specific bug, so could fairly be classified as Patroni-stack tech debt that Langfuse-deploy just surfaced.
+
+---
+
 ## 2026-05-16 — FIX: langfuse-stack — `DATABASE_URL` single env var instead of discrete `DATABASE_HOST` / `_PASSWORD_FILE` (Day-5 Step 3 deploy bug #1)
 
 ### Action
