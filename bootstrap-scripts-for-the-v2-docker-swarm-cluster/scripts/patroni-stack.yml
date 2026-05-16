@@ -349,9 +349,26 @@ services:
       POOL_MODE: transaction
       AUTH_TYPE: md5
       ADMIN_USERS: postgres,admin
-      # PGBOUNCER_USER + PGBOUNCER_PASSWORD will be wired in once we have
-      # a dedicated pgbouncer auth role; for the draft, edoburu's image
-      # falls back to passthrough auth against Patroni.
+      # Connect to upstream Patroni as `postgres` superuser with the
+      # password read from the mounted secret file. edoburu/pgbouncer's
+      # entrypoint reads DB_PASSWORD_FILE at startup, writes a
+      # `userlist.txt` entry for DB_USER, and uses DB_USER's password
+      # for any subsequent AUTH_QUERY connections.
+      DB_USER: postgres
+      DB_PASSWORD_FILE: /run/secrets/postgres-superuser-password
+      # Dynamic user lookup so clients other than `postgres` (e.g. the
+      # `langfuse` role on the shared Patroni cluster) can authenticate
+      # through pgbouncer without us pre-staging their password hashes
+      # in a userlist file. pgbouncer connects to upstream Patroni as
+      # AUTH_USER (= postgres = superuser), runs AUTH_QUERY against
+      # pg_shadow on demand, validates the client's md5 challenge
+      # against the returned hash. Day-5-Step-3 deploy attempt #2 bit
+      # us with an empty userlist + no AUTH_QUERY → Langfuse's
+      # connection to pgbouncer failed with "FATAL: password
+      # authentication failed" even though the `langfuse` role had
+      # been bootstrapped on Patroni itself.
+      AUTH_USER: postgres
+      AUTH_QUERY: SELECT usename, passwd FROM pg_shadow WHERE usename=$$1
     secrets:
       - source: ${YRAL_PATRONI_STACK_RESOLVED_YRAL_V2_POSTGRES_SUPERUSER_PASSWORD}
         target: postgres-superuser-password
