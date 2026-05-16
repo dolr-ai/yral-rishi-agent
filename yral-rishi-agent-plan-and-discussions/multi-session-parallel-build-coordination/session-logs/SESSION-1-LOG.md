@@ -1,6 +1,73 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-16 — MIGRATION: Spilo's Patroni from etcd v2 REST → v3 native (ETCD_HOSTS → ETCD3_HOSTS)
+
+### Action
+Follow-up future-proofing from PR #47's split. PR #47 unblocked Patroni
+on etcd 3.5 by adding `--enable-v2=true` to the etcd command line
+(Spilo 3.0 Patroni's default discovery path hits `/v2/machines`,
+which etcd 3.4+ disables by default). That fix was the right
+immediate unblock, but etcd 3.6 will REMOVE the v2 REST endpoint
+entirely — at which point `--enable-v2=true` becomes a no-op and
+Spilo's default config path stops working. This PR moves Patroni
+onto the v3 native gRPC code path so we're forward-proof regardless
+of when we upgrade etcd.
+
+### Fix
+- `patroni-stack.yml`: in all 3 Patroni service env blocks, rename
+  `ETCD_HOSTS` → `ETCD3_HOSTS`. Spilo's `configure_spilo.py`
+  recognises `ETCD3_HOSTS` and writes a Patroni config that uses
+  python-etcd3 (v3 native gRPC) instead of python-etcd (v2 REST).
+  The host:port format is unchanged — same `etcd-rishi-{4,5,6}:2379`.
+- Inline comment block on the rishi-4 service explains the migration
+  rationale + cross-references PR #47. The rishi-5 and rishi-6
+  blocks get a one-line cross-reference comment.
+- `--enable-v2=true` on the etcd command line stays put. It's now
+  effectively a safety net (Patroni won't use v2 anymore, but a
+  stray health-check or future tool might). Retiring it is a
+  separate cleanup PR, sequenced after this migration is verified
+  in the live cluster.
+
+### Operator action after merge (deferred — not urgent)
+The live cluster is currently HEALTHY on Patroni's v2 REST path
+(Day-5 Step 1 close state: rishi-4 Leader / rishi-5 Replica /
+rishi-6 Sync Standby, TL 5, lag 0, 3 successful switchovers
+verified). It will stay healthy until we redeploy. To activate the
+v3 native path, scp the updated `patroni-stack.yml` to rishi-4 and
+re-run `patroni-install.sh` — Swarm rolls the 3 Patroni containers
+with the new `ETCD3_HOSTS` env, Spilo regenerates `postgres.yml`
+with the etcd3 block, Patroni reconnects via v3 gRPC. Verify
+`patronictl list` still shows 3 healthy members on the same TL.
+
+The new `confirm_stack_actually_deployed` post-deploy verifier
+(PR #51) catches any Rejected/Failed task during the roll, so a
+regression would fail loud rather than silently downgrade the
+cluster.
+
+### Constraints touched
+A2.1 (single-concern: ETCD env var rename only; `--enable-v2=true`
+retirement deferred to its own PR), B7 (inline comment block
+captures full v2→v3 migration rationale + cross-reference to
+PR #47), I11 (same-commit LOG entry), I14 (under 400 diff lines,
+no coordinator-review-needed label → auto-merge-eligible under
+PR #50's flow).
+
+### Diff size
++18 / -3 in patroni-stack.yml (3 env line renames + 1 comment
+block + 2 cross-reference comments) + this LOG entry. Well under
+the 400-line auto-merge gate.
+
+### What this is NOT
+Not a removal of `--enable-v2=true` from etcd. That's a separate
+cleanup PR sequenced after this migration is verified.
+Not a change to host:port format — same `etcd-rishi-{4,5,6}:2379`.
+Not a deploy — this PR just changes the code; the live cluster
+keeps running v2 REST until someone explicitly re-runs
+patroni-install.sh.
+
+---
+
 ## 2026-05-15 — NEW: `confirm_stack_actually_deployed` post-deploy verifier (closes Day-5 silent-failure gap)
 
 ### Action
