@@ -1,0 +1,40 @@
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  caddyfile.placeholder                                                      ║
+# ║                                                                              ║
+# ║  The Caddyfile body that caddy-install.sh creates as a Swarm config         ║
+# ║  object on each deploy. SHA-rotation per CONSTRAINTS H2: editing this       ║
+# ║  file produces a new content hash → new config name → next deploy rolls    ║
+# ║  the caddy-edge-ingress service onto the new config.                       ║
+# ║                                                                              ║
+# ║  Phase 0 scope (per C10 corrected):                                         ║
+# ║  - Caddy on rishi-4/5 receives proxied traffic from rishi-1/2/3 edge       ║
+# ║    Caddy (currently DEFERRED per A2 — no traffic source yet).              ║
+# ║  - This placeholder configuration validates the deploy shape works +       ║
+# ║    has the listener + cert scaffolding ready when rishi-1/2/3 lands.       ║
+# ║  - Real per-service routes (public-api, orchestrator, hello-world, …)      ║
+# ║    arrive when Sessions 3+4 spawn services, via a future                   ║
+# ║    `generate-caddy-swarm-config.sh` that materializes routes from a        ║
+# ║    template + service registry. Queued as session-1/caddy-swarm-config-    ║
+# ║    generator follow-up.                                                    ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+{
+    # Caddy global options. `auto_https off` prevents Caddy from trying to
+    # solve ACME challenges against external CAs during Phase 0 — there is
+    # no public traffic source pointed here yet, so ACME would fail. The
+    # `:443` site below uses `tls internal` to generate a self-signed cert
+    # locally instead. The admin endpoint binds 127.0.0.1:2019 by default
+    # — explicit here to match what the stack-file healthcheck probes.
+    auto_https off
+    admin 127.0.0.1:2019
+}
+
+# Default site listening on the only published host port (443 via Swarm
+# ingress mode). Returns a marker response so curl smoke-tests confirm
+# the deploy works without depending on rishi-1/2/3 traffic source.
+# `tls internal` makes Caddy generate + serve a self-signed cert, which
+# Cloudflare-in-Full-mode (the eventual edge configuration) accepts.
+:443 {
+    tls internal
+    respond "v2 cluster edge — Phase 0 placeholder; no service routes wired yet" 200
+}

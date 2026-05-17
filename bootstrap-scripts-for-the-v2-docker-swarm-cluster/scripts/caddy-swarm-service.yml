@@ -40,8 +40,16 @@
 # ║    on-disk certificate cache so reloads do not regenerate certs.           ║
 # ║  - Health-check endpoint `/__caddy-healthz` answered locally by Caddy.    ║
 # ║                                                                              ║
-# ║  ⚠️ DRAFT — NO STACKS DEPLOYED YET (per agent spec + A13)                    ║
-# ║  Real `docker stack deploy` happens Day 6/7 with separate Rishi YES.      ║
+# ║  ✅ LIVE — Day-5 Step 4 (Phase 0 C10) deploys this stack on rishi-4/5.    ║
+# ║  rishi-1/2/3 edge Caddy upstream is still DEFERRED per A2; until that     ║
+# ║  lands this stack receives no real traffic but validates the deploy       ║
+# ║  shape + has the listener + cert scaffolding ready. Coordinator           ║
+# ║  clarification 2026-05-17: original "edge ingress" framing in this        ║
+# ║  preamble was kept verbatim from PR #10 — semantically it IS the          ║
+# ║  internal-cluster Caddy that receives proxied traffic from the (future)   ║
+# ║  rishi-1/2/3 edge layer. There is NO separate "internal service-to-       ║
+# ║  service" Caddy; v2 services talk via Swarm DNS over yral-v2-internal    ║
+# ║  directly without an intermediary proxy.                                  ║
 # ║                                                                              ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
@@ -118,12 +126,15 @@ services:
         source: yral_v2_edge_caddy_config
         target: /config
 
-    # The Caddyfile is delivered as a Swarm config object so we get the
-    # SHA-rotating naming pattern from CONSTRAINTS H2. The deploy workflow
-    # is responsible for creating the config with the SHA suffix; this
-    # file references the *current* alias.
+    # The Caddyfile is delivered as a Swarm config object with a SHA-suffixed
+    # name per CONSTRAINTS H2. `caddy-install.sh` hashes `caddyfile.placeholder`
+    # (or whatever the active Caddyfile content file is) and creates a Swarm
+    # config named `yral_v2_edge_caddyfile_<sha8>`, then exports the resolved
+    # name as YRAL_EDGE_CADDY_STACK_RESOLVED_YRAL_V2_EDGE_CADDYFILE for envsubst
+    # to render into this file. Editing the Caddyfile → new sha8 → new config
+    # name → Swarm rolls the service onto the new config on next deploy.
     configs:
-      - source: yral_v2_edge_caddyfile_current
+      - source: ${YRAL_EDGE_CADDY_STACK_RESOLVED_YRAL_V2_EDGE_CADDYFILE}
         target: /etc/caddy/Caddyfile
         mode: 0444
 
@@ -159,11 +170,12 @@ networks:
     external: true
 
 
-# Caddyfile content arrives as a Swarm config object created by the
-# deploy workflow — the alias `yral_v2_edge_caddyfile_current` always
-# points at the latest `_<sha8>` revision per CONSTRAINTS H2.
+# Caddyfile content arrives as an external Swarm config created by
+# `caddy-install.sh` BEFORE `docker stack deploy`. The name is
+# envsubst-rendered from YRAL_EDGE_CADDY_STACK_RESOLVED_YRAL_V2_EDGE_CADDYFILE
+# (SHA-suffixed per CONSTRAINTS H2).
 configs:
-  yral_v2_edge_caddyfile_current:
+  ${YRAL_EDGE_CADDY_STACK_RESOLVED_YRAL_V2_EDGE_CADDYFILE}:
     external: true
 
 
