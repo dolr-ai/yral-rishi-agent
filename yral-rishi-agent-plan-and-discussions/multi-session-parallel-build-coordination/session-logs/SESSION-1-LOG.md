@@ -1,6 +1,48 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-17 — HARDENING: `fill-rishi-5-disk.sh` SSH-by-IP + drop-sudo + write-under-rishi-deploy-home — Day-5 Step 5 retry-prep #5
+
+### Action
+Chaos retry 5 (post-PR #83): **Tests 1 + 2 both PASSED clean** (kill-rishi-6 with node-agnostic leader check + kill-patroni-leader with real failover + write/read roundtrip; Phase 0 exit criterion rows 1 + 2 cleared). Test 3 (fill-rishi-5-disk) failed first time it was exercised: `ERROR fill-rishi-5-disk: SSH to rishi-5 failed`. This PR fixes Test 3's mechanics.
+
+### Diagnostic
+Test as designed had three compounding issues:
+1. **SSH hostname doesn't resolve**: `ssh rishi-deploy@rishi-5` ran from rishi-4 host shell. `rishi-5` is an overlay-DNS hostname (resolvable inside containers on the data-plane overlay) but NOT in DNS from the host shell. Same root-cause class as PR #80's Patroni-REST-curl bug.
+2. **Narrow sudoers blocks `sudo fallocate` + `sudo rm`**: per CONSTRAINTS C8, rishi-deploy can only `sudo docker / systemctl <whitelist>`. The test wrote to `/data/yral-v2-chaos-fill-disk.bin` which requires sudo. `sudo -n -l` on rishi-5 confirmed only docker + systemctl + journalctl + apt-get allowed.
+3. **`/data` doesn't actually exist as a separate mount on rishi-5**: `df` confirmed single `/dev/sda1` mounted at `/`. Filling `/home/rishi-deploy/` exerts the SAME disk pressure on Postgres because `/home/rishi-deploy/` and `/data/` (the bind-mount path Patroni uses) both live on the same backing partition.
+
+### Fix
+- SSH to rishi-deploy via `YRAL_RISHI_5_PUBLIC_IPV4` (the env var the install scripts already use), not the overlay-DNS hostname literal `rishi-5`. New module var `NODE_TO_FILL_DISK_ON_IPV4` resolves the IP at script start; `confirm_preconditions` requires it.
+- `DUMMY_FILL_FILE_PATH`: `/data/yral-v2-chaos-fill-disk.bin` → `/home/rishi-deploy/yral-v2-chaos-fill-disk.bin`. rishi-deploy can write here without sudo. Same backing partition as `/data`, so equivalent disk-pressure semantics.
+- Drop `sudo` prefix from `fallocate` (file create) and `rm` (cleanup + safety-trap) calls.
+- `df --output=...% /data` → `df --output=...% /` for the percentage queries (single-partition layout; querying `/` is what we actually want).
+- Module-level role-comments capture the WHY for each change so future readers see (a) the sudoers vs path-permission interaction, (b) why home-vs-data-path is semantically equivalent on a single-partition layout, (c) why overlay-DNS hostnames don't resolve from host shells.
+
+### Constraints touched
+A2.1 (single concern: fill-disk mechanics), B7 (role-comments capture sudoers gap + single-partition layout + overlay-DNS-vs-host-shell wrinkle), C8 (sudoers stays narrow — chaos test is the thing that adapts), I11 (same-commit LOG entry), I14 (auto-merge eligible).
+
+### Diff size
+~50 lines code (sed-replaced + 2 hand-edits) + LOG entry. Well under 400 cap.
+
+### Day-5 Step 5 chaos-test arc tally
+- PR #80: host-vs-overlay-DNS + trap-cleanup + existence-gating
+- PR #81: kill mechanism uses service-scale instead of docker-kill
+- PR #82: executor filter + restore-before-sanity ordering
+- PR #83: node-agnostic Patroni-leader check
+- **PR #84 (this): fill-rishi-5-disk mechanics — SSH-by-IP + drop-sudo + write-under-home**
+
+### Operator action after merge
+scp updated `fill-rishi-5-disk.sh` + retry battery. Tests 1 + 2 already known-good (regression check), Test 3 should now actually exercise disk pressure + alertmanager (or SKIP cleanly since alertmanager isn't deployed in Phase 0 per PR #80), Test 4 runs for the first time.
+
+### Captured insight (23rd — for chaos-test design)
+**Chaos tests that need root-level disk operations (fallocate, dd) on a narrow-sudoers user have three escape paths**: (a) write under the unprivileged user's home (works if filesystem layout is single-partition or the home is on the same backing disk as the target), (b) widen sudoers for the specific operation (cluster-config change, not test-mechanics), (c) inject via `docker exec` into a container with privileged disk access. Phase 0 used (a). Sessions 3+4 can revisit (c) if more disruption modes are needed.
+
+### Captured insight (24th — for chaos-test design)
+**"SSH to a node" from a host shell uses IPv4, not overlay-DNS hostnames.** Overlay-DNS resolves inside container networks; host shells use system DNS / `/etc/hosts` / configured SSH aliases — none of which v2 cluster managers have for `rishi-N`. Pattern: read `YRAL_RISHI_N_PUBLIC_IPV4` at script start; require it in `confirm_preconditions`; SSH to `rishi-deploy@$IP` not `rishi-deploy@rishi-N`. Same pattern install scripts (langfuse-install.sh, etc.) already use.
+
+---
+
 ## 2026-05-17 — HARDENING: `kill-rishi-6.sh` Patroni-leader check is node-agnostic — Day-5 Step 5 retry-prep #4
 
 ### Action

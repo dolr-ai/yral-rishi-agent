@@ -38,10 +38,17 @@ set -euo pipefail
 
 # ────────────────────────── Constants ───────────────────────────────────────
 
-# Where the dummy file lives. /data is the bind-mount partition for
-# Patroni + Redis on edge nodes; filling it tests the alert that
-# matters. NOT /tmp because /tmp may be a tmpfs in RAM.
-DUMMY_FILL_FILE_PATH=/data/yral-v2-chaos-fill-disk.bin
+# Where the dummy file lives. Day-5 Step 5 chaos retry 5 surfaced two
+# compounding issues with the original `/data/yral-v2-chaos-fill-disk.bin`
+# path: (a) `/data` requires root to write, and the narrow sudoers
+# (CONSTRAINTS C8) grants rishi-deploy `sudo docker / systemctl` only,
+# NOT `sudo fallocate / sudo rm`; (b) writing as rishi-deploy under
+# their home avoids sudo entirely. The actual disk pressure on Patroni
+# is unchanged: rishi-5's `/data` and `/home/rishi-deploy/` share the
+# same backing partition (`/dev/sda1` mounted at `/`, no separate
+# /data mount), so a fill file in HOME pressures the SAME physical
+# disk Postgres writes to.
+DUMMY_FILL_FILE_PATH=/home/rishi-deploy/yral-v2-chaos-fill-disk.bin
 
 # Target the chaos test fills the disk TO. 80% matches the
 # CONSTRAINTS §6.5 alert threshold ("disk free < 20%").
@@ -53,8 +60,11 @@ TARGET_DISK_FILL_PERCENTAGE=80
 ALERT_FIRE_WAIT_SECONDS=$((5 * 60))
 
 # The node we fill. Defaults to rishi-5 (sync replica + Prometheus
-# host); override via env to test rishi-4 disk-full path later.
+# host); override via env to test rishi-4 disk-full path later. The
+# IPv4 (not the hostname) is what we SSH to — overlay-DNS hostnames
+# don't resolve from the host shell on the test runner.
 NODE_TO_FILL_DISK_ON="${YRAL_NODE_TO_FILL_DISK_ON:-rishi-5}"
+NODE_TO_FILL_DISK_ON_IPV4="${YRAL_RISHI_5_PUBLIC_IPV4:-}"
 
 
 # ────────────────────────── Entry point ─────────────────────────────────────
@@ -94,9 +104,13 @@ confirm_preconditions() {
     # The cleanup trap removes the dummy file even on early failure.
     trap "delete_dummy_fill_file_silently_on_exit" EXIT
 
+    if [[ -z "${NODE_TO_FILL_DISK_ON_IPV4}" ]]; then
+        echo "ERROR fill-rishi-5-disk: YRAL_RISHI_5_PUBLIC_IPV4 must be set (or YRAL_<NODE>_PUBLIC_IPV4 for an override target)" >&2
+        exit 1
+    fi
     if ! ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 \
-        "rishi-deploy@${NODE_TO_FILL_DISK_ON}" "echo ok" >/dev/null 2>&1; then
-        echo "ERROR fill-rishi-5-disk: SSH to ${NODE_TO_FILL_DISK_ON} failed" >&2
+        "rishi-deploy@${NODE_TO_FILL_DISK_ON_IPV4}" "echo ok" >/dev/null 2>&1; then
+        echo "ERROR fill-rishi-5-disk: SSH to ${NODE_TO_FILL_DISK_ON} (${NODE_TO_FILL_DISK_ON_IPV4}) failed" >&2
         exit 1
     fi
 }
@@ -111,12 +125,12 @@ capture_baseline_disk_usage() {
     #        size would over- or under-fill on machines with different
     #        baselines.
     local disk_usage_line
-    disk_usage_line="$(ssh "rishi-deploy@${NODE_TO_FILL_DISK_ON}" \
-        "df --output=size,used,pcent /data | tail -n 1")"
+    disk_usage_line="$(ssh "rishi-deploy@${NODE_TO_FILL_DISK_ON_IPV4}" \
+        "df --output=size,used,pcent / | tail -n 1")"
     DISK_TOTAL_KILOBYTES="$(echo "${disk_usage_line}" | awk '{print $1}')"
     DISK_USED_KILOBYTES="$(echo "${disk_usage_line}" | awk '{print $2}')"
     BASELINE_DISK_USAGE_PERCENTAGE="$(echo "${disk_usage_line}" | awk '{print $3}' | tr -d '%')"
-    echo "fill-rishi-5-disk: baseline = ${BASELINE_DISK_USAGE_PERCENTAGE}% on ${NODE_TO_FILL_DISK_ON}:/data"
+    echo "fill-rishi-5-disk: baseline = ${BASELINE_DISK_USAGE_PERCENTAGE}% on ${NODE_TO_FILL_DISK_ON}:/ (root partition; /data shares the same backing disk)"
 }
 
 
@@ -139,12 +153,12 @@ create_dummy_fill_file_on_target_node() {
     additional_kilobytes_needed=$(( fill_target_kilobytes - DISK_USED_KILOBYTES ))
 
     echo "fill-rishi-5-disk: allocating ${additional_kilobytes_needed} KiB on ${NODE_TO_FILL_DISK_ON}:${DUMMY_FILL_FILE_PATH}"
-    ssh "rishi-deploy@${NODE_TO_FILL_DISK_ON}" \
-        "sudo fallocate --length=${additional_kilobytes_needed}KiB ${DUMMY_FILL_FILE_PATH}"
+    ssh "rishi-deploy@${NODE_TO_FILL_DISK_ON_IPV4}" \
+        "fallocate --length=${additional_kilobytes_needed}KiB ${DUMMY_FILL_FILE_PATH}"
 
     local post_fill_percentage
-    post_fill_percentage="$(ssh "rishi-deploy@${NODE_TO_FILL_DISK_ON}" \
-        "df --output=pcent /data | tail -n 1 | tr -d ' %'")"
+    post_fill_percentage="$(ssh "rishi-deploy@${NODE_TO_FILL_DISK_ON_IPV4}" \
+        "df --output=pcent / | tail -n 1 | tr -d ' %'")"
     echo "  post-fill = ${post_fill_percentage}% (target ~${TARGET_DISK_FILL_PERCENTAGE}%)"
 }
 
@@ -252,8 +266,8 @@ delete_dummy_fill_file_and_confirm_recovery() {
     # WHEN:  after Patroni-writable check passes.
     # WHY:   restore is part of the contract; alert auto-resolves once
     #        the metric drops below threshold for a sustained interval.
-    ssh "rishi-deploy@${NODE_TO_FILL_DISK_ON}" \
-        "sudo rm --force ${DUMMY_FILL_FILE_PATH}"
+    ssh "rishi-deploy@${NODE_TO_FILL_DISK_ON_IPV4}" \
+        "rm --force ${DUMMY_FILL_FILE_PATH}"
 
     local recovery_deadline_seconds=120
     local started_at; started_at="$(date +%s)"
@@ -264,8 +278,8 @@ delete_dummy_fill_file_and_confirm_recovery() {
             return 1
         fi
         local current_percentage
-        current_percentage="$(ssh "rishi-deploy@${NODE_TO_FILL_DISK_ON}" \
-            "df --output=pcent /data | tail -n 1 | tr -d ' %'")"
+        current_percentage="$(ssh "rishi-deploy@${NODE_TO_FILL_DISK_ON_IPV4}" \
+            "df --output=pcent / | tail -n 1 | tr -d ' %'")"
         if (( current_percentage < TARGET_DISK_FILL_PERCENTAGE )); then
             echo "  ✅ disk usage back to ${current_percentage}% on ${NODE_TO_FILL_DISK_ON}"
             return 0
@@ -281,8 +295,8 @@ delete_dummy_fill_file_silently_on_exit() {
     # WHY:   leaving an 80%-fill dummy file on the box would be
     #        operational damage. This trap fires before the lock file
     #        is released so the next chaos run sees a clean state.
-    ssh -o ConnectTimeout=5 "rishi-deploy@${NODE_TO_FILL_DISK_ON}" \
-        "sudo rm --force ${DUMMY_FILL_FILE_PATH}" 2>/dev/null || true
+    ssh -o ConnectTimeout=5 "rishi-deploy@${NODE_TO_FILL_DISK_ON_IPV4}" \
+        "rm --force ${DUMMY_FILL_FILE_PATH}" 2>/dev/null || true
     rm --force /tmp/yral-v2-chaos-running.lock 2>/dev/null || true
 }
 
