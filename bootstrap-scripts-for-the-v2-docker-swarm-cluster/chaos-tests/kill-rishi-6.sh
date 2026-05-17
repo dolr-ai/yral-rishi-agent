@@ -72,9 +72,17 @@ HOT_PATH_SERVICES_THAT_MUST_RESCHEDULE=(
 
 main() {
     confirm_preconditions
+    # State-restoration runs in an EXIT trap so a `set -e` abort from
+    # verify_recovery_after_drain (or any other failure point after the
+    # drain command lands) still leaves the cluster restored to pre-test
+    # state. Day-5 Step 5 chaos retry surfaced that the previous shape —
+    # calling restore_node_to_active_availability as a regular function
+    # post-verify — left rishi-6 drained on every test failure.
+    DRAIN_HAS_BEEN_INJECTED=true
+    trap 'if [[ "${DRAIN_HAS_BEEN_INJECTED:-false}" == "true" ]]; then restore_node_to_active_availability || true; fi; rm -f /tmp/yral-v2-chaos-running.lock' EXIT
+
     inject_chaos_drain_node
     verify_recovery_after_drain
-    restore_node_to_active_availability
     print_post_test_summary
 }
 
@@ -147,8 +155,22 @@ verify_recovery_after_drain() {
     echo "kill-rishi-6: waiting ${RESCHEDULE_WAIT_SECONDS}s for reschedule"
     sleep "${RESCHEDULE_WAIT_SECONDS}"
 
+    # HOT_PATH_SERVICES_THAT_MUST_RESCHEDULE references services that only
+    # exist after Sessions 3+4 spawn their deliverables. In Phase 0 they
+    # don't exist yet; without an existence gate the loop's `grep --count`
+    # returns 0 trivially for an empty service-ps output, so the assertion
+    # is vacuously true — passing without actually exercising HA. Gating
+    # on `docker service ls` existence makes the trivial pass explicit +
+    # turns the bug into a clear SKIP log line per chaos-test-hardening.
     local hot_path_service_name
     for hot_path_service_name in "${HOT_PATH_SERVICES_THAT_MUST_RESCHEDULE[@]}"; do
+        local service_exists
+        service_exists="$(docker service ls --filter "name=${hot_path_service_name}" \
+            --format '{{.Name}}' 2>/dev/null | grep --count --line-regexp "${hot_path_service_name}" || true)"
+        if [[ "${service_exists}" == "0" ]]; then
+            echo "  ⏭ SKIP: ${hot_path_service_name} not deployed yet (Phase 0; Sessions 3+4 will add). Hot-path HA check is Phase-0-trivial-pass."
+            continue
+        fi
         local replicas_on_drained_node
         replicas_on_drained_node="$(docker service ps "${hot_path_service_name}" \
             --filter "desired-state=running" \
@@ -160,10 +182,17 @@ verify_recovery_after_drain() {
         echo "  ✅ ${hot_path_service_name} has 0 replicas on ${NODE_TO_DRAIN}"
     done
 
-    # Patroni leader check via REST API on rishi-4 (the expected leader).
+    # Patroni leader check via etcd (NOT host-curl to overlay-DNS).
+    # Day-5 Step 5 chaos run 1 surfaced that `curl http://patroni-rishi-4:8008/cluster`
+    # from the host shell returns empty — `patroni-rishi-4` is a Docker overlay-DNS
+    # name only resolvable from inside containers attached to yral-v2-data-plane.
+    # `etcdctl get /service/yral-v2-postgres/leader` returns the same answer via
+    # the etcd-stored Patroni cluster state, queried from inside the etcd container
+    # (etcd-rishi-4 is unaffected by any chaos test → always queryable).
     local patroni_leader_hostname
-    patroni_leader_hostname="$(curl --silent --max-time 5 \
-        http://patroni-rishi-4:8008/cluster | jq -r '.members[] | select(.role=="leader") | .name' || true)"
+    patroni_leader_hostname="$(docker exec "$(docker ps --filter name=etcd-rishi-4 --quiet | head -1)" \
+        etcdctl --endpoints=http://etcd-rishi-4:2379 \
+        get /service/yral-v2-postgres/leader --print-value-only 2>/dev/null || true)"
     if [[ "${patroni_leader_hostname}" != "patroni-rishi-4" ]]; then
         echo "FAIL kill-rishi-6: Patroni leader is '${patroni_leader_hostname}', expected patroni-rishi-4" >&2
         return 1
