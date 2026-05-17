@@ -19,13 +19,23 @@
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 {
-    # Caddy global options. `auto_https off` prevents Caddy from trying to
-    # solve ACME challenges against external CAs during Phase 0 — there is
-    # no public traffic source pointed here yet, so ACME would fail. The
-    # `:443` site below uses `tls internal` to generate a self-signed cert
-    # locally instead. The admin endpoint binds 127.0.0.1:2019 by default
-    # — explicit here to match what the stack-file healthcheck probes.
-    auto_https off
+    # Caddy global options. The admin endpoint binds 127.0.0.1:2019 by
+    # default — explicit here to match the stack-file healthcheck probe.
+    #
+    # We do NOT set `auto_https off`. Day-5 Step 4 deploy bug #1 surfaced
+    # the gotcha: `auto_https off` sets `automatic_https.disable=true` in
+    # Caddy's effective config, which then leaves `tls_connection_policies`
+    # empty for all sites — `tls internal` provisioning never runs, so any
+    # TLS handshake to :443 fails with a server-side `internal_error`
+    # alert (curl exit 35 / openssl SSL alert 80). The intuitive reading
+    # of `auto_https off` is "no ACME against public CAs", but it actually
+    # disables ALL automatic cert handling including the local-CA path
+    # `tls internal` depends on. Since we explicitly use `tls internal`
+    # below, we want automatic HTTPS enabled so Caddy provisions the
+    # local CA + per-SNI certs on demand. ACME against Let's Encrypt
+    # never triggers because the `:443` site below uses `tls internal`
+    # explicitly — Caddy honors per-site issuer directives over the
+    # global default.
     admin 127.0.0.1:2019
 }
 

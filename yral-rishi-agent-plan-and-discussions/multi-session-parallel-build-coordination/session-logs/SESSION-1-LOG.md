@@ -1,6 +1,80 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-17 — FIX: Caddyfile drops `auto_https off` so `tls internal` actually provisions certs — Day-5 Step 4 deploy bug #1
+
+### Action
+PR #76 deploy worked at the orchestration level (2/2 replicas Running on edge nodes, 30s post-deploy verifier passed) but `curl --insecure https://<rishi-4>/` failed with `tlsv1 alert internal error`. Diagnostic via `openssl s_client` + Caddy admin API confirmed: Caddy's effective config showed `automatic_https.disable=true` and an empty `tls_connection_policies: [{}]` — no cert to present at TLS handshake → server sends `internal_error` alert (SSL alert number 80) → handshake aborts.
+
+Root cause: my caddyfile.placeholder global block contained `auto_https off`. I added it thinking it would only block ACME-against-Let's-Encrypt during Phase 0 (no public traffic source pointed here yet). What it actually does: sets the JSON-config `automatic_https.disable=true`, which disables ALL automatic cert handling — including the local-CA path that `tls internal` depends on. `tls internal` is documented as part of Caddy's automatic-HTTPS subsystem, so disabling automatic-HTTPS globally breaks it.
+
+### Diagnostic (cited before fix)
+
+**openssl probe**:
+```
+$ openssl s_client -connect 138.201.128.108:443 -servername any.example
+... error:0A000438:SSL routines:ssl3_read_bytes:tlsv1 alert internal error
+... SSL alert number 80
+... no peer certificate available
+... New, (NONE), Cipher is (NONE)
+```
+
+`SSL alert number 80` = TLS `internal_error` — server-side fatal. Server never sent a cert. Handshake aborted after ClientHello.
+
+**Caddy effective config** (`docker exec <web> wget -qO - http://127.0.0.1:2019/config/`):
+```json
+{
+  "apps": {
+    "http": { "servers": { "srv0": {
+      "automatic_https": { "disable": true },                       // ← from `auto_https off`
+      "listen": [":443"],
+      "routes": [{ "handle": [{ "body": "v2 cluster edge...", ... }] }],
+      "tls_connection_policies": [{}]                              // ← empty, no cert configured
+    }}},
+    "tls": { "automation": { "policies": [{"issuers":[{"module":"internal"}]}] } }
+  }
+}
+```
+
+The `tls.automation.policies` has the `internal` issuer set (from `tls internal`), but `automatic_https.disable=true` prevents the policies from materializing into a connection policy with certs. Empty `tls_connection_policies` = no cert at handshake time.
+
+**/proc/net/tcp inside container**: `0000...:01BB` listening — port :443 IS bound, IPv6 dual-stack. Listener exists; just can't serve TLS.
+
+### Fix
+`caddyfile.placeholder` global block: remove `auto_https off`. ~6 lines (1 directive + 5 supporting comment-line rewrites). Replace the now-stale "auto_https off prevents ACME" comment with the lesson learned (auto_https off disables ALL automatic cert handling including `tls internal`).
+
+ACME against Let's Encrypt does NOT trigger because the `:443` site below explicitly uses `tls internal` — Caddy honors per-site issuer directives over the global default. So removing the global `auto_https off` doesn't open us up to ACME failures.
+
+### Constraints touched
+A2.1 (single concern: 1-directive removal + corresponding root-cause-comment swap; nothing else bundled), B7 (comment captures the lesson + why removing didn't open us to ACME issues), I11 (same-commit LOG entry), I14 (auto-merge-eligible — diff is ~15 lines code + LOG).
+
+### Diff size
+~15 lines in caddyfile.placeholder + LOG entry. Well under 400-line gate.
+
+### Operator action after merge
+scp updated `caddyfile.placeholder` to rishi-4:~/yral-deploy-caddy-76/, re-run `bash ~/yral-deploy-caddy-76/caddy-install.sh` with `YRAL_RISHI_{4,5,6}_PUBLIC_IPV4` set. New file content → new sha8 → new `yral_v2_edge_caddyfile_<sha8>` Swarm config → Caddy rolls onto new config.
+
+### Verification plan (post-deploy)
+1. `confirm_stack_actually_deployed` (30s) passes.
+2. `curl --insecure https://<rishi-4-ip>/ --resolve any.example:443:<rishi-4-ip>` returns the Phase-0 placeholder response, HTTP 200.
+3. Same from rishi-5.
+4. 5-min long-run check via `docker service ps`.
+
+Outcome:
+- Green → Step 4 closes (1-bug arc, well within the 1-3 allowance). Auto-flow into Step 5 (chaos tests).
+- Red on a new failure → STOP per escape clause; surface for triage.
+
+### Day-5 Step 4 bug-count tally (running)
+- Surfaced at deploy time: 1 (this PR — `auto_https off` disables `tls internal`)
+
+### Captured insight (14th — for future Caddy-in-Phase-0 deploys)
+**Caddy's `auto_https off` disables ALL automatic cert handling, NOT just ACME-against-public-CAs.** This includes `tls internal` (the local-CA path used for self-signed certs). If you want to use `tls internal` without ACME against external CAs, just use `tls internal` per-site — don't add `auto_https off` globally. The per-site issuer directive overrides Caddy's global ACME default cleanly. If you genuinely want to disable HTTP-to-HTTPS redirects only, use `auto_https disable_redirects` instead.
+
+### Known non-blocking warnings (separate from this PR)
+Caddy startup logs include a `level=error` entry about installing the root cert to `/tmp/truststore.*.pem: read-only file system`. This is the host-OS-truststore install (so a client's OS would trust Caddy's local CA without prompting). Not blocking cert serving — Caddy continues normally. Comes from the read-only container + tmpfs interaction. Not in scope for this PR; queueable cleanup if anyone wants OS-truststore install to succeed (probably not necessary since cert verification is `--insecure` from upstream).
+
+---
+
 ## 2026-05-17 — NEW: `caddy-install.sh` + Phase-0 Caddyfile placeholder — Day-5 Step 4 (C10 cluster-side edge Caddy) deploy artifacts
 
 ### Action
