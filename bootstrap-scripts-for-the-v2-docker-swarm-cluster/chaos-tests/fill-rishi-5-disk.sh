@@ -211,8 +211,11 @@ verify_patroni_still_writable() {
     # FAIL on a host-side resolver miss).
     local sanity_check_nonce; sanity_check_nonce="chaos-disk-$(date +%s)-$RANDOM"
 
+    # Filter is `name=yral-v2-patroni_patroni-` (specifically Spilo
+    # patroni containers, NOT the etcd / pgbouncer siblings in the
+    # same stack — only Spilo ships psql).
     local executor_container_id
-    executor_container_id="$(docker ps --filter "name=yral-v2-patroni" --quiet | head -1)"
+    executor_container_id="$(docker ps --filter "name=yral-v2-patroni_patroni-" --quiet | head -1)"
     if [[ -z "${executor_container_id}" ]]; then
         echo "  ⏭ SKIP write/read sanity: no local patroni container available on this host. Disk-pressure injection still demonstrates cluster reaction; Patroni-writes verification will activate post-Sessions-3+4 when full service mesh is up."
         return 0
