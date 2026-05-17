@@ -273,7 +273,20 @@ services:
         delay: 5s
         max_attempts: 5
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/api/public/health"]
+      # Probe target is 127.0.0.1 explicitly, NOT `localhost`. The container's
+      # /etc/hosts maps localhost to BOTH 127.0.0.1 (IPv4) AND ::1 (IPv6), and
+      # `getent hosts localhost` returns ::1 first. BusyBox wget consults the
+      # resolver and tries ::1:3000 — but Next.js's HOSTNAME=0.0.0.0 binds
+      # IPv4-only (Node.js's 0.0.0.0 listen does not dual-stack on Linux), so
+      # the IPv6 loopback has no listener and the probe gets `Connection
+      # refused`. Day-5-Step-3 deploy bug #14: this manifested as the same
+      # exit-137 "unhealthy container" pattern PR #71 thought it had fixed.
+      # Direct probe against 127.0.0.1:3000 from inside the live container
+      # returns {"status":"OK","version":"3.174.1"} — the app is healthy; only
+      # the probe target was wrong. Once node-bootstrap pins Next.js to dual-
+      # stack listening or the image's /etc/hosts is adjusted, `localhost` is
+      # also safe — until then, 127.0.0.1 is the deterministic target.
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:3000/api/public/health"]
       interval: 30s
       timeout: 5s
       retries: 5
