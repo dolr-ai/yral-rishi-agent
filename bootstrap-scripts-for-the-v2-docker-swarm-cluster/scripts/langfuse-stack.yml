@@ -168,8 +168,30 @@ services:
       # while DATABASE_URL stays pooled for fast runtime queries.
       DIRECT_URL: postgresql://langfuse:${YRAL_LANGFUSE_POSTGRES_PASSWORD_RENDERED}@patroni-rishi-4:5432/postgres?schema=langfuse
       NEXTAUTH_URL: https://langfuse.rishi.yral.com
+      # Langfuse 3's Next.js app uses t3-env createEnv (web/src/env.mjs)
+      # which validates `process.env.NEXTAUTH_SECRET` / `SALT` /
+      # `ENCRYPTION_KEY` directly. The container's `/app/web/entrypoint.sh`
+      # does NOT expand `*_FILE` env vars into their plain counterparts —
+      # `_FILE` is honored ONLY by some runtime code paths (e.g. the
+      # shared validator's CLICKHOUSE_PASSWORD path) but NOT by the
+      # Next.js boot-time server schema. Day-5-Step-3 attempt #10 surfaced
+      # this: `unhandledRejection: Error: An error occurred while loading
+      # instrumentation hook: Invalid environment variables`. Diagnostic
+      # extracted the t3-env schema from web/src/env.mjs (upstream main);
+      # 7 vars are truly-required in NODE_ENV=production; the 4 NOT yet
+      # set inline were SALT (z.string explicit-error), NEXTAUTH_SECRET
+      # (z.string().min(1) in production), and ENCRYPTION_KEY (.optional()
+      # but needed at runtime for API-key encryption — added for runtime
+      # correctness, not just validator passage).
+      #
+      # The _FILE mounts stay declared for compatibility but the inline
+      # forms are what actually take effect. Future cleanup: drop the
+      # _FILE entries since they're unused.
       NEXTAUTH_SECRET_FILE: /run/secrets/langfuse-nextauth-secret
+      NEXTAUTH_SECRET: ${YRAL_LANGFUSE_NEXTAUTH_SECRET_RENDERED}
       ENCRYPTION_KEY_FILE: /run/secrets/langfuse-encryption-key
+      ENCRYPTION_KEY: ${YRAL_LANGFUSE_ENCRYPTION_KEY_RENDERED}
+      SALT: ${YRAL_LANGFUSE_SALT_RENDERED}
       # ClickHouse for traces.
       # CLICKHOUSE_URL is used at runtime (HTTP, port 8123).
       # CLICKHOUSE_MIGRATION_URL is used by Langfuse 3's `langfuse-cli`
