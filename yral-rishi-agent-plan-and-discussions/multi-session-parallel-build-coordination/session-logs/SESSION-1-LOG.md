@@ -1,6 +1,94 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-17 — FIX: pin a hostname on the caddy placeholder site so `tls internal` has a cert SUBJECT — Day-5 Step 4 deploy bug #3 (coordinator-authorized override of bug-budget cap)
+
+### Action
+PR #78 (drop `read_only: true`) fixed /tmp — `docker exec <caddy> touch /tmp/...` now succeeds and Caddy's startup log shows `"certificate installed properly in linux trusts"`. BUT TLS handshakes to :443 STILL fail with `internal_error` from every vantage point (Mac, cross-node, container loopback). This is bug #3 of the Step-4 budget.
+
+Coordinator authorized **explicit override of the 3-bug cap** (same precedent as PR #73 healthcheck-arc override). Reasoning recorded in `feedback_escape_clause_override_pattern.md`: budget cap exists for blind iteration on unknown root causes; root cause + airtight evidence + bounded fix = COMPLETION, not iteration. Captured here for the audit trail.
+
+### Diagnostic (cited before fix)
+
+`docker exec <caddy> find /data/caddy -type f`:
+```
+/data/caddy/pki/authorities/local/root.crt
+/data/caddy/pki/authorities/local/root.key
+/data/caddy/pki/authorities/local/intermediate.crt
+/data/caddy/pki/authorities/local/intermediate.key
+/data/caddy/instance.uuid
+/data/caddy/last_clean.json
+```
+
+Local CA exists (root + intermediate). **NO leaf certs** under `/data/caddy/certificates/`. That's the smoking gun.
+
+Caddy startup logs after PR #78:
+- `"server is listening only on the HTTPS port but has no TLS connection policies; adding one to enable TLS"` ✓
+- `"certificate installed properly in linux trusts"` ✓
+- `"server running","name":"srv0","protocols":["h1","h2","h3"]` ✓
+- NO `level=error` entries
+- NO log entries at all from handshake-time (TLS fails BEFORE Caddy logs a request)
+
+Caddy effective config (`docker exec <caddy> wget -qO - http://127.0.0.1:2019/config/`):
+```json
+{
+  "apps": {
+    "http": { "servers": { "srv0": {
+      "listen": [":443"],
+      "routes": [...],
+      "tls_connection_policies": [{}]            // ← auto-added, but empty
+    }}},
+    "tls": { "automation": { "policies": [{"issuers":[{"module":"internal"}]}] } }
+  }
+}
+```
+
+The `tls.automation.policies[0]` has `internal` issuer set but NO `subjects` field. Without subjects, Caddy doesn't know what hostnames to issue certs for. The `tls_connection_policies[0]` is empty `{}` — accepts any SNI but presents no cert.
+
+**Root cause**: `tls internal` on a port-only `:443` site gives Caddy no SUBJECT (hostname) to bind a leaf cert to. The Caddyfile-to-JSON adapter creates the automation policy but doesn't populate `subjects`, so leaf-cert provisioning never runs. Empty leaf-cert set + any SNI handshake = `internal_error` alert from Caddy's TLS stack.
+
+### Fix
+`caddyfile.placeholder`: change site block address from `:443` to `placeholder.rishi.local`. ~1 strict-code line + ~13 supporting role-comment lines explaining the SUBJECT requirement + the placeholder hostname's transient role until Sessions 3+4 spawn real services.
+
+Caddy then:
+- Adapter populates `automation.policies[0].subjects=["placeholder.rishi.local"]`
+- Caddy provisions a leaf cert for `placeholder.rishi.local` from the local CA at startup or first handshake
+- Handshake against `--resolve placeholder.rishi.local:443:<ip>` succeeds
+
+### Constraints touched
+A2.1 (single concern: site-block address pin + role-comment), B7 (role-comment captures the SUBJECT requirement + override audit + transient-placeholder semantics), I11 (same-commit LOG entry), I14 (auto-merge-eligible). Override invocation parallels PR #73's precedent.
+
+### Diff size
+~1 strict-code line + ~13 role-comment lines + LOG entry. Well under 400-line gate.
+
+### Operator action after merge
+scp `caddyfile.placeholder` to rishi-4:~/yral-deploy-caddy-76/, re-run `bash caddy-install.sh`. New file content → new sha8 → new Swarm config → service rolls.
+
+### Verification plan (post-deploy)
+1. `confirm_stack_actually_deployed` (30s) passes.
+2. `docker exec <caddy> find /data/caddy/certificates -type f` shows a leaf cert for `placeholder.rishi.local` (post-handshake or eager-issued at startup).
+3. `curl --insecure --resolve placeholder.rishi.local:443:<rishi-4-ip> https://placeholder.rishi.local/` returns the placeholder response, HTTP 200.
+4. Same from rishi-5.
+5. 5-min long-run gate clean.
+
+Outcome:
+- Green → Step 4 closes at exactly the 3-bug arc + 1 override (parallels PR #73 + Step 3 close).
+- Red → STOP per escape clause; surface for Option C scope call. Override was granted on root-cause evidence; if evidence was wrong, back to the full escape rules.
+
+### Day-5 Step 4 bug-count tally (closing)
+- Surfaced at deploy time: 3 of 3 allowance + 1 coordinator-override (this PR completes the deploy)
+  - PR #77: `auto_https off` disables `tls internal` cert provisioning
+  - PR #78: Docker Swarm v24+ silently drops `tmpfs:` with `read_only: true` → /tmp read-only → `tls internal` cert temp files fail
+  - **PR #79 (this, under override): `tls internal` needs a SUBJECT (hostname) — port-only `:443` site gives no SNI to anchor a leaf cert**
+
+### Captured insight (16th — for future `tls internal` deployments)
+**`tls internal` requires a SUBJECT in the site block.** A port-only `:443 { tls internal ... }` site looks valid in Caddyfile syntax but produces an automation policy with no `subjects`, so leaf certs never issue. Symptoms: server `internal_error` (SSL alert 80) on any handshake; root+intermediate CAs present in storage but no leaf certs under `/data/caddy/certificates/`. Fix: pin a hostname (real domain, placeholder, or wildcard). For Phase-0 placeholders without real DNS, a `.local` or `.test` TLD works; smoke tests use `curl --resolve <hostname>:443:<ip>` to bind the SNI.
+
+### Captured insight (17th — coordinator-override precedent reinforced)
+**Two override invocations now**: PR #73 (Langfuse healthcheck IPv4/IPv6) + PR #79 (Caddy hostname pin). Pattern: budget caps exist to prevent blind iteration; when root cause is definitively diagnosed (with a concrete evidence table covering surface + result + interpretation) AND fix is bounded (≤ a few lines), coordinator may override for COMPLETION. Captured precedent: `feedback_escape_clause_override_pattern.md`. Future operators hitting "we're at the budget cap but I see the answer clearly" should STOP + surface evidence + request override rather than unilaterally proceed.
+
+---
+
 ## 2026-05-17 — FIX: drop `read_only: true` from caddy stack so `/tmp` is writable for `tls internal` — Day-5 Step 4 deploy bug #2
 
 ### Action
