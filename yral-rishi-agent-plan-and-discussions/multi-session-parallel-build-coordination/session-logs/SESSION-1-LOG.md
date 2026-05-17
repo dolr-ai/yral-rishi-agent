@@ -1,6 +1,40 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-17 — HARDENING: chaos-test psql executor filter + restore-before-sanity ordering — Day-5 Step 5 retry-prep #3
+
+### Action
+Chaos battery retry 3 (post-PR #81): Test 1 PASSED clean, Test 2 made it **all the way to leader election** (`✅ new leader = patroni-rishi-5 (failover took 0s)` — failover from patroni-rishi-4 → patroni-rishi-5 confirmed, TL 7 → TL 8 bumped, all replicas resynced to lag 0). The cluster behavior is correct. **But** the test FAILED at the next step: write/read sanity check returned empty (`FAIL kill-patroni-leader: write/read mismatch (wrote '<nonce>', read '')`).
+
+Root cause: PR #81's `docker ps --filter "name=yral-v2-patroni"` matched ALL containers in the patroni stack — including `yral-v2-patroni_etcd-rishi-4` and `yral-v2-patroni_pgbouncer`. At the moment of the write/read check the leader's patroni service was still scaled to 0, so no local patroni container existed on rishi-4. The filter's `head -1` picked the local etcd container. Etcd's image doesn't ship psql → the script silently failed (stderr was suppressed by `2>/dev/null`), nonce never landed in Postgres, read returned empty.
+
+### Fix
+Two-part. Both in this PR.
+
+1. **Tighten executor filter**: `name=yral-v2-patroni` → `name=yral-v2-patroni_patroni-` (underscore + `patroni-` prefix ensures match only on Spilo containers like `yral-v2-patroni_patroni-rishi-4`, NOT on etcd/pgbouncer siblings).
+2. **Restore before sanity check** in `kill-patroni-leader.sh` `main()`: reorder so `restore_killed_service_to_original_replicas` runs BEFORE `verify_no_data_loss_via_write_read_roundtrip`. After restore, Swarm respawns a local patroni-rishi-4 container (now a Replica following the new leader patroni-rishi-5) → executor lookup finds a real Spilo container → psql is available → write/read sanity exercises the real HA path. The new-leader-serves-writes signal is preserved because psql connects via pgbouncer overlay-DNS which routes to whichever node is the current leader, NOT the executor's host.
+
+Same filter fix in `fill-rishi-5-disk.sh::verify_patroni_still_writable` (defensive — that test doesn't scale anything to 0 so local patroni containers should be available, but the filter is the same robust shape).
+
+### Constraints touched
+A2.1 (single concern: 2-part fix for chaos-test executor lookup), B7 (role-comments capture filter rationale + restore-before-sanity ordering rationale), I11 (same-commit LOG entry), I14 (auto-merge eligible — diff ~25 lines code + LOG).
+
+### Operator action after merge
+scp 2 updated chaos scripts, re-run battery. Test 1 already known-good (regression check), Test 2 should now actually exercise the full failover + sanity path. Tests 3 + 4 run for the first time.
+
+### Day-5 Step 5 chaos-test arc tally
+- PR #80: host-vs-overlay-DNS + trap-cleanup + existence-gating
+- PR #81: kill mechanism uses service-scale instead of docker-kill
+- **PR #82 (this): executor filter + restore-before-sanity ordering**
+
+### Captured insight (20th — chaos-test executor lookup)
+**Stack-name filter on `docker ps` is too coarse when the stack has multiple service types.** `name=yral-v2-patroni` matches patroni-rishi-N, etcd-rishi-N, pgbouncer — even though only Spilo (patroni) ships psql. Use `name=<stack>_<service-prefix>` to filter on the actual binary you need.
+
+### Captured insight (21st — chaos-test verification ordering)
+**Restore-before-sanity ordering** is the correct shape when sanity checks need an executor container on the host where chaos was injected. The chaos-test contract isn't "destroy → verify destroyed → restore" — it's "destroy → verify failover happened → restore destroyed component → verify new state + restore worked". Sanity checks (which exercise the new state) should run AFTER restore makes the local toolchain available. The trap remains the safety net for set-e aborts.
+
+---
+
 ## 2026-05-17 — HARDENING: `kill-patroni-leader.sh` uses `docker service scale=0` (not `docker kill`) to actually exercise leader-election — Day-5 Step 5 retry-prep #2
 
 ### Action

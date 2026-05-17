@@ -83,8 +83,19 @@ main() {
 
     inject_chaos_scale_leader_service_to_zero
     verify_replica_promoted_within_deadline
-    verify_no_data_loss_via_write_read_roundtrip
+    # Restore-before-sanity-check ordering: chaos retry 3 surfaced that
+    # when the killed leader's service is scaled to 0, the host running
+    # the test (rishi-4, where patroni-rishi-4 lived) has no LOCAL
+    # patroni-* container to exec psql from — the other 2 patroni
+    # containers live on rishi-5/rishi-6. The fix is to restore first
+    # so Swarm respawns a local patroni container (now a Replica
+    # following the new leader), then run the sanity check from there.
+    # The new-leader-can-serve-writes signal is preserved because
+    # psql connects via pgbouncer overlay-DNS which routes to whichever
+    # node is the current leader (rishi-5 in retry 3's case), not the
+    # node the executor container runs on.
     restore_killed_service_to_original_replicas
+    verify_no_data_loss_via_write_read_roundtrip
     wait_for_rejoined_service_to_become_follower
     print_post_test_summary
 }
@@ -294,9 +305,14 @@ verify_no_data_loss_via_write_read_roundtrip() {
     local sanity_check_nonce
     sanity_check_nonce="chaos-$(date +%s)-$$-$RANDOM"
 
+    # Filter is `name=yral-v2-patroni_patroni-` (specifically Spilo
+    # patroni containers, NOT the etcd / pgbouncer containers in the
+    # same stack — only Spilo ships psql). Retry loop tolerates the
+    # 5-10s window between `docker service scale=1` and Swarm having a
+    # fresh task running locally.
     local executor_container_id="" attempt
     for attempt in 1 2 3 4 5 6 7 8 9 10; do
-        executor_container_id="$(docker ps --filter "name=yral-v2-patroni" --quiet | head -1)"
+        executor_container_id="$(docker ps --filter "name=yral-v2-patroni_patroni-" --quiet | head -1)"
         if [[ -n "${executor_container_id}" ]]; then break; fi
         sleep 3
     done
