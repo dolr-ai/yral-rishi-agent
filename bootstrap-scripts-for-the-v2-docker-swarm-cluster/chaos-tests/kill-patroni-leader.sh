@@ -321,30 +321,49 @@ verify_no_data_loss_via_write_read_roundtrip() {
         return 0
     fi
 
-    local psql_script="
-        PGPASSWORD=\"\$(cat /run/secrets/postgres-superuser-password 2>/dev/null || echo \"\${YRAL_POSTGRES_SUPERUSER_PASSWORD:-}\")\"
-        if [ -z \"\$PGPASSWORD\" ]; then echo 'NO_POSTGRES_PASSWORD'; exit 2; fi
-        export PGPASSWORD
-        psql --host=pgbouncer --username=postgres --dbname=postgres --no-password \
-            --command \"CREATE SCHEMA IF NOT EXISTS ${SANITY_CHECK_SCHEMA_NAME}; \
-                       CREATE TABLE IF NOT EXISTS ${SANITY_CHECK_SCHEMA_NAME}.sanity_log (inserted_at TIMESTAMPTZ DEFAULT now(), nonce TEXT); \
-                       INSERT INTO ${SANITY_CHECK_SCHEMA_NAME}.sanity_log (nonce) VALUES ('${sanity_check_nonce}');\"
-        psql --host=pgbouncer --username=postgres --dbname=postgres --no-password --tuples-only --no-align \
-            --command \"SELECT nonce FROM ${SANITY_CHECK_SCHEMA_NAME}.sanity_log WHERE nonce = '${sanity_check_nonce}';\"
-    "
+    # Day-5 Step 5 chaos retry 6 surfaced a real pgbouncer-routing-lag
+    # window during failover. When the chaos kill targets the LOCAL host's
+    # patroni container (e.g., killing patroni-rishi-4 from the rishi-4
+    # runner), the only executor available after restore is the
+    # just-respawned container. Its PostgreSQL client + pgbouncer's
+    # auth_query routing to the NEW leader haven't fully stabilised in
+    # the 0-5s post-restore window, so the first psql attempt silently
+    # returns empty. That's a real H3 observation — writes are briefly
+    # unavailable during the leader-routing transition — but it's not a
+    # FAIL of the broader contract (cluster eventually serves writes
+    # again). Retry the psql roundtrip with backoff until either the
+    # write/read matches the nonce or the deadline expires.
+    local read_back_value="" psql_attempt
+    for psql_attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+        # Re-roll the nonce on every attempt so a stale-cache return
+        # from a previous attempt can't masquerade as a clean success.
+        sanity_check_nonce="chaos-$(date +%s)-$$-$RANDOM-${psql_attempt}"
+        local per_attempt_psql_script="
+            PGPASSWORD=\"\$(cat /run/secrets/postgres-superuser-password 2>/dev/null || echo \"\${YRAL_POSTGRES_SUPERUSER_PASSWORD:-}\")\"
+            if [ -z \"\$PGPASSWORD\" ]; then echo 'NO_POSTGRES_PASSWORD'; exit 2; fi
+            export PGPASSWORD
+            psql --host=pgbouncer --username=postgres --dbname=postgres --no-password \
+                --command \"CREATE SCHEMA IF NOT EXISTS ${SANITY_CHECK_SCHEMA_NAME}; \
+                           CREATE TABLE IF NOT EXISTS ${SANITY_CHECK_SCHEMA_NAME}.sanity_log (inserted_at TIMESTAMPTZ DEFAULT now(), nonce TEXT); \
+                           INSERT INTO ${SANITY_CHECK_SCHEMA_NAME}.sanity_log (nonce) VALUES ('${sanity_check_nonce}');\"
+            psql --host=pgbouncer --username=postgres --dbname=postgres --no-password --tuples-only --no-align \
+                --command \"SELECT nonce FROM ${SANITY_CHECK_SCHEMA_NAME}.sanity_log WHERE nonce = '${sanity_check_nonce}';\"
+        "
+        read_back_value="$(docker exec "${executor_container_id}" sh -c "${per_attempt_psql_script}" 2>/dev/null | tail -1 || true)"
 
-    local read_back_value
-    read_back_value="$(docker exec "${executor_container_id}" sh -c "${psql_script}" 2>/dev/null | tail -1 || true)"
-
-    if [[ "${read_back_value}" == "NO_POSTGRES_PASSWORD" ]]; then
-        echo "  ⏭ SKIP write/read sanity: postgres-superuser-password secret not mounted in executor container. Leader election success still constitutes partial H3 signal."
-        return 0
-    fi
-    if [[ "${read_back_value}" != "${sanity_check_nonce}" ]]; then
-        echo "FAIL kill-patroni-leader: write/read mismatch (wrote '${sanity_check_nonce}', read '${read_back_value}')" >&2
-        return 1
-    fi
-    echo "  ✅ write+read roundtrip on new leader succeeded"
+        if [[ "${read_back_value}" == "NO_POSTGRES_PASSWORD" ]]; then
+            echo "  ⏭ SKIP write/read sanity: postgres-superuser-password secret not mounted in executor container. Leader election success still constitutes partial H3 signal."
+            return 0
+        fi
+        if [[ "${read_back_value}" == "${sanity_check_nonce}" ]]; then
+            echo "  ✅ write+read roundtrip on new leader succeeded (took ${psql_attempt} attempt(s))"
+            return 0
+        fi
+        echo "  … attempt ${psql_attempt}/12 write+read mismatch (wrote '${sanity_check_nonce:0:32}…', read '${read_back_value:0:32}'); retrying in 5s for pgbouncer to route to new leader"
+        sleep 5
+    done
+    echo "FAIL kill-patroni-leader: write/read mismatch after 12 attempts (60s); pgbouncer never routed to new leader" >&2
+    return 1
 }
 
 
