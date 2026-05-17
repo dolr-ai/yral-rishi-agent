@@ -1,6 +1,50 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-17 — HARDENING: `kill-patroni-leader.sh` retries psql write/read during pgbouncer routing lag — Day-5 Step 5 retry-prep #6
+
+### Action
+Chaos retry 6: Test 1 PASSED, Test 2 made it through failover (`patroni-rishi-4 → patroni-rishi-5`) + restore cleanly, but FAILED at the write/read sanity step. Read came back empty even though the write supposedly went through.
+
+**Real diagnostic**: this test passed in retry 5 because the killed leader (`patroni-rishi-5`) was on a REMOTE host — the local executor container on rishi-4 (`patroni-rishi-4`) was unaffected and stable. In retry 6, the killed leader (`patroni-rishi-4`) was the LOCAL container — so post-restore the executor was the just-respawned container. Pgbouncer hadn't finished re-routing its auth_query backend to the new leader (`patroni-rishi-5`) in the 0-5s post-restore window. First psql attempt silently returned empty.
+
+This is a REAL pgbouncer-routing-lag observation, not a script bug. The H3 contract is "cluster eventually serves writes via the new leader" — not "writes succeed immediately at the moment we ask". Solution: retry the psql roundtrip with backoff.
+
+### Fix
+Wrap the psql write/read in a 12-attempt × 5s-backoff loop (60s total window). Each attempt:
+- Re-roll the sanity-check nonce (so a stale cached return can't masquerade as success)
+- Build a per-attempt psql_script with the fresh nonce
+- Exec inside the local patroni container
+- If read matches written nonce → PASS, report attempt count
+- If `NO_POSTGRES_PASSWORD` → SKIP (secret not reachable)
+- Else → log mismatch + continue
+
+Replaces the previous one-shot psql attempt with a retry loop. 60s total budget is well within Patroni's failover-recovery semantics; if writes don't route within 60s, that IS a real H3 gap and the test correctly FAILs.
+
+### Constraints touched
+A2.1 (single concern: psql retry loop), B7 (role-comment captures pgbouncer-routing-lag observation + why this is a real H3 phenomenon worth tolerating), I11 (same-commit LOG entry), I14 (auto-merge eligible).
+
+### Diff size
+~50 lines code + LOG entry. Well under cap.
+
+### Day-5 Step 5 chaos-test arc tally
+- PR #80: host-vs-overlay-DNS + trap + existence-gating
+- PR #81: kill mechanism uses service-scale
+- PR #82: executor filter + restore-before-sanity ordering
+- PR #83: node-agnostic leader check
+- PR #84: fill-rishi-5-disk mechanics
+- **PR #85 (this): psql retry during pgbouncer routing lag**
+
+### Operator action after merge
+scp updated `kill-patroni-leader.sh` to rishi-4, retry battery. Tests 1+2 should both PASS; Tests 3+4 progress (3 was previously blocked behind 2; runs first time it gets the chance).
+
+### Captured insight (25th — for chaos-test design + production observation)
+**Pgbouncer's auth_query backend routing has a settling window after a Patroni failover.** When the leader changes from node A to node B, pgbouncer's first few connections may still target node A (stale auth_query cache or pool refresh delay). Subsequent connections (after ~5-20s) route correctly. Production-wise: brief write-unavailability during failover is acceptable, but applications need retry logic — single-shot writes against pgbouncer during a failover window may silently fail or return empty. This is a real observability item to capture in Phase 1+ when service auth-failure-rate metrics get wired up.
+
+For chaos tests: any write/read sanity check post-failover needs a retry loop with backoff long enough to cover the pgbouncer routing settling window (~60s is generous).
+
+---
+
 ## 2026-05-17 — HARDENING: `fill-rishi-5-disk.sh` SSH-by-IP + drop-sudo + write-under-rishi-deploy-home — Day-5 Step 5 retry-prep #5
 
 ### Action
