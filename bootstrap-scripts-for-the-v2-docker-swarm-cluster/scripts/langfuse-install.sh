@@ -37,6 +37,13 @@
 # ║  - YRAL_RISHI_5_PUBLIC_IPV4                (rishi-5's IPv4)               ║
 # ║  - YRAL_RISHI_6_PUBLIC_IPV4                (rishi-6's IPv4; Langfuse host)║
 # ║                                                                              ║
+# ║  📥 INPUTS (optional)                                                       ║
+# ║  - YRAL_LANGFUSE_SKIP_PREFLIGHT_BIND_MOUNT_VERIFY                          ║
+# ║      Default unset / "false". When "true": pre-flight bind-mount verifier  ║
+# ║      is skipped with a WARNING. Only set when the operator has confirmed   ║
+# ║      /data/clickhouse-data exists with 101:101 mode 0750 on rishi-6        ║
+# ║      out-of-band (see role-comment in the verifier function).              ║
+# ║                                                                              ║
 # ║  🛠️ ONE-TIME OPERATOR SETUP (run AS ROOT, while root SSH window is open)    ║
 # ║  Narrow sudoers per CONSTRAINTS C8 doesn't grant `sudo install -d` /       ║
 # ║  `sudo tee --append` to rishi-deploy, so this script CANNOT create the    ║
@@ -217,6 +224,22 @@ confirm_clickhouse_bind_mount_directory_exists_on_langfuse_node() {
     #        Langfuse stack file actually bind-mounts
     #        `/data/clickhouse-data` (uid 101) on rishi-6 only. The
     #        orphaned dir is harmless; cleanup is a separate Day-6+ task.
+    #
+    # BYPASS: YRAL_LANGFUSE_SKIP_PREFLIGHT_BIND_MOUNT_VERIFY=true short-
+    # circuits this check. Default is verify-on. Bypass exists because the
+    # verifier ssh-hops as rishi-deploy from this manager to the langfuse
+    # node, and rishi-deploy on cluster managers lacks intra-cluster SSH
+    # keys today (a node-bootstrap.sh gap tracked as session-1/intra-
+    # cluster-ssh-for-rishi-deploy follow-up). When that follow-up lands
+    # the verifier works natively and THIS bypass should be deprecated.
+    # Only operators who have verified the bind-mount out-of-band (host
+    # stat + container view + service-Running check) should set this.
+    if [[ "${YRAL_LANGFUSE_SKIP_PREFLIGHT_BIND_MOUNT_VERIFY:-false}" == "true" ]]; then
+        echo "langfuse-install: pre-flight bind-mount verifier SKIPPED — YRAL_LANGFUSE_SKIP_PREFLIGHT_BIND_MOUNT_VERIFY=true." >&2
+        echo "  Operator is responsible for confirming ${LANGFUSE_CLICKHOUSE_BIND_MOUNT_HOST_PATH} exists with 101:101 mode 0750 on ${LANGFUSE_PLACEMENT_NODE_NAME} out-of-band before deploy." >&2
+        echo "  Unset YRAL_LANGFUSE_SKIP_PREFLIGHT_BIND_MOUNT_VERIFY to re-enable." >&2
+        return 0
+    fi
     local langfuse_node_ipv4
     langfuse_node_ipv4="$(get_public_ipv4_for_node "${LANGFUSE_PLACEMENT_NODE_NAME}")"
     local actual_ownership
