@@ -1,6 +1,76 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-17 — FIX: langfuse-web Next.js inline env vars (SALT + NEXTAUTH_SECRET + ENCRYPTION_KEY) — Day-5 Step 3 deploy bug #10
+
+### Action
+PR #69 (ClickHouse Keeper + default cluster) RESOLVED bug #9 — ClickHouse migrations now succeed. Web's Next.js then fails at boot with:
+
+```
+unhandledRejection: Error: An error occurred while loading instrumentation hook: Invalid environment variables
+```
+
+Per coordinator direction (Option A diagnostic-first), enumerated the actual Next.js env schema rather than iterate-and-guess.
+
+### Diagnostic
+- Image's `/app/web/entrypoint.sh` extracted via `docker cp` from an exited web task. `grep -nE "_FILE|FILE_|read_secret"` returned **empty** — confirms the entrypoint does NOT expand `*_FILE` env vars into plain counterparts. So `NEXTAUTH_SECRET_FILE` / `ENCRYPTION_KEY_FILE` are silently ignored by the Next.js validator.
+- Pulled `web/src/env.mjs` from upstream Langfuse main (t3-env `createEnv` schema). Parsed the `server: {...}` block (lines 45-477, 7 zod-required vars after filtering optional-aliases):
+
+| var                | status before this PR | source of requirement                              |
+|--------------------|-----------------------|----------------------------------------------------|
+| `DATABASE_URL`     | ✓ set                 | `z.url()`                                          |
+| `NODE_ENV`         | ✓ set by image        | `z.enum(["development","test","production"])`      |
+| `NEXTAUTH_URL`     | ✓ set                 | `z.preprocess(z.url())`                            |
+| `NEXTAUTH_SECRET`  | ✗ only `_FILE` set    | `z.string().min(1)` in `NODE_ENV=production`       |
+| **`SALT`**         | **✗ NOT SET**         | `z.string()` with explicit "Salt is required" error |
+| `CLICKHOUSE_URL`   | ✓ set                 | `z.url()`                                          |
+| `CLICKHOUSE_USER`  | ✓ set                 | `z.string()`                                       |
+| `CLICKHOUSE_PASSWORD` | ✓ set (inline, PR #67) | `z.string()`                                    |
+| `ENCRYPTION_KEY`   | ✗ only `_FILE` set    | `.optional()` BUT needed at runtime for API-key encryption (Langfuse encrypts API keys with this) |
+
+### Architecture caveat verification
+Per coordinator's flag — searched for the trace ingestion API endpoint. Found at `web/src/pages/api/public/ingestion.ts`. **Trace ingestion is web-only.** Worker is queue-processing only (Redis BullMQ jobs). If web is down, **apps cannot post traces** at all. Worker-healthy alone does NOT satisfy D4 (LLM trace ingestion). This is the relevant data point IF PR #70 surfaces bug #11 and we need to make a deferral scope call.
+
+### Fix
+- `langfuse-stack.yml` `langfuse-web` env block: add three inline env vars rendered via envsubst — `SALT`, `NEXTAUTH_SECRET`, `ENCRYPTION_KEY`. The `_FILE` mounts stay (compatibility, even though they're now ignored by the validator; future cleanup PR to drop them).
+- `langfuse-install.sh`:
+  - `confirm_required_environment_variables_present`: add `YRAL_LANGFUSE_SALT` to required-env list.
+  - `render_langfuse_stack_compose_file_to_temporary_path`: export 3 new `*_RENDERED` placeholders for envsubst (SALT/NEXTAUTH_SECRET/ENCRYPTION_KEY); whitelist grows from 6 to 9 placeholders.
+  - File header `📥 INPUTS` section: add `YRAL_LANGFUSE_SALT` line.
+
+### Operator action after merge
+1. Generate `SALT` value: `openssl rand -base64 48 | tr -d '+/=\n' | head -c 43` and store in macOS Keychain as `account=dolr-ai service=langfuse-salt` (mirrors the pattern for the other Langfuse secrets). Already done locally — value generated + Keychain-stored before opening this PR.
+2. scp updated `langfuse-stack.yml` + `langfuse-install.sh` to rishi-4.
+3. Re-run `langfuse-install.sh` with the new `YRAL_LANGFUSE_SALT` env var sourced from Keychain.
+4. Force-restart web — Swarm rolls with new env. Next.js validator passes; web boots; ingestion API serves.
+
+### Constraints touched
+A2.1 (bundled per coordinator direction: enumerate-and-apply all known-required Next.js env vars in one PR rather than iterate; B7 (role-comment captures the `_FILE`-is-not-expanded finding + t3-env schema location + which vars are required vs runtime-needed-but-optional), D1 (same envsubst-render-inline tradeoff as DATABASE_URL/CLICKHOUSE_PASSWORD per PR #61/#67), I11 (same-commit LOG entry), I14 (auto-merge-eligible).
+
+### Diff size
++22 in stack file + +9 install script = 31 strict-code lines + this LOG entry. Well under 400-line gate.
+
+### Day-5 Step 3 bug-count tally
+- Pre-emptively closed (PR #60): 5
+- Surfaced at deploy time:
+  - DATABASE_URL inline (PR #61)
+  - pgbouncer auth gap (PRs #62-#65, 4 PRs for 1 class — pattern-fix + image bump)
+  - CLICKHOUSE_MIGRATION_URL (PR #66)
+  - CLICKHOUSE_PASSWORD inline (PR #67)
+  - Prisma+pgbouncer-transaction DIRECT_URL + worker zod LANGFUSE_S3_EVENT_UPLOAD_BUCKET (PR #68 — bundled)
+  - ClickHouse `ON CLUSTER default` needs Keeper + 1-node cluster (PR #69)
+  - **Next.js env validator: SALT + NEXTAUTH_SECRET + ENCRYPTION_KEY inline (this PR #70)**
+
+10 unique deploy-time bug classes. Per coordinator's escape clause: if PR #70 doesn't resolve web's restart loop, STOP — do NOT open PR #71 under Option A. At that point we make the real scope call (Option B/C per coordinator).
+
+### Captured insight (5th — for future Langfuse work reference)
+**Langfuse 3's Next.js web app uses t3-env `createEnv` (`web/src/env.mjs`) which reads `process.env.X` directly.** The container entrypoint does NOT honor the Docker `*_FILE` convention — `*_FILE` env vars are silently ignored by the validator. Required inline server vars in NODE_ENV=production: `DATABASE_URL`, `NEXTAUTH_URL`, `NEXTAUTH_SECRET`, `SALT`, `CLICKHOUSE_URL`, `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`. `ENCRYPTION_KEY` is `.optional()` but should be set for runtime API-key encryption to work.
+
+### Captured insight (6th — architecture)
+**Trace ingestion in Langfuse 3 runs ONLY on the web container** (`web/src/pages/api/public/ingestion.ts`). Worker is queue-processing only. For D4 (LLM trace ingestion), web must be healthy — worker alone is insufficient. Relevant if we ever discuss deferring web.
+
+---
+
 ## 2026-05-17 — FIX: single-node ClickHouse Keeper + `default` cluster so Langfuse `ON CLUSTER` migrations resolve (Day-5 Step 3 deploy bug #9)
 
 ### Action

@@ -32,6 +32,7 @@
 # ║  - YRAL_LANGFUSE_ENCRYPTION_KEY            (32-byte hex)                  ║
 # ║  - YRAL_LANGFUSE_POSTGRES_PASSWORD         (the langfuse-schema role)     ║
 # ║  - YRAL_LANGFUSE_CLICKHOUSE_PASSWORD       (random; auto-generate if not) ║
+# ║  - YRAL_LANGFUSE_SALT                      (32+ char random, API-key enc) ║
 # ║  - YRAL_RISHI_4_PUBLIC_IPV4                (rishi-4's IPv4; SSH targeting)║
 # ║  - YRAL_RISHI_5_PUBLIC_IPV4                (rishi-5's IPv4)               ║
 # ║  - YRAL_RISHI_6_PUBLIC_IPV4                (rishi-6's IPv4; Langfuse host)║
@@ -163,6 +164,7 @@ confirm_required_environment_variables_present() {
         YRAL_LANGFUSE_ENCRYPTION_KEY
         YRAL_LANGFUSE_POSTGRES_PASSWORD
         YRAL_LANGFUSE_CLICKHOUSE_PASSWORD
+        YRAL_LANGFUSE_SALT
         YRAL_RISHI_4_PUBLIC_IPV4
         YRAL_RISHI_5_PUBLIC_IPV4
         YRAL_RISHI_6_PUBLIC_IPV4
@@ -300,18 +302,29 @@ render_langfuse_stack_compose_file_to_temporary_path() {
     if [[ ! -f "${LANGFUSE_STACK_COMPOSE_FILE_PATH}" ]]; then
         echo "ERROR langfuse-install: stack file not found" >&2; exit 1
     fi
-    # Expose the literal postgres + clickhouse passwords for inline
-    # DATABASE_URL + CLICKHOUSE_MIGRATION_URL interpolation. Base64url
-    # password chars [a-zA-Z0-9_-] are all unreserved in RFC 3986
-    # userinfo so no URL-encoding is needed. If we ever switch the
-    # password generator to a wider char set this needs revisiting.
-    # CLICKHOUSE_MIGRATION_URL exists because Langfuse 3's
-    # langfuse-cli migration tool runs at container start and has no
-    # `*_FILE` variant — same rendering pattern as DATABASE_URL.
+    # Expose the literal secret values for inline env-var interpolation.
+    # Base64url password chars [a-zA-Z0-9_-] are all unreserved in RFC
+    # 3986 userinfo so no URL-encoding is needed for the URL-form vars.
+    #
+    # CLICKHOUSE_MIGRATION_URL exists because Langfuse 3's langfuse-cli
+    # migration tool runs at container start and has no `*_FILE` variant.
+    #
+    # NEXTAUTH_SECRET / ENCRYPTION_KEY / SALT exist because Langfuse 3's
+    # web Next.js t3-env validator (web/src/env.mjs) reads them directly
+    # from process.env at boot — `/app/web/entrypoint.sh` does NOT
+    # expand `*_FILE` env vars into their plain counterparts (verified
+    # via `grep -nE "_FILE" /app/web/entrypoint.sh` returning empty).
+    # SALT is z.string() with explicit error in the schema; NEXTAUTH_
+    # SECRET is z.string().min(1) required in NODE_ENV=production;
+    # ENCRYPTION_KEY is .optional() but needed at runtime for API-key
+    # encryption — included for runtime correctness.
     export YRAL_LANGFUSE_POSTGRES_PASSWORD_RENDERED="${YRAL_LANGFUSE_POSTGRES_PASSWORD}"
     export YRAL_LANGFUSE_CLICKHOUSE_PASSWORD_RENDERED="${YRAL_LANGFUSE_CLICKHOUSE_PASSWORD}"
+    export YRAL_LANGFUSE_NEXTAUTH_SECRET_RENDERED="${YRAL_LANGFUSE_NEXTAUTH_SECRET}"
+    export YRAL_LANGFUSE_ENCRYPTION_KEY_RENDERED="${YRAL_LANGFUSE_ENCRYPTION_KEY}"
+    export YRAL_LANGFUSE_SALT_RENDERED="${YRAL_LANGFUSE_SALT}"
     LANGFUSE_RENDERED_STACK_COMPOSE_FILE_PATH="$(mktemp /tmp/yral-v2-langfuse-rendered-stack.XXXXXX.yml)"
-    envsubst '${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_NEXTAUTH_SECRET} ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_ENCRYPTION_KEY} ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_POSTGRES_PASSWORD} ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_CLICKHOUSE_PASSWORD} ${YRAL_LANGFUSE_POSTGRES_PASSWORD_RENDERED} ${YRAL_LANGFUSE_CLICKHOUSE_PASSWORD_RENDERED}' \
+    envsubst '${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_NEXTAUTH_SECRET} ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_ENCRYPTION_KEY} ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_POSTGRES_PASSWORD} ${YRAL_LANGFUSE_STACK_RESOLVED_YRAL_V2_LANGFUSE_CLICKHOUSE_PASSWORD} ${YRAL_LANGFUSE_POSTGRES_PASSWORD_RENDERED} ${YRAL_LANGFUSE_CLICKHOUSE_PASSWORD_RENDERED} ${YRAL_LANGFUSE_NEXTAUTH_SECRET_RENDERED} ${YRAL_LANGFUSE_ENCRYPTION_KEY_RENDERED} ${YRAL_LANGFUSE_SALT_RENDERED}' \
         < "${LANGFUSE_STACK_COMPOSE_FILE_PATH}" \
         > "${LANGFUSE_RENDERED_STACK_COMPOSE_FILE_PATH}"
     export LANGFUSE_RENDERED_STACK_COMPOSE_FILE_PATH
