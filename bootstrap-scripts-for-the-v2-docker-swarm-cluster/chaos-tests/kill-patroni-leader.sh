@@ -43,7 +43,20 @@ set -euo pipefail
 # Patroni's leader-election timeout. Default Patroni `loop_wait` is 10s and
 # the leader lease is renewed every loop. Three loops (~30s) is the upper
 # bound on how long election should take — chaos test fails on >30s.
-PATRONI_FAILOVER_DEADLINE_SECONDS=30
+# Patroni's etcd `ttl` is 30s. When the leader's Swarm task is scaled
+# to 0, Swarm gracefully stops the container (~5-10s), then Patroni's
+# leader lock expires after ttl (30s after last heartbeat), then the
+# sync_standby races to promote (~5s). Total worst-case: ~45-50s.
+# 60s gives a safety margin for healthy clusters; failures here would
+# indicate a real HA gap.
+PATRONI_FAILOVER_DEADLINE_SECONDS=60
+
+# Populated by inject_chaos_scale_leader_service_to_zero so the
+# safety-trap restore can put the service back to its pre-test replica
+# count. Defaulted empty for clarity.
+LEADER_SERVICE_NAME=""
+LEADER_SERVICE_ORIGINAL_REPLICAS=""
+LEADER_SERVICE_HAS_BEEN_SCALED_DOWN=false
 
 # Where Patroni's REST API answers. The `cluster` endpoint reports the
 # current member roles (leader / sync_standby / replica).
@@ -60,10 +73,19 @@ SANITY_CHECK_SCHEMA_NAME=chaos_test_sanity
 main() {
     confirm_preconditions
     capture_pre_failover_leader_identity
-    inject_chaos_kill_leader_container
+
+    # Install belt-and-braces safety trap BEFORE injecting chaos.
+    # restore_killed_service_to_original_replicas (called in normal flow)
+    # flips LEADER_SERVICE_HAS_BEEN_SCALED_DOWN=false on success; if a
+    # set -e abort skips that call, this trap restores anyway. Original
+    # lock-cleanup trap is preserved by inclusion in this trap's body.
+    trap 'safety_restore_leader_service_if_still_scaled_down; rm -f /tmp/yral-v2-chaos-running.lock' EXIT
+
+    inject_chaos_scale_leader_service_to_zero
     verify_replica_promoted_within_deadline
     verify_no_data_loss_via_write_read_roundtrip
-    wait_for_killed_container_to_rejoin_as_follower
+    restore_killed_service_to_original_replicas
+    wait_for_rejoined_service_to_become_follower
     print_post_test_summary
 }
 
@@ -124,26 +146,87 @@ capture_pre_failover_leader_identity() {
 }
 
 
-inject_chaos_kill_leader_container() {
-    # WHAT:  `docker kill` (SIGKILL) the running container backing the
-    #        leader's Swarm task. Swarm will restart it via the service's
-    #        restart_policy after a short delay.
+inject_chaos_scale_leader_service_to_zero() {
+    # WHAT:  scale the leader's Swarm service to 0 replicas, preventing
+    #        Swarm from respawning the container. The leader's etcd
+    #        heartbeat stops; after Patroni's `ttl` (30s) the lock
+    #        expires and the sync_standby races to promote.
     # WHEN:  after capturing the leader identity.
-    # WHY:   SIGKILL bypasses graceful shutdown — exactly the kind of
-    #        sudden-failure scenario Patroni must handle. SIGTERM would
-    #        give Patroni a chance to demote itself cleanly, which is
-    #        the easy case.
-    local leader_container_id
-    leader_container_id="$(docker ps --filter "name=${PATRONI_LEADER_NODE_BEFORE_FAILOVER}" \
-        --format '{{.ID}}' | head -n 1)"
-    if [[ -z "${leader_container_id}" ]]; then
-        echo "ERROR kill-patroni-leader: no running container found for ${PATRONI_LEADER_NODE_BEFORE_FAILOVER}" >&2; exit 1
+    # WHY:   the original `docker kill` mechanism let Swarm's
+    #        restart_policy respawn the killed container within ~5-10s
+    #        — fast enough that with `synchronous_mode_strict: false`
+    #        the original leader reclaimed its etcd lock before TTL
+    #        expired, so NO failover happened. That's correct production
+    #        behavior (prevents flapping on transient outages) but it
+    #        means the chaos test never exercised the actual
+    #        leader-election path. Day-5 Step 5 retry 2 surfaced this:
+    #        cluster bumped TL 6→7 + replicas resynced cleanly, but
+    #        leader stayed on the killed-then-respawned node.
+    #
+    #        Scaling to 0 prevents respawn until the trap restores it.
+    #        Patroni MUST elect a new leader → tests the actual H3 path.
+    #        synchronous_mode_strict stays at its production-correct
+    #        default (false) — the chaos test, not the cluster config,
+    #        is what changes to exercise the destructive scenario.
+    LEADER_SERVICE_NAME="yral-v2-patroni_${PATRONI_LEADER_NODE_BEFORE_FAILOVER}"
+
+    LEADER_SERVICE_ORIGINAL_REPLICAS="$(docker service inspect "${LEADER_SERVICE_NAME}" \
+        --format '{{.Spec.Mode.Replicated.Replicas}}' 2>/dev/null || true)"
+    if [[ -z "${LEADER_SERVICE_ORIGINAL_REPLICAS}" ]]; then
+        echo "ERROR kill-patroni-leader: could not inspect service ${LEADER_SERVICE_NAME} replica count" >&2
+        exit 1
     fi
-    echo "kill-patroni-leader: SIGKILL container ${leader_container_id} (leader: ${PATRONI_LEADER_NODE_BEFORE_FAILOVER})"
-    docker kill --signal=KILL "${leader_container_id}"
+    echo "kill-patroni-leader: scaling ${LEADER_SERVICE_NAME} from ${LEADER_SERVICE_ORIGINAL_REPLICAS} → 0 (current leader: ${PATRONI_LEADER_NODE_BEFORE_FAILOVER})"
+
+    docker service scale --detach=false "${LEADER_SERVICE_NAME}=0"
+    LEADER_SERVICE_HAS_BEEN_SCALED_DOWN=true
 
     # Mark the moment for the failover-deadline check.
     PATRONI_KILL_TIMESTAMP_EPOCH_SECONDS="$(date +%s)"
+}
+
+
+restore_killed_service_to_original_replicas() {
+    # WHAT:  scale the leader service back to its pre-test replica count
+    #        so the killed node rejoins the cluster (as a follower since
+    #        Patroni has already elected a new leader on a different
+    #        node).
+    # WHEN:  after verify_no_data_loss passes; before the final rejoin
+    #        verification.
+    # WHY:   chaos test contract: restore the cluster to pre-test state.
+    #        The trap below is the safety net; this is the normal-flow
+    #        explicit restore. Flipping LEADER_SERVICE_HAS_BEEN_SCALED_DOWN
+    #        false here prevents the trap from double-restoring on
+    #        clean exits.
+    echo "kill-patroni-leader: restoring ${LEADER_SERVICE_NAME} to ${LEADER_SERVICE_ORIGINAL_REPLICAS} replicas"
+    docker service scale --detach=false "${LEADER_SERVICE_NAME}=${LEADER_SERVICE_ORIGINAL_REPLICAS}"
+    LEADER_SERVICE_HAS_BEEN_SCALED_DOWN=false
+}
+
+
+safety_restore_leader_service_if_still_scaled_down() {
+    # WHAT:  belt-and-braces restore in the EXIT trap. If
+    #        restore_killed_service_to_original_replicas never ran (due
+    #        to a `set -e` abort mid-verify), this restores the service.
+    # WHEN:  EXIT trap, always.
+    # WHY:   leaving a Patroni member at 0 replicas indefinitely degrades
+    #        the cluster (2-of-3 quorum, no sync standby promotion path
+    #        if the current leader also fails) — operational damage that
+    #        the chaos contract must never produce. If THIS restore also
+    #        fails, the script surfaces a LOUD message so the operator
+    #        knows to manually intervene.
+    if [[ "${LEADER_SERVICE_HAS_BEEN_SCALED_DOWN:-false}" != "true" ]]; then
+        return 0
+    fi
+    echo "kill-patroni-leader: SAFETY trap restoring ${LEADER_SERVICE_NAME} → ${LEADER_SERVICE_ORIGINAL_REPLICAS}" >&2
+    if ! docker service scale --detach=false "${LEADER_SERVICE_NAME}=${LEADER_SERVICE_ORIGINAL_REPLICAS}" >&2; then
+        echo "" >&2
+        echo "🚨 ERROR kill-patroni-leader: SAFETY RESTORE FAILED 🚨" >&2
+        echo "    Service ${LEADER_SERVICE_NAME} may still be at 0 replicas." >&2
+        echo "    MANUAL INTERVENTION REQUIRED — run on a Swarm manager:" >&2
+        echo "      docker service scale ${LEADER_SERVICE_NAME}=${LEADER_SERVICE_ORIGINAL_REPLICAS}" >&2
+        echo "" >&2
+    fi
 }
 
 
@@ -249,11 +332,14 @@ verify_no_data_loss_via_write_read_roundtrip() {
 }
 
 
-wait_for_killed_container_to_rejoin_as_follower() {
-    # WHAT:  poll until the killed node reports a non-leader role (replica
-    #        or sync_standby) — Swarm's restart_policy will respawn the
-    #        container; Patroni will start fresh and follow the new leader.
-    # WHEN:  after data-loss check passes.
+wait_for_rejoined_service_to_become_follower() {
+    # WHAT:  poll until the formerly-killed node reports a non-leader
+    #        role (replica or sync_standby). After restore_killed_service_
+    #        to_original_replicas, Swarm respawns the container; Patroni
+    #        starts fresh and follows the new leader.
+    # WHEN:  after data-loss check passes + restore_killed_service_to_
+    #        original_replicas. The function is the verification that
+    #        restore worked + the cluster ended in healthy 3-member shape.
     # WHY:   leaving the cluster in 2-node-active state would degrade the
     #        next chaos test. Restore is part of the chaos-test contract.
 
