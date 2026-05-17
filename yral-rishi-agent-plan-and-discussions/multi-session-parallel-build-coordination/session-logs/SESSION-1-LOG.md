@@ -1,6 +1,70 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-17 — FIX: `langfuse-install.sh` opt-out for pre-flight bind-mount verifier — Day-5 Step 3 deploy bug #12 (verifier-cant-reach-across-nodes class)
+
+### Action
+Re-deploying PR #71's `HOSTNAME=0.0.0.0` fix surfaced a fresh pre-flight failure:
+
+```
+ERROR langfuse-install: /data/clickhouse-data on rishi-6 is 'missing', expected '101:101'
+```
+
+Direct probe from Mac → rishi-6 contradicted the verifier: the bind-mount actually exists with correct ownership AND langfuse-clickhouse has been `Up 12 hours` on that exact mount. The verifier itself was broken — it ssh-hops as `rishi-deploy@<rishi-4>` to `rishi-deploy@<rishi-6>`, but `~rishi-deploy/.ssh/` on rishi-4 contains only `authorized_keys` and `known_hosts` (no private key). Intra-cluster SSH as rishi-deploy is a node-bootstrap.sh setup gap.
+
+Per coordinator: Option (3) — additive env-var bypass with explicit operator-out-of-band-verified semantics; default unchanged (verify-on). Marginal value of "proper architecture for the pre-flight verifier" is lower than marginal value of "Langfuse working tonight" given the bug debt. The proper fix (intra-cluster SSH keys for rishi-deploy) is queued as a focused follow-up because the same wall bites Caddy Swarm + chaos tests + Sessions 3/4.
+
+### Out-of-band verification captured (operator's responsibility when bypass is on)
+
+```
+$ ssh rishi-deploy@rishi-6 'stat -c "%u:%g %a %n" /data/clickhouse-data'
+101:101 750 /data/clickhouse-data
+
+$ ssh rishi-deploy@rishi-6 'sudo docker exec <clickhouse-container> stat -c "%u:%g %a" /var/lib/clickhouse'
+101:101 750
+
+$ ssh rishi-deploy@rishi-6 'sudo docker service ps yral-v2-langfuse_langfuse-clickhouse --no-trunc'
+yral-v2-langfuse_langfuse-clickhouse.1  Running 12 hours ago
+yral-v2-langfuse_langfuse-clickhouse.1  Shutdown 12 hours ago   (prior generation, no restart cycle since)
+```
+
+Host bind-mount, in-container view, and service state all confirm the prereq is good. The verifier's failure is purely the SSH-hop gap.
+
+### Fix
+- `langfuse-install.sh` `confirm_clickhouse_bind_mount_directory_exists_on_langfuse_node()`: early-return when `YRAL_LANGFUSE_SKIP_PREFLIGHT_BIND_MOUNT_VERIFY=true`. Prints a clear WARNING (skipped, operator responsibility, how to re-enable) to stderr. Default behavior unchanged (verify-on).
+- `langfuse-install.sh` header `📥 INPUTS` section: document the new optional env var.
+
+### Constraints touched
+A2.1 (single concern: env-var opt-out for one verifier; nothing else bundled), B7 (role-comment in the function captures the WHY tied to the rishi-deploy intra-cluster-SSH gap + how this bypass should be deprecated once that follow-up lands), I11 (same-commit LOG entry), I14 (auto-merge-eligible).
+
+### Diff size
++10 strict-code lines (4 echo + if/return/fi) + 9 role-comment lines + 7 header-INPUTS lines = ~26 lines in install script + this LOG entry. Well under 400-line gate.
+
+### Operator action after merge
+Re-deploy with `YRAL_LANGFUSE_SKIP_PREFLIGHT_BIND_MOUNT_VERIFY=true` in the subshell env, alongside the existing 5 Keychain-sourced secrets + 3 rishi-N IPs. Same subshell pattern, same safety rules (no echo of secrets, /tmp-captured output reviewed offline).
+
+### Verification plan (post-deploy)
+Per PR #71's gate: re-run `langfuse-install.sh`, `confirm_stack_actually_deployed` (30s) passes, then `sleep 300; sudo docker service ps yral-v2-langfuse_langfuse-web --no-trunc | head -5` — active task `Running`, no Shutdown cycles past 5 min. If green → close Step 3 with 13-bug audit. If red → STOP, surface for Option C; no further PRs in this arc.
+
+### Day-5 Step 3 bug-count tally
+- Pre-emptively closed (PR #60): 5
+- Surfaced at deploy time: 12 (was 11)
+  - Env arc (PRs #61-#70): 10 classes
+  - Healthcheck arc (PR #71): 1 class — Next.js bind needs `HOSTNAME=0.0.0.0`
+  - **Pre-flight verifier gap (this PR #72): 1 class — verifier ssh-hop fails because rishi-deploy lacks intra-cluster keys**
+
+### Queued follow-up (NOT bundled in PR #72)
+
+**Branch**: `session-1/intra-cluster-ssh-for-rishi-deploy`
+**Scope**: `node-bootstrap.sh` generates an intra-cluster SSH key for rishi-deploy, distributes the public key to all 3 nodes' `~rishi-deploy/.ssh/authorized_keys`, places the private key at `~rishi-deploy/.ssh/id_ed25519` with mode 0600.
+**Why**: Same SSH-hop wall will hit Caddy Swarm (Step 4) + chaos tests (Day 9-10) + Sessions 3/4 install scripts.
+**Sequencing**: Lands AFTER Step 3 closes, BEFORE Step 4 starts. Once landed + verified, the `YRAL_LANGFUSE_SKIP_PREFLIGHT_BIND_MOUNT_VERIFY` bypass introduced here can be deprecated (one deploy cycle of dual-support, then remove the env-var read).
+
+### Captured insight (9th — durable v2-template-design lesson for Sessions 3+4)
+**Pre-flight verifiers that depend on infrastructure not yet provisioned (e.g., intra-cluster SSH for cross-node checks) should either: (a) degrade gracefully with an explicit operator-bypass; (b) be deferred to post-deploy observation; or (c) provision the dependency at node-bootstrap time.** Bundling all three patterns retroactively into v2's install scripts is a Day-6+ cleanup item. New install scripts (Sessions 3+4) should pick (c) upfront — provision dependencies before verifiers need them — to avoid this debt.
+
+---
+
 ## 2026-05-17 — FIX: langfuse-web `HOSTNAME=0.0.0.0` so Next.js binds to loopback — Day-5 Step 3 deploy bug #11 (healthcheck class)
 
 ### Action
