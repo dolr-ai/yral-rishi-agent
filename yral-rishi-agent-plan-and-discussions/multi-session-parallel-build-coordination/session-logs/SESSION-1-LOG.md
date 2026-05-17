@@ -1,6 +1,71 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-17 — NEW: `caddy-install.sh` + Phase-0 Caddyfile placeholder — Day-5 Step 4 (C10 cluster-side edge Caddy) deploy artifacts
+
+### Action
+Day-5 Step 4 (Caddy Swarm internal/cluster-side service per C10) starts. Existing `caddy-swarm-service.yml` was a Day-7 draft from PR #10 marked "DRAFT — NO STACKS DEPLOYED YET". Coordinator clarified the C10 architecture: rishi-1/2/3 edge Caddy (deferred per A2) terminates HTTPS from Cloudflare → proxies into the cluster on `:443` → THIS cluster-side Caddy on rishi-4/5 (Swarm ingress mode) → individual v2 services on the `yral-v2-public-web` overlay. v2 services do NOT need an internal Caddy between them — they call each other via Swarm DNS over `yral-v2-internal` directly. The original "internal service-to-service routing" framing was a coordinator mental-model error self-corrected mid-session.
+
+This PR ships the deploy artifacts: `caddy-install.sh`, `caddyfile.placeholder`, and minor edits to `caddy-swarm-service.yml` to make it deployable today.
+
+### Files
+- **NEW** `bootstrap-scripts-for-the-v2-docker-swarm-cluster/scripts/caddy-install.sh` (~250 lines including header doc + role-comments)
+  - Ports the proven shape from `langfuse-install.sh` PR #60 + the post-deploy verifier from PR #51/#55 + envsubst whitelist from PR #57.
+  - `main()` flow: confirm Swarm manager → confirm env vars → confirm overlay → SHA-rotate Caddyfile config → envsubst stack → `docker stack deploy` → `confirm_stack_actually_deployed` (30s) → `confirm_stack_registered_with_swarm_resync_service` (cross-node SSH, works natively post-PR #75) → summary.
+  - No bypass env var needed (intra-cluster SSH now works from PR #75).
+- **NEW** `bootstrap-scripts-for-the-v2-docker-swarm-cluster/scripts/caddyfile.placeholder` (~40 lines including header doc)
+  - Caddy global options: `auto_https off` (no ACME during Phase 0; no traffic source), `admin 127.0.0.1:2019` (matches stack-file healthcheck probe, explicit IPv4 per Langfuse bug #14's lesson).
+  - One `:443` site with `tls internal` + marker `respond` so smoke-test curl confirms the listener works.
+  - Edit this file → new sha8 → new config name → next `caddy-install.sh` deploy rolls the service onto the new config (CONSTRAINTS H2).
+- **MODIFY** `bootstrap-scripts-for-the-v2-docker-swarm-cluster/scripts/caddy-swarm-service.yml`
+  - Preamble: replace "DRAFT — NO STACKS DEPLOYED YET" with "✅ LIVE — Day-5 Step 4". Capture the coordinator's C10 architecture clarification (no separate internal Caddy; v2 services talk via Swarm DNS).
+  - Config alias: `yral_v2_edge_caddyfile_current` (one of the file's "future deliverable" notes) → `${YRAL_EDGE_CADDY_STACK_RESOLVED_YRAL_V2_EDGE_CADDYFILE}` envsubst placeholder, applied in two places (`services.caddy-edge-ingress.configs[].source` + the top-level `configs:` block).
+  - Healthcheck unchanged: already used `http://127.0.0.1:2019/config/` (explicit IPv4, avoiding the `localhost` IPv6-first bug from PR #73).
+
+### Constraints touched
+A2.1 (single concern: Phase-0 deployable cluster-side Caddy; no Caddyfile generator, no bypass debt), B7 (role-comments in caddy-install.sh + Caddyfile-placeholder header capture C10 architecture + sha8 rotation + envsubst whitelist + 127.0.0.1 vs localhost lesson), C3 (only `:443` host port published per spec), C8 (rishi-deploy continues as the day-to-day SSH user; sudoers untouched), C10 (cluster-side edge Caddy receives proxied traffic from future rishi-1/2/3 edge), H1 (resync-registry verifier as last pre-completion check), H2 (SHA-suffixed Swarm config rotation), I11 (same-commit LOG entry), I14 (auto-merge-eligible).
+
+### Diff size
+~250 lines caddy-install.sh + ~40 lines caddyfile.placeholder + ~15 line edits to caddy-swarm-service.yml + this LOG entry. Total ~300 lines code + ~80 lines LOG. Auto-merge eligible (under 400-line gate; if Codex flags as too-large the truncation-FP gate applies — separate concern).
+
+### Operator action after merge
+1. scp `caddy-install.sh` + `caddy-swarm-service.yml` + `caddyfile.placeholder` to rishi-4 (single dir, sibling files — install script resolves them via `dirname "${BASH_SOURCE[0]}"`).
+2. ssh root@rishi-4 + run install with `YRAL_RISHI_{4,5,6}_PUBLIC_IPV4` env vars set.
+3. One-time resync-registry operator action: `ssh root@<each rishi> 'grep -q -x "yral-v2-edge-caddy" /etc/yral-v2/stacks-to-resync.list || echo "yral-v2-edge-caddy" >> ...'`. Documented in caddy-install.sh header `🛠️ ONE-TIME OPERATOR SETUP` section.
+
+### Verification plan
+- `confirm_stack_actually_deployed` (30s) passes.
+- `docker service ls --filter name=yral-v2-edge-caddy` shows `caddy-edge-ingress 2/2`.
+- 5-min long-run check via `docker service ps yral-v2-edge-caddy_caddy-edge-ingress`: 2 replicas Running, no Shutdown cycles since deploy.
+- Smoke test: `curl --insecure https://<rishi-4-ip>/` returns the Phase-0 placeholder response (`"v2 cluster edge — Phase 0 placeholder; no service routes wired yet"`), HTTP 200. Same from rishi-5.
+
+Outcome:
+- Long-run green → Day-5 Step 4 closes. Auto-flow into Step 5 (chaos tests against the live stateful core).
+- Long-run red → STOP per escape clause. Diagnose with root-cause-first methodology; PR cap = 3 in the bug arc per standing rule.
+
+### Day-5 Step 4 bug-count tally (running)
+- Pre-emptively closed (this PR): 5 architecture decisions
+  - SHA-rotating Swarm config pattern from PR #57 ported
+  - Post-deploy verifier from PR #51 ported
+  - Resync-registry verifier from PR #45/#75 pattern (cross-node SSH works natively)
+  - 127.0.0.1 healthcheck probe target from PR #73 lesson (already correct in original file; preserved)
+  - `auto_https off` to skip ACME with no public traffic source (no certbot debt during Phase 0)
+- Surfaced at deploy time: 0 (to be tallied)
+
+### Queued follow-ups (NOT bundled in this PR)
+- `session-1/caddy-swarm-config-generator` — materialize per-service routes from a template + Session 3/4 service registry. Lands when Sessions 3/4 spawn first real services.
+- `session-1/long-run-stability-check` — extend `confirm_stack_actually_deployed` with a 5-min `sleep + service ps` gate (gap PR #71 originally exposed). Affects ALL `*-install.sh` post-deploy verifiers.
+- `session-1/keychain-multiline-base64-wrap` — base64-wrap multi-line secrets in macOS Keychain. Workaround from PR #75 application surfaced the `security -w` hex-encoding gotcha; intra-cluster SSH currently works on cluster, but Keychain entries are functionally broken for re-bootstrap.
+- `session-1/deprecate-langfuse-skip-preflight-bind-mount-verify-bypass` — once we re-deploy Langfuse WITHOUT the PR #72 bypass + confirm verifiers pass natively (now that PR #75 provisioned intra-cluster SSH), remove the bypass env-var read.
+
+### Captured insight (12th — for future Swarm-service install scripts)
+**`docker config create <name> <file>` reads `<file>` directly** (unlike `docker secret create <name> -` which reads stdin). Caddyfile content is non-secret config so passing the file path is more idiomatic + lets us preserve file permissions + makes the operator-edit workflow obvious. For secrets, stdin-piping the value remains correct (no plaintext at rest beyond Swarm's raft DCS).
+
+### Captured insight (13th — for v2-template-design)
+**SHA-rotating Swarm config = the deploy workflow's recipe for "edit this file → roll the service".** The install script hashes the source-of-truth file, creates the Swarm config with the SHA-suffixed name, exports the resolved name via env so envsubst can place it in the stack yml. Same pattern works for secrets (langfuse-install.sh) + configs (caddy-install.sh). New install scripts (Sessions 3+4) inherit this pattern automatically.
+
+---
+
 ## 2026-05-17 — NEW: `node-bootstrap.sh` provisions intra-cluster ssh keypair for rishi-deploy (addresses Day-5 Step 3 bug #12 + #13 root cause)
 
 ### Action
