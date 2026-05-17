@@ -1,5 +1,5 @@
 # Session 1 STATE — Infra & Cluster
-> Updated: 2026-05-17 (Day-5 Step 3 — Langfuse — COMPLETE. 14-bug arc closed. All 3 Langfuse services 1/1 healthy on rishi-6. Idle pending intra-cluster-SSH follow-up PR, then Day-5 Step 4 green-light for Caddy Swarm).
+> Updated: 2026-05-17 (**Day-5 COMPLETE — Phase 0 OFFICIALLY CLOSED.** All 5 Day-5 steps closed, H3 chaos verification 3-of-4 PASS with Test 4 deferred to Phase 1+ per coordinator call. v2 stateful core operational on rishi-4/5/6. Session 1 idle pending Phase 1 green-light).
 
 ## ⭐ START-OF-SESSION SUMMARY (read first when resuming)
 
@@ -11,58 +11,77 @@ spec + A2 tightening 2026-05-13).
 
 ## LAST THING I DID
 
-**Day-5 Step 3 (Langfuse) is COMPLETE 2026-05-17.** Live state (verified 09:37 UTC):
+**Day-5 COMPLETE 2026-05-17. PHASE 0 OFFICIALLY CLOSED.**
+
+All 5 Day-5 steps closed in sequence (Patroni HA → Redis Sentinel → Langfuse → Caddy edge-ingress → chaos-test H3 verification). v2 cluster stateful core operational on rishi-4/5/6 with verified HA semantics.
+
+Live cluster state at Phase 0 close (12:55 UTC):
 
 ```
-$ docker service ls --filter name=yral-v2-langfuse --format "table {{.Name}}\t{{.Replicas}}"
-NAME                                   REPLICAS
-yral-v2-langfuse_langfuse-clickhouse   1/1
-yral-v2-langfuse_langfuse-web          1/1
-yral-v2-langfuse_langfuse-worker       1/1
+$ patronictl list  (yral-v2-postgres)
+patroni-rishi-4  | Leader        | TL 11 |
+patroni-rishi-5  | Replica       | TL 11 | lag 0
+patroni-rishi-6  | Sync Standby  | TL 11 | lag 0
 
-$ docker ps --filter name=yral-v2-langfuse_langfuse-web --format "{{.ID}} | {{.Status}}"
-3a84724c4612 | Up 5 minutes (healthy)
+$ docker service ls --filter name=yral-v2-langfuse
+langfuse-clickhouse  : 1/1
+langfuse-web         : 1/1 (healthy)
+langfuse-worker      : 1/1
 
-$ docker exec <web> wget --spider http://127.0.0.1:3000/api/public/health; echo $?
-0
+$ docker service ls --filter name=yral-v2-edge-caddy
+caddy-edge-ingress   : 2/2 on edge nodes (rishi-4 + rishi-5)
 ```
 
-14-bug deploy-time arc closed via PRs #61-#73 (env: 10 classes, healthcheck-bind: 1, verifier-bypass: 1 covering bug #12+#13, healthcheck-completion: 1 under coordinator-authorized override). All Langfuse stateful core is up: Postgres (Patroni HA), ClickHouse (single-node + embedded Keeper), Redis (Sentinel), Web ingestion API + UI, Worker queues. D4 satisfied — no functional deferrals.
+H3 chaos verification: Tests 1+2+3 PASSED programmatically (drain, kill-leader, fill-disk). Test 4 (partition) deferred to Phase 1+ per coordinator call — partition-graceful-degradation testing is moot until Sessions 3+4 deploy apps with that behavior; sudoers expansion for `sudo iptables` deferred to bounded privileged-sidecar approach when Phase 1 begins.
 
-PR #73 override precedent captured in `feedback_escape_clause_override_pattern.md` (memory): escape clauses block blind iteration; bounded fixes with airtight root-cause + evidence may be authorized as override.
+Full Day-5 close detail: see latest SESSION-1-LOG.md entry (timeline, 17-bug audit, 2 override invocations, 25 captured insights, 5 queued follow-ups).
 
 ## CURRENT TASK
 
-**Idle pending two-step sequence**: (a) intra-cluster-SSH follow-up PR opens BEFORE Step 4, (b) Step 4 (Caddy Swarm internal service per C10) green-light from Rishi.
+**Idle pending Phase 1 green-light from coordinator.** Session 1's Phase 0 deliverables are complete. Phase 1 is Sessions 3+4 spawning real services (public-api, conversation-turn-orchestrator, etc.) against this cluster.
 
-The intra-cluster-SSH PR (`session-1/intra-cluster-ssh-for-rishi-deploy`) addresses bug class #12 + #13's shared root cause: rishi-deploy has no private key in `~/.ssh/` on cluster managers, so any install-script verifier that ssh-hops across nodes fails. Step 4's Caddy install script will hit the same wall — better to land the architecture fix once now, cleanly, than bypass-and-iterate again.
+When Phase 1 starts, Session 1's planned work picks up the queued follow-ups (see below) as services come online. No process gate from Session 1's side; the gate is at the coordinator level (deciding when Phase 1 launches based on Sessions 2 + 5 progress).
 
-Once that PR lands + verifies (test: `ssh rishi-deploy@rishi-5 echo ok` from rishi-4 succeeds), the `YRAL_LANGFUSE_SKIP_PREFLIGHT_BIND_MOUNT_VERIFY` bypass introduced in PR #72 can be deprecated in a follow-up.
+## NEXT 3 PLANNED ACTIONS (when Phase 1 launches)
 
-Process gate: Day-5 Step 4 deploy requires Rishi's typed YES per A13.
-
-## NEXT 3 PLANNED ACTIONS
-
-1. Open `session-1/intra-cluster-ssh-for-rishi-deploy` PR: `node-bootstrap.sh` generates ed25519 keypair (idempotent), distributes pub key to all 3 nodes' `~rishi-deploy/.ssh/authorized_keys` (additive), places priv key at `~rishi-deploy/.ssh/id_ed25519` mode 0600. Auto-merge eligible if under 400 lines.
-2. After merge + redeploy via node-bootstrap on cluster nodes: verify `ssh rishi-deploy@rishi-5 echo ok` from rishi-4 returns "ok" without prompt. Then ping Rishi for Day-5 Step 4 green-light.
-3. When Step 4 YES lands: start Caddy Swarm internal-service deploy (per C10). The earlier verifier patterns (`confirm_stack_actually_deployed` + the new long-run-stability check follow-up + the intra-cluster-SSH foundation) should make this much smoother than Step 3.
+1. **`session-1/caddy-swarm-config-generator`**: materialize per-service Caddy routes from a template + service registry as Sessions 3+4 register their first deliverable. Replaces the Phase-0 `placeholder.rishi.local` site block.
+2. **`session-1/deprecate-langfuse-bypass`**: re-deploy Langfuse without `YRAL_LANGFUSE_SKIP_PREFLIGHT_BIND_MOUNT_VERIFY` env var (PR #72 bypass) — now that PR #75 provisioned intra-cluster SSH the verifier works natively.
+3. **`session-1/long-run-stability-check`**: extend `confirm_stack_actually_deployed` post-deploy verifier with a 5-min `sleep + service ps` gate across all `*-install.sh` scripts.
 
 ## BLOCKERS
 
-None technical. Day-5 Step 2 deploy is GATED on explicit Rishi YES per A13 — deliberate process gate, not a blocker.
+None technical. Phase 1 launch is GATED on coordinator's overall multi-session readiness call (Sessions 2 + 5 progress alongside this Session 1 close).
 
 Day 7 (rishi-1/2/3 Caddy snippet via the `yral-rishi-hetzner-infra-template` repo) remains DEFERRED per agent spec + A2 tightening 2026-05-13.
 
 ## PENDING PRs (mine)
 
-- This PR (`session-1/day-5-step-3-close`) is the close LOG entry + state file update. Auto-merge eligible (.md-only).
-- Next planned: `session-1/intra-cluster-ssh-for-rishi-deploy` follow-up (opens after this close PR merges).
+- This PR (`session-1/day-5-close`) is the close LOG entry + state file update. `.md`-only; auto-merge eligible if under 400 lines, otherwise admin-merged manually per coordinator (same pattern as PR #76 / Step-3-close).
+- No other PRs pending. Queued follow-ups (see top of file) wait for Phase 1.
+
+## MERGED PRs (mine, 2026-05-17 — Day-5 Step 5 chaos-test hardening arc)
+
+- **PR #80** — host-vs-overlay-DNS + trap-cleanup + service-existence-gating across 3 scripts
+- **PR #81** — kill mechanism uses `docker service scale=0` (not `docker kill`) so Patroni actually elects new leader
+- **PR #82** — psql executor filter (Spilo containers only) + restore-before-sanity-check ordering
+- **PR #83** — node-agnostic Patroni-leader check in kill-rishi-6 (no hardcoded `patroni-rishi-4`)
+- **PR #84** — fill-rishi-5-disk SSH-by-IP + drop-sudo + write-under-rishi-deploy-home
+- **PR #85** — kill-patroni-leader retries psql write/read during pgbouncer routing-settling window
+
+## MERGED PRs (mine, 2026-05-17 — Day-5 Step 4 Caddy arc)
+
+- **PR #76** — Caddy deploy artifacts (caddy-install.sh + caddyfile.placeholder + stack edits)
+- **PR #77** — drop `auto_https off` so `tls internal` provisions certs
+- **PR #78** — drop `read_only: true` so `/tmp` is writable for `tls internal` cert temp files
+- **PR #79** — pin hostname `placeholder.rishi.local` on the Caddy site block (coordinator-authorized override)
 
 ## MERGED PRs (mine, 2026-05-17 — Day-5 Step 3 close-out PRs)
 
 - **PR #71** — `HOSTNAME=0.0.0.0` so Next.js binds to loopback
 - **PR #72** — operator-bypass for pre-flight bind-mount verifier (`YRAL_LANGFUSE_SKIP_PREFLIGHT_BIND_MOUNT_VERIFY`)
 - **PR #73** — healthcheck probe targets `127.0.0.1` (IPv4/IPv6 resolution mismatch); coordinator-authorized override
+- **PR #74** — Day-5 Step 3 close LOG entry + STATE update
+- **PR #75** — `node-bootstrap.sh` provisions intra-cluster SSH keypair for rishi-deploy (architectural fix for bug #12 + #13)
 
 ## MERGED PRs (mine, 2026-05-16 — Day-5 Step 3 env arc + supporting fixes)
 
@@ -115,15 +134,21 @@ None open.
 ## CONFIRM TO RISHI (pre-written for resume)
 
 ```
-I'm resuming Session 1. Day-5 Step 3 (Langfuse) is COMPLETE 2026-05-17 —
-all 3 services 1/1 healthy on rishi-6; web is Up (healthy) past the 5-min
-long-run gate; trace ingestion API + UI reachable on the internal overlay.
-14-bug arc closed via PRs #61-#73 (10 env classes, 1 healthcheck-bind, 1
-verifier-bypass covering 2 sub-bugs, 1 healthcheck-completion under
-coordinator-authorized override). D4 satisfied — no functional deferrals.
+I'm resuming Session 1. PHASE 0 IS COMPLETE 2026-05-17 — v2 cluster
+stateful core operational on rishi-4/5/6 with verified HA semantics.
+All 5 Day-5 steps closed: Patroni HA, Redis Sentinel, Langfuse, Caddy
+edge-ingress, chaos-test H3 verification (3/4 passing; Test 4
+partition deferred to Phase 1+ per coordinator call).
 
-Next planned action: open the `session-1/intra-cluster-ssh-for-rishi-deploy`
-follow-up PR (addresses bug #12 + #13 root cause; landed BEFORE Step 4 so
-Caddy doesn't hit the same wall). After that lands + verifies, ready for
-Day-5 Step 4 (Caddy Swarm) green-light per A13. Ready to continue?
+17-bug Day-5 deploy-time arc closed across Steps 3+4 (PRs #61-#73 +
+#76-#79). 2 coordinator-override invocations (PR #73 healthcheck IPv4,
+PR #79 Caddy SUBJECT pin) both validated the discipline. 6-PR chaos-
+test mechanics hardening arc (#80-#85). 25 captured insights for
+future v2-template-design work.
+
+Session 1 idle pending Phase 1 green-light. When Phase 1 launches,
+queued follow-ups pick up: caddy-swarm-config-generator (real
+service routes), deprecate-langfuse-bypass, long-run-stability-check,
+keychain-multiline-base64-wrap, network-partition-chaos-test (Phase
+1+ design). Ready to continue?
 ```
