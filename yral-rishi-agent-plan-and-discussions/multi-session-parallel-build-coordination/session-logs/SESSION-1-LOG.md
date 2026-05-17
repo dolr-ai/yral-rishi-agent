@@ -1,6 +1,55 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-17 — FIX: drop `read_only: true` from caddy stack so `/tmp` is writable for `tls internal` — Day-5 Step 4 deploy bug #2
+
+### Action
+PR #77 (`auto_https off` removal) DID fix the Caddy config — `automatic_https.disable` is now correctly false + Caddy auto-adds TLS connection policies at startup per its logs. But external TLS handshakes to :443 STILL fail with `internal_error` (SSL alert 80) from every vantage point: Mac, rishi-5 → rishi-4 cross-node, and rishi-4 loopback through Swarm ingress. The internal Caddy-to-itself probe (`docker exec wget https://127.0.0.1/`) also fails identically — proves it's not a network/SNI issue.
+
+### Diagnostic
+`docker exec <caddy> sh -c "touch /tmp/can-i-write"` returns:
+```
+touch: /tmp/can-i-write: Read-only file system
+```
+
+The `tmpfs: - /tmp:size=64M` directive in the stack file is NOT being honored by Docker Swarm v24+ when `read_only: true` is also set on the same service. Result: container rootfs is read-only AND /tmp is read-only. The Caddy startup log error we noticed earlier — `failed to install root certificate: open /tmp/truststore.3926617089.pem: read-only file system` — is the visible tip of this; less visibly, Caddy's `tls internal` cert-issuance code path uses /tmp for atomic temp files during runtime cert generation, and those fail silently → handshake aborts with `internal_error`.
+
+`/data/caddy/pki/authorities/local/root.crt` + `intermediate.crt` exist (Caddy's local CA was provisioned during startup), so the storage volume works. Only /tmp is broken.
+
+### Fix
+Remove `read_only: true` from the `caddy-edge-ingress` service in `caddy-swarm-service.yml`. Keep the `tmpfs: - /tmp:size=64M` line as documentation (harmless when ignored, useful if a future operator wants to reintroduce hardened rootfs via a named volume — captured in the surrounding role-comment). ~3 strict-code lines + a 13-line role-comment block explaining the Swarm-vs-Compose tmpfs divergence + the security-tradeoff rationale.
+
+Slight security loss (no hardened rootfs) is acceptable here because the only files Caddy creates outside `/data/caddy` (volume) and `/config` (volume) are short-lived cert temp files — the attack-surface delta is minimal. If hardened rootfs is wanted later, the Swarm-honored shape is a named volume mounted at /tmp, not the inline `tmpfs:` directive.
+
+### Constraints touched
+A2.1 (single concern: one directive removal + role-comment), B7 (role-comment captures Swarm-vs-Compose `tmpfs` divergence + tradeoff for restoring hardened rootfs later), I11 (same-commit LOG entry), I14 (auto-merge-eligible).
+
+### Diff size
+~3 strict-code lines (1 removal + 2 unchanged surrounding) + ~13 role-comment lines + LOG entry. Well under 400-line gate.
+
+### Operator action after merge
+scp `caddy-swarm-service.yml` to rishi-4:~/yral-deploy-caddy-76/, re-run `bash caddy-install.sh`. The stack file change forces a service update; Caddy rolls onto the new spec.
+
+### Verification plan (post-deploy)
+1. `confirm_stack_actually_deployed` (30s) passes.
+2. `docker exec <caddy> touch /tmp/test` should succeed (proves /tmp is writable).
+3. `curl --insecure --resolve any.example:443:<rishi-4-ip> https://any.example/` returns Phase-0 placeholder, HTTP 200.
+4. 5-min long-run via `docker service ps`.
+
+Outcome:
+- Green → Step 4 closes (2-bug arc, within 1-3 allowance). Step 5 next.
+- Red → at bug #3, hit escape clause; STOP + surface for triage. NO PR #N+1 without coordinator override.
+
+### Day-5 Step 4 bug-count tally (running)
+- Surfaced at deploy time: **2** of 3 allowance
+  - PR #77: `auto_https off` disables `tls internal` cert provisioning
+  - **PR (this): `read_only: true` + `tmpfs:` don't compose in Swarm → /tmp read-only → cert temp files fail**
+
+### Captured insight (15th — for future Swarm hardened-rootfs services)
+**Docker Swarm v24+ does NOT honor the `tmpfs:` directive when combined with `read_only: true` on the same service.** This is a divergence from Docker Compose where the combo works correctly. For hardened-rootfs services in Swarm: either drop `read_only`, or mount a named volume at the writable path (Swarm honors `volumes:` consistently). Any service using `read_only: true` + an inline `tmpfs:` should be audited — if it writes runtime state to the tmpfs path, it will fail silently or with confusing errors at first user-facing request.
+
+---
+
 ## 2026-05-17 — FIX: Caddyfile drops `auto_https off` so `tls internal` actually provisions certs — Day-5 Step 4 deploy bug #1
 
 ### Action
