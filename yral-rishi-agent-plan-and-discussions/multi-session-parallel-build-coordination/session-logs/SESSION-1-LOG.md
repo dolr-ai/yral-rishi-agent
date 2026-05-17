@@ -1,6 +1,93 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-17 — HARDENING: chaos tests — host-vs-overlay-DNS query mechanics + cleanup-in-trap + service-existence gating (Day-5 Step 5 retry-prep)
+
+### Action
+First chaos-battery run (Day-5 Step 5 attempt 1) exited 1 in `kill-rishi-6.sh` with the symptom `FAIL kill-rishi-6: Patroni leader is '', expected patroni-rishi-4`. Manual diagnosis on the live cluster — Patroni cluster state was actually fully healthy (patroni-rishi-4 Leader, patroni-rishi-5 Sync Standby, patroni-rishi-6 Replica, all on timeline 6) — pinned the failure to the test's verification mechanics, not a real HA gap. Cluster manually recovered (rishi-6 restored to availability=active).
+
+Per coordinator (Option 1, in-scope test-mechanics fix): land one focused PR fixing all 4 chaos scripts so the retry battery exercises real HA. Single concern, 3 fix patterns applied across the 3 affected scripts.
+
+### Fix 1 — host vs overlay-DNS query mechanics
+All chaos tests run from a Swarm-manager HOST shell on rishi-4. Original implementation queried Patroni REST API + Alertmanager via `curl http://<service>:<port>/...` directly from the host. **Docker overlay-DNS names (`patroni-rishi-N`, `alertmanager`, `pgbouncer`) only resolve from inside containers attached to the overlay network** — host-shell curl returns empty silently.
+
+Switch pattern: route all overlay-DNS queries through `docker exec <some-always-alive-container> <query-cmd>`. Chose **etcd-rishi-4** as the canonical executor because (a) it's on the data-plane overlay so DNS resolves, (b) it's never the target of any chaos test so it's always queryable, (c) `etcdctl` already speaks the Patroni cluster state stored at `/service/yral-v2-postgres/{leader,members/<name>}` — no need to also have curl + jq in the executor container. Pattern: `docker exec "$(docker ps --filter name=etcd-rishi-4 --quiet | head -1)" etcdctl --endpoints=http://etcd-rishi-4:2379 get ...`.
+
+Applied to:
+- `kill-rishi-6.sh:165` (Patroni leader check) → etcdctl `/service/yral-v2-postgres/leader`
+- `kill-patroni-leader.sh:110` (capture pre-failover leader) → etcdctl `/service/.../leader`
+- `kill-patroni-leader.sh:167` (poll for new leader) → etcdctl `/service/.../leader`
+- `kill-patroni-leader.sh:248` (rejoin role check) → etcdctl `/service/.../members/<name>` JSON, `.role`
+- `fill-rishi-5-disk.sh:164` (alertmanager query) → `docker exec etcd-rishi-4 sh -c 'curl ...'` (curl + jq are inside etcd-rishi-4's busybox layer; verified via test invocation)
+
+Note: etcd stores the leader's role as `"master"` whereas the Patroni REST API exposes it as `"leader"`. For the rejoin check the comparisons against `"replica" | "sync_standby"` still match cleanly (non-leader values are identical between etcd and REST API representations). For "is this member the leader?" use the `/leader` key (single hostname value) instead of inspecting `.role`.
+
+### Fix 2 — Cleanup-in-trap, not after verify
+`kill-rishi-6.sh`'s original `main()` called `restore_node_to_active_availability` as a regular function after `verify_recovery_after_drain`. With `set -e` (strict mode) any `return 1` from verify aborts the script before restore runs → cluster left with rishi-6 in Drain state. Day-5 Step 5 attempt 1 surfaced this: I had to manually `docker node update --availability active rishi-6` after the chaos test exited.
+
+Fix: move restore into a proper `trap ... EXIT` block at the start of `main()`, gated on a `DRAIN_HAS_BEEN_INJECTED` flag so the trap is a no-op if `inject_chaos_drain_node` hasn't run yet (e.g., pre-flight precondition failure). The original lock-cleanup trap is preserved by inclusion in the same trap body.
+
+Other 3 scripts already had proper traps:
+- `kill-patroni-leader.sh` — Docker Swarm's `restart_policy` auto-respawns the killed container; no cluster-state cleanup beyond lock release. ✓
+- `fill-rishi-5-disk.sh` — already had `trap "delete_dummy_fill_file_silently_on_exit" EXIT` ✓
+- `partition-rishi-6.sh` — already had `trap "remove_partition_iptables_rules_silently_on_exit" EXIT` ✓
+
+### Fix 3 — Service-existence gating for Phase-0 trivial-pass
+Chaos test assertions on services/infrastructure that don't yet exist in Phase 0 either trivially pass (no replicas anywhere = "0 replicas on drained node" vacuously true) or trivially fail (alertmanager not deployed = curl empty). Both shapes hide real test signal.
+
+Applied existence gates with explicit SKIP log:
+- `kill-rishi-6.sh` — `HOT_PATH_SERVICES_THAT_MUST_RESCHEDULE` loop now checks `docker service ls --filter name=<svc>` exists before asserting; skips with `⏭ SKIP: ... not deployed yet (Phase 0; Sessions 3+4 will add). Hot-path HA check is Phase-0-trivial-pass.`
+- `fill-rishi-5-disk.sh` — alertmanager service-existence gate before the curl. Skip cleanly if not deployed.
+- `kill-patroni-leader.sh` `verify_no_data_loss_via_write_read_roundtrip` — also gated on Patroni-container-available locally + postgres-superuser-password secret reachable. SKIP if either missing (still reports leader-election success as partial H3 signal).
+- `fill-rishi-5-disk.sh` `verify_patroni_still_writable` — same Patroni-container + secret gating.
+
+### Constraints touched
+A2.1 (single concern: chaos-test mechanics, 3 uniform fix patterns), B7 (each fix has a role-comment citing the bug-of-origin + the structural rationale), I11 (same-commit LOG entry), I14 (auto-merge eligible — diff ~230 lines of code + LOG; under 400 cap).
+
+### Diff size
+~164 lines added / 68 lines removed across 3 chaos test scripts + this LOG entry = ~300 lines total. Single concern, under auto-merge cap.
+
+### Operator action after merge
+scp the 3 modified chaos scripts to rishi-4:`~/yral-chaos-tests/` (4-file scp, no install script needed), then re-run `bash ~/yral-chaos-tests/run-all-chaos-tests.sh` with `YRAL_CHAOS_RUN_AUTHORISED=$(date +%Y-%m-%d)` set in the env. Each test should now either PASS (real HA assertion succeeds) or SKIP (Phase 0 gating). No previous-test-mechanics class FAILs.
+
+### Verification plan
+Battery run with this PR + the partial H3 signal from manual cluster inspection during attempt 1:
+- attempt 1's manual observation: rishi-6 drained cleanly, Patroni leader stayed on rishi-4 (TL 6 unchanged), Sync Standby lag 0 throughout, manual restoration to active worked — **informal H3 row 1 signal**.
+- attempt 2 (post-this-PR): same plus programmatic verification across all 4 H3 rows.
+
+Outcome:
+- All 4 tests PASS or have explicit SKIP for Phase-0-trivial — Step 5 closes → Day-5 close → PHASE 0 COMPLETE.
+- Any test FAILs with a new error class — STOP per escape clause + surface (real HA gap signal, not test mechanics).
+
+### Day-5 Step 5 retry bug-count (running)
+- chaos-test-mechanics fix (this PR): 1 (single hardening pass; not bug arc)
+
+### Captured insights (3 durable lessons for chaos-test design)
+1. **Chaos tests querying overlay-DNS endpoints MUST use `docker exec` from inside an attached container, NOT host shell curl.** Overlay-DNS names only resolve inside the overlay. Use a never-targeted-by-chaos container (e.g., etcd-rishi-4) as the canonical query executor.
+2. **Chaos test cleanup MUST live in a `trap ... EXIT` block so verification failures don't leave the cluster in a degraded state.** `set -e` + post-verify cleanup-as-regular-function is a footgun. Use a `<STATE>_HAS_BEEN_INJECTED` flag to make the trap a no-op when chaos hasn't been injected yet (e.g., pre-flight failure).
+3. **Chaos test assertions on infrastructure that may not exist yet MUST gate on `docker service ls` existence with a clear SKIP log.** Trivial-pass on missing services hides real test signal; trivial-fail on missing observability stack blocks unrelated test progress.
+
+These three should be in the v2-template-design playbook for any future destructive-test scripts.
+
+### Queued follow-ups (NOT bundled)
+- After this PR's retry passes: Day-5 close PR per the standing plan (Steps 4 + 5 + Phase 0 close + the now-5 queued follow-ups).
+
+---
+
+## 2026-05-17T10:59:20Z — 7544217
+### Action
+fix(caddyfile): pin hostname so `tls internal` has a cert SUBJECT
+
+### Files touched
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/scripts/caddyfile.placeholder
+- yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-1-LOG.md
+
+### Notes
+Auto-appended by post-tool-use.sh hook. Add manual milestone entries
+above this line when crossing a meaningful boundary.
+
+---
+
 ## 2026-05-17 — FIX: pin a hostname on the caddy placeholder site so `tls internal` has a cert SUBJECT — Day-5 Step 4 deploy bug #3 (coordinator-authorized override of bug-budget cap)
 
 ### Action
