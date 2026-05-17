@@ -1,6 +1,72 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-17 — NEW: `node-bootstrap.sh` provisions intra-cluster ssh keypair for rishi-deploy (addresses Day-5 Step 3 bug #12 + #13 root cause)
+
+### Action
+Day-5 Step 3 closed with two pre-flight verifier failures (bugs #12 + #13) papered over by PR #72's per-verifier env-var bypass. Root cause was uniform: `rishi-deploy@<cluster-manager>` has no private key in `~/.ssh/`, so any install-script verifier that ssh-hops as rishi-deploy to another cluster node fails Permission denied. Step 4 (Caddy Swarm) will hit the same wall. Per coordinator: open this PR BEFORE Step 4 starts so the architecture is clean.
+
+### Fix
+- `node-bootstrap.sh` new function `install_intra_cluster_ssh_keypair_for_rishi_deploy()`: called from `root-window` phase AFTER `create_rishi_deploy_user_with_authorized_keys`. Reads two OPTIONAL env vars (`YRAL_RISHI_INTRA_CLUSTER_SSH_PRIVATE_KEY` multi-line + `YRAL_RISHI_INTRA_CLUSTER_SSH_PUBLIC_KEY` one-line); installs private key at `/home/rishi-deploy/.ssh/id_ed25519` mode 0600, appends public key to `/home/rishi-deploy/.ssh/authorized_keys` (idempotent via `grep -Fxq`). Both unset → graceful skip with WARNING (legacy nodes / re-runs don't break); one set → error.
+- `node-bootstrap.sh` header `📥 INPUTS` section: document the two new optional env vars + the operator's Keychain naming convention (`yral-rishi-intra-cluster-ssh-{private,public}-key` under `account=dolr-ai`).
+- `node-bootstrap.sh` header `📤 OUTPUTS` section: extended.
+
+The SAME keypair is installed on all 3 cluster managers — any can ssh-hop to any other. Operator generates ONCE locally (`ssh-keygen -t ed25519 -f /tmp/key -N "" -C "rishi-deploy intra-cluster"`), stores in Keychain, then re-runs `node-bootstrap.sh` with phase `root-window` on each rishi-{4,5,6}. The existing root-window steps are idempotent (`useradd` skipped if user exists, `install -d` no-op if dir matches, `printf > authorized_keys` rewrites from env, then new function appends intra-cluster pub) so re-running on a live node is safe.
+
+### Constraints touched
+A2.1 (single concern: one new function + INPUTS/OUTPUTS doc; no other phase changes), B7 (function role-comment captures the bug #12/#13 link + why same keypair on all 3 nodes + deprecation path for PR #72's bypass + idempotency rationale), C8 (rishi-deploy continues to be the day-to-day SSH user; this just gives it intra-cluster reach), I11 (same-commit LOG entry), I14 (auto-merge-eligible — diff is ~70 strict-code lines including function body + role-comment + header-doc).
+
+### Diff size
+~38 strict-code lines (function body) + ~28 role-comment lines + ~22 header-INPUTS-doc lines = ~88 lines in node-bootstrap.sh + this LOG entry. Well under 400-line gate.
+
+### Operator action after merge
+
+**One-time keypair generation + Keychain storage (on Mac):**
+```bash
+ssh-keygen -t ed25519 -f /tmp/yral-rishi-intra -N "" -C "rishi-deploy intra-cluster"
+
+security add-generic-password -a dolr-ai \
+    -s yral-rishi-intra-cluster-ssh-private-key \
+    -w "$(cat /tmp/yral-rishi-intra)"
+
+security add-generic-password -a dolr-ai \
+    -s yral-rishi-intra-cluster-ssh-public-key \
+    -w "$(cat /tmp/yral-rishi-intra.pub)"
+
+rm /tmp/yral-rishi-intra /tmp/yral-rishi-intra.pub
+```
+
+**Per-node application** (rishi-4, rishi-5, rishi-6 — one round each via root SSH or via rishi-deploy with sudo bash; root-window phase requires root):
+```bash
+# Source from Keychain in a tight subshell, scp the updated script,
+# then run with phase=root-window. Existing steps are idempotent.
+# YRAL_AUTHORIZED_SSH_KEYS still needs to be provided per the original
+# bootstrap pattern.
+```
+
+The detailed operator command sequence is in the file header's `🛠️ ONE-TIME OPERATOR SETUP` section + the PR body.
+
+### Verification plan (post-application)
+After the operator has run the updated root-window on all 3 nodes:
+```
+$ ssh -i ~/.ssh/rishi-hetzner-ci-key rishi-deploy@<rishi-4-ip> 'ssh -o BatchMode=yes rishi-deploy@<rishi-6-ip> hostname'
+rishi-6
+$ ssh -i ~/.ssh/rishi-hetzner-ci-key rishi-deploy@<rishi-4-ip> 'ssh -o BatchMode=yes rishi-deploy@<rishi-5-ip> hostname'
+rishi-5
+$ ssh -i ~/.ssh/rishi-hetzner-ci-key rishi-deploy@<rishi-5-ip> 'ssh -o BatchMode=yes rishi-deploy@<rishi-4-ip> hostname'
+rishi-4
+```
+All 9 directed pairs (3 origins × 3 destinations, minus self) should succeed. Once verified, `confirm_clickhouse_bind_mount_directory_exists_on_langfuse_node` in `langfuse-install.sh` (re-run without the bypass env var) should pass natively, and `confirm_stack_registered_with_swarm_resync_service` should also pass.
+
+### Once verified
+- `langfuse-install.sh` re-run from rishi-4 WITHOUT `YRAL_LANGFUSE_SKIP_PREFLIGHT_BIND_MOUNT_VERIFY=true` should succeed all pre-flight + post-deploy verifiers cleanly. Deprecation of that bypass becomes a small follow-up PR.
+- Day-5 Step 4 (Caddy Swarm) green-light unblocked. Step 4's install script can use the same cross-node verifier pattern without bypass.
+
+### Captured insight (11th — durable v2-template lesson)
+**Cross-node verifier pre-flight checks need cross-node SSH to be a node-bootstrap responsibility, not a deferred-to-operator-action one.** v2's first attempt deferred intra-cluster SSH provisioning to "later" and surfaced as 2 distinct bug classes (#12 + #13) during the first install-script-that-needs-cross-node-verification deploy. New install scripts (Sessions 3+4) inherit this provisioning automatically by virtue of `node-bootstrap.sh` running first on every node — pre-flight verifiers across nodes "just work".
+
+---
+
 ## 2026-05-17 — MILESTONE: Day-5 Step 3 (Langfuse) COMPLETE — 14-bug arc closed, 3 services 1/1 healthy
 
 ### Final live state (verified 2026-05-17 09:37 UTC)

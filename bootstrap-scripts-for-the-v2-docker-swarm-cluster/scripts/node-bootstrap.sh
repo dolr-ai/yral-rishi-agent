@@ -48,8 +48,34 @@
 # ║  - YRAL_AUTHORIZED_SSH_KEYS  newline-separated list of public keys to    ║
 # ║                              install into rishi-deploy's authorized_keys ║
 # ║                                                                              ║
+# ║  📥 INPUTS (optional — intra-cluster SSH for rishi-deploy)                  ║
+# ║  Used during root-window phase so this node's rishi-deploy can SSH to     ║
+# ║  OTHER rishi-{4,5,6} nodes as rishi-deploy. Install scripts ssh-hop      ║
+# ║  between cluster managers (e.g., langfuse-install.sh's pre-flight        ║
+# ║  verifier ssh to rishi-6); without a private key in rishi-deploy's      ║
+# ║  home those calls fail Permission denied (publickey). Generate ONE      ║
+# ║  ed25519 keypair locally (`ssh-keygen -t ed25519 -f /tmp/key -N ""      ║
+# ║  -C "rishi-deploy intra-cluster"`), store both halves in macOS Keychain ║
+# ║  under service names `yral-rishi-intra-cluster-ssh-private-key` +       ║
+# ║  `yral-rishi-intra-cluster-ssh-public-key`, then source via             ║
+# ║  `security find-generic-password -w` when re-running node-bootstrap.sh  ║
+# ║  on each of the 3 nodes. Same keypair on all 3 nodes — any can ssh-hop  ║
+# ║  to any other.                                                          ║
+# ║  - YRAL_RISHI_INTRA_CLUSTER_SSH_PRIVATE_KEY                              ║
+# ║                              multi-line OpenSSH-format private key.    ║
+# ║                              Required together with _PUBLIC_KEY. Both  ║
+# ║                              unset = function skips with WARNING; both ║
+# ║                              set = installed; one set = error.         ║
+# ║  - YRAL_RISHI_INTRA_CLUSTER_SSH_PUBLIC_KEY                               ║
+# ║                              one-line OpenSSH-format public key        ║
+# ║                              matching the above. Appended idempotently ║
+# ║                              to rishi-deploy authorized_keys.          ║
+# ║                                                                              ║
 # ║  📤 OUTPUTS / SIDE EFFECTS                                                   ║
 # ║  - rishi-deploy user exists and is in the docker group                     ║
+# ║  - (if both YRAL_RISHI_INTRA_CLUSTER_SSH_* set) rishi-deploy has         ║
+# ║    ~/.ssh/id_ed25519 mode 0600 + that pub key appended to              ║
+# ║    authorized_keys, enabling intra-cluster ssh-hops                     ║
 # ║  - Docker Engine + compose plugin installed                                 ║
 # ║  - UFW configured per CONSTRAINTS C3 (only 22 from known IPs, 443 on      ║
 # ║    edge nodes, Swarm ports between cluster members, default deny)          ║
@@ -131,6 +157,7 @@ main() {
         root-window)
             install_base_packages
             create_rishi_deploy_user_with_authorized_keys
+            install_intra_cluster_ssh_keypair_for_rishi_deploy
             configure_narrow_sudoers_for_rishi_deploy
             configure_ufw_firewall_for_this_node_role
             enable_unattended_security_upgrades
@@ -306,6 +333,82 @@ create_rishi_deploy_user_with_authorized_keys() {
         > /home/rishi-deploy/.ssh/authorized_keys
     chown rishi-deploy:rishi-deploy /home/rishi-deploy/.ssh/authorized_keys
     chmod 0600 /home/rishi-deploy/.ssh/authorized_keys
+}
+
+
+install_intra_cluster_ssh_keypair_for_rishi_deploy() {
+    # WHAT:  install rishi-deploy's intra-cluster ssh keypair so THIS
+    #        node's rishi-deploy can ssh to other rishi-{4,5,6} nodes
+    #        as rishi-deploy.
+    # WHEN:  root-window phase, AFTER create_rishi_deploy_user_with_authorized_keys
+    #        (which creates the .ssh dir + writes operator authorized_keys).
+    # WHY:   Install scripts ssh-hop between cluster managers as
+    #        rishi-deploy — for example langfuse-install.sh's pre-flight
+    #        verifier sshes from rishi-4 to rishi-6 to verify the
+    #        /data/clickhouse-data bind-mount before deploy. Without a
+    #        private key in rishi-deploy's home, those calls fail
+    #        Permission denied (publickey). Day-5 Step 3 bugs #12 + #13
+    #        both surfaced this gap (PR #72 added a per-verifier bypass
+    #        as a stopgap; this function is the proper fix). Step 4
+    #        (Caddy Swarm) would hit the same wall.
+    #
+    #        The keypair is generated ONCE by the operator locally,
+    #        stored in macOS Keychain under service names
+    #        `yral-rishi-intra-cluster-ssh-{private,public}-key`, and
+    #        the SAME pair is installed on all 3 cluster managers via
+    #        env-var inputs — so any node can ssh-hop to any other.
+    #        Both YRAL_RISHI_INTRA_CLUSTER_SSH_* vars are OPTIONAL on
+    #        purpose: legacy nodes bootstrapped before this function
+    #        existed don't have them, and the graceful skip keeps
+    #        re-runs of root-window phase non-breaking. Once all 3
+    #        nodes have the keypair installed, the PR #72 bypass env
+    #        var (YRAL_LANGFUSE_SKIP_PREFLIGHT_BIND_MOUNT_VERIFY) can
+    #        be deprecated in a follow-up.
+    if [[ -z "${YRAL_RISHI_INTRA_CLUSTER_SSH_PRIVATE_KEY:-}" \
+        && -z "${YRAL_RISHI_INTRA_CLUSTER_SSH_PUBLIC_KEY:-}" ]]; then
+        echo "node-bootstrap: intra-cluster ssh keypair NOT installed — YRAL_RISHI_INTRA_CLUSTER_SSH_PRIVATE_KEY + _PUBLIC_KEY unset." >&2
+        echo "  Cross-node verifier calls (e.g., langfuse-install.sh pre-flight) will fail until provided on every cluster node." >&2
+        echo "  See header doc for the operator one-time setup (Keychain entries + node-bootstrap re-run)." >&2
+        return 0
+    fi
+    if [[ -z "${YRAL_RISHI_INTRA_CLUSTER_SSH_PRIVATE_KEY:-}" \
+        || -z "${YRAL_RISHI_INTRA_CLUSTER_SSH_PUBLIC_KEY:-}" ]]; then
+        echo "ERROR node-bootstrap: intra-cluster ssh keypair partially set — both YRAL_RISHI_INTRA_CLUSTER_SSH_PRIVATE_KEY + _PUBLIC_KEY required (or both unset to skip)." >&2
+        exit 1
+    fi
+
+    local rishi_deploy_ssh_directory="/home/rishi-deploy/.ssh"
+    local rishi_deploy_id_ed25519_path="${rishi_deploy_ssh_directory}/id_ed25519"
+    local rishi_deploy_authorized_keys_path="${rishi_deploy_ssh_directory}/authorized_keys"
+
+    # The .ssh directory was created by create_rishi_deploy_user_with_authorized_keys
+    # at mode 0700. Re-running install --directory is idempotent (no-op when
+    # ownership + mode already match) so re-bootstrap of an existing node
+    # doesn't fight prior state.
+    install --owner=rishi-deploy --group=rishi-deploy --mode=0700 \
+        --directory "${rishi_deploy_ssh_directory}"
+
+    # Write the private key. printf preserves the multi-line OpenSSH format
+    # exactly and ensures the trailing newline OpenSSH requires.
+    printf '%s\n' "${YRAL_RISHI_INTRA_CLUSTER_SSH_PRIVATE_KEY}" \
+        > "${rishi_deploy_id_ed25519_path}"
+    chown rishi-deploy:rishi-deploy "${rishi_deploy_id_ed25519_path}"
+    chmod 0600 "${rishi_deploy_id_ed25519_path}"
+
+    # Append the public key to authorized_keys ONLY IF not already
+    # present. grep -Fxq matches the line literally + returns 0 if
+    # found, so the append is a true idempotent op. The 2>/dev/null
+    # covers the (theoretical) case where authorized_keys is missing
+    # — though create_rishi_deploy_user_with_authorized_keys above
+    # always creates it.
+    if ! grep --fixed-strings --line-regexp --quiet \
+         "${YRAL_RISHI_INTRA_CLUSTER_SSH_PUBLIC_KEY}" \
+         "${rishi_deploy_authorized_keys_path}" 2>/dev/null; then
+        printf '%s\n' "${YRAL_RISHI_INTRA_CLUSTER_SSH_PUBLIC_KEY}" \
+            >> "${rishi_deploy_authorized_keys_path}"
+        chown rishi-deploy:rishi-deploy "${rishi_deploy_authorized_keys_path}"
+        chmod 0600 "${rishi_deploy_authorized_keys_path}"
+    fi
 }
 
 
