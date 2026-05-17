@@ -1,6 +1,83 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-17 — FIX: langfuse-web healthcheck probe targets `127.0.0.1` (not `localhost`) — Day-5 Step 3 deploy bug #14 (IPv4/IPv6 resolution mismatch)
+
+### Action
+Re-deploy after PR #72's bypass landed surfaced web STILL exit-137 cycling with `dockerexec: unhealthy container`. Identical surface to bug #11, **different root cause**: PR #71's `HOSTNAME=0.0.0.0` was working as designed (listener verifiably on `0.0.0.0:3000`), but the healthcheck probe target `localhost` was IPv6-first under the container's resolver — `::1:3000` has no listener because Next.js's `0.0.0.0` binds IPv4-only on Linux.
+
+Coordinator authorized **explicit override of the healthcheck-arc escape clause** based on root-cause + evidence (see "Override reasoning" below).
+
+### Diagnostic (root cause definitively isolated, not iteration)
+
+Inside the live new-generation web container (`7dd6310f5253`, uptime 49s post-PR-72-deploy):
+
+| Surface | Result | Interpretation |
+|---|---|---|
+| `docker exec ... echo \$HOSTNAME` | `HOSTNAME=0.0.0.0` | PR #71 fix verifiably applied |
+| `service inspect ... .Env` | `HOSTNAME=0.0.0.0` | Confirmed at service-spec level |
+| `cat /proc/net/tcp` listening sockets | `00000000:0BB8` | Listener bound `0.0.0.0:3000` IPv4 |
+| `wget http://127.0.0.1:3000/api/public/health` | `{"status":"OK","version":"3.174.1"}` exit 0 | App responds on IPv4 loopback |
+| `wget http://langfuse-web:3000/api/public/health` | `{"status":"OK","version":"3.174.1"}` exit 0 | App responds on overlay-network IPv4 |
+| `wget http://localhost:3000/api/public/health` | `Connection refused` exit 1 | **The healthcheck probe target** |
+| `getent hosts localhost` | `::1 localhost localhost` (IPv6 first) | Resolver returns IPv6 ::1 ahead of 127.0.0.1 |
+| `cat /etc/hosts` | both `127.0.0.1 localhost` AND `::1 localhost ...` | Dual-stack mapping with IPv6 listed second but preferred by getent |
+| `cat /etc/nsswitch.conf` hosts line | `hosts: files dns` | Standard order — /etc/hosts wins; the IPv6 entry has more `localhost` aliases so it sorts first |
+
+**Conclusion**: app is healthy; the Swarm healthcheck cmd target `localhost` is the only thing failing. PR #71 fix is correct + necessary; PR #71 alone was insufficient because of the IPv4/IPv6 resolution wrinkle.
+
+### Override reasoning (captured for durable governance)
+
+Coordinator's healthcheck-arc escape clause says "if PR #71 doesn't resolve web's restart loop, STOP, NO PR #73". Override granted because the escape clause exists to prevent **blind iteration on unknown root causes** (the env arc was 11 layers without clarity). It is NOT meant to block one-line fixes when root cause is **definitively diagnosed with airtight evidence**. The diagnostic table above is airtight:
+- (a) direct probe shows app healthy on `127.0.0.1:3000`
+- (b) `/proc/net/tcp` confirms listener bound `0.0.0.0:3000`
+- (c) `HOSTNAME=0.0.0.0` env var verified applied
+- (d) `/etc/hosts` dual-stack + `getent` ordering is proven root cause
+- (e) Fix is one word, zero risk of new surface
+
+This pattern (override when root cause + evidence) is **distinct from iteration** (try-fix-observe-try-again). Escape clause stays valid for the latter; override proceeds for the former. Captured in `feedback_escape_clause_override_pattern.md` (memory) for future use.
+
+### Fix
+`langfuse-stack.yml` `langfuse-web` healthcheck `test`: change probe URL from `http://localhost:3000/api/public/health` → `http://127.0.0.1:3000/api/public/health`. Single word swap. Role-comment captures the WHY (dual-stack /etc/hosts + getent ordering + Next.js IPv4-only bind) so future readers don't re-introduce the regression by "normalizing" to `localhost`.
+
+### Constraints touched
+A2.1 (single concern: one word in one line + supporting role-comment; nothing else bundled), B7 (role-comment in stack file captures the IPv4/IPv6 wrinkle + dual-stack hosts file + why 127.0.0.1 is deterministic vs. `localhost`), I11 (same-commit LOG entry), I14 (auto-merge-eligible — diff is ~14 strict-code lines including the explanatory comment).
+
+### Diff size
++1 strict-code line changed (the `test:` value) + ~13 role-comment lines explaining the WHY = ~14 lines in stack file + this LOG entry. Well under 400-line gate.
+
+### Operator action after merge
+Re-deploy with same subshell pattern as before:
+- 5 Keychain-sourced secrets (langfuse-*)
+- 3 rishi-N public IPs
+- `YRAL_LANGFUSE_SKIP_PREFLIGHT_BIND_MOUNT_VERIFY=true` (still required until intra-cluster-ssh follow-up lands)
+- Run `bash ~/yral-deploy-langfuse-71/langfuse-install.sh` on rishi-4 via ssh + stdin
+
+### Verification plan (post-deploy)
+- `confirm_stack_actually_deployed` (30s) passes
+- `sleep 300; sudo docker service ps yral-v2-langfuse_langfuse-web --no-trunc | head -10` — active task `Running` with no Shutdown cycles since the PR #73 rollout window
+- ephemeral `docker exec ... wget --spider http://127.0.0.1:3000/api/public/health; echo $?` — exit 0
+
+Outcome:
+- Long-run green → Step 3 closes with **14-bug audit LOG** (10 env + 3 verifier + 1 healthcheck-completion) + override reasoning + queued intra-cluster-SSH follow-up. Ping coordinator for Step 4.
+- Long-run red → STOP per escape clause. Override was granted on the strength of root-cause evidence; if evidence is wrong, back to full escape rules.
+
+### Day-5 Step 3 bug-count tally
+- Pre-emptively closed (PR #60): 5
+- Surfaced at deploy time: **14** (was 12)
+  - Env arc (PRs #61-#70): 10 classes
+  - Healthcheck-bind arc (PR #71): 1 class — Next.js bind needs `HOSTNAME=0.0.0.0`
+  - Verifier-cant-reach-across-nodes (PR #72 bypass): bug #12 (bind-mount verifier) + bug #13 (resync-registry verifier, same root cause, runs AFTER deploy succeeds, will be addressed by the same intra-cluster-ssh follow-up)
+  - **Healthcheck-probe-target IPv4/IPv6 mismatch (this PR #73): 1 class — `localhost` resolves to ::1 first, listener is IPv4-only on 0.0.0.0**
+
+### Queued follow-up (still NOT bundled)
+`session-1/intra-cluster-ssh-for-rishi-deploy` addresses BOTH bug #12 (bind-mount verifier) AND bug #13 (resync-registry verifier) — same root cause: no intra-cluster SSH keys for rishi-deploy on cluster managers. Lands AFTER Step 3 closes, BEFORE Step 4 (Caddy Swarm) starts.
+
+### Captured insight (10th — for future Next.js-in-Docker-Swarm deploys)
+**Next.js standalone's `HOSTNAME=0.0.0.0` binds IPv4-only on Linux (Node.js's `0.0.0.0` listen does not dual-stack).** If `/etc/hosts` dual-stacks `localhost` to both `127.0.0.1` and `::1`, the `getent hosts localhost` resolver may prefer `::1` (depends on entry ordering + alias counts), and any healthcheck cmd targeting `localhost` then hits an empty IPv6 loopback. Use `127.0.0.1` literally for healthcheck probes. Alternatives: set `HOSTNAME=::` for IPv6 wildcard listen (Linux usually dual-stacks ::), or patch /etc/hosts at container start.
+
+---
+
 ## 2026-05-17 — FIX: `langfuse-install.sh` opt-out for pre-flight bind-mount verifier — Day-5 Step 3 deploy bug #12 (verifier-cant-reach-across-nodes class)
 
 ### Action
