@@ -182,22 +182,37 @@ verify_recovery_after_drain() {
         echo "  ✅ ${hot_path_service_name} has 0 replicas on ${NODE_TO_DRAIN}"
     done
 
-    # Patroni leader check via etcd (NOT host-curl to overlay-DNS).
-    # Day-5 Step 5 chaos run 1 surfaced that `curl http://patroni-rishi-4:8008/cluster`
-    # from the host shell returns empty — `patroni-rishi-4` is a Docker overlay-DNS
-    # name only resolvable from inside containers attached to yral-v2-data-plane.
-    # `etcdctl get /service/yral-v2-postgres/leader` returns the same answer via
-    # the etcd-stored Patroni cluster state, queried from inside the etcd container
-    # (etcd-rishi-4 is unaffected by any chaos test → always queryable).
+    # Patroni leader check via etcd. NOT hardcoded to `patroni-rishi-4`
+    # any more — chaos retry 4 surfaced that prior runs of the
+    # kill-patroni-leader test legitimately failover the leader away
+    # from patroni-rishi-4 (to patroni-rishi-5 in our case), and that
+    # post-failover state PERSISTS across chaos battery runs. The test
+    # must not assume the cluster always starts with patroni-rishi-4 as
+    # leader.
+    #
+    # H3 semantics for draining rishi-6: cluster behaves correctly with
+    # rishi-6 absent. Concretely:
+    #   - some node is the leader (Patroni active)
+    #   - the leader is NOT on the drained node (rishi-6 has no live
+    #     containers, so it can't be leading anything)
+    # If the drained node WAS the leader pre-drain, Patroni will have
+    # elected a new one. Either path is a valid PASS for "drain doesn't
+    # destabilise the cluster".
     local patroni_leader_hostname
     patroni_leader_hostname="$(docker exec "$(docker ps --filter name=etcd-rishi-4 --quiet | head -1)" \
         etcdctl --endpoints=http://etcd-rishi-4:2379 \
         get /service/yral-v2-postgres/leader --print-value-only 2>/dev/null || true)"
-    if [[ "${patroni_leader_hostname}" != "patroni-rishi-4" ]]; then
-        echo "FAIL kill-rishi-6: Patroni leader is '${patroni_leader_hostname}', expected patroni-rishi-4" >&2
+    if [[ -z "${patroni_leader_hostname}" ]]; then
+        echo "FAIL kill-rishi-6: no Patroni leader present in etcd after drain (cluster degraded)" >&2
         return 1
     fi
-    echo "  ✅ Patroni leader unchanged: patroni-rishi-4"
+    # The leader's hostname is `patroni-rishi-N`; the drained node is
+    # `rishi-N` (no `patroni-` prefix). Compare the suffix.
+    if [[ "${patroni_leader_hostname}" == "patroni-${NODE_TO_DRAIN}" ]]; then
+        echo "FAIL kill-rishi-6: Patroni leader is on the drained node ('${patroni_leader_hostname}') — failover didn't trigger" >&2
+        return 1
+    fi
+    echo "  ✅ Patroni leader present and NOT on drained node: ${patroni_leader_hostname}"
 
     # etcd quorum: query a non-drained etcd member; expect HEALTHY.
     if ! docker exec "$(docker ps --filter name=etcd-rishi-4 --quiet | head -n 1)" \

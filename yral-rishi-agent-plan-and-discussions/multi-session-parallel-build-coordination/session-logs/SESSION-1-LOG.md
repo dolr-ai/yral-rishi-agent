@@ -1,6 +1,40 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-17 — HARDENING: `kill-rishi-6.sh` Patroni-leader check is node-agnostic — Day-5 Step 5 retry-prep #4
+
+### Action
+Chaos retry 4 (post-PR #82): **Test 2 succeeded so fully in retry 3** that the resulting failover (`patroni-rishi-4` → `patroni-rishi-5`) **persisted into retry 4's starting state**. patronictl now shows patroni-rishi-5 as Leader (TL 8). Retry 4's Test 1 failed because `kill-rishi-6.sh:167` hardcoded `expected patroni-rishi-4` for the post-drain leader check. Cluster is fine; the assertion is too narrow.
+
+### Fix
+Replace the hardcoded `if [[ "${patroni_leader_hostname}" != "patroni-rishi-4" ]]` with a node-agnostic semantic check: post-drain Patroni leader must (a) exist (some node is leading the cluster), AND (b) NOT be on the drained node (rishi-6). Both shapes are valid H3 PASS:
+- Pre-drain leader was on a non-drained node → leader unchanged post-drain.
+- Pre-drain leader was on the drained node → Patroni elected a new leader off the drained node.
+
+This is the correct H3 semantics for "drain doesn't destabilise the cluster". The previous hardcode assumed the test always started against a freshly-deployed cluster; that's true the first time but false after any prior failover persists.
+
+Also audited the other 3 chaos scripts + run-all-chaos-tests.sh for similar hardcoded `patroni-rishi-4 == leader` assumptions: none found. `kill-patroni-leader.sh` already captures the leader dynamically via etcd (PR #80's etcdctl pattern).
+
+### Constraints touched
+A2.1 (single concern: 1 assertion in kill-rishi-6.sh + role-comment), B7 (role-comment captures dual-shape PASS semantics + audit-elsewhere result), I11 (same-commit LOG entry), I14 (auto-merge eligible).
+
+### Diff size
+~20 strict-code lines + role-comment + LOG entry. Well under 400 cap.
+
+### Day-5 Step 5 chaos-test arc tally
+- PR #80: host-vs-overlay-DNS + trap-cleanup + existence-gating
+- PR #81: kill mechanism uses service-scale instead of docker-kill
+- PR #82: executor filter + restore-before-sanity ordering
+- **PR #83 (this): node-agnostic Patroni-leader check in kill-rishi-6**
+
+### Operator action after merge
+scp updated `kill-rishi-6.sh` to rishi-4, re-run battery. Tests 1+2 should both PASS; Tests 3+4 run for the first time.
+
+### Captured insight (22nd — for chaos-test design)
+**Chaos tests must NOT hardcode pre-chaos cluster state**, even seemingly-stable values like "rishi-4 is the Postgres leader". A successful chaos test legitimately mutates cluster state (the whole point), and subsequent runs may start from any post-chaos state. Use dynamic capture (etcd queries, etcdctl, runtime introspection) for pre-test snapshots; encode the test's contract as semantic assertions ("leader exists AND is not on the drained node"), not absolute identity assertions ("leader is patroni-rishi-4"). This pattern applies recursively: any test that runs after another test runs against an evolved cluster, not the original deployment.
+
+---
+
 ## 2026-05-17 — HARDENING: chaos-test psql executor filter + restore-before-sanity ordering — Day-5 Step 5 retry-prep #3
 
 ### Action
