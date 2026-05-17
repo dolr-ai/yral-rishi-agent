@@ -1,6 +1,52 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-17 — HARDENING: `kill-patroni-leader.sh` uses `docker service scale=0` (not `docker kill`) to actually exercise leader-election — Day-5 Step 5 retry-prep #2
+
+### Action
+Day-5 Step 5 chaos-battery retry 1 (post-PR #80 hardening) passed `kill-rishi-6` cleanly but `kill-patroni-leader` failed: `no new leader after 30s`. **Manual diagnosis confirmed Patroni handled the kill correctly + cluster ended healthy on TL 7 (TL 6 → TL 7 happened ~17s after the kill, all replicas resynced to lag 0)** — but the original leader patroni-rishi-4 reclaimed its position rather than yielding to the sync standby. Root cause: Swarm's `restart_policy` respawned the SIGKILL'd container within ~5-10s, fast enough that the original leader reclaimed the etcd lock before Patroni's `ttl: 30` expired. With `synchronous_mode_strict: false` (the production-correct cluster setting), Patroni keeps the same leader if it returns before the lock expires — no failover triggered.
+
+Coordinator triage: this is a TEST mechanics issue, not a cluster gap. `synchronous_mode_strict: false` is the right production setting (prevents flapping on transient outages, faster ACKs). Fix the test to actually exercise the leader-election path: use `docker service scale --replicas=0` instead of `docker kill`, so Swarm CAN'T respawn the container until the trap restores it. Patroni MUST then elect a new leader on a different node — that's the real H3 row 2 signal.
+
+### Fix
+`kill-patroni-leader.sh`:
+- New module-level vars: `LEADER_SERVICE_NAME`, `LEADER_SERVICE_ORIGINAL_REPLICAS`, `LEADER_SERVICE_HAS_BEEN_SCALED_DOWN` (used by safety trap).
+- `inject_chaos_kill_leader_container` → `inject_chaos_scale_leader_service_to_zero`: captures pre-test replica count, scales `yral-v2-patroni_<leader>` to 0 via `docker service scale --detach=false` (synchronous), sets flag.
+- New `restore_killed_service_to_original_replicas`: explicit normal-flow restore. Scales back to original replica count; flips flag false.
+- New `safety_restore_leader_service_if_still_scaled_down`: belt-and-braces EXIT trap function. Restores if flag still true (i.e., `set -e` aborted mid-verify before normal restore ran). If restore itself fails, prints a LOUD "MANUAL INTERVENTION REQUIRED" message with the exact `docker service scale ... = N` command to run.
+- `main()` installs the safety trap BEFORE injecting chaos; calls explicit restore in normal flow after verify; trap is a no-op on clean exit.
+- `wait_for_killed_container_to_rejoin_as_follower` → `wait_for_rejoined_service_to_become_follower` (renamed; same body, runs after explicit restore now).
+- `PATRONI_FAILOVER_DEADLINE_SECONDS: 30 → 60` (TTL 30 + container-stop ~5-10s + promotion ~5s; 60s safety margin).
+
+### Constraints touched
+A2.1 (single concern: chaos-test kill mechanism for one script), B7 (role-comments capture (a) why scale-to-0 vs docker kill, (b) why `synchronous_mode_strict: false` stays as production-correct cluster setting, (c) safety-trap discipline + manual-intervention fallback), I11 (same-commit LOG entry), I14 (auto-merge eligible — diff ~120 lines code + LOG).
+
+### Diff size
+~132 inserts / ~17 deletes across `kill-patroni-leader.sh` + LOG entry. Under auto-merge cap.
+
+### Operator action after merge
+scp updated `kill-patroni-leader.sh` to rishi-4:~/yral-chaos-tests/, re-run `bash ~/yral-chaos-tests/run-all-chaos-tests.sh` with `YRAL_CHAOS_RUN_AUTHORISED=$(date +%Y-%m-%d)`. Test 1 (kill-rishi-6) already passed in retry 1; will pass again. Test 2 (kill-patroni-leader) should now actually exercise election + pass. Tests 3 + 4 run for the first time.
+
+### Verification plan
+After merge + retry: each chaos test PASS or explicit SKIP. Cluster ends in 3/3 healthy state with all members on a single timeline and lag 0.
+
+Outcome:
+- All 4 PASS → Step 5 closes → Day-5 close PR → PHASE 0 COMPLETE.
+- New test-mechanics class in Test 3 or 4 → small fix PR (same arc).
+- Real HA gap in Test 3 or 4 → STOP per escape clause + surface.
+
+### Day-5 Step 5 chaos-test arc tally (running)
+- PR #80: host-vs-overlay-DNS + trap-cleanup + existence-gating across 3 scripts
+- **This PR: kill mechanism for kill-patroni-leader uses service-scale instead of docker-kill so Patroni actually elects**
+
+### Captured insight (18th — durable lesson for chaos-test design)
+**`docker kill` of a Swarm service task does NOT reliably exercise the failover path on services with `restart_policy: condition: any` (or similar fast-respawn policies).** Swarm respawns the container within 5-10s — if the underlying system (Patroni, Redis Sentinel, etc.) has a TTL/heartbeat longer than the respawn time, NO failover happens. The killed node briefly disappears, returns, reclaims its position. That's correct production behavior (avoids flapping) but it doesn't test the destructive scenario. **For chaos tests that need to verify "failover to a different node": use `docker service scale --replicas=0` (or remove the service spec entirely) so respawn is prevented; restore in an EXIT trap with belt-and-braces fallback.** Captured for v2-template-design + future chaos-test work.
+
+### Captured insight (19th — production-config protection)
+**Don't change cluster config to make a chaos test pass.** Patroni's `synchronous_mode_strict: false` is the production-correct setting (prevents flapping for transient leader outages, faster commit ACKs). Switching it to `true` to satisfy a "leader must change on kill" test assertion would degrade production HA semantics. When a chaos test result conflicts with production-correct config, fix the TEST mechanism, not the config. This is governance — Phase 0 verifies HA semantics of the production-shape cluster, not a test-shaped variant.
+
+---
+
 ## 2026-05-17 — HARDENING: chaos tests — host-vs-overlay-DNS query mechanics + cleanup-in-trap + service-existence gating (Day-5 Step 5 retry-prep)
 
 ### Action
