@@ -110,9 +110,21 @@ services:
         protocol: tcp
         mode: ingress
 
-    # Read-only filesystem on the container — Caddy needs write access
-    # only to /data (cert cache) which we mount as a per-node volume.
-    read_only: true
+    # NOTE: original design specified `read_only: true` + `tmpfs: /tmp:size=64M`
+    # for hardened-rootfs + writable /tmp. Day-5 Step 4 deploy bug #2 surfaced
+    # that Docker Swarm v24+ does NOT honor the `tmpfs:` directive when
+    # `read_only: true` is also set — /tmp ends up read-only inside the
+    # container, and Caddy's `tls internal` machinery uses /tmp for atomic
+    # cert write/install (truststore install + cert-issuance temp files).
+    # With /tmp read-only, cert operations fail and every TLS handshake to
+    # :443 aborts with `internal_error` (SSL alert 80). Dropping `read_only:
+    # true` lets the container fs be writable, which restores /tmp. Slight
+    # security loss (no hardened rootfs) is acceptable for this Caddy stack
+    # because the only files Caddy creates outside its volumes are
+    # short-lived cert temp files — the attack-surface delta is minimal.
+    # If we ever want hardened rootfs back, the right shape is a named
+    # volume mounted at /tmp (Swarm honors that consistently) instead of
+    # the inline `tmpfs:` directive.
     tmpfs:
       - /tmp:size=64M
 
