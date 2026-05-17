@@ -1,6 +1,79 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-17 — FIX: langfuse-web `HOSTNAME=0.0.0.0` so Next.js binds to loopback — Day-5 Step 3 deploy bug #11 (healthcheck class)
+
+### Action
+PR #70 (SALT + NEXTAUTH_SECRET + ENCRYPTION_KEY inline) RESOLVED bug #10 — Next.js env validator no longer throws. New failure surfaces immediately after: Swarm marks web tasks "Failed" with `task: non-zero exit (137): dockerexec: unhealthy container`, replicas drop to 0/1, restart_policy max_attempts=5 exhausts. **Fresh failure class, not env-arc continuation** — surfaced to coordinator; coordinator authorized Option B (fresh budget, one-PR cap, then immediate Option C if it fails).
+
+### Diagnostic (cited before fix, no guess-and-iterate)
+
+**STEP 1 — Read current healthcheck definition (`langfuse-stack.yml:260-264`):**
+```yaml
+test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/api/public/health"]
+interval: 30s ; timeout: 5s ; retries: 5 ; start_period: 60s
+```
+
+**STEP 2 — Verify which of the 4 candidates is true.** Swarm's max_attempts=5 was exhausted so no live container available to `docker exec` into. Pulled the `State.Health` block stored on the most-recent dead container (`ed6adb0a0784`) — Docker retains health log post-exit. Independent corroboration from prior dead container (`7c490bc7513e`) showed the identical pattern:
+
+```
+"Status": "unhealthy", "FailingStreak": 5,
+"Log": [ 5x { "ExitCode": 1, "Output": "wget: can't connect to remote host: Connection refused\n" } ]
+```
+
+Ruled out:
+- (#1) **wget binary missing** — FALSE. Standalone `docker run --rm --entrypoint sh <image>` confirms `/usr/bin/wget` → `/bin/busybox` (BusyBox v1.37.0).
+- (route missing) — FALSE. `find /app/web/.next/server/pages/api/public/health*` returns the bundled Next.js Pages-API route.
+- (timing / start_period) — FALSE. The failing-streak window is at 10:00:51 → 10:02:51 (2+ min past container start, well past the 60s grace), and the error is `Connection refused` not `timeout` — the listener isn't responding *at all*, not slowly.
+- (NEXTAUTH_URL redirect mismatch) — FALSE. `Connection refused` is L4 (TCP), not L7 (HTTP). No HTTP response means no app listener on the probed address.
+
+**Confirmed: candidate #4 — bind mismatch.** Read `/app/web/server.js` from inside the image:
+```
+const hostname = process.env.HOSTNAME || '0.0.0.0'
+...
+hostname,
+```
+
+Next.js standalone reads `process.env.HOSTNAME`. Docker/Swarm auto-fills `HOSTNAME=langfuse-web` from this service's `hostname:` directive (used for inter-service DNS). Next.js then binds the listener to the overlay-network interface for that name only — NOT to `127.0.0.1`. wget probes `localhost:3000` from inside the same container, hits no listener on loopback, gets `Connection refused`. After 5 consecutive 30s-interval failures Swarm declares unhealthy and SIGKILLs.
+
+### Fix
+`langfuse-stack.yml` `langfuse-web` env block: add `HOSTNAME: "0.0.0.0"` (with multi-line root-cause comment). This env value takes precedence over Docker's auto-set HOSTNAME inside the container. Next.js then binds to all interfaces including loopback. Inter-service DNS is unaffected — Docker DNS resolves `langfuse-web` via the `hostname:` directive (which writes `/etc/hostname` + the Docker swarm-internal DNS record), not via the in-container env var.
+
+Worker is unaffected — `langfuse-worker` doesn't run a Next.js HTTP listener (BullMQ background consumer only), no healthcheck wget probe.
+
+### Constraints touched
+A2.1 (single concern: one env var add + root-cause comment; no bundled cleanups), B7 (role-comment captures Next.js standalone bind behavior + Docker HOSTNAME auto-set finding + why DNS is unaffected), I11 (same-commit LOG entry), I14 (auto-merge-eligible — diff is +15 strict-code lines).
+
+### Diff size
++1 env line + 14 root-cause comment lines = 15 lines in stack file. Well under 400-line gate.
+
+### Verification plan (after merge + redeploy)
+Per coordinator's extended verifier rule for healthcheck-killed services:
+1. Re-run `langfuse-install.sh` on rishi-4. `confirm_stack_actually_deployed` (30s) must pass.
+2. **Long-run check**: `sleep 300; sudo docker service ps yral-v2-langfuse_langfuse-web --no-trunc | head -5` — active task must show `Running` state with no Shutdown cycles in the recent history past 5 min.
+3. **Probe smoke**: ephemeral `docker exec` into running web → `wget --spider http://localhost:3000/api/public/health; echo $?` must exit 0.
+
+Outcome:
+- Long-run check passes → Step 3 closes with full 12-bug audit. Ping coordinator for Step 4.
+- Long-run check fails → STOP per escape clause, surface for Option C (D4 partial deferral), NO PR #72.
+
+### Followup queued (separate session-1 PR after Step 3 closes — not bundled now)
+- `session-1/long-run-stability-check`: extend the post-deploy verifier in `langfuse-install.sh` (and other `*-install.sh`) with a 5-min `sleep 300 + docker service ps` long-run gate. The existing 30s verifier was insufficient against healthcheck-killed services because failures here surface at ~150s (5 × 30s interval). Adds ~5 min to install runtime — acceptable tradeoff against the false-positive we just hit. Capture only — DO NOT touch in PR #71.
+
+### Day-5 Step 3 bug-count tally
+- Pre-emptively closed (PR #60): 5
+- Surfaced at deploy time: 11 (was 10; this PR makes it 11)
+  - Env arc (PRs #61-#70): 10 classes
+  - **Healthcheck arc (this PR #71): 1 class — Next.js bind needs `HOSTNAME=0.0.0.0`**
+
+### Captured insight (7th — for future Next.js-in-Swarm reference)
+**Next.js standalone server.js binds to `process.env.HOSTNAME || '0.0.0.0'`.** Docker/Swarm auto-fills `HOSTNAME` from the service's `hostname:` directive (used for inter-service DNS). If you don't explicitly override, Next.js binds ONLY to the overlay-network IP for that name — `127.0.0.1` probes get `Connection refused`. Any healthcheck that probes `localhost` will fail. Fix: set `HOSTNAME: "0.0.0.0"` in the service env block. This overrides the env var only; Docker's actual container hostname (/etc/hostname + swarm DNS) is unaffected.
+
+### Captured insight (8th — diagnostic-method reference)
+**Docker retains `State.Health.Log` on exited containers.** When Swarm has max_attempts-exhausted the slot and you can't catch a live container in its healthy window, `docker inspect <dead-container-id> --format "{{json .State.Health}}"` gives you the last 5 healthcheck attempts with exit codes + output. Cheaper than forcing a new task spawn just to grab a probe; also independent corroboration across multiple dead containers gives a stronger signal than one live one.
+
+---
+
 ## 2026-05-17 — FIX: langfuse-web Next.js inline env vars (SALT + NEXTAUTH_SECRET + ENCRYPTION_KEY) — Day-5 Step 3 deploy bug #10
 
 ### Action

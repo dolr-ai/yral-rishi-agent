@@ -139,6 +139,21 @@ services:
       - yral-v2-data-plane
       - yral-v2-internal
     environment:
+      # Next.js standalone server (/app/web/server.js) binds to
+      # `process.env.HOSTNAME || '0.0.0.0'`. Docker/Swarm auto-sets
+      # HOSTNAME from the `hostname:` directive above ("langfuse-web"),
+      # so Next.js binds only to the overlay-network IP and NOT to
+      # 127.0.0.1. The stack's wget healthcheck probes localhost:3000
+      # and gets `Connection refused` every interval; after 5 failed
+      # probes Swarm kills the container with exit 137 / "unhealthy
+      # container". Day-5-Step-3 attempt #12 surfaced this — health.Log
+      # on dead container ed6adb0a0784 confirmed `wget: can't connect
+      # to remote host: Connection refused` x5. Explicitly setting
+      # HOSTNAME=0.0.0.0 here overrides the Docker-set env var so
+      # Next.js binds to all interfaces (including loopback). Inter-
+      # service DNS is unaffected — that resolves via Docker DNS based
+      # on the `hostname:` directive, not the in-container env var.
+      HOSTNAME: "0.0.0.0"
       # Langfuse 3 ONLY supports DATABASE_URL — not the discrete
       # DATABASE_HOST/PORT/NAME/USERNAME + DATABASE_PASSWORD_FILE form
       # that Langfuse 2 accepted. First Day-5-Step-3 deploy bit us
