@@ -1,6 +1,170 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-17 — MILESTONE: Day-5 COMPLETE — Phase 0 H3 exit criterion SATISFIED, v2 stateful core operational
+
+### Status
+**Phase 0 of the v2 build is COMPLETE.** All 5 Day-5 steps closed, H3 chaos verification 3-of-4 passing programmatically with Test 4 deferred to Phase 1+ per coordinator call. v2 cluster stateful core (Patroni HA + Redis Sentinel + Langfuse + Caddy edge-ingress) operational on rishi-4/5/6. Session 1 idle pending Phase 1 green-light.
+
+### Day-5 timeline summary
+
+| Step | What | When | Closed by |
+|---|---|---|---|
+| 1 | Patroni HA (Postgres on Spilo + etcd + pgbouncer) on rishi-4/5/6 | 2026-05-14 → 2026-05-16 | PR #51 verifier + PRs #41-#49 bug arc |
+| 2 | Redis Sentinel HA on shared cluster | 2026-05-16 | PRs #54-#59 + close PR |
+| 3 | Langfuse 3 (Postgres + ClickHouse + Web + Worker + Redis) | 2026-05-15 → 2026-05-17 | PRs #61-#73 (14-bug arc) + PR #74 close + PR #75 intra-cluster SSH follow-up |
+| 4 | Caddy cluster-side edge-ingress (yral-v2-public-web) | 2026-05-17 | PR #76 artifacts + PRs #77-#79 (3-bug arc + 1 override) |
+| 5 | Chaos tests / H3 verification | 2026-05-17 | PRs #80-#85 (6 hardening passes) — Tests 1-3 PASS, Test 4 deferred |
+
+### Live cluster state at close (2026-05-17 ~12:55 UTC)
+
+```
+$ docker node ls
+rishi-4  Active  Ready  Manager (Leader)
+rishi-5  Active  Ready  Manager (Reachable)
+rishi-6  Active  Ready  Manager (Reachable)
+
+$ patronictl list  (yral-v2-postgres)
+patroni-rishi-4 | Leader        | TL 11 |
+patroni-rishi-5 | Replica       | TL 11 | lag 0
+patroni-rishi-6 | Sync Standby  | TL 11 | lag 0
+
+$ docker service ls
+yral-v2-patroni_etcd-rishi-{4,5,6}            : 1/1 each
+yral-v2-patroni_patroni-rishi-{4,5,6}         : 1/1 each
+yral-v2-patroni_pgbouncer                      : 2/2
+yral-v2-redis_redis-{primary,replica-N,sentinel-N} : per spec
+yral-v2-langfuse_langfuse-{clickhouse,web,worker}  : 1/1 each
+yral-v2-edge-caddy_caddy-edge-ingress              : 2/2 on edge nodes
+```
+
+Plus 11 timelines of Patroni leader-elections + 1 successful failover cycle from chaos testing — concrete evidence of HA semantics holding.
+
+### Day-5 deploy-time bug audit (cluster-fix bugs, not test-mechanics)
+
+**Total: 17 deploy-time bug classes across Steps 3 + 4** (Steps 1, 2 had their own bug arcs documented in earlier LOG entries; Step 5 was test-mechanics hardening not cluster bugs).
+
+#### Step 3 — Langfuse arc (14 classes)
+- **Pre-emptively closed** in PR #60 hardening: 5 patterns ported from Patroni/Sentinel install scripts
+- **Surfaced at deploy time** (PRs #61-#73): 14
+  - 10 env arc (PRs #61-#70): Langfuse 3 env shape, pgbouncer auth chain, ClickHouse cluster + Keeper, Prisma + pgbouncer-transaction-mode, Next.js t3-env validator
+  - 1 healthcheck-bind (PR #71): Next.js `HOSTNAME=0.0.0.0` to bind loopback
+  - 2 verifier-bypass (PR #72): bind-mount verifier (#12) + resync-registry verifier (#13) sharing intra-cluster SSH root cause
+  - 1 healthcheck-completion (PR #73, **override**): `localhost` → `127.0.0.1` in healthcheck cmd, IPv4/IPv6 resolution wrinkle
+
+#### Step 4 — Caddy arc (3 classes)
+- PR #77: `auto_https off` disabled `tls internal` cert provisioning
+- PR #78: Docker Swarm silently drops `tmpfs:` when combined with `read_only: true`
+- PR #79 (**override**): `tls internal` needs a SUBJECT — port-only `:443` site supplied none
+
+### Override-precedent invocations (2 total during Phase 0)
+
+1. **PR #73** — Langfuse healthcheck IPv4/IPv6 mismatch. Healthcheck-arc escape clause capped at PR #71; override granted on root-cause + evidence (airtight diagnostic table). One-word fix.
+2. **PR #79** — Caddy `tls internal` SUBJECT pin. Caddy-arc 3-bug budget cap; override granted on same precedent — root cause + airtight evidence (Caddy effective config dump showing empty `subjects`, no leaf certs in `/data/caddy/certificates/`). One-line fix.
+
+**Rule captured in `feedback_escape_clause_override_pattern.md`**: escape clauses target blind iteration on unknown root causes; bounded fixes with confirmed root cause + airtight evidence may proceed under explicit coordinator approval (NOT unilateral). 2 invocations + 0 hangover bugs validates the discipline.
+
+### H3 (chaos test) Phase 0 verification
+
+| H3 row | Test | Result | Evidence |
+|---|---|---|---|
+| 1 | `kill-rishi-6` (drain) | ✅ PASS | rishi-6 drained cleanly; Patroni leader unchanged + not on drained node; etcd quorum healthy; restore-to-active worked |
+| 2 | `kill-patroni-leader` | ✅ PASS | service-scale-to-0 forced election; failover `patroni-rishi-5 → patroni-rishi-4` in 0s; write+read roundtrip on new leader (1 attempt); original container rejoined as Replica |
+| 3 | `fill-rishi-5-disk` | ✅ PASS | filled to 81% (target 80%); Patroni stayed writable; alertmanager check SKIP (Phase 0 — Sessions 3+4 will deploy); dummy file removed; disk recovered to 1% |
+| 4 | `partition-rishi-6` | ⏭ **DEFERRED to Phase 1+** | requires `sudo iptables` (not in narrow C8 sudoers); coordinator call 2026-05-17 — partition-graceful-degradation testing is moot until Sessions 3+4 deploy apps that have partition-degradation behavior to verify |
+
+**H3 Phase 0 exit criterion: SATISFIED.** Reasoning per coordinator call: Test 4's unique HA properties (quorum behavior under partition, sentinel quorum convergence) are largely covered by Tests 1+2 (member-appears-gone-to-quorum is the same etcd Raft path); app-level partition-graceful-degradation is moot in Phase 0 (no apps yet); host-level partition vs container-disappearance distinction requires sudoers expansion (C8 + A1 capability change) not justified by marginal Phase 0 confidence gain.
+
+### Chaos-test hardening arc (6 PRs, NOT cluster-bugs)
+
+The chaos test scripts (PRs #12 + #13 from Day 3) were drafted months before deploy against an envisioned fully-populated cluster. Day-5 Step 5 exercised them against the actual deployed cluster and surfaced 6 distinct test-mechanics gaps:
+
+| PR | Mechanism class |
+|---|---|
+| #80 | host-vs-overlay-DNS query mechanics + cleanup-in-trap + service-existence gating |
+| #81 | kill mechanism: `docker service scale=0` (not `docker kill`) so Swarm respawn can't reclaim leadership |
+| #82 | psql executor filter (Spilo containers only) + restore-before-sanity ordering |
+| #83 | node-agnostic Patroni-leader check (no hardcoded `patroni-rishi-4`) |
+| #84 | fill-disk: SSH-by-IP + drop-sudo + write-under-rishi-deploy-home (narrow-sudoers compatible) |
+| #85 | psql retry-with-backoff during pgbouncer routing-settling window |
+
+All 6 are documented in their own LOG entries with role-comments captured for v2-template-design.
+
+### Captured insights (25 total across the Day-5 arc)
+
+For future v2-template-design + Sessions 3+4 build reference. Each is documented in detail in its originating PR's LOG entry:
+1. Langfuse 3 ≠ Langfuse 2 env shape
+2. Prisma + pgbouncer transaction-mode needs `DIRECT_URL` bypass
+3. Worker zod schema is shared in `@langfuse/shared`, validates differently than web
+4. Langfuse 3 ClickHouse migrations always emit `ON CLUSTER`; single-node needs cluster + Keeper
+5. Langfuse 3 t3-env reads `process.env.X` directly; entrypoint doesn't expand `*_FILE`
+6. Trace ingestion is web-only (`/api/public/ingestion`)
+7. Next.js standalone `0.0.0.0` is IPv4-only on Linux; dual-stack `/etc/hosts` `localhost` resolves IPv6 first
+8. Docker retains `State.Health.Log` on exited containers — usable diagnostic
+9. Pre-flight verifiers need provisioned dependencies (3 escape paths)
+10. Cross-node verifier checks share the intra-cluster-SSH dependency
+11. Cross-node verifier design needs node-bootstrap to provision SSH keys
+12. `docker config create` reads files directly; `docker secret create` reads stdin
+13. SHA-rotating Swarm configs as "edit-file → roll-service" recipe
+14. Caddy `auto_https off` disables ALL automatic cert handling including `tls internal`
+15. Docker Swarm v24+ silently drops `tmpfs:` when combined with `read_only: true`
+16. `tls internal` ALWAYS needs a SUBJECT in the site block
+17. Coordinator-override precedent (rule + 2 invocations)
+18. `docker kill` doesn't exercise failover for fast-respawn services; use `docker service scale=0`
+19. Don't change cluster config to make a chaos test pass
+20. `docker ps` stack-name filter too coarse for multi-service-type stacks; use `<stack>_<service-prefix>`
+21. Restore-before-sanity ordering for chaos tests needing local executors
+22. Chaos tests must NOT hardcode pre-chaos cluster state
+23. Chaos tests needing root-level disk ops: write under unprivileged-user home (if same partition) OR widen sudoers OR inject via privileged container
+24. SSH from host shells uses IPv4, not overlay-DNS hostnames
+25. Pgbouncer's auth_query backend has a routing-settling window after Patroni failover — applications need retry logic
+
+### Queued follow-ups (5 entries — Phase 1+ scope, NOT bundled)
+
+| Branch | Scope | When |
+|---|---|---|
+| `session-1/caddy-swarm-config-generator` | Materialize per-service routes in `caddy-edge-caddyfile` from a template + service registry, replacing the Phase-0 `placeholder.rishi.local` site block. | When Sessions 3+4 spawn first real services |
+| `session-1/long-run-stability-check` | Extend `confirm_stack_actually_deployed` (post-deploy verifier in all `*-install.sh`) with a 5-min `sleep + service ps` gate. The original 30s gate missed Langfuse bug #11 (PR #71 healthcheck timing). | Day-6+ cleanup |
+| `session-1/keychain-multiline-base64-wrap` | base64-wrap multi-line secrets in macOS Keychain. `security -w` hex-encodes multi-line content. Workaround applied for the intra-cluster SSH keypair (direct scp instead of Keychain round-trip); follow-up codifies this in PR #75's docs + `node-bootstrap.sh` INPUTS contract. | Day-6+ cleanup |
+| `session-1/deprecate-langfuse-bypass` | Remove `YRAL_LANGFUSE_SKIP_PREFLIGHT_BIND_MOUNT_VERIFY` env var (PR #72) now that PR #75 provisioned intra-cluster SSH so the verifier works natively. Re-deploy Langfuse without the bypass + confirm verifiers pass. | Whenever convenient post-Phase-0 |
+| `session-1/network-partition-chaos-test` | **NEW (Phase 1+)** Re-enable `partition-rishi-6.sh` after Sessions 3+4 deploy apps with partition-graceful-degradation behavior. Two design options: (a) widen sudoers for `sudo iptables` (cluster capability expansion, Rishi sign-off); (b) privileged sidecar container with `CAP_NET_ADMIN`. Recommendation: (b) — keeps capability expansion bounded. | Phase 1+ when apps exist |
+
+### Cross-session notes for Sessions 2/3/4/5
+
+- **Langfuse trace ingestion endpoint**: `http://langfuse-web:3000/api/public/ingestion` on the `yral-v2-internal` overlay. Per-service `LANGFUSE_PUBLIC_KEY` + `LANGFUSE_SECRET_KEY` minted in the Langfuse UI post-Caddy-real-routes (when rishi-1/2/3 edge proxy lands) and stored in each service's GitHub Secrets.
+- **Patroni access**: through `pgbouncer:5432` overlay-DNS from any container on `yral-v2-data-plane`. Authentication via `postgres` superuser + per-schema role per app.
+- **Redis access**: through `redis-sentinel-rishi-4:26379` (Sentinel mode) for HA-aware Redis clients.
+- **Caddy routes**: edit `caddyfile.placeholder` (or the future `generate-caddy-swarm-config.sh` template) to add per-service route blocks. The SHA-rotation pattern handles cert provisioning automatically.
+
+### Day-5 stats
+
+- Days spent: 4 (2026-05-14 → 2026-05-17)
+- PRs landed: ~30 (Steps 1-5 + close)
+- 14-bug arc (Step 3 Langfuse): longest single-step arc
+- 6 chaos-test-hardening PRs (Step 5): most-iterations-on-one-component arc
+- 2 override invocations (PRs #73 + #79): both ratified the discipline
+- 25 captured insights: durable v2-template lessons
+
+### Phase 0 OFFICIALLY CLOSES
+
+v2 cluster stateful core operational on rishi-4/5/6 with verified HA semantics. H3 satisfied (3/4 chaos tests + deferred 4th to Phase 1+). All deploy-time bug classes resolved. Session 1 idle pending Phase 1 green-light from coordinator.
+
+---
+
+## 2026-05-17T12:46:38Z — 89de15a
+### Action
+hardening(chaos): kill-patroni-leader retries psql during pgbouncer routing lag
+
+### Files touched
+- bootstrap-scripts-for-the-v2-docker-swarm-cluster/chaos-tests/kill-patroni-leader.sh
+- yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-1-LOG.md
+
+### Notes
+Auto-appended by post-tool-use.sh hook. Add manual milestone entries
+above this line when crossing a meaningful boundary.
+
+---
+
 ## 2026-05-17 — HARDENING: `kill-patroni-leader.sh` retries psql write/read during pgbouncer routing lag — Day-5 Step 5 retry-prep #6
 
 ### Action
