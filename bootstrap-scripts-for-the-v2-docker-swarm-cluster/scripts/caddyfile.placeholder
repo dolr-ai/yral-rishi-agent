@@ -42,9 +42,23 @@
 # Default site listening on the only published host port (443 via Swarm
 # ingress mode). Returns a marker response so curl smoke-tests confirm
 # the deploy works without depending on rishi-1/2/3 traffic source.
-# `tls internal` makes Caddy generate + serve a self-signed cert, which
-# Cloudflare-in-Full-mode (the eventual edge configuration) accepts.
-:443 {
+# `tls internal` makes Caddy generate + serve a self-signed cert via
+# its local CA at /data/caddy/pki/authorities/local/, which Cloudflare-
+# in-Full-mode (the eventual edge configuration) accepts.
+#
+# IMPORTANT: the site block must pin a HOSTNAME, not a port-only `:443`.
+# Day-5 Step 4 deploy bug #3 (resolved under coordinator-override of the
+# 1-3-bug budget, same precedent as PR #73): `tls internal` provisions
+# a leaf cert from the local CA at TLS-handshake time bound to a SUBJECT
+# (hostname). A port-only `:443 { tls internal ... }` site gives Caddy
+# no SNI to anchor the cert to — the connection policy is registered but
+# the automation policy never issues a leaf, so every handshake aborts
+# with `internal_error` (SSL alert 80). `placeholder.rishi.local` is a
+# non-routable placeholder until Sessions 3+4 spawn real services (each
+# will declare its own site block via the future caddy-swarm-config-
+# generator follow-up). Smoke tests use
+# `curl --resolve placeholder.rishi.local:443:<ip>` to pin the SNI.
+placeholder.rishi.local {
     tls internal
     respond "v2 cluster edge — Phase 0 placeholder; no service routes wired yet" 200
 }
