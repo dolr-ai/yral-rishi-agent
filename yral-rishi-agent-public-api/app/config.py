@@ -106,6 +106,51 @@ class Settings(BaseSettings):
     # is NOT yet in place AND (b) the deploy target is local/staging.
     enable_session_3_phase_1_day_2_placeholder_responses: bool = False
 
+    # -- Day-3 JWT shadow-validation rig (per E9 + agent definition Day 3) --
+    # E9 mandates DUAL-validate JWTs during shadow rollout: legacy path
+    # (skip signature, accept any well-formed JWT — current chat-ai
+    # behavior) runs ALONGSIDE the strict path (full JWKS verification).
+    # When `jwt_strict_validation_enabled` is False (production default),
+    # the LEGACY answer is authoritative; strict's result is shadow-
+    # logged for divergence analysis. After 7 days with <0.01% divergence
+    # rate (per E9 + the JWT shadow-rollout memory), Rishi types YES +
+    # this flag flips True; strict becomes authoritative.
+    jwt_strict_validation_enabled: bool = False
+
+    # URL of the auth.yral.com JWKS document — published list of public
+    # keys the strict validator pulls to verify token signatures. Per E6.
+    # Production override via env: JWKS_URL=https://auth.yral.com/...
+    jwks_url: str = "https://auth.yral.com/.well-known/jwks.json"
+
+    # JWT `iss` claim expected on every token. Strict validator rejects
+    # tokens whose `iss` doesn't match this. Default value matches the
+    # current chat-ai expected issuer per E6; verify with auth team
+    # before flipping `jwt_strict_validation_enabled` ON (a wrong default
+    # would cause 100% divergence in the shadow log — caught early but
+    # noisy).
+    jwt_expected_issuer: str = "https://auth.yral.com"
+
+    # JWT `aud` claim expected on every token (the OAuth2 client_id
+    # auth.yral.com issued tokens for). Empty default means audience
+    # check is SKIPPED in the strict validator (matches chat-ai's
+    # current behavior of not enforcing audience). When you know the
+    # actual client_id, set this via env to enable the audience check.
+    # NOTE: leaving audience empty means strict + legacy agree on the
+    # audience dimension; divergence on bad audience is impossible
+    # until this is set. Verify with auth team before flipping flag.
+    jwt_expected_audience: str = ""
+
+    # How long the JWKS document stays in the per-replica in-process
+    # cache before re-fetching. 6 hours (21,600 s) per Rishi's Day-3
+    # directive. NOTE: E9 in CONSTRAINTS says "Redis 1hr TTL" — Rishi's
+    # Day-3 directive overrides with 6h in-process. Per I6 surfaced the
+    # discrepancy in the Day-3 PR body; coordinator to reconcile E9 or
+    # this default. Day-4 (when the Redis client lands for idempotency)
+    # may promote this to a Redis-shared cache; for Day-3 the per-
+    # replica fetch is fine — JWKS rotation is rare + 3 replicas × 1
+    # fetch / 6h = trivially small.
+    jwks_cache_ttl_seconds: int = 21600
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

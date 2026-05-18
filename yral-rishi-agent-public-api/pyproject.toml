@@ -125,6 +125,15 @@ dependencies = [
     # ships an allowlist-based redaction processor (in app/logging.py)
     # that drops any field key not on a known-safe list.
     "structlog==24.4.0",
+
+    # PyJWT (with crypto extras) — RS256 signature verification against
+    # auth.yral.com's JWKS per E6 + E9. Pinned to 2.10.1 (latest stable
+    # at Day 3). The [crypto] extra pulls in `cryptography` so the RS256
+    # algorithm is available; without it PyJWT raises "Algorithm not
+    # supported" at decode time. Day-3 uses this in BOTH validators
+    # (legacy = decode-without-verify; strict = decode-with-verify) so
+    # the same library handles both paths consistently.
+    "pyjwt[crypto]==2.10.1",
 ]
 
 # ===========================================================================
