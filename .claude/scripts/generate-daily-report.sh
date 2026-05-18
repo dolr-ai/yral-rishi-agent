@@ -25,11 +25,16 @@
 # ║  - REPORT_KIND env: "morning" or "evening"                              ║
 # ║  - YRAL_DAILY_REPORT_EMAIL_TO env: recipient (default rishi@gobazzinga.io)
 # ║  - macOS Keychain entry yral-google-chat-webhook-url under -a dolr-ai  ║
-# ║    (read at runtime via `security find-generic-password`; never in    ║
-# ║    env vars or files in repo — keeps the webhook secret-shaped).     ║
-# ║    Rishi installs once via:                                          ║
-# ║      security add-generic-password -a dolr-ai \                      ║
-# ║        -s yral-google-chat-webhook-url -w '<webhook-url>' -U         ║
+# ║    (preferred path — read at runtime via                              ║
+# ║    `security find-generic-password`). Rishi installs once via:        ║
+# ║      security add-generic-password -a dolr-ai \                       ║
+# ║        -s yral-google-chat-webhook-url -w '<webhook-url>' -U          ║
+# ║                                                                        ║
+# ║  - YRAL_GOOGLE_CHAT_WEBHOOK_URL env var (fallback — local testing      ║
+# ║    only, NOT used by the launchd-fired production path). If set,      ║
+# ║    overrides Keychain read failure. Production launchd jobs read     ║
+# ║    Keychain only; env-var fallback is for `bash script.sh` manual    ║
+# ║    invocations during development.                                    ║
 # ║                                                                          ║
 # ║  📤 OUTPUTS / SIDE EFFECTS                                                ║
 # ║  - File written to /tmp/ (read-only; not committed)                     ║
@@ -248,30 +253,45 @@ assemble_decisions_log_section() {
 
 
 send_via_email() {
-    # macOS `mail` requires postfix/sendmail to be RUNNING + CONFIGURED
-    # to relay externally (e.g., via Gmail SMTP). Out of the box, neither
-    # is set up on a fresh macOS install — the `mail` command exits 0
-    # silently but the message goes into a queue that never drains.
+    # WHAT: deliver the assembled report file via macOS `mail` to
+    #       EMAIL_RECIPIENT. Pre-flight probes the local mail-system
+    #       health + skips loudly when down (instead of silently
+    #       dropping mail).
+    # WHEN: called once per report assembly, after send_via_google_chat.
+    # WHY:  email is a SECONDARY channel (Google Chat is primary). macOS
+    #       Sequoia ships with postfix NOT RUNNING by default — the
+    #       `mail` command exits 0 silently but messages go into a queue
+    #       that never drains externally. Out-of-the-box `mail` looks
+    #       like it works but doesn't. The postqueue probe catches that
+    #       state up-front so we never silently lose a report.
     #
-    # We try to detect the "mail system is down" state up-front + skip
-    # so we don't silently lose mail. If Rishi wants real email later,
-    # he can either:
-    #   (a) Configure postfix to relay through Gmail SMTP (sudo +
-    #       app-password setup, ~30 min one-time)
+    # If Rishi wants real email later, three real options:
+    #   (a) Configure postfix to relay through Gmail SMTP
+    #       (sudo + Gmail app-password, ~30 min one-time)
     #   (b) Switch to a transactional API (Resend / Mailgun / SendGrid)
-    #       via curl call from this function
-    #   (c) Stay on Google Chat as the primary channel + skip email
-    #       (current recommendation 2026-05-18)
+    #       via curl call — replace the `mail` invocation below
+    #   (c) Stay on Google Chat-only + skip email entirely (current
+    #       recommendation 2026-05-18; simpler operational story)
+
+    # Step 1: does the `mail` binary even exist? (Some hardened macOS
+    # images strip it; defensive.)
     if ! command -v mail >/dev/null 2>&1; then
         echo "[email] SKIPPED (mail command not available)"
         return 0
     fi
-    # Quick health probe: postqueue -p exits non-zero if mail system down
+
+    # Step 2: is the local mail system actually able to deliver?
+    # `postqueue -p` exits non-zero when postfix master daemon isn't
+    # running, which is the macOS Sequoia default state. Skip loudly
+    # so the operator knows + can pick one of the three fix paths.
     if ! postqueue -p >/dev/null 2>&1; then
-        echo "[email] SKIPPED (postfix mail system not running — see send_via_email() comment for fix options)"
+        echo "[email] SKIPPED (postfix mail system not running — see send_via_email() doc-block for fix options)"
         return 0
     fi
 
+    # Step 3: actually send. The mail command writes to the local
+    # postfix queue, which postfix master then relays via the
+    # configured smtp relay.
     local subject="🚦 yral-v2 daily report (${REPORT_KIND}) — ${REPORT_DATE}"
     mail -s "$subject" "$EMAIL_RECIPIENT" < "$REPORT_FILE" \
         && echo "[email] sent to $EMAIL_RECIPIENT" \
@@ -280,8 +300,21 @@ send_via_email() {
 
 
 send_via_google_chat() {
+    # WHAT: post the assembled report text to Google Chat via the
+    #       webhook URL stored in macOS Keychain (preferred) OR
+    #       YRAL_GOOGLE_CHAT_WEBHOOK_URL env var (fallback). Truncates
+    #       to ~3500 chars (Google Chat simple-text limit ~4096).
+    # WHEN: called first in the dispatch flow (Google Chat is the
+    #       PRIMARY delivery channel; email is secondary).
+    # WHY:  Google Chat is Rishi's preferred alert channel (per the
+    #       2026-05-17 autonomy plan). webhook URL is secret-shaped
+    #       (acts as an unauthenticated POST target), so it lives in
+    #       Keychain like all other v2 secrets — never in env vars
+    #       (except local-testing fallback), never in repo files,
+    #       never echoed to stdout/logs.
+
     if [ -z "$GOOGLE_CHAT_WEBHOOK" ]; then
-        echo "[google-chat] SKIPPED (webhook not in Keychain at yral-google-chat-webhook-url AND env var not set)"
+        echo "[google-chat] SKIPPED (webhook not in Keychain at yral-google-chat-webhook-url AND env var fallback not set)"
         return 0
     fi
 
