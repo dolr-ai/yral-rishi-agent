@@ -25,7 +25,8 @@
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 # Sentry MUST init before the FastAPI object exists. See the file header
 # rationale above and sentry_middleware.py's own header. This is the one
@@ -45,6 +46,13 @@ from app.logging import configure_logging
 # Per-request correlation ID middleware. Mounted on the FastAPI app
 # below so it runs OUTERMOST in the request chain.
 from app.request_id_middleware import RequestIdMiddleware
+
+# Day-2 API surface: three routers (v1 chat, v2 chat, influencer) +
+# the health probes. Each router file documents its own endpoints +
+# why those endpoints sit there vs elsewhere.
+from app.api.chat_routes import chat_v1_router, chat_v2_router
+from app.api.health_routes import health_router
+from app.api.influencer_routes import influencer_router
 
 
 # Run Sentry init now, at module import time. After this line, every
@@ -92,6 +100,46 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Day-2 routers. Order doesn't matter for FastAPI routing (each router
+# owns a distinct path prefix); declared in mobile call-frequency
+# order so the OpenAPI docs page is sensibly grouped.
+app.include_router(chat_v1_router)
+app.include_router(chat_v2_router)
+app.include_router(influencer_router)
+app.include_router(health_router)
+
+
+# When a handler's dependency raises HTTPException with a dict-shaped
+# detail (the feature_flag dependency does this — it builds an
+# ApiResponse-shaped body), FastAPI's default behavior would wrap it
+# as {"detail": <dict>} which breaks mobile's envelope parser. This
+# handler emits the dict verbatim instead, preserving the envelope
+# shape for mobile per A8 + the contract.
+@app.exception_handler(HTTPException)
+async def envelope_aware_http_exception_handler(
+    _request: Request,
+    exc: HTTPException,
+) -> JSONResponse:
+    """Preserve dict-shaped HTTPException details verbatim (no wrapping).
+
+    WHAT: when an HTTPException's detail is a dict, emit it as the
+          response body unchanged; otherwise emit FastAPI's default
+          {"detail": <str>} shape so non-envelope error paths still work.
+    WHEN: every time a dependency or handler raises HTTPException.
+    WHY:  the feature_flag dependency raises HTTPException(503, detail=<envelope-dict>);
+          mobile expects the dict body verbatim per the contract; this
+          handler stops FastAPI from re-wrapping it.
+    """
+    if isinstance(exc.detail, dict):
+        return JSONResponse(status_code=exc.status_code, content=exc.detail)
+    # Fallback: FastAPI's default {"detail": <str>} for non-envelope
+    # callsites (e.g. 422 validation errors from Pydantic).
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+    )
+
+
 # Mount RequestIdMiddleware. In Starlette/FastAPI, `add_middleware`
 # is LIFO for incoming requests — the LAST added is the FIRST to
 # see the request. We want the request ID assigned before anything
@@ -108,6 +156,14 @@ app.add_middleware(RequestIdMiddleware)
 #   langfuse_middleware.py   — init_langfuse() + flush_langfuse() (per D4)
 #   logging.py               — configure_logging() called above (per H6)
 #   request_id_middleware.py — RequestIdMiddleware mounted above
+#   api/                     — Day-2 route surface (chat / influencer / health)
+#   api/chat_routes.py       — chat_v1_router + chat_v2_router (7 endpoints)
+#   api/influencer_routes.py — influencer_router (3 read endpoints)
+#   api/health_routes.py     — health_router (/health/{live,ready,deep})
+#   api/feature_flag.py      — dependency that raises 503 when Day-2 stubs are off
+#   api/envelope.py          — ApiResponse[T] every endpoint returns
+#   api/dtos.py              — MessageDto / ConversationDto / InfluencerDto / ChatAccessDataDto
+#   api/errors.py            — error code Literal + error_response() helper
 #   pyproject.toml           — fastapi + sentry-sdk + langfuse + structlog
 #   Dockerfile               — CMD ["uvicorn", "app.main:app", ...]
 #   docker-compose.yml       — local-dev runner with --reload

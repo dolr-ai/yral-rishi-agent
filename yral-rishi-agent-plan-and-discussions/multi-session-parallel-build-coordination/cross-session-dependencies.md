@@ -3,7 +3,70 @@
 
 ## OPEN
 
-<none — DEP-003 moved to RESOLVED below>
+### DEP-004 — Session 2 needs to mirror `/health/{live,ready,deep}` in the template (per F9)
+
+Raised: 2026-05-18 by Session 3
+
+What:    Session 3's Day-2 PR ships `app/api/health_routes.py` locally
+         in `yral-rishi-agent-public-api/` because the template
+         (`yral-rishi-agent-new-service-template/app/`) does not yet
+         include health endpoints. F9 requires the three-tier split
+         (`/health/live` cheap, `/health/ready` deps-aware,
+         `/health/deep` real round-trip) on EVERY service. Codex
+         flagged the gap on Session 3 Day-1 PR #94; coordinator
+         confirmed it's template-inherited, not Session 3-introduced.
+
+         The local file Session 3 just shipped is intentionally a
+         bridge — same FastAPI APIRouter + handler signatures the
+         template should adopt. Copy-paste should work:
+
+         `yral-rishi-agent-public-api/app/api/health_routes.py` →
+         `yral-rishi-agent-new-service-template/app/health_routes.py`
+         (drop the `/api/` subfolder since the template lacks one;
+         re-add the subfolder when the template's `app/api/`
+         submodule is built — likely never, since the template stays
+         minimal per A2.1).
+
+         OR — keep my file in the spawned copy as the canonical
+         version and have the template ship `health_routes.py` at the
+         top of `app/` with identical shape. Either way, all 13 v2
+         services need these endpoints by the time Day-5 cluster
+         deploy lands (per I2 + the Swarm rolling-update health gate
+         + the rishi-1/2 Caddy `health_uri /health/ready` per C10).
+
+Why:     Without health endpoints on every v2 service:
+         - Swarm rolling-update treats every replica as "unhealthy"
+           and auto-rolls-back on first deploy (per I2).
+         - rishi-1/2 Caddy's `reverse_proxy ... { health_uri /health/ready }`
+           (per C10) marks the upstream dead → 502s the request.
+         - Uptime Kuma (per D5) shows the service down forever.
+
+         Bridge in place for `yral-rishi-agent-public-api` so my
+         Day-5 deploy isn't blocked, but Session 4's three services
+         (orchestrator + soul-file-library + influencer-and-profile-
+         directory) + Session 5's user-memory-service + the other 8
+         deferred services need the template fix.
+
+Blocks:  NOT a hard block on Session 3 (the local bridge works). DOES
+         block all OTHER sessions' first cluster deploys until they
+         either re-spawn from a fixed template OR back-fill the local
+         bridge in each service folder.
+
+ETA needed: Before Day 5 cluster deploy for any service (so Session 4's
+         services don't all hit auto-rollback on first deploy attempt).
+         Generous estimate: 1-2 days of Session 2 work.
+
+Suggested
+resolution: Session 2 adds `app/health_routes.py` to the template
+         (mirror of `yral-rishi-agent-public-api/app/api/health_routes.py`,
+         minus the `api/` package nesting) + wires
+         `app.include_router(health_router)` in the template's
+         `app/main.py`. Spawned services pick it up at next spawn.
+         For already-spawned services (Session 3 public-api +
+         Session 4's three services), back-fill the local bridge OR
+         re-spawn fresh.
+
+---
 
 ---
 

@@ -144,6 +144,19 @@ dev = [
     "pytest-asyncio==0.25.2",
 ]
 
+
+# ===========================================================================
+# [tool.pytest.ini_options] — how pytest discovers + runs tests.
+# ===========================================================================
+#
+# `testpaths` tells pytest where to look so it doesn't crawl the whole
+# repo. `asyncio_mode = "auto"` is the modern pytest-asyncio idiom —
+# every `async def test_*()` runs in the event loop without needing
+# `@pytest.mark.asyncio` on each one.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
 # ===========================================================================
 # [tool.hatch.build.targets.wheel] — which folders end up in the wheel.
 # ===========================================================================

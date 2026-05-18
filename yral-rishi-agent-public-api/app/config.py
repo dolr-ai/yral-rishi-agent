@@ -94,6 +94,18 @@ class Settings(BaseSettings):
     # so a forgotten override still routes correctly per D4.
     langfuse_host: str = "https://langfuse.rishi.yral.com"
 
+    # -- Day-2 placeholder responses gate (per agent definition Day 2) ------
+    # Day-2 endpoint handlers return SCHEMA-VALID stubs (not the real
+    # responses — those land Day 4 when the orchestrator RPC is wired).
+    # This flag MUST stay False in production so a half-built v2 cluster
+    # cannot accidentally serve placeholders to real mobile traffic at
+    # agent.rishi.yral.com. Local dev + staging flip it to True via env
+    # injection so the contract tests + smoke runs pass.
+    # When False, every Day-2 chat / influencer handler returns HTTP 503
+    # service_unavailable. Flip to True when (a) Day-4 RPC integration
+    # is NOT yet in place AND (b) the deploy target is local/staging.
+    enable_session_3_phase_1_day_2_placeholder_responses: bool = False
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

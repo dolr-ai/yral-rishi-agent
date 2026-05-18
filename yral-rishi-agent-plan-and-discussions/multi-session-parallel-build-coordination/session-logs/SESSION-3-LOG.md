@@ -2,6 +2,107 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-18 — Day 2, PR 2 (endpoint handlers per the locked API contract + 32 contract tests)
+
+### Action
+Day 2 of Phase 1, off the back of PR #94 merge. Implemented every endpoint listed in `interface-contracts/00-api-contract.md` that the Day-2 scope calls out (per the agent definition + Rishi's "go" message), wired the ApiResponse<T> envelope verbatim, gated every chat + influencer handler behind a new feature flag so production cannot serve stubs, added a local bridge for the F9 health endpoints the template doesn't yet ship (raised DEP-004 for Session 2 to mirror), and shipped 32 contract tests that all pass (0.09s wall-clock).
+
+### Endpoints implemented
+- `POST   /api/v1/chat/conversations` → `ApiResponse<ConversationDto>`
+- `GET    /api/v1/chat/conversations` → `ApiResponse<list[ConversationDto]>` (v1 inbox)
+- `POST   /api/v1/chat/conversations/{conversation_id}/messages` → `ApiResponse<MessageDto>`
+- `GET    /api/v1/chat/conversations/{conversation_id}/messages` → `ApiResponse<list[MessageDto]>` (paginated; `limit` + `before` accepted)
+- `POST   /api/v1/chat/conversations/{conversation_id}/read` → `ApiResponse<{}>`
+- `DELETE /api/v1/chat/conversations/{conversation_id}` → `ApiResponse<{}>`
+- `GET    /api/v2/chat/conversations` → `ApiResponse<list[ConversationDto]>` (v2 bot-aware inbox — what current mobile build uses)
+- `GET    /api/v1/influencers` → `ApiResponse<list[InfluencerDto]>`
+- `GET    /api/v1/influencers/trending` → `ApiResponse<list[InfluencerDto]>`
+- `GET    /api/v1/influencers/{influencer_id}` → `ApiResponse<InfluencerDto>`
+- `GET    /health/live`, `/health/ready`, `/health/deep` → `{"status": "ok", ...}` (F9 three-tier; raw shape, NOT envelope per F9 — health probes need cheap parsing for docker/Swarm/Uptime Kuma)
+
+### Deferred to Day 6-7 parity sprint (per agent definition)
+- Influencer write set: `POST /generate-prompt`, `POST /validate-and-generate-metadata`, `POST /create`, `PATCH /{id}/system-prompt`, `POST /{id}/generate-video-prompt`, `DELETE /{id}`, `POST /admin/{id}/ban`, `POST /admin/{id}/unban`
+- Reason: write set routes through Session 4's influencer-directory RPC; deferring to Day 6-7 avoids a coordination round-trip with Session 4 at Day 2 + keeps Day-2 scope tight per A2.1.
+
+### Architecture decisions (worth recording)
+
+- **Module layout: `app/api/` package** — kept all Day-2 surface under one subpackage instead of dropping files directly into `app/` because (a) the template's `app/` is shared scaffold (sentry / langfuse / logging / config / request-id middleware) and adding 8 new files there would mix concerns, (b) future API-version sprints can drop sibling packages (e.g. `app/admin/`, `app/internal/`) without renaming.
+- **Single feature flag, FastAPI dependency** — `require_day_2_placeholder_flag_enabled` is a 1-line dependency every Day-2 chat / influencer handler depends on. Test client overrides it via `app.dependency_overrides` to assert both states. When Day-4 swaps stubs for the orchestrator RPC, the dependency is removed in one place (not 10 handlers).
+- **Envelope-aware HTTPException handler** — `app/main.py` registers a custom `HTTPException` handler that emits dict-shaped detail verbatim. Without it, FastAPI's default would wrap our envelope as `{"detail": <envelope>}` and break mobile's parser. The handler falls back to FastAPI's default `{"detail": <str>}` shape for non-envelope error paths (e.g. Pydantic 422s).
+- **Stub helper factories** — `_stub_message()`, `_stub_conversation()`, `_stub_influencer()` centralize the SCHEMA-VALID placeholder shapes. Day-4 RPC integration swaps a single function (or removes it) instead of editing 10 handlers.
+- **Placeholder content text is OBVIOUS** — every stub message body contains `"[v2 phase-1 day-2 placeholder — real response from day-4 once orchestrator RPC is wired]"`. If a feature-flag misconfiguration ever slips a stub into production, mobile users see the literal placeholder string in the chat bubble — non-confusable with real LLM output (per agent definition Day-2 spec).
+- **Request DTOs live in `chat_routes.py`, response DTOs in `dtos.py`** — response DTOs are cross-cutting (Sessions 4 + 5 reference them); request DTOs are route-internal. Per A2.1 — don't speculatively share until two callsites need the same shape.
+- **Health endpoints local bridge** — template doesn't ship them yet; raised DEP-004 so Session 2 mirrors. Kept in `app/api/health_routes.py` instead of `app/health_routes.py` for symmetry with the other route files; the template's mirror should live at `app/health_routes.py` top-level (no `api/` nest) since the template stays minimal per A2.1.
+- **Contract-test fixtures derived from the contract doc, NOT from chat-ai pulls** — per A14 + the agent definition Day 6-7 plan, live chat-ai pulls need typed Rishi YES every time. Day-2 tests assert shape against `interface-contracts/00-api-contract.md`; Day 6-7 parity sprint replaces these with captured chat-ai JSON.
+
+### Files touched
+- `yral-rishi-agent-public-api/app/config.py` — added `enable_session_3_phase_1_day_2_placeholder_responses: bool = False` field with extensive WHY comments
+- `yral-rishi-agent-public-api/app/main.py` — added router includes (chat_v1, chat_v2, influencer, health) + envelope-aware HTTPException handler + expanded RELATED FILES footer
+- `yral-rishi-agent-public-api/app/api/__init__.py` (new)
+- `yral-rishi-agent-public-api/app/api/envelope.py` (new) — `ApiResponse[T]` generic
+- `yral-rishi-agent-public-api/app/api/errors.py` (new) — `ErrorCode` Literal + `HTTP_STATUS_FOR_ERROR_CODE` map + `error_response()` helper
+- `yral-rishi-agent-public-api/app/api/dtos.py` (new) — `MessageDto` / `ConversationDto` / `InfluencerDto` / `ChatAccessDataDto`
+- `yral-rishi-agent-public-api/app/api/feature_flag.py` (new) — `require_day_2_placeholder_flag_enabled` dependency
+- `yral-rishi-agent-public-api/app/api/chat_routes.py` (new) — 7 chat handlers + 3 request-DTO classes + 2 stub factories
+- `yral-rishi-agent-public-api/app/api/influencer_routes.py` (new) — 3 influencer-read handlers + 1 stub factory
+- `yral-rishi-agent-public-api/app/api/health_routes.py` (new) — 3 health handlers (LOCAL BRIDGE — DEP-004 raised)
+- `yral-rishi-agent-public-api/pyproject.toml` — added `[tool.pytest.ini_options]` block (`testpaths = ["tests"]`, `asyncio_mode = "auto"`)
+- `yral-rishi-agent-public-api/tests/__init__.py` (new)
+- `yral-rishi-agent-public-api/tests/contract/__init__.py` (new)
+- `yral-rishi-agent-public-api/tests/contract/conftest.py` (new) — `client` + `client_flag_off` TestClient fixtures (dependency-override based)
+- `yral-rishi-agent-public-api/tests/contract/test_chat_routes.py` (new) — 20 tests
+- `yral-rishi-agent-public-api/tests/contract/test_influencer_routes.py` (new) — 9 tests
+- `yral-rishi-agent-public-api/tests/contract/test_health_routes.py` (new) — 3 tests
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/cross-session-dependencies.md` — DEP-004 raised
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-3-LOG.md` (this entry)
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-state/SESSION-3-STATE.md` — advanced to Day-3 next-action
+
+### Why
+Per the agent definition Day 2 deliverable (verbatim): "Read `interface-contracts/00-api-contract.md` end-to-end. Capture the full endpoint list. Don't invent paths — these are LOCKED. Implement handlers as THIN routing + auth + envelope wrappers. Every response uses the `ApiResponse<T>` envelope verbatim. Initial implementation for chat endpoints: return SCHEMA-VALID stub DTOs (NOT empty data). For non-chat endpoints (influencers list, health, etc.): partial Phase 1 OK — implement the ones Session 4 doesn't need first. Tests: 3-5 contract-fixture tests per endpoint." Day 2 is the FIRST PR mobile could in-principle hit — the envelope + DTO shapes are now locked in, and Day-4 RPC integration becomes a fill-in-the-handlers exercise.
+
+### Test evidence
+- `python3 -m py_compile` against all 15 `app/*.py` + `app/api/*.py` files → 0 errors.
+- `pytest tests/contract/ -v` inside the Day-1 Docker image (Python 3.12, FastAPI TestClient, pytest-asyncio in `asyncio_mode=auto`):
+  ```
+  collected 32 items
+  ... [32 PASSED] ...
+  ============================== 32 passed in 0.09s ==============================
+  ```
+- Live HTTP smoke test against `docker run` of the rebuilt image:
+  - With `ENABLE_SESSION_3_PHASE_1_DAY_2_PLACEHOLDER_RESPONSES=true`:
+    - `/openapi.json` → HTTP 200, 11 paths registered:
+      `/api/v1/chat/conversations` + `/api/v1/chat/conversations/{conversation_id}` + `.../messages` + `.../read` + `/api/v1/influencers` + `/trending` + `/{influencer_id}` + `/api/v2/chat/conversations` + `/health/{live,ready,deep}`
+    - `POST /api/v1/chat/conversations` → HTTP 200, envelope-shaped body with fresh UUID + echoed `ai_influencer_id` + stub assistant `last_message`
+    - `GET /api/v1/influencers` → HTTP 200, envelope-shaped list with stub Tara
+    - `GET /health/live` → HTTP 200, `{"status":"ok"}`
+  - Without the env var (flag defaults False — production behavior):
+    - `POST /api/v1/chat/conversations` → HTTP **503**, envelope-shaped error body: `{"success":false,"msg":"This endpoint is not yet implemented in this environment. ...","error":"service_unavailable","data":null}`
+    - `GET /health/live` → HTTP 200, `{"status":"ok"}` (health unaffected by flag — correct per the contract for production deploy safety)
+
+### Constraints honored
+- **A1 (relaxed)** — no deletions; new files only (plus 3 edits to existing files). Cleaned up `.pytest_cache` artifact from docker mount via `docker run` (since it was created by root inside the container) — that artifact is in `.gitignore` regardless.
+- **A2.1** — kept scope to the Day-2 deliverable set. Deferred influencer write set + admin endpoints + WebSocket inbox + JWT auth + orchestrator RPC + idempotency middleware to their respective day-by-day slots. Single feature flag (not a hierarchy); single stub-factory helper (not a class hierarchy); request DTOs co-located with handlers (not promoted prematurely). PR scope is large but every line is mandated by the locked Day-2 scope; no speculative abstractions.
+- **A7 + C4 + D3** — Sentry tag remains `yral-rishi-agent-public-api` → `sentry.rishi.yral.com` (no changes to the inherited middleware).
+- **A8** — every endpoint shape comes from `interface-contracts/00-api-contract.md` verbatim; DTOs match the contract field-for-field; envelope is the locked `{success, msg, error, data}` shape mobile parses today.
+- **B1 + B2** — every name reads as English; only allowlisted abbreviations used (`api`, `id`, `url`, `app`, `init`, `ci`, `dto`, `http`, `json`, `uuid`). `Dto` is widely-recognized in the yral codebase + chat-ai's existing wire format — confirms with B4 product vocab.
+- **B4** — used "AI Influencer" (not "bot"), "Soul File" (not "system prompt") in comments. `InfluencerDto.bio` documented as NOT the Soul File (which stays inside the orchestrator per E8).
+- **B7** — every new file carries the 3-tier doc treatment: ⭐ START HERE file header + per-function/class WHAT/WHEN/WHY + role-not-syntax line comments + RELATED FILES footer. Functions in PRIORITY order (entry-point first, helpers after).
+- **C7** — feature flag goes through `app/config.py` (the pydantic-settings singleton), not a hardcoded global. shared-config.yaml loader still deferred to its first consumer per A2.1 (no nested config shape needed today).
+- **E5** — `conversation_type` Literal supports `ai_chat`, `human_chat`, `chat_as_human` — H2H + AI + Chat-as-Human in one schema from day 1, as locked.
+- **E7** — `ChatAccessDataDto` in dtos.py preserves the camelCase `hasAccess` / `expiresAt` from the chat-ai contract (per CURRENT-TRUTH paywall section + A8 — chat-ai wins on wire format).
+- **F9** — three-tier health split shipped via the local bridge; DEP-004 raised for Session 2 to mirror in the template so all 13 services get them by default.
+- **F10** — idempotency middleware deferred to Day 4 per agent spec; no idempotency claims in Day-2 stubs.
+- **F16** — all changes inside `yral-rishi-agent-public-api/` (path-scoped to my session scope) + the cross-session-dependencies.md append.
+- **I9** — no edits to `.github/workflows/` at repo root. The per-service workflow inside `yral-rishi-agent-public-api/.github/workflows/per-service-ci.yml` is unchanged (it picks up `tests/` via pytest auto-discovery).
+
+### Blockers raised
+- **DEP-004** — Session 2 to mirror `/health/{live,ready,deep}` in the template. Not a hard block for Session 3 (local bridge ships), but a hard block for Sessions 4 + 5 + other deferred services before their first Day-5 cluster deploy. Detail in cross-session-dependencies.md.
+
+### Next
+Day 3 — JWT auth middleware in SHADOW mode per E9 (JWKS fetch from `https://auth.yral.com/.well-known/jwks.json`, Redis 1hr cache, `enable_strict_jwt_signature_validation: false` default, validate-but-don't-enforce, log mismatch metric to Sentry per the 7-day-divergence-rollout plan). Separate branch + PR.
+
+---
+
 ## 2026-05-18 — Day 1, PR 1 (spawn yral-rishi-agent-public-api from template + FastAPI-title fix)
 
 ### Action
