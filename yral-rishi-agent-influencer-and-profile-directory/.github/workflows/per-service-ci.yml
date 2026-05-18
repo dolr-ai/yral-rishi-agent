@@ -1,0 +1,136 @@
+# ---------------------------------------------------------------------------
+# per-service-ci.yml — the per-service CI workflow TEMPLATE.
+#
+# ⭐ START HERE: this file is NOT a live GitHub Actions workflow. It's a
+# template. GitHub Actions only discovers workflows at the REPO ROOT
+# `.github/workflows/`; files under any subdirectory (including this one
+# inside the template folder) are ignored by the workflow runner.
+#
+# WHY DOES IT LIVE HERE THEN?
+# Per F16 (monorepo) + the role spec: every spawned service gets its OWN
+# CI workflow at `.github/workflows/<service-name>-ci.yml` (at repo
+# root). `scripts/new-service.sh` (PR 3 of Day 3) takes THIS file as
+# input, sed-substitutes `yral-rishi-agent-influencer-and-profile-directory` with
+# the spawned service's name everywhere, and outputs the result to the
+# right path at root for GitHub Actions to pick up.
+#
+# WHO WRITES THE ROOT-LEVEL WORKFLOWS?
+# Coordinator session — `.github/workflows/` is coordinator-only per
+# I9. For the template folder itself (which the spawner doesn't have a
+# "service" copy of), coordinator can install this file at root as
+# `template-ci.yml`. For each spawned service, new-service.sh emits the
+# expected content; coordinator stages it as `<service>-ci.yml`.
+#
+# WHAT THIS WORKFLOW DOES (once installed at root):
+#   - lint: byte-compiles every .py under `app/` to catch syntax errors.
+#   - docker-build: runs the multi-stage `docker build` from
+#     `yral-rishi-agent-influencer-and-profile-directory/Dockerfile` to verify the
+#     image builds cleanly. No GHCR push yet (deploy workflow is later).
+#
+# JOBS NOT INCLUDED YET (added in subsequent Day-3 PRs):
+#   - validate-secrets: lands in PR 4 with `scripts/validate-secrets.sh`.
+#   - pytest + coverage gate: lands when the first test suite exists.
+#
+# RELATED FILES (footer at end).
+# ---------------------------------------------------------------------------
+
+name: ci-yral-rishi-agent-influencer-and-profile-directory
+
+# Trigger on PRs that touch this service's folder + on pushes to main
+# that touch it. Path-scoping per F16 means changes to OTHER services
+# (or to plan-and-discussions) don't waste this service's CI minutes.
+on:
+  pull_request:
+    paths:
+      - 'yral-rishi-agent-influencer-and-profile-directory/**'
+  push:
+    branches: [main]
+    paths:
+      - 'yral-rishi-agent-influencer-and-profile-directory/**'
+
+# All jobs run from inside the service folder. new-service.sh
+# rewrites `yral-rishi-agent-influencer-and-profile-directory` here too.
+defaults:
+  run:
+    working-directory: yral-rishi-agent-influencer-and-profile-directory
+
+jobs:
+
+  # -------------------------------------------------------------------------
+  # lint — byte-compile every Python file under app/. Cheap + fast (~10s)
+  # syntax-correctness gate that runs on every PR.
+  # -------------------------------------------------------------------------
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12 (per F12)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Byte-compile all Python files. py_compile is stdlib, doesn't
+      # need any deps installed, catches every syntax error fast. When
+      # ruff lands later it slots in here as an additional step.
+      - name: Byte-compile every Python file in app/
+        run: python -m py_compile $(find app -name '*.py')
+
+  # -------------------------------------------------------------------------
+  # docker-build — make sure the multi-stage build still produces an
+  # image. Catches Dockerfile regressions before they hit the deploy
+  # workflow. No GHCR push yet — deploy lands in a later PR.
+  # -------------------------------------------------------------------------
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # `build-push-action` with push: false just builds. The context
+      # is the service folder; the Dockerfile is auto-detected at the
+      # context root. Tags only exist locally for this build's logs.
+      - name: Build the service image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: yral-rishi-agent-influencer-and-profile-directory
+          push: false
+          tags: yral-rishi-agent-influencer-and-profile-directory:ci-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # -------------------------------------------------------------------------
+  # shell-tests — runs the D8 bridge-scripts test suite. Read-only against
+  # the fixtures in scripts/tests/fixtures/; no temp dirs created. Requires
+  # yq installed in the runner.
+  # -------------------------------------------------------------------------
+  shell-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Install yq
+        run: sudo snap install yq
+
+      - name: Run validate-secrets.sh test suite
+        run: bash scripts/tests/test_validate_secrets.sh
+
+      - name: Run gen-env-example.sh test suite
+        run: bash scripts/tests/test_gen_env_example.sh
+
+
+# ===========================================================================
+# RELATED FILES:
+#   ../../../Dockerfile           — the multi-stage build this workflow exercises
+#   ../../../pyproject.toml       — Python deps + tooling config
+#   ../../../app/                 — service code lint runs against
+#   ../../../scripts/new-service.sh
+#                                 — the spawner that copies this file to root
+#                                   `.github/workflows/<service>-ci.yml` with
+#                                   the service name sed-substituted (added PR 3)
+# ===========================================================================

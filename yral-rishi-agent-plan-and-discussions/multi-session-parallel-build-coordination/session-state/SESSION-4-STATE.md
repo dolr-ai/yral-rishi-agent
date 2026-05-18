@@ -1,6 +1,6 @@
 # Session 4 STATE — Orchestrator + Soul File + Influencer Directory
 
-> Updated: 2026-05-18 (initial scaffold by coordinator before Session 4's first work; Session 4 maintains from here).
+> Updated: 2026-05-18 (Day-1 spawn PR opened — Session 4 now in active build).
 
 ## ⭐ START-OF-SESSION SUMMARY (read first when resuming)
 
@@ -14,33 +14,37 @@ Full agent definition: `.claude/agents/session-4-orchestrator.md`.
 
 ## LAST THING I DID
 
-**2026-05-18 — Session 4 first-launched.** Pre-work (Step A onboarding + Step B I12 resume protocol) complete. CONFIRM-TO-RISHI printed. Idle pending Rishi's `continue` to start Day 1.
+**2026-05-18 — Day 1 spawn PR opened.** Spawned all three Session-4 services from `yral-rishi-agent-new-service-template/` via `new-service.sh` × 3 (full prefixed names — agent-def's bare-suffix examples don't match the script's regex; coordinator follow-up flagged). Bundled into ONE PR per A2.1 + Rishi's explicit `continue`-with-bundle directive. Substantive Soul-File engineering contracts from the pre-existing coordinator placeholders preserved as `PRE-SPAWN-CONTRACTS-FROM-COORDINATOR.md` inside each spawned folder (A1 7-step report in same-commit LOG entry).
 
-(Coordinator scaffolded this file on 2026-05-18 before Session 4's first PR per the agent definition's "initially scaffolded by coordinator on first launch" clause.)
+Empirical proof:
+- Spawn output: 3 × "Spawned ... at ..." with exit 0
+- Python syntax (py_compile on app/main.py): 3/3 OK
+- Bash syntax (bash -n on scripts/*.sh): 9/9 OK
+- YAML parse (secrets / docker-compose / docker-compose.swarm / shared-config): 12/12 OK
+- Docker build (orchestrator, as rep — all 3 spawns share the template's Dockerfile bytes): exit 0, image `yral-rishi-agent-conversation-turn-orchestrator-service:latest` built
+- FastAPI app-import inside built image: exit 0, default routes `['/openapi.json', '/docs', '/docs/oauth2-redirect', '/redoc']` registered
+
+Worktree-per-session collision: Session 3 (parallel agent) checked out its own branch in the main repo checkout mid-task, briefly switching my working tree under me. Reverted the misplaced staged deletions without disturbing Session 3's work; created `/Users/rishichadha/Claude Projects/yral-rishi-agent-worktrees/session-4/` and continued there.
 
 ## CURRENT TASK
 
-Awaiting Rishi's `continue` to start Day 1: spawn the three services from Session 2's template via `new-service.sh`:
-1. `bash yral-rishi-agent-new-service-template/scripts/new-service.sh conversation-turn-orchestrator`
-2. `bash yral-rishi-agent-new-service-template/scripts/new-service.sh soul-file-library`
-3. `bash yral-rishi-agent-new-service-template/scripts/new-service.sh influencer-and-profile-directory`
+PR open + awaiting CI + Codex + Rishi-YES (or auto-merge under I14 if eligible — likely NOT auto-merge eligible since this PR adds ~60 new code files which is well over the 200-line cap + the "test/lint/doc-only" auto-merge criteria).
 
-Progress: 0% (not yet started)
-ETA to first PR-ready: ~60-90 min after `continue` (three spawn operations; can bundle into one PR per A2.1 since they share the same shape).
+Progress: Day 1 → 100% done; Day 2 → 0%.
 
 ## NEXT 3 PLANNED ACTIONS
 
-1. Day 1 — Spawn the 3 services from template + STATE/LOG seeding entries.
-2. Day 2 — Orchestrator `run_turn(...)` RPC handler skeleton. **Return shape: plain JSON MessageDto matching chat-ai parity contract — NOT SSE on the v1 path.** Stub returns SCHEMA-VALID MessageDto behind a feature flag (not for production traffic).
-3. Day 3 — Safety stack BEFORE any real LLM call: H5 prompt-injection defense classifier → H4 crisis-detection routing (Claude with Anthropic safety system) → A10 NSFW routing (`is_nsfw=true` → OpenRouter). All three wired in middleware order before Day-5's real LLM enablement.
+1. Day 2 — Orchestrator `run_turn(...)` RPC handler skeleton on a new branch `session-4/orchestrator-run-turn-rpc-handler`. **Return shape: plain JSON MessageDto matching chat-ai parity contract — NOT SSE on the v1 path.** Stub returns SCHEMA-VALID MessageDto behind a feature flag (off in production). Pydantic-typed request/response models per the internal-RPC contract. 3-5 happy-path tests + 2-3 error-path per J1.
+2. Day 3 — Safety stack BEFORE any real LLM call: H5 prompt-injection defense classifier → H4 crisis-detection routing (Claude with Anthropic safety system) → A10 NSFW routing (`is_nsfw=true` → OpenRouter). All three wired in middleware order before Day-5's real LLM enablement.
+3. Day 4 — Soul-File library: Postgres schema (`soul_file` table) + Alembic migration + CRUD endpoints (`GET` + `PATCH /soul-files/{influencer_id}`). Tests: insert+read fixture roundtrip; PATCH rejects non-creator; version bumps correctly.
 
 ## BLOCKERS
 
-None hard. Session 3 launches in parallel; coordination happens via cross-session-dependencies.md when Session 3 needs my `run_turn` RPC (expected Day 4).
+None hard. Session 3 launching in parallel; my run_turn skeleton (Day 2) does not block Session 3 — Session 3's Day-2 work is its own template-spawn + auth middleware, not yet RPC-consuming.
 
 ## PENDING PRs (mine)
 
-(none yet)
+- `session-4/spawn-three-services-from-template` — opens this turn (Day-1 spawn PR, bundled). Cannot self-auto-merge under I14 (~60 new code files, well over 200-line cap + not in the .md/test/lint/comment-only category). Coordinator review expected.
 
 ## CROSS-SESSION DEPS (mine)
 
