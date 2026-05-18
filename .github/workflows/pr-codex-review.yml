@@ -91,13 +91,22 @@ jobs:
           # Codex prompt
           cp .github/scripts/codex-prompt.txt /tmp/context/
 
-      # The actual Codex call — see codex-review.py for the prompt logic
+      # The actual Codex call — see codex-review.py for the prompt logic.
+      # CODEX_REVIEW_MAX_PROMPT_CHARACTERS bumped from default 80,000 to
+      # 250,000 (2026-05-18) because CONSTRAINTS.md alone is now ~66k chars
+      # and the SHARDING doc is ~14k — together they exceeded the prior
+      # budget, leaving 0 chars for the diff and triggering truncation
+      # fail-closed on EVERY PR. 250k chars ≈ 62k tokens, well within
+      # gpt-4o's 128k context window. TPM impact: at our PR rate (~5-10/hr
+      # peak), single-call budget × queueing is fine; OpenAI's tier
+      # auto-promotion handles bursts.
       - name: Run Codex review
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_CODEX_API_KEY }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_BRANCH: ${{ github.event.pull_request.head.ref }}
           PR_TITLE: ${{ github.event.pull_request.title }}
+          CODEX_REVIEW_MAX_PROMPT_CHARACTERS: '250000'
         run: |
           python .github/scripts/codex-review.py \
             --diff /tmp/pr.diff \
