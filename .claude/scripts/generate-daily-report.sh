@@ -24,7 +24,12 @@
 # ║  📥 INPUTS                                                                ║
 # ║  - REPORT_KIND env: "morning" or "evening"                              ║
 # ║  - YRAL_DAILY_REPORT_EMAIL_TO env: recipient (default rishi@gobazzinga.io)
-# ║  - YRAL_GOOGLE_CHAT_WEBHOOK_URL env (optional): if set, posts to chat   ║
+# ║  - macOS Keychain entry yral-google-chat-webhook-url under -a dolr-ai  ║
+# ║    (read at runtime via `security find-generic-password`; never in    ║
+# ║    env vars or files in repo — keeps the webhook secret-shaped).     ║
+# ║    Rishi installs once via:                                          ║
+# ║      security add-generic-password -a dolr-ai \                      ║
+# ║        -s yral-google-chat-webhook-url -w '<webhook-url>' -U         ║
 # ║                                                                          ║
 # ║  📤 OUTPUTS / SIDE EFFECTS                                                ║
 # ║  - File written to /tmp/ (read-only; not committed)                     ║
@@ -50,7 +55,16 @@ export HOME="${HOME:-/Users/rishichadha}"
 
 REPORT_KIND="${REPORT_KIND:-morning}"   # "morning" or "evening"
 EMAIL_RECIPIENT="${YRAL_DAILY_REPORT_EMAIL_TO:-rishi@gobazzinga.io}"
-GOOGLE_CHAT_WEBHOOK="${YRAL_GOOGLE_CHAT_WEBHOOK_URL:-}"
+
+# Read Google Chat webhook URL from macOS Keychain at runtime so it never
+# lands in plain text in env vars / process listings / log files. Falls
+# back to env var if Keychain entry doesn't exist (for legacy/manual
+# testing scenarios).
+GOOGLE_CHAT_WEBHOOK="$(security find-generic-password \
+    -a dolr-ai -s yral-google-chat-webhook-url -w 2>/dev/null || true)"
+if [ -z "$GOOGLE_CHAT_WEBHOOK" ]; then
+    GOOGLE_CHAT_WEBHOOK="${YRAL_GOOGLE_CHAT_WEBHOOK_URL:-}"
+fi
 
 REPORT_DATE="$(date +%Y-%m-%d)"
 REPORT_TIME="$(date +%H:%M)"
@@ -234,21 +248,40 @@ assemble_decisions_log_section() {
 
 
 send_via_email() {
-    local subject="🚦 yral-v2 daily report (${REPORT_KIND}) — ${REPORT_DATE}"
-    if command -v mail >/dev/null 2>&1; then
-        # macOS `mail` honors LC_ALL + supports Markdown-as-plaintext
-        mail -s "$subject" "$EMAIL_RECIPIENT" < "$REPORT_FILE" \
-            && echo "[email] sent to $EMAIL_RECIPIENT" \
-            || echo "[email] FAILED to send (mail command returned non-zero)"
-    else
+    # macOS `mail` requires postfix/sendmail to be RUNNING + CONFIGURED
+    # to relay externally (e.g., via Gmail SMTP). Out of the box, neither
+    # is set up on a fresh macOS install — the `mail` command exits 0
+    # silently but the message goes into a queue that never drains.
+    #
+    # We try to detect the "mail system is down" state up-front + skip
+    # so we don't silently lose mail. If Rishi wants real email later,
+    # he can either:
+    #   (a) Configure postfix to relay through Gmail SMTP (sudo +
+    #       app-password setup, ~30 min one-time)
+    #   (b) Switch to a transactional API (Resend / Mailgun / SendGrid)
+    #       via curl call from this function
+    #   (c) Stay on Google Chat as the primary channel + skip email
+    #       (current recommendation 2026-05-18)
+    if ! command -v mail >/dev/null 2>&1; then
         echo "[email] SKIPPED (mail command not available)"
+        return 0
     fi
+    # Quick health probe: postqueue -p exits non-zero if mail system down
+    if ! postqueue -p >/dev/null 2>&1; then
+        echo "[email] SKIPPED (postfix mail system not running — see send_via_email() comment for fix options)"
+        return 0
+    fi
+
+    local subject="🚦 yral-v2 daily report (${REPORT_KIND}) — ${REPORT_DATE}"
+    mail -s "$subject" "$EMAIL_RECIPIENT" < "$REPORT_FILE" \
+        && echo "[email] sent to $EMAIL_RECIPIENT" \
+        || echo "[email] FAILED to send (mail command returned non-zero — check /var/log/mail.log)"
 }
 
 
 send_via_google_chat() {
     if [ -z "$GOOGLE_CHAT_WEBHOOK" ]; then
-        echo "[google-chat] SKIPPED (YRAL_GOOGLE_CHAT_WEBHOOK_URL not set)"
+        echo "[google-chat] SKIPPED (webhook not in Keychain at yral-google-chat-webhook-url AND env var not set)"
         return 0
     fi
 
