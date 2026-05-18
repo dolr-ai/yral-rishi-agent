@@ -46,6 +46,11 @@ from app.logging import configure_logging
 # below so it runs OUTERMOST in the request chain.
 from app.request_id_middleware import RequestIdMiddleware
 
+# Day-2 run_turn RPC handler. The router defines `POST /v1/turn`; we
+# mount it on the FastAPI app below. See `run_turn.py` for the two-
+# gate refusal logic that keeps the stub out of production traffic.
+from app.run_turn import router as run_turn_router
+
 
 # Run Sentry init now, at module import time. After this line, every
 # unhandled exception below is shipped to sentry.rishi.yral.com (per A7).
@@ -91,6 +96,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Mount the run_turn router (Day 2). Adds `POST /v1/turn` to the app.
+# Routes always mount BEFORE middleware so the request flows through
+# the middleware chain into a known handler. Day 3 adds the safety
+# stack (H5/H4/A10) as middleware that wraps this route without
+# touching the route signature.
+app.include_router(run_turn_router)
+
 # Mount RequestIdMiddleware. In Starlette/FastAPI, `add_middleware`
 # is LIFO for incoming requests — the LAST added is the FIRST to
 # see the request. We want the request ID assigned before anything
@@ -107,6 +119,8 @@ app.add_middleware(RequestIdMiddleware)
 #   langfuse_middleware.py   — init_langfuse() + flush_langfuse() (per D4)
 #   logging.py               — configure_logging() called above (per H6)
 #   request_id_middleware.py — RequestIdMiddleware mounted above
+#   run_turn.py              — Day-2 POST /v1/turn router mounted above
+#   models/turn.py           — Pydantic models the run_turn router consumes
 #   pyproject.toml           — fastapi + sentry-sdk + langfuse + structlog
 #   Dockerfile               — CMD ["uvicorn", "app.main:app", ...]
 #   docker-compose.yml       — local-dev runner with --reload

@@ -94,6 +94,23 @@ class Settings(BaseSettings):
     # so a forgotten override still routes correctly per D4.
     langfuse_host: str = "https://langfuse.rishi.yral.com"
 
+    # -- Day-2 run_turn stub gate ------------------------------------------
+    # When True, the orchestrator's `POST /v1/turn` endpoint returns the
+    # Day-2 placeholder MessageDto. False everywhere by default — non-prod
+    # environments opt in explicitly via env var
+    # `ENABLE_RUN_TURN_STUB=true`, and `app/run_turn.py` ADDITIONALLY
+    # refuses to serve the stub when `environment == "production"`
+    # regardless of this flag (defence-in-depth so a mis-set env var in
+    # prod can never leak a stub reply to mobile parity-test traffic).
+    #
+    # Why two gates instead of one? Per the Session-4 agent definition's
+    # Day-2 plan: "must be schema-valid, must be feature-flagged to
+    # non-production, must not leak to mobile parity-test traffic." The
+    # environment gate is the unconditional safety net; the flag is the
+    # explicit opt-in for the non-prod environments that actually want
+    # the stub.
+    enable_run_turn_stub: bool = False
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

@@ -2,6 +2,76 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-18 — Day 2, PR: orchestrator `POST /v1/turn` RPC handler skeleton (JSON, NOT SSE)
+
+### Action
+Implemented the Day-2 deliverable per the Session-4 agent definition + Rishi's typed Day-2 green-light 2026-05-18: a schema-valid stub for `POST /v1/turn` in `yral-rishi-agent-conversation-turn-orchestrator`, returning a chat-ai-parity `MessageDto` (NOT SSE — per A16 + the agent def's explicit "plain JSON" directive). Behind two safety gates (`environment != production` AND `enable_run_turn_stub=true`) so the stub cannot leak into production parity-test traffic. 9 tests cover 5 happy + 4 error paths; all green locally on Python 3.12.13 inside the template's Dockerfile-equivalent container.
+
+### Branch
+`session-4/orchestrator-run-turn-rpc-handler`
+
+### Files touched (orchestrator service only; B4/B7 honoured throughout)
+- **Added:**
+  - `yral-rishi-agent-conversation-turn-orchestrator/app/models/__init__.py` (package marker)
+  - `yral-rishi-agent-conversation-turn-orchestrator/app/models/turn.py` — `RunTurnRequest` (`conversation_id`, `user_message`; `min_length=1` on both) + `MessageDto` (8 fields, byte-identical to chat-ai's MessageDto per `interface-contracts/00-api-contract.md`)
+  - `yral-rishi-agent-conversation-turn-orchestrator/app/run_turn.py` — FastAPI `APIRouter` exposing `POST /v1/turn`; two-gate refusal logic; stub returns the literal `[v2 phase-1 day-2 orchestrator stub — real LLM response from day-5]` content per agent def + Rishi green-light
+  - `yral-rishi-agent-conversation-turn-orchestrator/tests/__init__.py` (package marker)
+  - `yral-rishi-agent-conversation-turn-orchestrator/tests/conftest.py` — `clean_settings_cache` (auto-use; invalidates `@lru_cache` between tests) + `client` (FastAPI `TestClient`) fixtures
+  - `yral-rishi-agent-conversation-turn-orchestrator/tests/test_run_turn.py` — 9 tests (5 happy + 4 error) following B7 doc shape (WHAT/WHEN/WHY per test; priority order in file)
+- **Modified:**
+  - `yral-rishi-agent-conversation-turn-orchestrator/app/config.py` — added `enable_run_turn_stub: bool = False` setting with role-comment capturing the two-gate rationale
+  - `yral-rishi-agent-conversation-turn-orchestrator/app/main.py` — imported + mounted `app.run_turn.router` BEFORE `RequestIdMiddleware` (Starlette LIFO: middleware sees the request, then routes); updated RELATED FILES footer
+  - `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/cross-session-dependencies.md` — raised DEP-004 (see below)
+  - `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-state/SESSION-4-STATE.md`
+  - `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-4-LOG.md` (this entry)
+
+### Why
+Day-2 critical path per the agent definition + Rishi's green-light: the `run_turn` skeleton unblocks Session 3's Day-4 wiring + queues the safety stack (Day 3) and real LLM enablement (Day 5) without changing the route signature. The route only mounts in non-production environments AND only with the explicit feature flag set, so a freshly spawned dev/staging environment serving the stub cannot leak into mobile parity-test traffic by accident.
+
+### Test evidence
+- **pytest run** inside `python:3.12-slim` (matches template F12 Python 3.12 pin) with `pip install -e '.[dev]'` then `pytest -v tests/`:
+  - `test_run_turn_returns_schema_valid_message_dto_when_both_gates_open` — PASSED
+  - `test_run_turn_idempotency_key_header_is_accepted` — PASSED
+  - `test_run_turn_request_id_header_is_accepted` — PASSED
+  - `test_run_turn_echoes_conversation_id_into_response` — PASSED
+  - `test_run_turn_stub_content_matches_documented_placeholder` — PASSED
+  - `test_run_turn_returns_503_when_flag_unset_default` — PASSED
+  - `test_run_turn_returns_503_when_environment_is_production` — PASSED
+  - `test_run_turn_returns_422_when_conversation_id_missing` — PASSED
+  - `test_run_turn_returns_422_when_user_message_is_empty_string` — PASSED
+  - **9/9 PASSED in 0.04s** (rootdir=/work, configfile=pyproject.toml, plugins=asyncio-0.25.2 + anyio-4.13.0)
+- **FastAPI app-import smoke** inside `python:3.12-slim` with `pip install .` then `from app.main import app`: import succeeds; `/v1/turn POST` registered alongside the default `/docs`, `/docs/oauth2-redirect`, `/openapi.json`, `/redoc` routes.
+- **Python syntax** (`python3 -m py_compile`): all 4 new + 2 modified Python files OK.
+- **Bash + YAML**: no .sh / .yaml / .yml touched in this PR; no regression risk against earlier syntax checks.
+
+### Constraints touched
+- **A2.1** — kept scope tight: ONE route, ONE feature flag, ONE Pydantic-models file, NO new middleware (Day 3 adds safety stack on top), NO database (Day 4 adds soul-file schema), NO LLM client (Day 5). Net new code well under 100 strict-code lines (~80 substantive lines across run_turn.py + models/turn.py + the config.py addition; the rest is B7 doc structure).
+- **A8 + A16** — `MessageDto` shape byte-identical to chat-ai's parity contract from `interface-contracts/00-api-contract.md`; response is plain JSON not SSE so the mobile client sees zero schema delta during parity window.
+- **B1 + B2** — every name reads as English; only B2-allowlist abbreviations used (`id`, `url`, `api`, `http`, `json`, `uuid`, `app`, `init`).
+- **B4** — DOLR product vocab: code + comments NEVER say "system prompt" (only `Soul File`, `AI Influencer`); the file headers + tests refer to the soul-file-library by service name + per its role.
+- **B7** — every new file has: file-header block (one-sentence summary, "⭐ START HERE", WHY-it-fits, RELATED FILES footer), function-WHAT/WHEN/WHY blocks, role-comments-not-syntax line comments, functions in priority order (happy paths first, error paths after), RELATED FILES footer.
+- **C7** — feature flag in `shared-config.yaml`-or-`config.py`-typed settings layer, not a hardcoded value buried in `run_turn.py`.
+- **D4** — `request_id` header is accepted + threaded for Day 3's Langfuse correlation wiring (Day 2 just accepts the header without erroring; trace emission lands when the safety stack does).
+- **E1** — handler is pure-Python + zero I/O (no DB, no LLM, no Redis) so the stub's latency is dominated by FastAPI's serialisation. Sets the floor for the orchestrator-side latency target (<100ms p95 per agent def Day-8-14 plan) for future PRs to measure against.
+- **F10** — `X-Idempotency-Key` header is accepted (Day-3 PR wires it into Redis dedup per F10).
+- **F12** — Python 3.12 verified via Docker test run (no local 3.12 available; falling back to container matches what CI will do).
+- **H5 + H4 + A10 deferred to Day 3** — safety stack is the Day-3 deliverable per the agent definition; the Day-2 stub has NO safety middleware yet, hence the two-gate refusal (production-block + flag-off-by-default) protecting against accidental enablement.
+- **I11** — same-commit LOG + STATE updates land alongside the code.
+- **J1** — orchestrator is HOT-tier (75-80% floor). The 9 tests exercise both gates × both header paths × both body-validation surfaces; combined with the schema-shape happy-path assertion that's broad coverage of every Day-2 surface for a stub-only PR.
+- **J2** — zero flakes: no time-dependence beyond `created_at` ISO-format assertion (we assert it ends in `Z`, not a specific timestamp); no unmocked network; no race conditions.
+- **J3** — tests follow B7 doc shape (plain-English names, WHAT/WHEN/WHY docstring, file header, priority order, role-not-syntax inline comments).
+
+### DEP-004 raised (coordinator follow-up)
+`interface-contracts/01-internal-rpc-contracts.md` (coordinator-owned per Session 4's scope-not-allowed list) still shows the OLDER "POST /turn + SSE response" shape from pre-A16 planning. Session 4 implements the agent-def-specified JSON-MessageDto shape. Raised DEP-004 asking coordinator to update that doc to match the actual contract (proposed text included in the DEP). Session 3's Day-4 integration work reads the doc; if it stays stale, Session 3 might write a streaming consumer + then rewrite.
+
+### Notes
+- **Tested in Docker, not local venv:** the laptop has Python 3.9.6 only (no `python3.12` in PATH, no `pyenv` / `uv`). Ran pytest inside a fresh `python:3.12-slim` container bind-mounting the orchestrator folder + `pip install -e '.[dev]'`. Matches Session 1's pattern of using the production container as the test bed where appropriate.
+- **One residual deprecation warning** from pytest-asyncio about an unset `asyncio_default_fixture_loop_scope` config option — harmless today (we have zero `@pytest.mark.asyncio` tests in this PR; all tests are sync), but worth setting before the first async test lands (Day 3+ when middleware/LLM tests appear).
+- **Codex flags from Day-1 PR #95 acknowledged:** coordinator confirmed both BLOCKER/CONCERN are template-inherited (F9 health endpoints + bridge-script test fixtures); not Session 4's introductions; coordinator queuing as DEPs against Session 2. The Day-2 PR doesn't fix those (out of Session 4 scope; Session 2 owns the template).
+- **Next:** Day 3 — safety stack BEFORE any real LLM call. H5 prompt-injection defense classifier (rule-based for Phase 1 → ML for Phase 2) → H4 crisis-detection routing (to Claude with Anthropic safety system) → A10 NSFW routing (`is_nsfw=true` → OpenRouter). All three wired as middleware in front of `POST /v1/turn`; each writes its decision to Langfuse trace metadata; default-deny posture.
+
+---
+
 ## 2026-05-18 — Day 1, PR 1: spawn three services from template (bundled per A2.1)
 
 ### Action
