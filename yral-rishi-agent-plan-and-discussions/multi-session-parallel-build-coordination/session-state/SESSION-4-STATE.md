@@ -1,6 +1,6 @@
 # Session 4 STATE — Orchestrator + Soul File + Influencer Directory
 
-> Updated: 2026-05-18 (Day-1 spawn PR opened — Session 4 now in active build).
+> Updated: 2026-05-18 (Day-4 Soul File Library PR opened — first stateful v2 service for Session 4; 20/20 tests green incl. byte-identity × 5 reps).
 
 ## ⭐ START-OF-SESSION SUMMARY (read first when resuming)
 
@@ -14,37 +14,42 @@ Full agent definition: `.claude/agents/session-4-orchestrator.md`.
 
 ## LAST THING I DID
 
-**2026-05-18 — Day 1 spawn PR opened.** Spawned all three Session-4 services from `yral-rishi-agent-new-service-template/` via `new-service.sh` × 3 (full prefixed names — agent-def's bare-suffix examples don't match the script's regex; coordinator follow-up flagged). Bundled into ONE PR per A2.1 + Rishi's explicit `continue`-with-bundle directive. Substantive Soul-File engineering contracts from the pre-existing coordinator placeholders preserved as `PRE-SPAWN-CONTRACTS-FROM-COORDINATOR.md` inside each spawned folder (A1 7-step report in same-commit LOG entry).
+**2026-05-18 — Day 4 Soul File Library PR opened.** First stateful v2 service for Session 4. Single `soul_file_layers` table (per A2.1 — one table for all 4 layers) + Alembic migration with seeds for L1+L2+L4 (L3 deferred to Day-4.5 data port per F11) + asyncpg-backed repository + 4-layer composer with byte-stable prefix + FastAPI `GET /composed-prompt` route + testcontainers-postgres pytest suite. **20/20 tests PASSED in 3.81s** on Python 3.12.13 inside `python:3.12-slim` with Docker-managed Postgres 17. Byte-identity contract verified across 5 reps. Alembic upgrade ↔ downgrade round-trips cleanly.
+
+Two pushbacks raised before code per I6:
+1. F2 citation drift — CONSTRAINTS F2 is the hetzner-template-freeze row, not Soul-File. PR body cites E8/F8/F11/F3/B4/A2.1/C7/D8 instead; DEP-005 raised for coordinator clarification.
+2. Schema spec gap — added `archetype TEXT NULL` column to bridge L3 → L2 composer lookup; smallest delta from directive's spec.
 
 Empirical proof:
-- Spawn output: 3 × "Spawned ... at ..." with exit 0
-- Python syntax (py_compile on app/main.py): 3/3 OK
-- Bash syntax (bash -n on scripts/*.sh): 9/9 OK
-- YAML parse (secrets / docker-compose / docker-compose.swarm / shared-config): 12/12 OK
-- Docker build (orchestrator, as rep — all 3 spawns share the template's Dockerfile bytes): exit 0, image `yral-rishi-agent-conversation-turn-orchestrator-service:latest` built
-- FastAPI app-import inside built image: exit 0, default routes `['/openapi.json', '/docs', '/docs/oauth2-redirect', '/redoc']` registered
-
-Worktree-per-session collision: Session 3 (parallel agent) checked out its own branch in the main repo checkout mid-task, briefly switching my working tree under me. Reverted the misplaced staged deletions without disturbing Session 3's work; created `/Users/rishichadha/Claude Projects/yral-rishi-agent-worktrees/session-4/` and continued there.
+- pytest: 20/20 PASSED in 3.81s (asyncio.AUTO mode, function-scope loop)
+- Byte-identity ×5 reps of `compose(influencer_id, 'new')` — all bytes-equal
+- Golden-file diff: matches `tests/fixtures/composer_golden_layer_output.txt` verbatim
+- Alembic up → down → up cycle clean
+- Partial-unique-index correctly rejects dual-current via `asyncpg.UniqueViolationError`
+- HTTP shape matches `interface-contracts/01-internal-rpc-contracts.md` (3 fields: layered_prompt / version_pin / cache_hit)
 
 ## CURRENT TASK
 
-PR open + awaiting CI + Codex + Rishi-YES (or auto-merge under I14 if eligible — likely NOT auto-merge eligible since this PR adds ~60 new code files which is well over the 200-line cap + the "test/lint/doc-only" auto-merge criteria).
+Day-4 PR open + awaiting CI + Codex + Rishi-YES. NOT auto-merge eligible under I14 (adds Postgres schema + Python code + tests; fails the ".md / test / lint / comment-only" gate). Base = `main` per directive (different service folder than orchestrator; no dep on PR #96/#100).
 
-Progress: Day 1 → 100% done; Day 2 → 0%.
+Progress: Day 1 → 100% (PR #95 merged); Day 2 → 100% (PR #96 open); Day 3 → 100% (PR #100 open, based on #96); Day 4 → 100% (PR opened this turn, base=main).
 
 ## NEXT 3 PLANNED ACTIONS
 
-1. Day 2 — Orchestrator `run_turn(...)` RPC handler skeleton on a new branch `session-4/orchestrator-run-turn-rpc-handler`. **Return shape: plain JSON MessageDto matching chat-ai parity contract — NOT SSE on the v1 path.** Stub returns SCHEMA-VALID MessageDto behind a feature flag (off in production). Pydantic-typed request/response models per the internal-RPC contract. 3-5 happy-path tests + 2-3 error-path per J1.
-2. Day 3 — Safety stack BEFORE any real LLM call: H5 prompt-injection defense classifier → H4 crisis-detection routing (Claude with Anthropic safety system) → A10 NSFW routing (`is_nsfw=true` → OpenRouter). All three wired in middleware order before Day-5's real LLM enablement.
-3. Day 4 — Soul-File library: Postgres schema (`soul_file` table) + Alembic migration + CRUD endpoints (`GET` + `PATCH /soul-files/{influencer_id}`). Tests: insert+read fixture roundtrip; PATCH rejects non-creator; version bumps correctly.
+1. Day 4.5 — F11 data port: migrate chat-ai's `ai_influencers.system_prompt` → `soul_file_layers` Layer 3 rows. Requires Rishi YES per A14 (live chat-ai read). Likely a separate small PR.
+2. Day 5 — Orchestrator wires real LLM calls (Tara → OpenRouter; default → Gemini Flash; per A10 `is_nsfw=true` → OpenRouter; per H4 crisis → Claude with Anthropic safety system). Real LLM flows THROUGH the Day-3 safety stack unchanged. Day-2 stub stays accessible in non-prod for diagnostics.
+3. Day 6 — Influencer directory (yral-rishi-agent-influencer-and-profile-directory): Postgres schema + endpoints + Redis-cached reads per E7. Different service folder; orthogonal to soul-file-library.
 
 ## BLOCKERS
 
-None hard. Session 3 launching in parallel; my run_turn skeleton (Day 2) does not block Session 3 — Session 3's Day-2 work is its own template-spawn + auth middleware, not yet RPC-consuming.
+None hard. DEP-004 (interface-contracts SSE→JSON) + DEP-005 (F2 citation drift) both open, both coordinator-handled, both non-blocking.
 
 ## PENDING PRs (mine)
 
-- `session-4/spawn-three-services-from-template` — opens this turn (Day-1 spawn PR, bundled). Cannot self-auto-merge under I14 (~60 new code files, well over 200-line cap + not in the .md/test/lint/comment-only category). Coordinator review expected.
+- `session-4/day-4-soul-file-library-postgres-schema-and-composer` — opens this turn (Day-4 Soul File Library). Base=`main`. 20/20 tests green incl. byte-identity × 5 reps. Not auto-merge eligible.
+- `session-4/day-3-safety-stack-middleware` — PR #100 (Day-3 safety stack). Base=PR #96 branch. 19/19 tests green.
+- `session-4/orchestrator-run-turn-rpc-handler` — PR #96 (Day-2 run_turn skeleton). Base=`main`. 9/9 tests green.
+- `session-4/spawn-three-services-from-template` — **MERGED 2026-05-18** as PR #95 (Day-1 spawn bundle).
 
 ## CROSS-SESSION DEPS (mine)
 

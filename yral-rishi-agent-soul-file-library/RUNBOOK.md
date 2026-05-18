@@ -87,6 +87,84 @@ Per D2's three-layer strategy. This service stores nothing local; persistent sta
 - `DEEP-DIVE.md` — deploy + DB HA diagrams
 - `yral-rishi-agent-plan-and-discussions/CONSTRAINTS.md` — the rules that make these procedures safe
 
+## Day-4 operational procedures
+
+### How to add a new archetype (Layer 2)
+
+```bash
+# 1. Insert the new archetype row via the repository (auth'd Python session
+#    or a Day-5+ admin script — Day 4 has NO HTTP write endpoint).
+python -c "
+import asyncio
+from app.db import init_pool, close_pool
+from app.repository.soul_file_repository import create_new_version, LAYER_ARCHETYPE
+
+async def main():
+    await init_pool()
+    row = await create_new_version(
+        layer=LAYER_ARCHETYPE,
+        scope_key='cheerleader',
+        body='<the new archetype body text>',
+        archetype=None,  # NULL on L2 rows — archetype column is L3-only
+    )
+    print('inserted', row.scope_key, 'version', row.version)
+    await close_pool()
+
+asyncio.run(main())
+"
+```
+
+The partial unique index guarantees only one current row per `(layer, scope_key)` — no extra cleanup needed. Until at least one L3 row references the new archetype, the new L2 row is dead weight.
+
+### How to rollback a Layer 3 edit
+
+```bash
+# Pick a known-good prior version; create_new_version with its body.
+# This both retires the bad current row + lands a new current at prior+1.
+python -c "
+import asyncio
+from app.db import init_pool, close_pool
+from app.repository.soul_file_repository import list_versions, create_new_version, LAYER_PER_INFLUENCER
+
+INFLUENCER_ID = '<the affected influencer UUID>'
+
+async def main():
+    await init_pool()
+    history = await list_versions(LAYER_PER_INFLUENCER, INFLUENCER_ID)
+    for r in history:
+        print('  v', r.version, 'is_current=', r.is_current, '—', r.body[:60])
+
+    good = history[1]  # one version before current
+    rolled_back = await create_new_version(
+        layer=LAYER_PER_INFLUENCER,
+        scope_key=INFLUENCER_ID,
+        body=good.body,
+        archetype=good.archetype,
+        created_by='runbook-rollback',
+    )
+    print('rolled back to v', rolled_back.version)
+    await close_pool()
+
+asyncio.run(main())
+"
+```
+
+NOT `retire_current` — that leaves the slot empty + composer 500s. Always replace.
+
+### Alembic migrations
+
+```bash
+# Local dev (against docker-compose Postgres):
+export POSTGRES_DSN_SOUL_FILE_LIBRARY="postgresql://service:service-local-password@localhost:6432/service_local_database"
+alembic upgrade head
+
+# Production (against the Patroni cluster — operator action):
+# 1. Source the DSN per D8.
+# 2. alembic upgrade head from the service folder root.
+# 3. Verify with `alembic current` — should match `head`.
+# 4. If anything goes wrong: `alembic downgrade -1`.
+```
+
 ## Status
 
-Scaffold. Real incident-response detail (links, runbook commands, paging contacts) fills in Days 5-6 once Session 1's cluster + Session 5's contract tests are live.
+Day-4 operational procedures current. Day-5+ adds: Redis cache invalidation hooks; Prompt-Coach auth'd HTTP write surface; Patroni-failover RUNBOOK additions.

@@ -50,6 +50,23 @@ Legend:
 - `ONBOARDING.md` does NOT exist in this template per F8. Use this READING-ORDER + `WHEN-YOU-GET-LOST.md` instead.
 - `WALKTHROUGH.md` — the narrative-form companion to this numbered list
 
+## Day-4 additions (composer + schema modules)
+
+After the template-inherited files above, the Day-4 PR adds the following — read in priority order:
+
+| # | File | ETA | Priority | Why you read it |
+|---|---|---|---|---|
+| A1 | `PRE-SPAWN-CONTRACTS-FROM-COORDINATOR.md` | 3 min | 🟥 HIGH | Pre-spawn engineering contract — byte-identity, layer order, cache breakpoint. Read BEFORE the composer. |
+| A2 | `app/migrations/versions/001_initial_schema_and_seed.py` | 5 min | 🟥 HIGH | Single `soul_file_layers` table + indexes + L1/L2/L4 seeds. L3 deferred to Day-4.5 data port. |
+| A3 | `app/models/soul_file.py` | 4 min | 🟥 HIGH | Pydantic models — `SoulFileLayer` (DB row) + `ComposedPromptResponse` (orchestrator-facing). |
+| A4 | `app/repository/soul_file_repository.py` | 7 min | 🟥 HIGH | Read + write methods. Writes for tests + future Prompt-Coach; not wired to HTTP. |
+| A5 | `app/composer/four_layer_composer.py` | 8 min | 🟥 HIGH | The 4-layer assembly + byte-identity contract. Most important Day-4 module. |
+| A6 | `app/api/composed_prompt_routes.py` | 4 min | 🟥 HIGH | HTTP surface. Internal-only per C3; no auth on Day 4. |
+| A7 | `app/db.py` | 3 min | 🟨 MED | asyncpg pool lifecycle. Lifespan-managed in `app/main.py`. |
+| A8 | `app/migrations/env.py` | 3 min | 🟨 MED | Alembic async env. Builds AsyncEngine from `POSTGRES_DSN_SOUL_FILE_LIBRARY`. |
+| A9 | `tests/conftest.py` | 5 min | 🟨 MED | testcontainers-postgres setup + per-test truncate-and-reseed pattern. |
+| A10 | `tests/test_composer.py` | 5 min | 🟥 HIGH | Byte-identity × 5 reps + golden-file diff. Catches composer drift. |
+
 ## Status
 
-Scaffold. Numbers + ETAs refresh as files land (database / redis / LLM modules will add ~10 rows in later PRs).
+Day-4 surface live; the 10 Day-4 files above are in addition to the template-inherited ones. Day-5+ adds Redis cache module + LLM-client integration (the latter in orchestrator-service, not here).

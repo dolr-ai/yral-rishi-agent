@@ -3,7 +3,61 @@
 
 ## OPEN
 
-<none — DEP-003 moved to RESOLVED below>
+### DEP-005 — Day-4 directive cites CONSTRAINTS F2; F2 is actually about hetzner-template-freeze, not Soul-File
+
+Raised: 2026-05-18 by Session 4
+
+What:    The Day-4 directive Rishi pasted to Session 4 lists eight
+         CONSTRAINTS rows to cite verbatim in the PR body:
+         "E8 — B4 — F2 — F12 — C7 — D8 — F8 — A2.1". The directive's
+         description of F2 is:
+
+             "F2 — this service IS yral-prompt-composer (the README
+             §F2 'merges the 4 layers' piece)."
+
+         CONSTRAINTS row F2 verbatim from
+         `yral-rishi-agent-plan-and-discussions/CONSTRAINTS.md`:
+
+             | F2 | Existing `yral-rishi-hetzner-infra-template` is
+                  NEVER modified. V2 template forks and evolves
+                  independently | 🔒 | No-delete covenant | Existing
+                  repo stays frozen; CI doesn't touch it |
+
+         F2 is the hetzner-template-freeze row — has nothing to do with
+         the soul-file-library OR a "yral-prompt-composer" component.
+
+Why:     The directive's "README §F2" reference suggests the intent was
+         a README.md section number, not a CONSTRAINTS row. Sessions 4
+         (this one) + 5 (when contract-tests land) + future readers
+         will check `CONSTRAINTS.md` for an F2 row that backs the
+         citation and find a mismatch. Per CLAUDE.md guidance to "open
+         CONSTRAINTS.md and confirm the row text matches; catching
+         coordinator drift mid-flight saves a redo cycle."
+
+Session 4's resolution in this PR: cite **E8** (the actual Soul-File
+         row) + **F8** (8 required docs) + **F11** (data port deferred)
+         + **F3** (schema-per-service) instead. The Day-4 PR body
+         does NOT cite F2.
+
+Blocks:  No hard block. Cosmetic doc-drift; future PRs from any
+         session reading "cite F2" guidance will hit the same dead-end.
+
+ETA needed: Before the next "cite F2" appears in a session directive.
+
+Suggested
+resolution: Coordinator either:
+         (a) clarifies the directive intent — was it a README §
+             reference (correct as-is, just rename for clarity), OR
+         (b) adds a new CONSTRAINTS row that codifies the
+             yral-prompt-composer naming + 4-layer-merge intent the
+             directive describes, OR
+         (c) confirms the directive should have cited a different
+             row (e.g. E8) + amends the autonomy-charter to flag
+             this kind of citation-drift as a known surface.
+
+---
+
+
 
 ---
 

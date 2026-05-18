@@ -2,6 +2,116 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-18 — Day 4, PR: Soul File Library — Postgres schema + 4-layer composer + GET /composed-prompt
+
+### Action
+First stateful v2 service for Session 4. Single `soul_file_layers` table + Alembic migration + asyncpg repository + 4-layer composer + FastAPI HTTP route + testcontainers-backed pytest suite. **20/20 PASSED in 3.81s** on Python 3.12.13 inside `python:3.12-slim` with Docker-managed Postgres 17. Byte-identity contract verified across 5 reps; alembic upgrade↔downgrade round-trips cleanly.
+
+### Branch
+`session-4/day-4-soul-file-library-postgres-schema-and-composer` — branched off `main` per directive (no dep on Day-2/3 PRs since this is a different service folder).
+
+### Two pushbacks raised upfront (per I6)
+Before any code, surfaced two divergences to Rishi:
+
+1. **F2 citation drift.** The directive listed F2 among the CONSTRAINTS rows to cite. CONSTRAINTS F2 is the hetzner-template-freeze row, not anything about soul-file-library. Resolution: cite E8 / F8 / F11 / F3 / B4 / A2.1 / C7 / D8 in the PR body instead; DEP-005 raised in `cross-session-dependencies.md` asking coordinator to clarify intent.
+
+2. **Schema-spec gap on archetype derivation.** The directive's composer reads "Layer 2 by archetype derived from influencer" but the spec'd schema didn't carry an archetype on L3 rows. Resolved by adding a single `archetype TEXT NULL` column (NULL on L1/L2/L4, populated on L3 by the Day-4.5 data port). Smallest possible delta from the directive's spec — flagged in the PR body for coordinator review.
+
+Rishi typed `continue` after both pushbacks → cited as authorisation for both calls.
+
+### Files touched (soul-file-library service ONLY; no cross-service edits)
+
+**Added (Day-4 substantive code):**
+- `alembic.ini` — Alembic config; reads DSN from `POSTGRES_DSN_SOUL_FILE_LIBRARY` env var, NOT inline (per D1+D8)
+- `app/migrations/__init__.py` + `app/migrations/env.py` — Alembic env using AsyncEngine + asyncpg (no psycopg2 dep added)
+- `app/migrations/versions/__init__.py` + `app/migrations/versions/001_initial_schema_and_seed.py` — single `soul_file_layers` table (id / layer / scope_key / **archetype** / body / version / is_current / created_at / created_by) + 3 indexes (partial unique on `(layer, scope_key) WHERE is_current=TRUE` + history + composer hot path) + L1 global seed + 3× L2 archetypes (companion/therapist/coach) + 3× L4 segments (new/paying/dormant). L3 NOT seeded — Day-4.5 data port handles that per F11.
+- `app/db.py` — asyncpg pool lifecycle (init_pool / close_pool / get_pool); `statement_cache_size=0` for pgBouncer transaction-mode compat per C11+G3
+- `app/models/__init__.py` + `app/models/soul_file.py` — Pydantic models: `SoulFileLayer` (DB row) + `ComposedPromptResponse` (3 fields matching `01-internal-rpc-contracts.md`) + `UserSegment` literal type
+- `app/repository/__init__.py` + `app/repository/soul_file_repository.py` — asyncpg SELECT + INSERT with transactional retire-then-insert in `create_new_version`. Write methods exposed for tests + future Prompt-Coach; NOT wired to HTTP today per directive.
+- `app/composer/__init__.py` + `app/composer/four_layer_composer.py` — `compose(influencer_id, user_segment) → ComposedPromptResponse`. Reads `LAYER_SEPARATOR` from `shared-config.yaml` at module-load (fails fast if missing). Raises `InfluencerSoulFileMissingError` (→ 404 mapping) or `SoulFileDataIntegrityError` (→ 500 mapping). Strict determinism — no timestamps/UUIDs/dates inside the prompt string.
+- `app/api/__init__.py` + `app/api/composed_prompt_routes.py` — FastAPI `APIRouter` exposing `GET /composed-prompt?influencer_id={uuid}&user_segment={new|paying|dormant}`. Maps composer exceptions to 404/500. Internal-only per C3, no auth on Day 4 (documented in code + SECURITY.md).
+- `tests/__init__.py` + `tests/conftest.py` — testcontainers-postgres session fixture (Ryuk disabled for docker-in-docker compat) + per-test truncate-and-reseed + httpx.AsyncClient via ASGITransport (to avoid the TestClient + async-pool event-loop mismatch).
+- `tests/test_schema_migrations.py` — alembic up → down → up round-trip via subprocess.
+- `tests/test_repository.py` — 7 tests: get_current happy + None paths; list_versions DESC; create_new_version flips is_current; partial-unique-index throws on dual-current.
+- `tests/test_composer.py` — 8 tests: happy path matches golden file; missing L3 → InfluencerSoulFileMissingError; missing L4 → SoulFileDataIntegrityError (defensive); **BYTE-IDENTITY × 5 reps** (parametrize) covering the load-bearing pre-spawn contract.
+- `tests/test_api_composed_prompt.py` — 4 tests: 200 + shape; 404 for unknown influencer; 422 for invalid segment; 422 for missing required param.
+- `tests/fixtures/composer_golden_layer_output.txt` — committed expected layered-prompt bytes for diff-friendly review.
+
+**Modified:**
+- `app/main.py` — imported run_turn... wait that's orchestrator. Here: imported `composed_prompt_router` + `init_pool` / `close_pool`; mounted router; lifespan now opens/closes pool around `yield`.
+- `app/config.py` — added `postgres_dsn: str = ""` setting with `validation_alias="POSTGRES_DSN_SOUL_FILE_LIBRARY"` per D8 + a `from pydantic import Field` import.
+- `shared-config.yaml` — added the `soul_file_library.layer_separator: "\n\n---\n\n"` block (LOCKED — changing breaks every cached prefix downstream per C7+E8).
+- `secrets.yaml` — renamed the template's generic `DATABASE_URL` declaration to `POSTGRES_DSN_SOUL_FILE_LIBRARY` per D8.
+- `docker-compose.yml` — switched the `service` env var from `DATABASE_URL` to `POSTGRES_DSN_SOUL_FILE_LIBRARY` to match the renamed secret.
+- `pyproject.toml` — added `PyYAML==6.0.2` to runtime deps (composer reads shared-config) + `testcontainers[postgres]==4.10.0` to dev deps + `[tool.pytest.ini_options]` block with `asyncio_mode="auto"` + `asyncio_default_fixture_loop_scope="function"`.
+- F8 docs updated (Day-4 sections appended): DEEP-DIVE / WALKTHROUGH / READING-ORDER / GLOSSARY / RUNBOOK / WHEN-YOU-GET-LOST / SECURITY. CLAUDE.md unchanged (still accurate).
+- `cross-session-dependencies.md` — DEP-005 raised (see above).
+
+### Why
+First stateful surface of v2's chat hot path. The byte-stable prompt prefix this service emits is what provider-side prompt caching keys on; cache hit is what makes the 50%-faster-than-Python-chat-ai target reachable on prefix-heavy turns per E1. Schema-per-service per F3; single table per A2.1; layer order locked per E8.
+
+### Test evidence
+
+**pytest run** inside `python:3.12-slim` with `pip install -e '.[dev]'` then `pytest tests/`:
+```
+configfile: pyproject.toml
+plugins: asyncio-0.25.2, anyio-4.13.0
+asyncio: mode=Mode.AUTO, asyncio_default_fixture_loop_scope=function
+collected 20 items
+
+tests/test_api_composed_prompt.py ....                  [ 20%]
+tests/test_composer.py ........                         [ 60%]
+tests/test_repository.py .......                        [ 95%]
+tests/test_schema_migrations.py .                       [100%]
+
+20 passed in 3.81s
+```
+
+**Breakdown:**
+- `test_schema_migrations` — 1 test: alembic upgrade → downgrade base → upgrade head round-trip clean.
+- `test_repository` — 7 tests: 3 read + 4 write paths including the partial-unique-index dual-current rejection.
+- `test_composer` — 8 tests: golden-file diff + 2 error paths + **5 BYTE-IDENTITY reps** (parametrize over `range(5)`).
+- `test_api_composed_prompt` — 4 tests: 200 + 404 + 422×2.
+
+**FastAPI app routes (verified):** `/composed-prompt POST→GET`, `/docs`, `/docs/oauth2-redirect`, `/openapi.json`, `/redoc`.
+
+**Docker compose:** existing template's `service` + `postgres:17-alpine` + `pgbouncer` + `redis` stack unchanged except for env-var rename `DATABASE_URL` → `POSTGRES_DSN_SOUL_FILE_LIBRARY`. Note: directive said Postgres 16; template ships postgres:17-alpine. Kept 17 (newer, matches what Patroni cluster would deploy + already in template); flagging in PR body.
+
+### Constraints touched
+- **A2.1** — single table for all 4 layers; rule-based detectors stay simple (deferred ML to Phase 2); write methods exposed for tests but NOT wired to HTTP today; one extra `archetype` column instead of a separate join table.
+- **B1 + B2 + B4** — English names + B2 allowlist only; DOLR product vocab ("Soul File" not "system prompt") in code, comments, model field names, log fields, exception names.
+- **B7** — full doc shape on every new file + 7 of the 8 F8 docs updated.
+- **C3** — service binds to `yral-v2-internal` overlay; HTTP route documented as internal-only / no-auth on Day 4.
+- **C7** — `LAYER_SEPARATOR` lives in `shared-config.yaml` (locked); composer reads at module-import.
+- **C11** — asyncpg pool uses `statement_cache_size=0` for pgBouncer transaction-mode compat (template's local-dev pgbouncer is session-mode, but the same code works in prod's transaction-mode).
+- **D1 + D8** — `POSTGRES_DSN_SOUL_FILE_LIBRARY` declared in `secrets.yaml`, sourced from env at runtime; never in committed files; `alembic.ini` has `sqlalchemy.url=` empty so a missing env var fails fast.
+- **E1** — composer's hot-path SELECTs use the partial unique index (index-only scan); zero in-process work beyond string concat + sha256.
+- **E8** — layer order locked (L1 → L2 → L3 → L4); change-detection via golden-file diff test.
+- **F3** — schema-per-service (this service owns `soul_file_layers` only).
+- **F8** — 8 required docs all present; 7 updated with Day-4 sections.
+- **F11** — Layer 3 data port deferred to Day 4.5 per directive (needs Rishi YES per A14 for live chat-ai read).
+- **F12** — Python 3.12 + FastAPI + asyncpg; NO SQLAlchemy ORM (Alembic transitively pulls SQLAlchemy core, but our app code uses raw asyncpg).
+- **G3** — pgBouncer in the local-dev path (template provides it); composer connects via pgbouncer:6432 not raw postgres:5432.
+- **H11** — migration round-trip (up + down) covered by `test_schema_migrations.py`.
+- **I11** — LOG + STATE updated same-commit.
+- **I6** — TWO pushbacks raised: F2 citation drift + schema archetype-derivation gap; both acknowledged + addressed.
+- **J1** — soul-file-library is WARM-tier (50-60% floor); 20 tests cover the full surface.
+- **J2** — zero-flake: no time-dependence beyond `created_at` shape; testcontainers-Postgres has stable startup; no race conditions; 5-rep byte-identity catches intermittent nondeterminism.
+- **J3** — every test follows B7 doc shape (priority order, WHAT/WHEN/WHY docstring, role-not-syntax inline comments).
+
+### Three Day-4 design carve-outs flagged for coordinator review
+1. **Added `archetype TEXT NULL` column** to `soul_file_layers` to bridge L3 → L2 lookup; the directive's spec didn't include it but the composer can't derive Layer 2 without it. NULL on L1/L2/L4 rows.
+2. **postgres:17-alpine** kept from template (directive said 16). 17 is newer + already in the template + matches what Patroni would deploy.
+3. **HTTP test uses `httpx.AsyncClient` + ASGITransport** instead of FastAPI's `TestClient`. The TestClient creates its own event loop for lifespan, leaving the test fixture's asyncpg pool in a DIFFERENT loop → "another operation is in progress" + connection-closed errors. AsyncClient + ASGITransport runs the app in the test's event loop. Same Starlette + FastAPI dispatch chain.
+
+### Notes
+- **testcontainers Docker-in-Docker:** running pytest inside `python:3.12-slim` while spawning a Postgres container via testcontainers required `TESTCONTAINERS_RYUK_DISABLED=true` (Ryuk reaper can't reach Docker from inside non-privileged container) + `--network host` + `-v /var/run/docker.sock:/var/run/docker.sock`. CI workflows may need the same env-var when running pytest in containerised mode.
+- **Day-3 PR #100 LIFO order regression check:** not applicable to this PR (different service folder; orchestrator's middleware stack is untouched). When PR #100 lands first, no rebase needed for this PR's diff (different service folder).
+- **DEP-005 raised** for F2 citation drift (coordinator follow-up).
+- **Next:** Day 5 — orchestrator wires real LLM calls (Tara → OpenRouter; default → Gemini; NSFW per `is_nsfw` → OpenRouter; crisis → Claude with Anthropic safety system). Real LLM flows THROUGH the Day-3 safety stack unchanged. Day-2 stub stays accessible in non-prod for diagnostics.
+
+---
+
 ## 2026-05-18 — Day 1, PR 1: spawn three services from template (bundled per A2.1)
 
 ### Action

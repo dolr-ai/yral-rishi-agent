@@ -38,6 +38,7 @@
 
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -93,6 +94,20 @@ class Settings(BaseSettings):
     # Host defaults to the production self-hosted Langfuse on rishi-6
     # so a forgotten override still routes correctly per D4.
     langfuse_host: str = "https://langfuse.rishi.yral.com"
+
+    # -- Postgres (Day-4 — per D8) ----------------------------------------
+    # Per-service DSN read by both the asyncpg runtime pool (`app/db.py`)
+    # and the Alembic migration env (`app/migrations/env.py`). The env-var
+    # name matches the secret declaration in `secrets.yaml` per D8.
+    # asyncpg-compatible URL — `postgresql://user:pass@host:port/db`.
+    # `pydantic-settings` will read the env var with the same name as
+    # this field (case-insensitive); we use the `alias=` form so the
+    # field is `postgres_dsn` in Python while the env var stays the
+    # D8-declared `POSTGRES_DSN_SOUL_FILE_LIBRARY`.
+    postgres_dsn: str = Field(
+        default="",
+        validation_alias="POSTGRES_DSN_SOUL_FILE_LIBRARY",
+    )
 
 
 @lru_cache(maxsize=1)

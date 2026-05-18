@@ -76,6 +76,24 @@ When Swarm rolls a deploy or scales down, the container receives SIGTERM. uvicor
 - `app/main.py` — the orchestrator file this walkthrough follows.
 - `Dockerfile` — explains why exec-form CMD matters for SIGTERM (Step 11).
 
+## Day-4 walkthrough — one `GET /composed-prompt` call
+
+Trace of a single orchestrator → soul-file-library RPC call after the Day-4 PR lands.
+
+1. **Orchestrator sends:** `GET /composed-prompt?influencer_id=33333333-...&user_segment=new` on the Swarm overlay `yral-v2-internal` (per C3 — no auth, no public exposure).
+2. **Uvicorn ASGI hits FastAPI** → `app/main.py:lifespan` already ran `init_pool()` at process start so the asyncpg pool is ready (`app/db.py:_pool`).
+3. **`RequestIdMiddleware`** sets an `X-Request-Id` header on the request scope (for log correlation).
+4. **FastAPI route dispatch** → `app/api/composed_prompt_routes.py:get_composed_prompt`. Pydantic parses query params; `user_segment="not-a-segment"` would have 422'd here, never reaching the handler body.
+5. **Handler delegates:** `await compose(influencer_id, user_segment)` in `app/composer/four_layer_composer.py`.
+6. **Composer Step 1** — `get_current(LAYER_PER_INFLUENCER, influencer_id)` via `app/repository/soul_file_repository.py`. Index-only scan through the partial unique index → ~0.1ms.
+7. **Branch on L3:** None → `InfluencerSoulFileMissingError` → 404 at the route boundary. Has row → take `layer_3.archetype`.
+8. **Composer Step 2** — three SELECTs for L1 / L2-by-archetype / L4. Any None → `SoulFileDataIntegrityError` → 500.
+9. **Composer Step 3 — assembly:** `LAYER_SEPARATOR.join([l1.body, l2.body, l3.body, l4.body])`. Separator loaded at module-import from `shared-config.yaml:soul_file_library.layer_separator` (`\n\n---\n\n`). NO timestamps, UUIDs, dates inside the prompt — byte-identity is the load-bearing contract.
+10. **Composer Step 4 — version pin:** `sha256(f"{l1.version}:{l2.version}:{l3.version}:{l4.version}")[:16]`.
+11. **Return `ComposedPromptResponse{ layered_prompt, version_pin, cache_hit=False }`.**
+12. **Route serialises to JSON** + 200 response. RequestIdMiddleware adds the response header on the way out.
+13. **Orchestrator receives** the response, hands `layered_prompt` to the LLM provider as the cache-eligible prefix, appends the per-turn user message + memory facts as the un-cached suffix.
+
 ## Status
 
-Scaffold. Once real endpoints land, this walkthrough switches to "a real user message" instead of "an empty request" — same step structure, more detail per step.
+Day-4 walkthrough current. Day-5+ adds: provider `cache_control` markers around `layered_prompt` (orchestrator's concern); Redis cache promote in step 6 (`cache_hit=True` short-circuit before DB hit).

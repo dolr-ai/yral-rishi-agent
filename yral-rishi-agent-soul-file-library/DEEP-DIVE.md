@@ -147,6 +147,73 @@ No host ports exposed except 443 at the edge per C3. Inter-service traffic stays
 - `SECURITY.md` — threat model
 - `yral-rishi-agent-plan-and-discussions/V2_INFRASTRUCTURE_AND_CLUSTER_ARCHITECTURE_CURRENT.md` — full cluster reference
 
+## Day-4 surface — the 4-layer Soul File composer
+
+The Day-4 PR (`session-4/day-4-soul-file-library-postgres-schema-and-composer`) lands the FIRST stateful surface of this service: a single Postgres table, an asyncpg-backed composer, and the `GET /composed-prompt` HTTP route the orchestrator calls per chat turn.
+
+### The 4 layers (per E8 — order is the public contract)
+
+```
+   Layer 1: Global       (scope_key='')                — one row, applies to every turn
+   Layer 2: Archetype    (scope_key='companion'/...)   — 3 rows, one per archetype
+   Layer 3: Per-Influencer (scope_key=ai_influencer_id) — N rows; Day-4 deferred to Day-4.5 data port
+   Layer 4: Per-User-Segment (scope_key='new'/'paying'/'dormant') — 3 rows, one per segment
+```
+
+Concatenation order is L1 → L2 → L3 → L4, joined by `LAYER_SEPARATOR` (`\n\n---\n\n`, locked in `shared-config.yaml`). The composer reads the L3 row first to find the archetype the L2 lookup uses.
+
+### Why one table for all 4 layers
+
+Per A2.1 — "one table for all 4 layers (NOT four tables)." Single `soul_file_layers` table + `layer` SMALLINT column + `scope_key` TEXT column models every layer + history without 4× the schema surface.
+
+### Schema (per the Alembic migration)
+
+```
+soul_file_layers
+  id           UUID PK (gen_random_uuid())
+  layer        SMALLINT NOT NULL  (CHECK 1..4)
+  scope_key    TEXT NOT NULL      ('' for L1, archetype for L2, influencer_id for L3, segment for L4)
+  archetype    TEXT NULL          (L3 rows only — the archetype the composer joins on for L2)
+  body         TEXT NOT NULL      (the actual Soul File body)
+  version      INTEGER NOT NULL DEFAULT 1
+  is_current   BOOLEAN NOT NULL DEFAULT TRUE
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_by   TEXT NULL          (future Prompt-Coach attribution)
+
+Indexes:
+  soul_file_layers_one_current_per_slot — PARTIAL UNIQUE (layer, scope_key) WHERE is_current=TRUE
+  soul_file_layers_history              — (layer, scope_key, version DESC)
+  soul_file_layers_current_by_layer     — (layer) WHERE is_current=TRUE
+```
+
+The partial unique index is the durable safety net: exactly ONE current row per `(layer, scope_key)`. The repository's `create_new_version` retire-then-insert pattern keeps this invariant intentional; a concurrent direct-SQL insert would be rejected by the index.
+
+### Request flow
+
+```
+   orchestrator (Day-5+)
+        │  GET /composed-prompt?influencer_id={uuid}&user_segment={new|paying|dormant}
+        │  (overlay yral-v2-internal per C3; no auth on Day 4)
+        ▼
+   FastAPI route in app/api/composed_prompt_routes.py
+        │  → calls compose(influencer_id, user_segment)
+        ▼
+   four_layer_composer.compose()
+        │  Step 1: get_current(LAYER_PER_INFLUENCER, influencer_id)
+        │           → None → raise InfluencerSoulFileMissingError → 404
+        │           → has L3 row → continue with L3.archetype
+        │  Step 2: get_current(LAYER_GLOBAL, '') / (LAYER_ARCHETYPE, L3.archetype) / (LAYER_PER_USER_SEGMENT, user_segment)
+        │           → any None → raise SoulFileDataIntegrityError → 500
+        │  Step 3: concat L1.body + LAYER_SEPARATOR + L2.body + ... + L4.body
+        │  Step 4: version_pin = sha256(versions)[:16]
+        ▼
+   ComposedPromptResponse { layered_prompt, version_pin, cache_hit=False }
+```
+
+### Why the byte-stable prefix matters
+
+Provider-side prompt caching (Anthropic `cache_control: ephemeral`, Gemini context cache, OpenAI prompt cache) keys on the byte-prefix. One drifting byte = full cache miss = 3-10× TTFT regression on cache-eligible turns. The composer guarantees byte-identity for the same `(influencer_id, user_segment)` pair — no timestamps, UUIDs, dates, or random ordering inside the prompt string. Tests assert this with a 5-rep parametrize.
+
 ## Status
 
-Scaffold. Diagrams will gain real per-service detail in Days 5-6 once Session 1's cluster is up + spawned services exist.
+Day-4 surface live. Day-5+ wiring: Redis cache promote (composer's `cache_hit` flag flips when serving from Redis); provider `cache_control` markers wired by the orchestrator (this service stays opaque-bytes); Day-4.5 data port populates Layer 3 rows from chat-ai's `ai_influencers.system_prompt` (per F11).
