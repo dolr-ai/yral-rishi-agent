@@ -120,11 +120,11 @@ The plan targets a **Phase 1 working window** ending around 2026-06-07 — Rishi
 - Goal: >95% response-shape match on a sample of 100 test conversations + 50 influencer-list/detail calls
 
 ### Day 8-14 — Parity-readiness + the 50%-faster latency target (note: parity-ready ≠ cutover-authorized; see A6)
-- Session 5's user-memory service is live by ~Day 10; wire to it for conversation-context lookups (the user_id_hash field in MessageDto, conversation list filtering)
 - Performance: measure your p50/p95/p99 latency under load + compare against Sentry baselines (Session 1's Day-0.5 cron data); target 50% faster per E1
 - Load test: ramp to 25K msgs/day equivalent (~17 req/sec sustained) — verify no degradation
 - WebSocket inbox endpoint (`WS /api/v1/chat/ws/inbox/{user_id}`): real-time inbox push for mobile, per the contract
 - Idempotency persistence: extend Redis-cached idempotency keys to Postgres for >60s persistence (per F10 + the failure-recovery requirement)
+- **NOTE on user-memory + Session 5:** Session 3 does NOT call Session 5's user-memory service directly. Any memory-context-aware behavior (e.g., conversation-context lookups for a chat turn) goes through Session 4's orchestrator RPC; Session 4 + Session 5 coordinate the memory-read path internally. Session 3 stays a thin HTTP gateway routing layer — auth, envelope, routing — nothing else.
 
 ## Constraints you live under (your top 10)
 
