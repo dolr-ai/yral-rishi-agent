@@ -1,32 +1,45 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  ╔══════════════════════════════════════════════════════════════════════╗
-  ║  LAUNCHD JOB: com.yral.rishi.agent.daily-report-morning.plist           ║
-  ║                                                                          ║
-  ║  ⭐ THIS FILE IN ONE SENTENCE                                            ║
-  ║  Triggers the daily report (morning kind) at 9:00 IST every day on     ║
-  ║  Rishi's Mac.                                                            ║
-  ║                                                                          ║
-  ║  📖 EXPLAINED FOR A NON-PROGRAMMER                                       ║
-  ║  launchd is macOS's built-in scheduler (like cron). This file tells   ║
-  ║  it: "every day at 9:00 in India time (which is 3:30 UTC), run the    ║
-  ║  daily-report script with REPORT_KIND=morning." The script emails +   ║
-  ║  Google-Chats the report.                                              ║
-  ║                                                                          ║
-  ║  🔗 HOW IT FITS                                                          ║
-  ║  - Installed by: `launchctl load ~/Library/LaunchAgents/<this>.plist`  ║
-  ║  - Calls: .claude/scripts/generate-daily-report.sh                    ║
-  ║  - Runs: 9:00 IST = 3:30 UTC daily                                     ║
-  ║                                                                          ║
-  ║  ⚠️ SIDE EFFECTS                                                         ║
-  ║  - Sends one email + one Google Chat post per day                      ║
-  ║  - Writes /tmp/yral-v2-daily-report-<date>-morning.md                 ║
-  ║                                                                          ║
-  ║  ⭐ START HERE                                                           ║
-  ║  Read the StartCalendarInterval + ProgramArguments to understand WHAT  ║
-  ║  fires WHEN.                                                            ║
-  ║                                                                          ║
-  ╚══════════════════════════════════════════════════════════════════════╝
+  ╔══════════════════════════════════════════════════════════════════╗
+  ║  LAUNCHD JOB: com.yral.rishi.agent.daily-report-morning              ║
+  ║                                                                      ║
+  ║  ⭐ THIS FILE IN ONE SENTENCE                                        ║
+  ║  Triggers the daily report (morning kind) at 9:00 IST every day.    ║
+  ║                                                                      ║
+  ║  📖 EXPLAINED FOR A NON-PROGRAMMER                                   ║
+  ║  launchd = macOS's cron. Every day at 9:00 local time (which is    ║
+  ║  IST for Rishi's Mac), this fires generate-daily-report.sh with    ║
+  ║  REPORT_KIND=morning in its env. The script emails + Google-Chats  ║
+  ║  the report.                                                         ║
+  ║                                                                      ║
+  ║  🔧 INSTALL (Rishi runs once, OR coordinator under autonomy)         ║
+  ║  cp .claude/scripts/com.yral.rishi.agent.daily-report-morning.plist \║
+  ║     ~/Library/LaunchAgents/                                          ║
+  ║  launchctl bootstrap gui/$(id -u) \                                  ║
+  ║    ~/Library/LaunchAgents/com.yral.rishi.agent.daily-report-morning.plist
+  ║                                                                      ║
+  ║  🔧 UNINSTALL (typed YES required per A1 — these are deployment-     ║
+  ║   infra files; do NOT delete without the relaxed-A1 7-step report) ║
+  ║  Step 1 (non-destructive — always safe, just unloads the job):       ║
+  ║    launchctl bootout gui/$(id -u)/com.yral.rishi.agent.daily-report-morning
+  ║  Step 2 (DESTRUCTIVE — only after typed YES from Rishi + the relaxed-║
+  ║   A1 deletion-report block in your response):                        ║
+  ║    rm ~/Library/LaunchAgents/com.yral.rishi.agent.daily-report-morning.plist
+  ║                                                                      ║
+  ║  ⚠️ DESIGN NOTE (2026-05-18 — fixed)                                  ║
+  ║  Prior version wrapped the script call via `bash -c "VAR=val ..."`  ║
+  ║  which launchd-on-Sequoia rejects with EIO. Working pattern is to   ║
+  ║  call the script DIRECTLY (as ProgramArguments) and put env vars    ║
+  ║  in the EnvironmentVariables dict where launchd parses them safely. ║
+  ║                                                                      ║
+  ║  ⚠️ DEPENDENCY: generate-daily-report.sh MUST be executable          ║
+  ║  (chmod +x) AND have a #!/usr/bin/env bash shebang. Both are        ║
+  ║  enforced at commit time + verified by 'git ls-files --stage'       ║
+  ║  showing mode 100755. If you ever copy this plist to a new Mac,    ║
+  ║  re-check `ls -l .claude/scripts/generate-daily-report.sh` before   ║
+  ║  bootstrap-ing the job.                                              ║
+  ║                                                                      ║
+  ╚══════════════════════════════════════════════════════════════════╝
 -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -34,16 +47,14 @@
     <key>Label</key>
     <string>com.yral.rishi.agent.daily-report-morning</string>
 
-    <!-- Run the daily-report script with morning kind -->
+    <!-- Direct script call (NOT wrapped in bash -c); spaces in path are
+         safe inside <string> elements without escaping. -->
     <key>ProgramArguments</key>
     <array>
-        <string>/bin/bash</string>
-        <string>-c</string>
-        <string>REPORT_KIND=morning /Users/rishichadha/Claude\ Projects/yral-rishi-agent/.claude/scripts/generate-daily-report.sh</string>
+        <string>/Users/rishichadha/Claude Projects/yral-rishi-agent/.claude/scripts/generate-daily-report.sh</string>
     </array>
 
-    <!-- 9:00 IST = 3:30 UTC. macOS launchd uses LOCAL Mac time, so if
-         Rishi's Mac is set to IST, this fires at 9:00 IST. -->
+    <!-- 9:00 IST (Rishi's Mac is set to IST) -->
     <key>StartCalendarInterval</key>
     <dict>
         <key>Hour</key>
@@ -52,16 +63,17 @@
         <integer>0</integer>
     </dict>
 
-    <!-- Pass environment so the script can find git/gh/python3 -->
+    <!-- Environment variables passed to the script.
+         REPORT_KIND is the morning/evening discriminator.
+         PATH + HOME are needed because launchd inherits a minimal env. -->
     <key>EnvironmentVariables</key>
     <dict>
+        <key>REPORT_KIND</key>
+        <string>morning</string>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
         <key>HOME</key>
         <string>/Users/rishichadha</string>
-        <!-- YRAL_GOOGLE_CHAT_WEBHOOK_URL set out-of-band (login script
-             or manual export); not in plist to avoid committing webhook
-             URL even though webhook URLs are quasi-secret. -->
     </dict>
 
     <!-- Logs go to /tmp so we can debug failed runs -->
@@ -70,8 +82,8 @@
     <key>StandardErrorPath</key>
     <string>/tmp/yral-v2-daily-report-morning.err</string>
 
-    <!-- Don't run on Mac wake-up if it missed the schedule overnight
-         (Mac was asleep). Run NEXT time the schedule hits. -->
+    <!-- Don't run on Mac wake-up if it missed the schedule overnight.
+         Run NEXT time the schedule hits. -->
     <key>RunAtLoad</key>
     <false/>
 </dict>

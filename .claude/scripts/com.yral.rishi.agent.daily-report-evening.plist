@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   Evening daily-report launchd job — fires 21:00 IST.
-  See com.yral.rishi.agent.daily-report-morning.plist for full rationale +
-  doc block. This file is the evening twin.
+  See com.yral.rishi.agent.daily-report-morning.plist for the full
+  install/uninstall + design-note doc block. This file is the evening
+  twin (same pattern, REPORT_KIND=evening, 21:00 trigger).
 -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -12,9 +13,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/bin/bash</string>
-        <string>-c</string>
-        <string>REPORT_KIND=evening /Users/rishichadha/Claude\ Projects/yral-rishi-agent/.claude/scripts/generate-daily-report.sh</string>
+        <string>/Users/rishichadha/Claude Projects/yral-rishi-agent/.claude/scripts/generate-daily-report.sh</string>
     </array>
 
     <!-- 21:00 IST (9pm) -->
@@ -28,6 +27,8 @@
 
     <key>EnvironmentVariables</key>
     <dict>
+        <key>REPORT_KIND</key>
+        <string>evening</string>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
         <key>HOME</key>
