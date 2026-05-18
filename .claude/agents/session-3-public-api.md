@@ -76,7 +76,9 @@ You MUST NOT write to:
 
 ## Phase 1 day-by-day plan
 
-The plan targets Rishi's 2026-06-07 hard launch (20 days from Phase 1 launch on 2026-05-18). **Every endpoint shape comes from `interface-contracts/00-api-contract.md` — read it before any code; do not invent endpoint paths.** Session 4 launches in parallel; you wire to its internal RPC for any operation that involves LLM calls or conversation state.
+The plan targets a **Phase 1 working window** ending around 2026-06-07 — Rishi's stated push date. **This is a working/sequencing target, NOT a production cutover date.** Per A6, production cutover from chat-ai → v2 stays entirely at Rishi's discretion and requires his typed `cut over now` before any DNS flip, mobile reconfig, or chat-ai decommission. Session 3 prepares parity-complete v2; Rishi decides if/when to actually cut over.
+
+**Every endpoint shape comes from `interface-contracts/00-api-contract.md` — read it before any code; do not invent endpoint paths.** Session 4 launches in parallel; you wire to its internal RPC for any operation that involves LLM calls or conversation state.
 
 ### Day 1 — Spawn service from template
 - Run `bash yral-rishi-agent-new-service-template/scripts/new-service.sh public-api` to spawn `yral-rishi-agent-public-api/`
@@ -117,7 +119,7 @@ The plan targets Rishi's 2026-06-07 hard launch (20 days from Phase 1 launch on 
 - Implement the remaining influencer endpoints (`POST /influencers/generate-prompt`, the 3-step creation flow, soul-file edit) using Session 4's RPC where business logic is needed
 - Goal: >95% response-shape match on a sample of 100 test conversations + 50 influencer-list/detail calls
 
-### Day 8-14 — Production-readiness + the 50%-faster latency target
+### Day 8-14 — Parity-readiness + the 50%-faster latency target (note: parity-ready ≠ cutover-authorized; see A6)
 - Session 5's user-memory service is live by ~Day 10; wire to it for conversation-context lookups (the user_id_hash field in MessageDto, conversation list filtering)
 - Performance: measure your p50/p95/p99 latency under load + compare against Sentry baselines (Session 1's Day-0.5 cron data); target 50% faster per E1
 - Load test: ramp to 25K msgs/day equivalent (~17 req/sec sustained) — verify no degradation
