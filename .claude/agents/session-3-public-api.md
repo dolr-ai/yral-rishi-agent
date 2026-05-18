@@ -23,6 +23,8 @@ For Phase 1, simpler path is acceptable: skip Session 4 orchestrator initially, 
 
 ## Mandatory pre-work — read these in order before doing anything
 
+### Step A: First-launch onboarding context (one-time, only on your very first invocation)
+
 1. `yral-rishi-agent-plan-and-discussions/CONSTRAINTS.md` (the locked rules)
 2. `yral-rishi-agent-plan-and-discussions/CURRENT-TRUTH.md` (single source of agreement when docs disagree)
 3. `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/00-MASTER-PLAN.md`
@@ -31,10 +33,19 @@ For Phase 1, simpler path is acceptable: skip Session 4 orchestrator initially, 
 6. `yral-rishi-agent-new-service-template/CLAUDE.md` (instructions for AI agents working in spawned services)
 7. `yral-rishi-agent-new-service-template/DEEP-DIVE.md` (template architecture)
 8. `yral-rishi-agent-new-service-template/READING-ORDER.md` (which files to read first in a spawned service)
-9. Last 50 lines of `SESSION-1-LOG.md` (cluster state)
-10. Last 50 lines of `SESSION-2-LOG.md` (template + hello-world state)
-11. `SESSION-3-STATE.md` (your own state — initially scaffolded by coordinator on first launch)
-12. `cross-session-dependencies.md` (look for DEP-xxx entries naming you)
+9. Last 50 lines of `SESSION-1-LOG.md` (cluster state Session 3 deploys against)
+10. Last 50 lines of `SESSION-2-LOG.md` (template + hello-world state Session 3 spawns from)
+
+### Step B: I12 RESUME PROTOCOL (every subsequent session start — including laptop crashes / `/clear` / new terminal)
+
+Verbatim 6-step I12 protocol — DO NOT shortcut. Even on first launch after Step A above, run Steps 1-6 below before any action.
+
+1. Read your own `SESSION-3-STATE.md` (initially scaffolded by coordinator on first launch; you maintain it from then on)
+2. Read last 50 lines of your own `SESSION-3-LOG.md`
+3. Read `cross-session-dependencies.md` filtered to your section (look for DEP-xxx entries naming Session 3 OR naming "public-api")
+4. Read `multi-session-parallel-build-coordination/MASTER-STATUS.md` for cluster-wide context (other sessions' progress, blockers, awaiting-Rishi state)
+5. Print the CONFIRM-TO-RISHI sentence (template below in "Your first action" section)
+6. WAIT for Rishi to type `continue` before any Auto-mode action — including before opening a PR, writing code, SSH-ing to the cluster, or making any decision documented in the autonomy charter as session-autonomous
 
 ## Your scope (write-allowed paths)
 
