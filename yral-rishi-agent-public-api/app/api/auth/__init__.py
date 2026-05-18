@@ -9,7 +9,7 @@
 # LEGACY is authoritative; STRICT runs in shadow + its result is logged
 # to Langfuse + Sentry. Once shadow soak shows <0.01% divergence for
 # 7 consecutive days (per E9 + the JWT shadow-rollout memory + Rishi
-# typed YES), the `jwt_strict_validation_enabled` flag flips True and
+# typed YES), the `enable_strict_jwt_signature_validation` flag flips True and
 # STRICT becomes authoritative.
 #
 # PACKAGE CONTENTS:
@@ -54,7 +54,7 @@
 
 # ===========================================================================
 # RELATED FILES:
-#   ../../config.py          — defines jwt_strict_validation_enabled,
+#   ../../config.py          — defines enable_strict_jwt_signature_validation,
 #                              jwks_url, jwt_expected_issuer,
 #                              jwt_expected_audience, jwks_cache_ttl_seconds
 #   jwks_client.py           — JWKS fetch + per-replica cache

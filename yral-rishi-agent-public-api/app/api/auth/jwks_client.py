@@ -1,157 +1,264 @@
 # ---------------------------------------------------------------------------
-# jwks_client.py — fetch + per-replica cache of auth.yral.com's JWKS.
+# jwks_client.py — fetch + Redis-backed cache of auth.yral.com's JWKS.
 #
-# ⭐ START HERE: the public API is one function, `get_signing_keys()`.
-# It returns a dict {kid: PEM-encoded public key} suitable for handing
-# to `jwt.decode(..., key=keys[kid], algorithms=["RS256"])`. First call
-# fetches from settings.jwks_url; subsequent calls within
-# settings.jwks_cache_ttl_seconds return the cached set; expired-cache
-# triggers a refetch.
+# ⭐ START HERE: one public function, `get_signing_keys()`. Returns
+# `{kid: PEM-encoded public key object}` suitable for
+# `jwt.decode(..., key=keys[kid], algorithms=["RS256"])`. Cache lookup
+# is Redis-shared per E9; on Redis errors the strict path fails closed
+# (returns jwks_fetch_error) so legacy keeps answering.
 #
-# WHY IN-PROCESS (NOT REDIS) CACHE FOR DAY 3?
-# Per Rishi's Day-3 directive ("cache 6h, per E9"); E9 originally said
-# Redis 1hr but Rishi's Day-3 instruction overrides the storage layer.
-# In-process per-replica means each replica fetches independently;
-# 3 replicas × 1 fetch / 6h = trivial load on auth.yral.com. Day-4
-# (Redis client lands) may promote this to a shared cache; the change
-# is a single function-body edit since `get_signing_keys()` is the
-# entire public surface.
+# REDIS CACHE LAYOUT (per Day-4A directive):
+#   key:   jwks:auth.yral.com:v1
+#   value: the raw JWKS document bytes (JSON, exactly as auth.yral.com
+#          returned them). NOT the parsed {kid: key_obj} dict — that
+#          would require pickling RSA key objects, which is slow + a
+#          security smell. Parsing happens AFTER the bytes come out of
+#          Redis.
+#   TTL:   3600s (1 hour) — E9 verbatim.
 #
-# WHY httpx (sync), NOT asyncpg?
-# JWKS fetch is rare (once per replica per 6h) AND happens at request
-# time when a token's `kid` doesn't match a cached key. Using sync
-# `httpx.get()` keeps the cache logic simple — async fetching adds
-# complexity (event-loop coordination, concurrent-fetch dedup) for
-# zero benefit at this call rate. Per A2.1 — simple > clever.
+# WHY STORE THE RAW JSON (not the parsed dict)?
+# Three wins:
+#   1. Pickle-free — no `pickle.dumps(rsa_public_key_obj)` which would
+#      be slow + a security trip wire (deserializing pickle from a
+#      shared cache is a classic compromise vector).
+#   2. Human-readable in Redis — `redis-cli get` shows the JSON, makes
+#      debugging "why is strict failing for this user" trivial.
+#   3. Multi-version-safe — if a future cryptography lib bumps changes
+#      the in-memory key object's repr, the cache still works because
+#      it stores the JWK spec form (universal), not the lib's
+#      representation.
 #
-# WHY THE JWKS RESPONSE IS PARSED AT FETCH TIME, NOT LAZILY?
-# A malformed JWKS (e.g., auth.yral.com returns HTML during an outage)
-# should fail-fast at fetch — not silently corrupt later validations.
-# The PyJWT helpers convert each JWK to a public key object eagerly;
-# any error becomes a `jwks_fetch_error` reason in the strict validator.
+# WHY DAY-4A SWAPPED FROM IN-PROCESS TO REDIS?
+# E9 verbatim: "cached in Redis 1hr TTL." Day-3 shipped in-process 6h
+# on Rishi's directive; Day-4A reconciles to E9 per the coordinator
+# follow-up. Trade-off: Redis-shared means ONE fetch per cluster per
+# hour vs in-process per-replica 1 per 6h (3 replicas → 3/6h). Both
+# tiny load; Redis-shared adds visibility (any operator can
+# `redis-cli get jwks:auth.yral.com:v1` to see what's cached).
+#
+# WHY REDIS-DOWN MEANS STRICT FAILS CLOSED (not falls back to live JWKS
+# fetch)?
+# Per Day-4A directive: "On Redis unavailable: fail-closed for STRICT
+# path only (return jwks_fetch_error reason) — legacy path is
+# unaffected since it doesn't consult JWKS." This is conservative: if
+# the cache is broken, our entire JWKS contract is broken; we'd rather
+# refuse to claim strict-validated than silently bypass the layer that
+# E9 mandates. Legacy still answers, so the request itself doesn't
+# crash — only the shadow logging records the failure.
 #
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
 
-import time
+import json
 from typing import Optional
 
 import httpx
+import redis as redis_lib
 from jwt.algorithms import RSAAlgorithm
 
+from app import redis_client as redis_client_module
 from app.config import get_settings
 
 
-class JwksFetchError(Exception):
-    """Raised when JWKS fetch / parse fails.
+# Late-binding accessor so test fixtures that monkey-patch
+# `app.redis_client.get_redis` reach this module's lookup. (Doing
+# `from app.redis_client import get_redis` would bind the name at
+# import time and miss subsequent monkey-patches — classic Python
+# import-binding gotcha caught in Day-4A test development.)
+def _get_redis():
+    return redis_client_module.get_redis()
 
-    WHAT: signals the JWKS document couldn't be retrieved or parsed.
-    WHEN: raised by `get_signing_keys()` after exhausting retries.
-    WHY:  the strict validator catches this + reports `jwks_fetch_error`
-          as the divergence reason so the shadow log shows the auth
-          server is unreachable; legacy still answers so the request
-          isn't crashed.
+
+# Cache key per the Day-4A directive. The `:v1` suffix futureproofs:
+# if the cache value shape ever changes (e.g., we add metadata
+# alongside the JWKS JSON), bumping to `:v2` invalidates every
+# old-format entry without manual flushes.
+_JWKS_CACHE_KEY = "jwks:auth.yral.com:v1"
+
+
+class JwksFetchError(Exception):
+    """Raised when JWKS retrieval / parse fails.
+
+    WHAT: signals the JWKS document couldn't be retrieved from EITHER
+          the Redis cache OR the upstream auth.yral.com endpoint, or
+          couldn't be parsed.
+    WHEN: raised by `get_signing_keys()` on Redis errors OR HTTP fetch
+          failures OR JSON parse failures.
+    WHY:  the strict validator catches this + reports
+          `jwks_fetch_error` as the divergence reason so the shadow log
+          shows the cache or auth server is unhealthy; legacy still
+          answers (it doesn't consult JWKS) so the request isn't
+          crashed.
     """
 
 
-# Module-level cache. Per-replica per-process.
-_cached_keys: Optional[dict[str, object]] = None
-_cached_at: float = 0.0
+def _fetch_jwks_from_upstream() -> bytes:
+    """Pull the raw JWKS document bytes from auth.yral.com.
 
-
-def _fetch_jwks() -> dict[str, object]:
-    """Pull the JWKS document + parse into {kid: public_key_object}.
-
-    WHAT: sync HTTPS GET against settings.jwks_url; parses the response
-          JSON; converts each JWK entry into a public key object via
-          PyJWT's RSAAlgorithm.from_jwk().
-    WHEN: called by `get_signing_keys()` when the cache is empty or
-          expired.
-    WHY:  centralizes the fetch + parse logic so the cache layer stays
-          dumb (timestamp + dict).
+    WHAT: sync HTTPS GET against settings.jwks_url; returns the
+          response body bytes (the raw JWKS JSON, exactly as
+          auth.yral.com served it).
+    WHEN: called by `get_signing_keys()` on a Redis cache miss.
+    WHY:  keeps the upstream fetch separate from the cache layer +
+          the parse layer so each can be tested + mocked independently.
     """
     settings = get_settings()
     # 5-second timeout — JWKS endpoints respond in <100ms in practice;
-    # 5s is generous enough to absorb transient slowness without making
-    # the request handler block indefinitely.
+    # 5s absorbs transient slowness without blocking the request handler.
     try:
         response = httpx.get(settings.jwks_url, timeout=5.0)
         response.raise_for_status()
-        document = response.json()
-    except (httpx.HTTPError, ValueError) as exc:
-        # ValueError catches json-decode errors (e.g., HTML 5xx page);
-        # httpx.HTTPError catches network + 4xx/5xx.
-        raise JwksFetchError(f"jwks fetch failed: {exc}") from exc
+        return response.content
+    except httpx.HTTPError as exc:
+        raise JwksFetchError(f"jwks upstream fetch failed: {exc}") from exc
+
+
+def _parse_jwks_bytes(raw_bytes: bytes) -> dict[str, object]:
+    """Parse JWKS JSON bytes into {kid: public_key_obj} dict.
+
+    WHAT: json-decodes the bytes; iterates the `keys` array;
+          converts each JWK to an RSA public key via
+          PyJWT's RSAAlgorithm.from_jwk(); returns the dict.
+    WHEN: called by `get_signing_keys()` on every call (cache hit OR
+          miss) — parsing is cheap relative to a HTTP fetch + we want
+          the parsed dict in memory for the strict validator's
+          per-request lookup.
+    WHY:  separating parse from fetch lets us cache the raw bytes (per
+          the "store raw JSON" rationale in the file header) while
+          handing strict the parsed dict.
+    """
+    try:
+        document = json.loads(raw_bytes)
+    except ValueError as exc:
+        raise JwksFetchError(f"jwks json parse failed: {exc}") from exc
 
     keys_by_kid: dict[str, object] = {}
     for jwk in document.get("keys", []):
         kid = jwk.get("kid")
         if not kid:
-            # Skip keys without a kid — a token couldn't reference them
-            # anyway. (Some auth providers emit a default-kid for
-            # legacy clients; we don't need that here.)
+            # Tokens reference keys by kid; without a kid, the key is
+            # unreferenceable. Skip silently — matches how every other
+            # JWKS-consuming library handles it.
             continue
-        # PyJWT's RSAAlgorithm.from_jwk accepts the JWK dict (or its
-        # JSON string form) and returns an RSAPublicKey object that
-        # jwt.decode() accepts as `key`.
         try:
             keys_by_kid[kid] = RSAAlgorithm.from_jwk(jwk)
-        except Exception as exc:  # noqa: BLE001 — JWK parse errors vary by lib version
-            # A single broken key shouldn't bring down the whole JWKS
-            # cache; skip it + continue. If ALL keys are broken, the
-            # eventual KeyError-by-kid in the validator becomes the
-            # surfaced error.
-            _ = exc
+        except Exception:  # noqa: BLE001 — JWK parse errors vary by lib version
+            # A single broken key shouldn't poison the entire cache;
+            # skip + continue. If ALL keys are broken, the strict
+            # validator's per-kid lookup fails with unknown_kid downstream.
+            continue
 
     return keys_by_kid
 
 
-def get_signing_keys() -> dict[str, object]:
-    """Return the cached {kid: public_key} dict, refreshing if expired.
+def _cache_get_raw() -> Optional[bytes]:
+    """Read the raw JWKS bytes from Redis, or None on miss / failure.
 
-    WHAT: returns a dict mapping JWT `kid` header values to RSA public
-          key objects. Strict validator does `keys[kid]` to find the
-          signing key for a given token.
-    WHEN: called by StrictJwtValidator.validate() on every request when
-          the strict path runs.
-    WHY:  per-replica cache means each replica fetches JWKS at most
-          once per `jwks_cache_ttl_seconds` (6h by default per Rishi's
-          Day-3 directive).
+    WHAT: GET `jwks:auth.yral.com:v1` from Redis. Returns the raw bytes
+          on hit, None on miss. On Redis connection / timeout error,
+          re-raises as JwksFetchError so the caller can fail strict-closed.
+    WHEN: called by `get_signing_keys()` as the first cache step.
+    WHY:  bytes-in / bytes-out keeps the cache layer dumb; the parse
+          layer is the next step.
     """
-    global _cached_keys, _cached_at  # noqa: PLW0603 — module-level cache is intentional
+    try:
+        client = _get_redis()
+        cached = client.get(_JWKS_CACHE_KEY)
+        # redis-py returns None for cache miss + bytes for hit (we
+        # construct the client with decode_responses=False).
+        return cached
+    except (redis_lib.RedisError, OSError) as exc:
+        # Connection refused, timeout, auth failure, etc. — fail
+        # strict-closed per the Day-4A directive. The strict validator
+        # catches JwksFetchError + reports jwks_fetch_error as the
+        # divergence reason; legacy still answers (it doesn't consult
+        # JWKS) so the request handler doesn't crash.
+        raise JwksFetchError(f"redis get failed: {exc}") from exc
 
-    settings = get_settings()
-    now = time.monotonic()
 
-    # Cache miss: never fetched, OR TTL expired.
-    if _cached_keys is None or (now - _cached_at) > settings.jwks_cache_ttl_seconds:
-        _cached_keys = _fetch_jwks()
-        _cached_at = now
+def _cache_set_raw(raw_bytes: bytes) -> None:
+    """Write the raw JWKS bytes to Redis with the configured TTL.
 
-    return _cached_keys
+    WHAT: SET `jwks:auth.yral.com:v1` to `raw_bytes` with EX =
+          settings.jwks_cache_ttl_seconds (default 3600 per E9).
+    WHEN: called by `get_signing_keys()` on cache-miss after a
+          successful upstream fetch.
+    WHY:  populates the cache for the rest of the cluster + the next
+          hour's requests.
+    """
+    try:
+        client = _get_redis()
+        settings = get_settings()
+        client.set(_JWKS_CACHE_KEY, raw_bytes, ex=settings.jwks_cache_ttl_seconds)
+    except (redis_lib.RedisError, OSError) as exc:
+        # On cache-write failure: we successfully fetched the upstream
+        # JWKS, so the CURRENT request can still strict-validate. But
+        # future requests will hit the upstream again (cache will keep
+        # missing). Per Day-4A's "fail-closed for STRICT path only" —
+        # we raise so the strict path on the CURRENT request reports
+        # jwks_fetch_error too, matching the cache-get semantics. Without
+        # this, the current request would strict-pass + the next hour's
+        # requests would hammer auth.yral.com — both bad.
+        raise JwksFetchError(f"redis set failed: {exc}") from exc
+
+
+def get_signing_keys() -> dict[str, object]:
+    """Return the cached {kid: public_key} dict, fetching on miss.
+
+    WHAT: tries Redis GET first; on hit, parses bytes + returns the
+          dict. On miss, fetches from upstream auth.yral.com, sets the
+          cache, parses + returns. On Redis error at either step or
+          on upstream fetch error: raises JwksFetchError so strict
+          fails closed per E9.
+    WHEN: called by StrictJwtValidator.validate() on every request
+          when the strict path runs.
+    WHY:  single public entry point; the cache layer details are
+          private to this module.
+    """
+    cached_bytes = _cache_get_raw()
+
+    if cached_bytes is not None:
+        # Cache hit — parse + return. Parsing failure here is
+        # legitimately "the cached JSON is broken," which we treat as
+        # a fetch error (the cache is poisoned; let the next request
+        # re-fetch upstream after expiry).
+        return _parse_jwks_bytes(cached_bytes)
+
+    # Cache miss — fetch upstream + cache + parse.
+    raw_bytes = _fetch_jwks_from_upstream()
+    _cache_set_raw(raw_bytes)
+    return _parse_jwks_bytes(raw_bytes)
 
 
 def reset_cache_for_testing() -> None:
-    """Test-only helper: clear the cache so a test can force a refetch.
+    """Test-only helper: delete the cached JWKS so the next call
+    forces a re-fetch.
 
-    WHAT: nulls the cache so the next get_signing_keys() call hits
-          _fetch_jwks() again.
-    WHEN: called from test fixtures that want to validate cache-miss
-          + JWKS-fetch-error paths deterministically.
-    WHY:  tests need a way to clear state between cases without
-          tearing down the entire pytest session.
+    WHAT: DELETE `jwks:auth.yral.com:v1` from Redis. Tolerates Redis
+          errors silently — tests that mock Redis as unavailable don't
+          want the reset itself to throw.
+    WHEN: called from test fixtures before / after each case so cache
+          state from a prior test doesn't leak.
+    WHY:  test isolation; deterministic cache-state per test.
     """
-    global _cached_keys, _cached_at  # noqa: PLW0603 — see above
-    _cached_keys = None
-    _cached_at = 0.0
+    try:
+        client = _get_redis()
+        client.delete(_JWKS_CACHE_KEY)
+    except Exception:  # noqa: BLE001 — test-only helper must not throw
+        # If Redis is unavailable / mocked-as-error, the cache is
+        # effectively reset by virtue of the test's mock. Nothing to do.
+        pass
 
 
 # ===========================================================================
 # RELATED FILES:
 #   validators.py            — StrictJwtValidator calls get_signing_keys()
 #   dependency.py            — wires the validators into a FastAPI dep
-#   ../../config.py          — jwks_url + jwks_cache_ttl_seconds settings
+#   ../../redis_client.py    — get_redis() singleton this module uses
+#   ../../config.py          — jwks_url + jwks_cache_ttl_seconds + redis_url
 #   ../../../tests/contract/test_jwt_shadow.py
-#                            — monkey-patches _fetch_jwks() to control
-#                              what get_signing_keys returns
+#                            — monkey-patches _fetch_jwks_from_upstream()
+#                              + get_redis() to control cache + fetch state
+#   yral-rishi-agent-plan-and-discussions/CONSTRAINTS.md
+#                            — E9 (JWKS cache in Redis 1hr TTL)
 # ===========================================================================

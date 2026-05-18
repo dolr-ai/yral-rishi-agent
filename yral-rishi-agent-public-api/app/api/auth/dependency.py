@@ -13,10 +13,10 @@
 #   4. Call emit_dual_validate_result(legacy, strict, request.url.path)
 #      — Sentry breadcrumb + (on divergence) WARN event + Langfuse trace.
 #   5. Decide which result is AUTHORITATIVE:
-#      - If settings.jwt_strict_validation_enabled is False (default,
+#      - If settings.enable_strict_jwt_signature_validation is False (default,
 #        production today): LEGACY is authoritative. Return its
 #        user_id (or 401 if legacy itself failed).
-#      - If settings.jwt_strict_validation_enabled is True (post 7-day
+#      - If settings.enable_strict_jwt_signature_validation is True (post 7-day
 #        soak + Rishi YES): STRICT is authoritative. Return its
 #        user_id (or 401 if strict failed).
 #   6. Return the user_id string (the dependency value handlers receive).
@@ -91,7 +91,7 @@ def authenticate_user_dual_validate(request: Request) -> str:
     WHAT: extracts the Bearer token; runs LegacyJwtValidator +
           StrictJwtValidator in sequence; emits the divergence metric;
           returns the user_id from whichever validator is authoritative
-          (per settings.jwt_strict_validation_enabled).
+          (per settings.enable_strict_jwt_signature_validation).
     WHEN: applied as `Depends(authenticate_user_dual_validate)` on every
           authenticated endpoint by Day-4's wiring PR. Day-3 exercises
           it via a test-internal endpoint in tests/contract/test_jwt_shadow.py.
@@ -124,7 +124,7 @@ def authenticate_user_dual_validate(request: Request) -> str:
 
     # Step 5: pick the authoritative result.
     settings = get_settings()
-    authoritative = strict_result if settings.jwt_strict_validation_enabled else legacy_result
+    authoritative = strict_result if settings.enable_strict_jwt_signature_validation else legacy_result
 
     if not authoritative.ok:
         raise _unauthorized_response(authoritative.reason)
@@ -141,7 +141,7 @@ def authenticate_user_dual_validate(request: Request) -> str:
 #   jwks_client.py           — get_signing_keys() the strict path uses
 #   observability.py         — emit_dual_validate_result()
 #   ../errors.py             — error_response() helper + HTTP status map
-#   ../../config.py          — jwt_strict_validation_enabled (the gate)
+#   ../../config.py          — enable_strict_jwt_signature_validation (the gate)
 #   ../../main.py            — envelope-aware HTTPException handler that
 #                              preserves the dict body verbatim
 #   ../../../tests/contract/test_jwt_shadow.py

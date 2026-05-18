@@ -2,6 +2,72 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-18 — Day 4A, PR 4 (E9 reconciliation — flag rename + Redis JWKS cache per E9)
+
+### Action
+Per the coordinator's Day-4A directive, fixed two divergences from E9 introduced during Day 3 (coordinator's Day-3 prompt diverged from CONSTRAINTS E9 on the flag NAME and on the JWKS cache STORAGE/TTL; this PR reconciles both before strict ever becomes authoritative):
+
+1. **Flag rename `jwt_strict_validation_enabled` → `enable_strict_jwt_signature_validation`** — E9 verbatim. 13 references swept across 6 files: app/config.py (1 setting + 2 docstring cross-refs), app/api/auth/__init__.py (2 header refs), app/api/auth/validators.py (1 footer ref), app/api/auth/dependency.py (4 refs incl 1 code), tests/contract/test_jwt_shadow.py (3 refs incl env var `JWT_STRICT_VALIDATION_ENABLED` → `ENABLE_STRICT_JWT_SIGNATURE_VALIDATION`), SESSION-3-STATE.md (1 ref). Per the LOG's own append-only contract, the Day-3 LOG entry below stays as historical record (with the old name); future readers cross-reference via this Day-4A entry.
+
+2. **JWKS cache: in-process 6h → Redis 1hr per E9 verbatim** — new infrastructure file `app/redis_client.py` (lru_cache-backed `get_redis()` singleton returning a `redis.Redis` instance; `decode_responses=False` since cache values are raw bytes; 2s socket connect+read timeouts so a hung Redis fails the strict-path read fast rather than blocking request threads). `app/api/auth/jwks_client.py` refactored to GET/SET raw JWKS bytes against key `jwks:auth.yral.com:v1` with TTL 3600s (E9-verbatim "1hr"). Storage of RAW JSON bytes (not pickled key objects): three wins — pickle-free (no security trip wire), human-readable in `redis-cli get`, multi-version-safe across lib bumps. On Redis errors at GET OR SET → `JwksFetchError` raised → strict fails closed with `jwks_fetch_error` reason → legacy still answers (it doesn't consult JWKS) → request returns 200. Same resilience semantics as Day-3's "JWKS unreachable" path, now applied to the Redis layer per Day-4A directive.
+
+### Files touched
+- `yral-rishi-agent-public-api/app/config.py` — flag renamed + jwks_cache_ttl_seconds default 21600→3600 (E9 verbatim) + new `redis_url` setting (default `redis://localhost:6379/0` for local dev; prod via Swarm secret) + updated docstrings to reflect Redis-backed + E9-aligned semantics
+- `yral-rishi-agent-public-api/app/redis_client.py` (new) — `get_redis()` lru-cached singleton + `reset_for_testing()` helper (hasattr-guards `cache_clear` so monkey-patched substitutes don't crash teardown — bug caught during Day-4A test development)
+- `yral-rishi-agent-public-api/app/api/auth/jwks_client.py` — refactored from in-process dict cache to Redis-backed. New `_fetch_jwks_from_upstream()` (httpx fetch, returns raw bytes), `_parse_jwks_bytes()` (JSON parse + RSAAlgorithm.from_jwk for each kid), `_cache_get_raw()` + `_cache_set_raw()` (Redis layer). `get_signing_keys()` orchestrates: cache GET → on hit parse + return; on miss fetch upstream + cache SET + parse + return. `reset_cache_for_testing()` now DELETEs the Redis key (tolerates Redis errors silently for tests that mock Redis-down).
+- `yral-rishi-agent-public-api/app/api/auth/__init__.py` — flag-name refs updated; JWKS-cache description updated to "Redis 1hr per E9"
+- `yral-rishi-agent-public-api/app/api/auth/validators.py` — flag-name ref updated in footer
+- `yral-rishi-agent-public-api/app/api/auth/dependency.py` — flag-name refs updated (3 comments + 1 code line: `authoritative = strict_result if settings.enable_strict_jwt_signature_validation else legacy_result`)
+- `yral-rishi-agent-public-api/tests/contract/test_jwt_shadow.py` — `patched_jwks` fixture now patches `_fetch_jwks_from_upstream` (returns JWKS document JSON bytes built from the test keypair's `RSAAlgorithm.to_jwk(public_key)`) + uses new `fake_redis_client` fixture (dict-backed `_FakeRedis` class with get/set/delete matching redis-py's interface). `redis_down_jwks` fixture (renamed from `unreachable_jwks`) now monkey-patches `get_redis` to return a MagicMock whose `.get/.set/.delete` raise `redis_lib.ConnectionError`. Existing `test_jwks_unreachable_strict_fail_no_crash` rebound to Redis-down semantics (per directive: "repurpose the existing fixture to mock Redis failure, not just httpx failure"). 2 new tests: `test_redis_cache_hit_second_call_no_refetch` (asserts upstream fetch count = 1 over 2 requests via a call-counter spy) + `test_redis_down_strict_fails_legacy_unaffected_divergence_logged` (spies on `emit_dual_validate_result`, asserts called once with legacy.ok=True + strict.ok=False + strict.reason="jwks_fetch_error"). Env var rename `JWT_STRICT_VALIDATION_ENABLED` → `ENABLE_STRICT_JWT_SIGNATURE_VALIDATION` in `strict_flag_on` fixture.
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-state/SESSION-3-STATE.md` — flag rename + LAST-THING-I-DID advanced to Day-4A + NEXT 3 PLANNED ACTIONS updated for the Day-4B/4C stack
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-3-LOG.md` (this entry)
+
+### Bug caught + fixed during Day-4A test development
+Python's import-binding gotcha: `app/api/auth/jwks_client.py` originally did `from app.redis_client import get_redis` — that BINDS the name `get_redis` inside jwks_client's namespace at import time. Monkey-patching `redis_client.get_redis` from tests DOES NOT update jwks_client's reference (it still points to the original lru-cached function). Fix: changed to `from app import redis_client as redis_client_module` + private wrapper `_get_redis()` that does attribute lookup at call time — `redis_client_module.get_redis()`. Tests' monkey-patches now reach the call site. Two tests failed initially exposing this (test_flag_on_strict_authoritative_expired_token_401 returned `jwks_fetch_error` instead of `expired`; test_redis_cache_hit_second_call_no_refetch saw upstream call count = 0 instead of 1). After the fix both pass. The 9 Day-3 tests passed initially DESPITE this bug because they only asserted the LEGACY-authoritative response — they didn't actually exercise strict's success path. Documented the gotcha in jwks_client.py header so future-me doesn't repeat it.
+
+### Why
+Two coordinator-acknowledged divergences from E9. Per the directive ("Coordinator owes you this fix"), 4A lands first so the strict path's contract is E9-correct before anything else builds on it. Day-4B + Day-4C stack on this branch's tip.
+
+### Test evidence
+- `python3 -m py_compile` against all new + edited Python files → 0 errors
+- `docker compose build service` → image rebuilt with the new code + the existing `redis==5.2.1` dep already pinned in pyproject.toml (Day-1) so no dep change needed (directive's "otherwise add `redis[hiredis]>=5`" branch was the no-shared-library fallback; shared-library is still a placeholder, but redis-py is already there)
+- `pytest tests/contract/` inside the rebuilt docker image:
+  ```
+  collected 43 items
+  tests/contract/test_chat_routes.py        ....................  [ 46%]
+  tests/contract/test_health_routes.py      ...                   [ 53%]
+  tests/contract/test_influencer_routes.py  .........             [ 74%]
+  tests/contract/test_jwt_shadow.py         ...........           [100%]
+  43 passed in 0.37s
+  ```
+  - 32 Day-2 chat / influencer / health tests — STILL GREEN
+  - 9 Day-3 JWT-shadow tests — STILL GREEN (rename + cache backend swap behaviour-neutral as predicted)
+  - 2 new Day-4A tests — both PASS (cache-hit + Redis-down + divergence-logged)
+- 0 deprecation warnings
+
+### Constraints honored
+- **A1 (relaxed)** — no deletions; only file additions + edits.
+- **A2.1** — 1-function-body promote (`get_signing_keys()` orchestration changed; the helpers `_fetch_jwks_from_upstream`/`_parse_jwks_bytes`/`_cache_get_raw`/`_cache_set_raw` are mechanical splits, not new abstractions). NO new top-level deps (redis-py was already in pyproject.toml since Day 1 spawn). Did NOT wire auth into handlers (Day 4B). Did NOT touch orchestrator RPC (Day 4C). Diff surgical to 4A's "rename + cache backend swap" scope.
+- **A7 + C4 + D3** — Sentry observability unchanged; existing shadow-rig emissions continue to fire.
+- **B1 + B2** — English names; only allowlisted abbreviations (`jwt`, `jwks`, `kid`, `pem`, `ttl`, `url`).
+- **B7** — every new file (redis_client.py) carries the 3-tier doc treatment: ⭐ START HERE file header + function WHAT/WHEN/WHY + role-not-syntax comments + RELATED FILES footer. Refactored jwks_client.py: file header expanded to document the Day-4A Redis cache rationale + the "store raw JSON not pickled keys" trade-off + the "Redis-down → strict fails closed" contract.
+- **C7** — `redis_url` is a config setting via `app/config.py` pydantic-settings singleton; no hardcoded URL.
+- **C11** — Production override is expected to point at the v2 Redis Sentinel set via env injection (matching the cluster's Redis HA topology). For Day-4A's JWKS cache (read-mostly + tolerant of brief failures via fail-closed) the single-URL form is sufficient; Sentinel-aware client wiring lands later when a service genuinely needs primary/replica routing.
+- **E9** — flag NAME verbatim + JWKS cache STORAGE (Redis) + TTL (1hr) verbatim. The shadow contract (default OFF, dual-validate, divergence logged, 7-day rollout) is unchanged from Day 3.
+- **F16** — all code changes inside `yral-rishi-agent-public-api/`.
+- **I6** — no new push-back-once on Day-4A's own scope (E9 reconciliation IS the resolution to my Day-3 I6 surface). Two FORWARD I6 candidates for Day 4C surfaced during planning (will land in the Day-4C PR body): (a) F10 says "default-on on all non-GET endpoints" but Day-4C only wires idempotency on `POST /chat/conversations/{id}/messages` per directive scope — the other non-GET handlers (create-conversation, mark-read, delete-conversation) deferred; (b) directive's header set `X-User-Id`/`X-Idempotency-Key`/`X-Request-Id` differs from the current internal-rpc contract's `X-Internal-Caller`/`X-Trace-Id`/`X-User-Id` — both shipped (X-Request-Id as X-Trace-Id) to remain compat-correct.
+- **I9** — no `.github/workflows/` root edits.
+- **J1 HOT-tier** — auth path stays HOT; coverage delta net positive (2 new tests).
+- **LOG append-only contract** — the Day-3 LOG entry below was NOT edited (per the LOG's "Never edit past entries; correct via new entries" header rule). The historical record stays as it was written on Day 3; this Day-4A entry explicitly notes the rename + the reason.
+
+### Blockers raised
+None new. DEP-005 (Session 2 template `/health/*` mirror) still OPEN; doesn't block Day 4A/B/C.
+
+### Next
+Day 4B — wire `authenticate_user_dual_validate` as `Depends(...)` into all chat + influencer handlers per the Day-4 directive. Branch off Day-4A tip.
+
+---
+
 ## 2026-05-18 — Day 3, PR 3 (JWT signature-validation shadow rig per E9 + 9 J1-HOT tests)
 
 ### Action
