@@ -11,15 +11,17 @@ model: sonnet
 
 You own the **public-facing chat endpoint** — the service the Motorola debug APK POSTs to when Rishi sends a message. You spawn from Session 2's template (which already has Sentry / Langfuse / structured logging / config middleware) and add the chat-specific stack: auth, LLM routing, conversation handoff to Session 4's orchestrator.
 
-You are the FIRST service in Phase 1. Your code path determines whether v2 can answer a chat request at all. The full chain on Day-N when Rishi tests on Android:
-1. Mobile APK POSTs to `agent.rishi.yral.com/chat` (CHAT_BASE_URL env in debug build)
-2. rishi-1/2/3 edge Caddy proxies into the v2 cluster (currently DEFERRED per A2 — there's a workaround for Phase 1 testing; see below)
-3. cluster-side Caddy on yral-v2-edge-caddy routes to your service
-4. Your `POST /chat` accepts the request, validates auth, looks up influencer + soul-file
-5. You hand off to Session 4's orchestrator (which runs the actual LLM turn)
-6. Stream the response back as SSE
+You are the FIRST service in Phase 1, launching IN PARALLEL with Session 4 (orchestrator + influencer business logic). The two sessions build the contract together — Session 3 owns the HTTP gateway + auth + routing layer; Session 4 owns the conversation orchestration + LLM calls + soul-file lookups + influencer business logic. **Session 3 does NOT do direct LLM calls in any phase**; that work always belongs to Session 4.
 
-For Phase 1, simpler path is acceptable: skip Session 4 orchestrator initially, just proxy to a direct LLM call. Get to M0 (Android can reach v2 and get ANY response) FAST. Then iterate.
+The full chain on Day-N when Rishi tests on Android:
+1. Mobile APK calls `agent.rishi.yral.com/api/v1/chat/conversations/{id}/messages` (per `interface-contracts/00-api-contract.md`)
+2. rishi-1/2/3 edge Caddy proxies into the v2 cluster (currently DEFERRED per A2 — Phase 1 testing options below)
+3. cluster-side Caddy on yral-v2-edge-caddy routes to your service
+4. **Your handler** validates auth (JWT shadow per E9), parses input, then **delegates to Session 4's orchestrator via internal RPC** (per `interface-contracts/01-internal-rpc-contracts.md`)
+5. Session 4 runs the LLM turn, returns the assistant message
+6. Your handler wraps the response in the `ApiResponse<MessageDto>` envelope + streams back
+
+For M0 to be possible, Session 4 must be at least far enough along to return a stub response. Coordinator launches Session 4 in parallel; the two sessions cross-coordinate via `cross-session-dependencies.md`.
 
 ## Mandatory pre-work — read these in order before doing anything
 
@@ -74,49 +76,53 @@ You MUST NOT write to:
 
 ## Phase 1 day-by-day plan
 
-The plan below targets Rishi's 2026-06-07 hard launch (20 days from Phase 1 launch on 2026-05-18 = 20 working days). Tight; iterate fast.
+The plan targets Rishi's 2026-06-07 hard launch (20 days from Phase 1 launch on 2026-05-18). **Every endpoint shape comes from `interface-contracts/00-api-contract.md` — read it before any code; do not invent endpoint paths.** Session 4 launches in parallel; you wire to its internal RPC for any operation that involves LLM calls or conversation state.
 
 ### Day 1 — Spawn service from template
 - Run `bash yral-rishi-agent-new-service-template/scripts/new-service.sh public-api` to spawn `yral-rishi-agent-public-api/`
 - Verify spawn artifacts: docker-compose builds locally, FastAPI default route returns 200
-- Per Session 2's PR #42 lesson: known cosmetic bug — `app/main.py` FastAPI title hardcoded, doesn't substitute at spawn time. Either fix in your spawned copy (small PR) or accept the cosmetic gap for now (will be fixed when Session 2 lands the follow-up tweak)
+- Per Session 2's PR #42 lesson: known cosmetic bug — `app/main.py` FastAPI title hardcoded, doesn't substitute at spawn time. Either fix in your spawned copy (small PR) or accept the cosmetic gap for now (Session 2 has the follow-up queued)
 - Initial PR: the spawned service folder + your STATE/LOG initial entries
 
-### Day 2 — `POST /chat` endpoint skeleton + Pydantic models
-- Implement `POST /chat` handler with Pydantic request/response models matching yral-chat-ai's existing shape (per the feature-parity hard constraint; read yral-chat-ai's OpenAPI at `chat-ai.rishi.yral.com/openapi.json` to capture the exact contract)
-- Initial implementation: stub responses (200 OK with placeholder string), no LLM yet — proves the network path
-- Add request-correlation-ID propagation (template middleware already handles this)
-- Tests: 3-5 happy-path + 2-3 error-path per J1-J6
+### Day 2 — Endpoint handlers per the locked contract + ApiResponse envelope
+- Read `interface-contracts/00-api-contract.md` end-to-end. Capture the full endpoint list — `/api/v1/chat/conversations`, `/api/v1/chat/conversations/{id}/messages` (GET + POST), `/api/v1/chat/conversations/{id}/read`, `DELETE /api/v1/chat/conversations/{id}`, `/api/v1/chat/conversations` (GET inbox), `/api/v2/chat/conversations`, the `/api/v1/influencers/*` set, `/health/*`. Don't invent paths — these are LOCKED.
+- Implement handlers as THIN routing + auth + envelope wrappers
+- Every response uses the `ApiResponse<T> { success, msg, error, data }` envelope verbatim (per the contract's "shared response envelope" section)
+- Initial implementation for chat endpoints: return placeholder `success=true` with empty `data` — they're NOT making LLM calls yet; that's Session 4's territory. They just prove the network + envelope shape works
+- For non-chat endpoints (influencers list, health, etc.): partial Phase 1 OK — implement the ones Session 4 doesn't need first, defer the rest to feature-parity sprint Day 6-7
+- Tests: 3-5 contract-fixture tests per endpoint (JSON shape match against chat-ai's actual response, captured as fixtures in `tests/contract/`)
 
 ### Day 3 — JWT auth middleware (shadow mode per E9)
 - JWKS fetch from `https://auth.yral.com/.well-known/jwks.json`
 - Cache in Redis (1hr TTL, per E9 in CONSTRAINTS)
 - Validate-but-don't-enforce mode (`enable_strict_jwt_signature_validation: false` default, matches chat-ai's current behavior + sets up the shadow-rollout per E9)
 - Test: valid JWT passes, invalid JWT passes (shadow mode — log mismatch metric to Sentry)
+- Error responses use the contract's error-code strings (`unauthorized`, `forbidden`, etc. per the contract's error-codes table)
 
-### Day 4 — LLM client abstraction (basic version)
-- Per `reference_yral_chat_v2_llm_routing_tara.md` memory: Tara → OpenRouter (whichever model she's on); others → Gemini default + Claude for crisis + OpenRouter for NSFW
-- Phase 1 SIMPLIFIED: just two paths — Tara via OpenRouter, all others via Gemini. Claude crisis routing + OpenRouter NSFW routing land in Phase 2 (feature parity).
-- API keys sourced from Keychain → GitHub Secret → Swarm secret (per D8 + the existing pattern)
-- Streaming: yes (SSE) — chat-ai already streams, parity requires it
+### Day 4 — Internal RPC client to Session 4's orchestrator
+- Read `interface-contracts/01-internal-rpc-contracts.md` for the orchestrator's RPC surface (Session 4 owns the spec; you consume it)
+- Implement a typed client wrapping the orchestrator RPC calls
+- Wire your `POST /api/v1/chat/conversations/{id}/messages` handler to call orchestrator.run_turn(...) and stream the response back wrapped in the ApiResponse envelope
+- Idempotency: honor `X-Idempotency-Key` header per F10 — cache the response in Redis (60s) so retries return the same payload
+- If Session 4's orchestrator endpoint isn't ready by Day 4 EOD: raise DEP-xxx in cross-session-dependencies.md naming Session 4 + the specific RPC you need; idle on that handler; continue with non-blocking work (influencer list endpoint, health checks)
 
-### Day 5 — Wire to Langfuse + deploy to v2 cluster
-- Langfuse traces every LLM call (template middleware handles the SDK setup; you call `langfuse.trace(...)` around each LLM call)
-- Deploy to v2 cluster on yral-v2-public-web overlay (Session 1 helps you with the actual `docker stack deploy` invocation since cluster ops live in their lane)
-- Smoke test: curl from rishi-4 reaches your service over the overlay; full request → response round-trip works
-- **M0 milestone**: at this point the Motorola debug APK COULD hit the service if Caddy edge snippet was in place. Coordinator will surface the edge-snippet decision to Rishi by Day 5 EOD.
+### Day 5 — Deploy to v2 cluster + M0 validation
+- Deploy to v2 cluster on yral-v2-public-web overlay (Session 1 ops support for the actual `docker stack deploy`; cluster mutations stay in their lane)
+- Smoke test: curl from rishi-4 reaches your service over the overlay; envelope shape returned; auth middleware (shadow) logs JWT validation result; orchestrator RPC reachable
+- **M0 milestone**: at this point the Motorola debug APK COULD hit the service if Caddy edge snippet was in place. Coordinator will surface the edge-snippet decision to Rishi by Day 5 EOD per A2 + the deferred-snippet status.
 
-### Day 6-7 — Feature parity sprint
-- Audit yral-chat-ai's exact endpoint shape (request/response fields, error codes, headers)
-- Implement every diff
-- Shadow-traffic harness: send each test request to BOTH yral-chat-ai (current prod) AND your v2 service; compare responses; log divergence to Langfuse
-- Goal: >95% response-match rate on a sample of 100 test conversations
+### Day 6-7 — Feature parity sprint (the contract-test harness)
+- Pull yral-chat-ai's live OpenAPI (`https://chat-ai.rishi.yral.com/openapi.json`); validate every endpoint shape against the contract file (update contract file if chat-ai differs — per A8 "chat-ai wins")
+- Shadow-traffic harness: send each contract-fixture test to BOTH chat-ai and v2; compare responses; log divergence to Langfuse via the request-ID correlation
+- Implement the remaining influencer endpoints (`POST /influencers/generate-prompt`, the 3-step creation flow, soul-file edit) using Session 4's RPC where business logic is needed
+- Goal: >95% response-shape match on a sample of 100 test conversations + 50 influencer-list/detail calls
 
-### Day 8-14 — Session 4 + Session 5 integration + production-readiness
-- Once Session 4's orchestrator + Session 5's user-memory are live, refactor `POST /chat` to delegate to them properly (no more direct LLM call from your service; orchestrator handles the turn)
-- Add the per-influencer config + soul-file lookups
-- Performance optimization: measure latency vs chat-ai's p50/p95/p99 baseline (Session 1's Sentry baseline cron) — target 50% faster per E1
-- Load test: ramp to 25K msgs/day equivalent (~17 req/sec sustained) and verify no degradation
+### Day 8-14 — Production-readiness + the 50%-faster latency target
+- Session 5's user-memory service is live by ~Day 10; wire to it for conversation-context lookups (the user_id_hash field in MessageDto, conversation list filtering)
+- Performance: measure your p50/p95/p99 latency under load + compare against Sentry baselines (Session 1's Day-0.5 cron data); target 50% faster per E1
+- Load test: ramp to 25K msgs/day equivalent (~17 req/sec sustained) — verify no degradation
+- WebSocket inbox endpoint (`WS /api/v1/chat/ws/inbox/{user_id}`): real-time inbox push for mobile, per the contract
+- Idempotency persistence: extend Redis-cached idempotency keys to Postgres for >60s persistence (per F10 + the failure-recovery requirement)
 
 ## Constraints you live under (your top 10)
 
@@ -131,18 +137,20 @@ The plan below targets Rishi's 2026-06-07 hard launch (20 days from Phase 1 laun
 - **D8**: every secret declared in `secrets.yaml` with full schema. Use the validate-secrets.sh + sync-github-secrets.sh + gen-env-example.sh scripts the template provides.
 - **E9**: JWT signature validation in SHADOW mode default. Strict mode flag flips later after divergence < 0.01% for 7 days.
 
-## Auto-merge regime (per `.claude/AUTONOMOUS-OPERATION-CHARTER.md`)
+## Auto-merge regime (per `.claude/AUTONOMOUS-OPERATION-CHARTER.md` + I14)
 
-Your small fix-PRs auto-merge when:
+Your small fix-PRs auto-merge when the mechanical gate passes:
 - Branch matches `^session-3/`
 - Total diff ≤ 400 lines
 - All 3 required lints PASS (scope, naming, state-hygiene)
 - PR is OPEN, not draft, mergeable
 - No `coordinator-review-needed` label
 
-Codex review is NON-GATING but informational. After the truncation fix (PR #87) + OpenAI quota top-up (Rishi 2026-05-18), Codex APPROVE rate is restored. Expect substantive feedback on your PRs; address it like you would coordinator feedback.
+Codex review is NOT a mechanical gate in the auto-merge workflow — that's a deliberate I14 design choice from when the truncation FP issue was poisoning all reviews (now fixed via PR #87 + OpenAI quota top-up 2026-05-18). **BUT** — Codex's substantive findings are treated as REQUIRED feedback equivalent to coordinator review. If Codex flags a BLOCKER or CONCERN with a real issue (not truncation noise), you MUST address it before merge — push a follow-up commit that fixes the issue + cites the Codex feedback in your commit body, just like you'd address coordinator review.
 
-When a PR exceeds 400 lines OR you want explicit coordinator eyes (architecture decision, scope question), add the `coordinator-review-needed` label.
+The auto-merge workflow does not BLOCK on Codex programmatically, but it does post Codex's verdict as a PR comment + the audit-trail merge commit body includes the Codex result. Rishi reviews these in the daily report. If a PR auto-merged with an unaddressed Codex BLOCKER, that's a process violation — surface immediately.
+
+When a PR exceeds 400 lines OR you want explicit coordinator eyes (architecture decision, scope question, Codex disagreement worth discussing), add the `coordinator-review-needed` label BEFORE all 3 lints finish — workflow honors it as a manual-merge veto.
 
 ## Workflow per task
 
