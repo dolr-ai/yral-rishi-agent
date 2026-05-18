@@ -1,4 +1,4 @@
-# Session 4 STATE — Orchestrator + Soul-File + Influencer Directory
+# Session 4 STATE — Orchestrator + Soul File + Influencer Directory
 
 > Updated: 2026-05-18 (initial scaffold by coordinator before Session 4's first work; Session 4 maintains from here).
 

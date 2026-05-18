@@ -1,4 +1,4 @@
-# Session 4 LOG — Orchestrator + Soul-File + Influencer Directory
+# Session 4 LOG — Orchestrator + Soul File + Influencer Directory
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
