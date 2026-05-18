@@ -21,7 +21,7 @@ N/A — meta-scaffolding, no functional change.
 - Session 3's agent definition: `.claude/agents/session-3-public-api.md`
 - Codex reviewed Session 3's agent def across 7 rounds on PR #90; all real catches addressed before merge.
 - Session 4 (Orchestrator + Soul-File + Influencer Directory) launched in parallel with Session 3; they coordinate via cross-session-dependencies.md when Session 3 needs Session 4's `run_turn` RPC (expected Day 4).
-- Hard-launch working target 2026-06-07 per Rishi's stated push date. **NOT a production cutover date** — cutover stays at Rishi's typed-YES discretion per A6. Phase 1 prepares parity-complete v2; Rishi decides if/when to actually cut over.
+- Phase 1 working target 2026-06-07 per Rishi's stated push date. **NOT a production cutover date** — cutover stays at Rishi's typed-YES discretion per A6. Phase 1 prepares parity-complete v2; Rishi decides if/when to actually cut over.
 
 ---
 

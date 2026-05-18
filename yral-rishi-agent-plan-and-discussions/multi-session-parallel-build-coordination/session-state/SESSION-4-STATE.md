@@ -8,7 +8,7 @@ I am Session 4. I own **three services** that together implement the conversatio
 
 1. **yral-rishi-agent-conversation-turn-orchestrator** — runs the actual LLM turn for each chat message. Session 3 calls my `run_turn(...)` RPC; I do the safety stack (H5 prompt-injection defense → H4 crisis routing → A10 NSFW routing) → LLM call → return JSON `MessageDto` (NOT SSE on the v1 path per A16 parity).
 2. **yral-rishi-agent-soul-file-library** — Postgres-backed Soul File store. CRUD endpoints for AI Influencers' personality definitions. Per B4 product vocab: NEVER say "system prompt" in code/comments/internal naming (only the API path `/system-prompt` is kept for chat-ai parity).
-3. **yral-rishi-agent-influencer-and-profile-directory** — Postgres-backed catalog of AI Influencers + their profile metadata. Read-heavy; Redis-cached per E7.
+3. **yral-rishi-agent-influencer-and-profile-directory** — Postgres-backed catalog of AI Influencers + their profile metadata. Read-heavy; Redis-cached for read latency (per the API contract's `GET /api/v1/influencers` Cache-Control 300s + the `GET /api/v1/influencers/{id}` per-influencer caching note). NOT to be confused with E7 (which is specifically yral-billing's 60s access-check cache).
 
 Full agent definition: `.claude/agents/session-4-orchestrator.md`.
 

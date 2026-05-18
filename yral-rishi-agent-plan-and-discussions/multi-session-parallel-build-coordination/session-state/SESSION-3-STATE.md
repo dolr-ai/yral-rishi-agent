@@ -8,7 +8,7 @@ I am Session 3. I own **yral-rishi-agent-public-api** — the public-facing chat
 
 I am a **thin HTTP gateway** — I do auth (JWT shadow per E9), envelope wrapping (`ApiResponse<T>`), and route to Session 4's orchestrator RPC for any business logic involving LLM calls / conversation state / soul-file lookups / influencer reads.
 
-I implement the locked API contract at `interface-contracts/00-api-contract.md`. I consume Session 4's internal RPC contract at `interface-contracts/01-internal-rpc-contracts.md`. I do NOT make direct LLM calls in any phase. I do NOT call Session 5's user-memory service directly (any memory-context-aware behavior goes through Session 4).
+I implement the locked API contract at `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/interface-contracts/00-api-contract.md`. I consume Session 4's internal RPC contract at `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/interface-contracts/01-internal-rpc-contracts.md`. I do NOT make direct LLM calls in any phase. I do NOT call Session 5's user-memory service directly (any memory-context-aware behavior goes through Session 4).
 
 Full agent definition: `.claude/agents/session-3-public-api.md`.
 
@@ -28,7 +28,7 @@ ETA to first PR-ready: ~30-60 min after `continue` (template spawn is mostly mec
 ## NEXT 3 PLANNED ACTIONS
 
 1. Day 1 — Spawn `yral-rishi-agent-public-api/` from template + open PR for the spawned service folder + this STATE/LOG seeding.
-2. Day 2 — Implement endpoint handlers per `interface-contracts/00-api-contract.md` (the locked endpoints — `/api/v1/chat/conversations`, `/api/v1/chat/conversations/{id}/messages`, etc.) as thin envelope wrappers; SCHEMA-VALID stub responses behind feature flag.
+2. Day 2 — Implement endpoint handlers per `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/interface-contracts/00-api-contract.md` (the locked endpoints — `/api/v1/chat/conversations`, `/api/v1/chat/conversations/{id}/messages`, etc.) as thin envelope wrappers; SCHEMA-VALID stub responses behind feature flag.
 3. Day 3 — JWT auth middleware in shadow mode per E9 (JWKS fetch + Redis 1hr cache + validate-but-don't-enforce; log mismatch metric to Sentry).
 
 ## BLOCKERS

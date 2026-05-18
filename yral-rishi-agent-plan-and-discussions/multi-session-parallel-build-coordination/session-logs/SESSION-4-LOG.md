@@ -33,7 +33,7 @@ N/A — meta-scaffolding, no functional change.
   - B4 product vocab: "Soul File" not "system prompt" in code/internal naming; only the API path keeps the legacy phrasing for chat-ai parity.
   - A14 STOP-and-ask before any live chat-ai read (Day 7 feature-parity sprint uses committed audit docs + contract fixtures by default).
 - Session 3 launched in parallel; we coordinate via cross-session-dependencies.md.
-- Hard-launch working target 2026-06-07 per Rishi's stated push date. **NOT a production cutover date** — cutover stays at Rishi's typed-YES discretion per A6.
+- Phase 1 working target 2026-06-07 per Rishi's stated push date. **NOT a production cutover date** — cutover stays at Rishi's typed-YES discretion per A6.
 
 ---
 
