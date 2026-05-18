@@ -139,27 +139,27 @@ The plan targets a **Phase 1 working window** ending around 2026-06-07 — Rishi
 - **D8**: every secret declared in `secrets.yaml` with full schema. Use the validate-secrets.sh + sync-github-secrets.sh + gen-env-example.sh scripts the template provides.
 - **E9**: JWT signature validation in SHADOW mode default. Strict mode flag flips later after divergence < 0.01% for 7 days.
 
-## Auto-merge regime
+## Auto-merge regime — Session 3 follows locked I14 strictly
 
-There are TWO sources of policy here and they currently DIFFER (governance drift to surface to Rishi):
+Per CONSTRAINTS row I14 (Rishi 2026-04-27, locked), a PR auto-merges only when ALL of these are true:
+- (a) PR is .md-only OR test-only OR lint/format-only OR comment-update-only
+- (b) Codex review = APPROVE with no concerns/blockers
+- (c) all CI checks green
+- (d) diff size < 200 lines
+- (e) branch matches `session-N/*` pattern
+- (f) no files in critical scopes (.github/, secrets, CONSTRAINTS.md, memory files)
 
-### Locked I14 policy (per CONSTRAINTS.md row I14, Rishi 2026-04-27)
-ALL of (a) .md-only OR test-only OR lint/format-only OR comment-update-only; (b) Codex APPROVE with no concerns/blockers; (c) all CI checks green; (d) diff size < 200 lines; (e) session-N branch; (f) no critical-scope files. ANY one false → standard Rishi YES flow per I10.
+ANY one false → standard Rishi YES flow per I10 (i.e., add `coordinator-review-needed` label OR open as draft until ready).
 
-### Currently DEPLOYED workflow (per `.github/workflows/auto-merge-small-session-fix-prs.yml`, shipped PR #50 2026-05-15)
-Gates: session-N branch; diff ≤ 400 lines; 3 required lints (scope/naming/state-hygiene) PASS; not draft + mergeable; no `coordinator-review-needed` label. Codex is INFORMATIONAL but NOT mechanical-gate (was deliberate while Codex truncation FP was poisoning reviews; now functionally restored 2026-05-18).
+**Practical implication for Session 3 PRs:**
+- Most service-code PRs (handlers, middleware, internal RPC clients) are NOT .md/test/lint/format — they're real implementation code → fall outside I14's auto-merge category by clause (a) → manual coordinator review required.
+- Pure test-PRs (adding contract fixtures, pytest cases) DO qualify for auto-merge if they meet all 6 clauses.
+- Pure doc-PRs (README updates, RUNBOOK additions) DO qualify if they meet all 6 clauses.
+- Pure lint/format-PRs (perl-i renaming after a B2 carve-out) DO qualify.
 
-### Drift acknowledgment
-The deployed workflow is more lenient than I14 on three dimensions (size cap, Codex gating, PR category). This is a real governance question Rishi needs to resolve: tighten workflow to match I14, OR update I14 to ratify the deployed policy. Coordinator has surfaced this for separate resolution; until resolved, **Session 3 follows the STRICTER of the two policies** — i.e., for any PR, ask "would this pass BOTH I14 and the deployed workflow?" If yes, auto-merge fires + matches I14 spirit. If only the deployed workflow would pass: pause + add the `coordinator-review-needed` label so coordinator manually reviews instead.
+**Note on the currently-deployed workflow:** `.github/workflows/auto-merge-small-session-fix-prs.yml` (shipped PR #50 2026-05-15) currently runs with looser gates than I14 (≤ 400 lines instead of < 200, no Codex APPROVE requirement, any session-N category). This is a governance drift the coordinator has surfaced separately to Rishi for resolution (tighten workflow OR update I14). Until resolved, Session 3 self-imposes the STRICTER I14 discipline regardless of what the workflow's mechanical gate would accept. If the workflow merges your PR but I14 wouldn't have, treat that as a process bug + surface immediately.
 
-### What Session 3 does in practice
-- Keep PRs as small as feasible (< 200 lines preferred; the workflow allows up to 400 but I14 caps at 200)
-- After Codex returns its verdict on each PR: if Codex APPROVED with no concerns, auto-merge is honest. If Codex REQUEST_CHANGES or flagged a real BLOCKER/CONCERN, address it via a follow-up commit BEFORE the workflow merges (push the fix; the workflow's next re-evaluation will see the latest state)
-- For any PR that touches files near (but not in) critical scopes — e.g., the spawned service's secrets.yaml manifest — add `coordinator-review-needed` proactively
-- Cite the specific I14 clause(s) your PR satisfies in the PR body so the audit trail is clear
-
-### Substantive Codex findings = blocking by policy
-Codex review is not the mechanical workflow gate today, but Codex's substantive findings (BLOCKER, CONCERN with real issues — not truncation noise) are TREATED as blocking equivalent to coordinator review. If a Session 3 PR auto-merges with an unaddressed Codex BLOCKER, that's a process violation; surface to coordinator immediately for retroactive review + a follow-up fix PR.
+**Codex findings are blocking by policy** — even when the workflow's mechanical gate doesn't programmatically enforce it. Real BLOCKER or CONCERN from Codex (not truncation noise) must be addressed via a follow-up commit before merge. If a PR auto-merges with an unaddressed Codex BLOCKER, surface to coordinator for retroactive review + follow-up fix PR.
 
 ## Workflow per task
 
