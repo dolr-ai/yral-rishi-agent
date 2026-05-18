@@ -14,26 +14,53 @@ Downstream services trust X-User-Id without re-validating (per E6).
 ## public-api → orchestrator
 
 ```
-POST http://yral-rishi-agent-conversation-turn-orchestrator:8000/turn
+POST http://yral-rishi-agent-conversation-turn-orchestrator:8000/v1/turn
 
 Request:
 {
-  user_id: string,
-  conversation_id: string,
-  ai_influencer_id: string,
-  message_content: string,
-  client_message_id: string,
-  media_urls: string[] | null
+  conversation_id: string,   // UUID of the conversation row; orchestrator
+                             // joins on this to find user_id +
+                             // ai_influencer_id (the latter feeds the
+                             // Soul-File lookup).
+  user_message: string       // Raw text the user typed. PII per H6 —
+                             // log only LENGTH, never the value.
 }
 
-Response: SSE stream of events
-  event: token       data: { delta: "..." }
-  event: token       data: { delta: "..." }
-  event: complete    data: { message: MessageDto }
-  event: error       data: { code, message }
+Headers:
+  X-User-Id          (forwarded from public-api after JWT validation, per E6)
+  X-Idempotency-Key  (per F10 — orchestrator uses this Day-5+ for Redis
+                      dedup of duplicate LLM calls)
+  X-Request-Id       (per Langfuse correlation, D4)
+
+Response: JSON MessageDto (byte-identical to chat-ai parity per A8 + A16)
+{
+  id: string,                        // fresh UUID per assistant reply
+  conversation_id: string,           // echoes the request's conversation_id
+  role: "user" | "assistant",        // orchestrator always returns "assistant"
+  content: string,                   // the assistant reply text
+  media_urls: string[] | null,       // attachment URLs (null today; real
+                                     // Day-5+ may include generated images)
+  client_message_id: string | null,  // null on assistant replies; copied
+                                     // from request on user messages
+                                     // (public-api owns user-msg persist)
+  created_at: string,                // ISO8601 UTC, "YYYY-MM-DDTHH:MM:SSZ"
+  count_toward_paywall: boolean      // E7 paywall counter; safety-blocked
+                                     // turns flip false once H4/H5 land
+}
 ```
 
-Used: every chat turn. Streaming response per E2.
+Used: every chat turn. Plain JSON response (NOT SSE) per A16 — mobile
+parity requires byte-shape-identical to chat-ai's existing
+`POST /api/v1/chat/conversations/{id}/messages` contract. The v1 path
+stays plain-JSON forever for parity stability. SSE streaming per E2
+(first-token <200ms p95 target) lives at a separate `POST /v2/turn-stream`
+path behind a feature flag per the Session-4 agent definition — the v1
+JSON shape above never silently mutates into a stream.
+
+Source of truth: `yral-rishi-agent-conversation-turn-orchestrator/app/models/turn.py`
+(`RunTurnRequest` + `MessageDto` Pydantic models) and
+`yral-rishi-agent-conversation-turn-orchestrator/app/run_turn.py`
+(`POST /v1/turn` handler). Update this section if those models change.
 
 ## public-api → influencer-and-profile-directory
 
