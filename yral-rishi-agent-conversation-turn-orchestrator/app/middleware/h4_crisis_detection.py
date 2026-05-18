@@ -1,0 +1,222 @@
+# ---------------------------------------------------------------------------
+# h4_crisis_detection.py — Day-3 H4 crisis-detection middleware.
+#
+# ⭐ START HERE: this module exports `H4CrisisDetectionMiddleware`, the
+# MIDDLE safety layer in the H5 → H4 → A10 → handler chain. When the
+# user-message body contains self-harm / suicide / mental-health-crisis
+# language, the middleware short-circuits the route with HTTP 200 + a
+# canned crisis-response (per
+# `app/safety/canned_responses.py::crisis_response`) and the run_turn
+# handler is never called.
+#
+# WHY OVER-ROUTING IS THE EXPLICIT BIAS HERE
+# Per the Session-4 agent definition Day-3 plan verbatim: "Tune crisis-
+# detection thresholds (H4) using real Langfuse traces — false-positive
+# rate target < 5%, false-negative rate target ~0% (lean toward over-
+# routing to Claude on uncertain cases)." Day-3 ships a deliberately
+# WIDE keyword net — better to surface a helpline placeholder to
+# someone who didn't strictly need one than to MISS someone who did.
+# Phase-2 hardening narrows the false-positive rate while keeping
+# false-negatives at zero.
+#
+# WHY KEYWORDS NOT EMBEDDINGS FOR PHASE 1
+# Same A2.1 argument as H5's regex choice: a keyword list is one file
+# to edit + zero infra. Day-5+ promotion to embeddings or a fine-tuned
+# classifier replaces `_CRISIS_PATTERNS` here without touching dispatch.
+#
+# WHY THE STUB COPY IS OBVIOUSLY-PLACEHOLDER
+# Per the Day-3 directive verbatim: "must be obviously a stub, not a
+# wrong helpline number." A wrong helpline number is more harmful than
+# a bracketed-string marker for someone in crisis. Product (Day-3.5)
+# owns the real copy + locale-aware helpline routing.
+#
+# THE GATE-RESPECT PATTERN
+# Same as H5 (see `h5_prompt_injection.py` file header) — when EITHER
+# `environment == "production"` or `enable_run_turn_stub` is false,
+# this middleware passes through so the handler's 503-emission fires
+# unchanged. Avoids the "leak via safety bypass" attack vector.
+#
+# WHY H4 SITS INSIDE H5
+# Order matters: H5 handles ADVERSARIAL input (deliberate jailbreaks).
+# H4 handles VULNERABLE input (genuine crisis signals). A user could
+# include BOTH (a jailbreak phrase combined with self-harm language);
+# in that case we treat them as adversarial first per H5's heuristic
+# bias, which Day-5 product review may reverse if the data argues for
+# crisis-routing all such cases.
+#
+# RELATED FILES (footer at end).
+# ---------------------------------------------------------------------------
+
+import json
+import logging
+import re
+from typing import Final
+
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
+from starlette.types import ASGIApp
+
+from app.config import get_settings
+from app.middleware._safety_audit import record
+from app.safety.canned_responses import crisis_response
+
+
+GUARDED_PATH: Final[str] = "/v1/turn"
+
+
+# ===========================================================================
+# Rule set — Phase-1 keyword-based crisis detection (false-positive bias)
+# ===========================================================================
+
+# Patterns are word-boundary anchored so "I'm reading a book about
+# suicide prevention" still matches (the standalone token "suicide"
+# is enough) — over-routing is intentional per the agent definition's
+# false-negative-target-~0% bias.
+#
+# Phase-2 follow-up: replace this list with embeddings + similarity
+# threshold, or a fine-tuned crisis-detection classifier. The dispatch
+# path keeps the same `_match_crisis()` return contract.
+_CRISIS_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
+    re.compile(r"\bsuicid(e|al)\b", re.IGNORECASE),
+    re.compile(r"\bkill\s+(myself|me)\b", re.IGNORECASE),
+    re.compile(r"\bend\s+my\s+life\b", re.IGNORECASE),
+    re.compile(r"\bself[\s-]?harm(ing)?\b", re.IGNORECASE),
+    re.compile(r"\bhurt(ing)?\s+myself\b", re.IGNORECASE),
+    re.compile(r"\bwant\s+to\s+die\b", re.IGNORECASE),
+    re.compile(r"\bno\s+reason\s+to\s+live\b", re.IGNORECASE),
+    re.compile(r"\bcut(ting)?\s+myself\b", re.IGNORECASE),
+)
+
+
+# One reason code — Day-3 doesn't distinguish sub-patterns. Phase-2
+# classifier may return a finer-grained category (suicidal-ideation
+# vs self-harm vs general-distress, etc.).
+_REASON_CRISIS_LANGUAGE: Final[str] = "h4_crisis_language"
+
+
+# Structured logger. Per H6 we log MATCH-OCCURRED + length, never the
+# raw user message (especially important for crisis content).
+_log = logging.getLogger("app.middleware.h4_crisis_detection")
+
+
+def _match_crisis(user_message: str) -> str | None:
+    """Return a reason code if `user_message` matches any H4 pattern, else None.
+
+    WHAT: walks the crisis keyword regex list; returns the reason code
+          on FIRST match.
+    WHEN: called once per /v1/turn request inside `dispatch()`.
+    WHY:  isolated so unit tests can exercise the matcher without
+          spinning up the full middleware chain.
+    """
+    for pattern in _CRISIS_PATTERNS:
+        if pattern.search(user_message):
+            return _REASON_CRISIS_LANGUAGE
+
+    return None
+
+
+# ===========================================================================
+# Middleware
+# ===========================================================================
+
+
+class H4CrisisDetectionMiddleware(BaseHTTPMiddleware):
+    """Middle safety layer — routes crisis-signal inputs to a helpline
+    placeholder reply before the handler is reached.
+
+    WHAT: BaseHTTPMiddleware whose `dispatch()` inspects POST /v1/turn
+          request bodies for crisis-language keywords + short-circuits
+          with a canned 200 response on match.
+    WHEN: invoked once per request by the FastAPI middleware chain,
+          AFTER H5 and BEFORE A10 (request side).
+    WHY:  protects vulnerable users from receiving an unrelated stub
+          / LLM reply when they're signalling a mental-health crisis.
+          Default helpline-placeholder is intentionally a stub —
+          Product (Day-3.5) replaces with real copy + locale routing.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        super().__init__(app)
+
+    async def dispatch(self, request: Request, call_next) -> Response:  # type: ignore[override]
+        # Path filter — only POST /v1/turn is in scope.
+        if request.url.path != GUARDED_PATH:
+            return await call_next(request)
+
+        # Gate-respect — see h5_prompt_injection.py file header for
+        # the full rationale.
+        settings = get_settings()
+        gate_closed = (
+            settings.environment == "production"
+            or not settings.enable_run_turn_stub
+        )
+        if gate_closed:
+            return await call_next(request)
+
+        record("H4_entry")
+
+        # Read the body. H5 (outer) already read + replayed it, so
+        # `request.body()` returns the cached `_body` for free. Without
+        # H5 first having replayed receive, this call would still
+        # work (returns cached `_body` if H5 didn't run; new read if
+        # we're somehow alone in the chain) — defence-in-depth.
+        body_bytes = await request.body()
+
+        try:
+            payload = json.loads(body_bytes)
+            user_message = payload.get("user_message", "")
+        except (json.JSONDecodeError, AttributeError):
+            payload = None
+            user_message = ""
+
+        reason = _match_crisis(user_message)
+        if reason is not None:
+            conversation_id = (
+                payload.get("conversation_id", "") if payload else ""
+            )
+
+            _log.warning(
+                "h4_blocked",
+                extra={
+                    "safety_layer": "H4",
+                    "reason": reason,
+                    "conversation_id": conversation_id,
+                    "user_message_length": len(user_message),
+                },
+            )
+
+            response = JSONResponse(
+                content=crisis_response(conversation_id),
+                status_code=200,
+            )
+            response.headers["X-Safety-Decision"] = "H4"
+            response.headers["X-Safety-Reason"] = reason
+
+            record("H4_exit")
+            return response
+
+        # No match — propagate to A10.
+        response = await call_next(request)
+
+        record("H4_exit")
+        return response
+
+
+# ===========================================================================
+# RELATED FILES:
+#   __init__.py                — package marker + visual ASCII chain
+#   _body_replay.py            — used by H5 (outer); H4 reads cached _body
+#   _safety_audit.py           — audit-trail ContextVar + record() helper
+#   h5_prompt_injection.py     — outer safety layer this layer sits inside
+#   a10_nsfw_filter.py         — inner safety layer this layer passes to
+#   ../safety/canned_responses.py
+#                              — `crisis_response()` returns the canned
+#                                MessageDto when H4 short-circuits
+#   ../config.py               — `environment` + `enable_run_turn_stub`
+#                                settings the gate-respect check reads
+#   ../run_turn.py             — Day-2 handler this layer protects
+#   ../main.py                 — mounts this middleware via `add_middleware()`
+#   ../../tests/test_safety_stack.py
+#                              — H4-blocked path + order-verification tests
+# ===========================================================================

@@ -2,6 +2,95 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-18 — Day 3, PR: H5 → H4 → A10 safety-stack middleware in front of `/v1/turn`
+
+### Action
+Implemented the Day-3 deliverable per the Session-4 agent definition + Rishi's typed Day-3 green-light 2026-05-18: a three-layer safety stack (H5 prompt-injection → H4 crisis-detection → A10 NSFW-output-filter) mounted as FastAPI `BaseHTTPMiddleware` IN FRONT OF the `POST /v1/turn` route. Each layer short-circuits with HTTP 200 + a canned `MessageDto` (per `app/safety/canned_responses.py`) on a rule-set match; otherwise passes through. Gate-respect pattern preserves the Day-2 503 behaviour for production + flag-off requests so jailbreaks cannot bypass the production gate via safety. 19 tests (9 Day-2 regression + 10 Day-3) all green in 0.07s on Python 3.12.13 inside `python:3.12-slim`.
+
+### Branch
+`session-4/day-3-safety-stack-middleware` (branched off the PR #96 tip `session-4/orchestrator-run-turn-rpc-handler` so the PR diff scopes to Day-3 work only).
+
+### Files touched (orchestrator service only; no Day-2 contract changes per directive)
+- **Added (10 new files):**
+  - `yral-rishi-agent-conversation-turn-orchestrator/app/safety/__init__.py` (package marker)
+  - `yral-rishi-agent-conversation-turn-orchestrator/app/safety/canned_responses.py` — 3 callables (`prompt_injection_blocked`, `crisis_response`, `nsfw_blocked`) returning `MessageDto`-shaped dicts with `count_toward_paywall=False`; product (Day-3.5) replaces the crisis placeholder
+  - `yral-rishi-agent-conversation-turn-orchestrator/app/middleware/__init__.py` (package marker + ASCII chain diagram)
+  - `yral-rishi-agent-conversation-turn-orchestrator/app/middleware/_safety_audit.py` — `SAFETY_AUDIT_TRAIL` ContextVar + `record()` helper (production no-op when ContextVar is None default; tests inject a list)
+  - `yral-rishi-agent-conversation-turn-orchestrator/app/middleware/_body_replay.py` — `read_and_replay_body()` helper (read body once + patch `request._receive` so downstream layers re-read the cached bytes via a custom receive callable)
+  - `yral-rishi-agent-conversation-turn-orchestrator/app/middleware/h5_prompt_injection.py` — H5 layer: 7 regex patterns (ignore-previous, system-prompt-probe, Soul-File-probe, role-override, jailbreak-personas, special-token-injection) + base64-blob threshold >200 chars; reason codes `h5_regex_match` and `h5_base64_blob`
+  - `yral-rishi-agent-conversation-turn-orchestrator/app/middleware/h4_crisis_detection.py` — H4 layer: 8 crisis-language regex patterns (false-positive bias per agent def: "lean toward over-routing"); reason code `h4_crisis_language`
+  - `yral-rishi-agent-conversation-turn-orchestrator/app/middleware/a10_nsfw_filter.py` — A10 output-side layer: drains response body, parses content, replaces with canned reply on match; intentionally-minimal Day-3 keyword list (Day-5+ replaces with `yral-rishi-agent-content-safety-and-moderation` RPC + the `influencer.is_nsfw` routing decision); A10 ALSO appends the synthetic `handler` audit marker between its own entry/exit (the run_turn handler is out-of-scope to modify per the directive)
+  - `yral-rishi-agent-conversation-turn-orchestrator/tests/test_safety_stack.py` — 10 tests: 2 happy (clean-passes + order-verification) + 3 H5 (regex + base64 + chain-stops-before-H4) + 2 H4 (crisis + chain-stops-before-A10) + 1 A10 (monkeypatched STUB_CONTENT) + 2 gate-respect (production-jailbreak-503 + flag-off-jailbreak-503)
+- **Modified:**
+  - `yral-rishi-agent-conversation-turn-orchestrator/app/main.py` — added imports for the 3 middleware classes; added 3 `add_middleware()` calls in REVERSE order (A10, H4, H5) so LIFO produces request flow `RequestId → H5 → H4 → A10 → handler`; verbose role-comment block spells out the LIFO mapping per B7 + the template's `CLAUDE.md` warning
+  - `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-4-LOG.md` (this entry)
+  - `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-state/SESSION-4-STATE.md` (Day-3 progress)
+
+**NOT touched (per directive's scope guardrail):**
+- `app/run_turn.py` — Day-2 contract; safety is purely additive in middleware
+- `app/models/turn.py` — Day-2 contract; same reason
+
+### Why
+Day-3 critical-path per the agent definition: "safety stack BEFORE any real LLM call." Landing the middleware now means Day-5's real-LLM swap inside the handler automatically inherits the safety stack — the LLM never sees a jailbreak input (H5 short-circuits), a crisis user gets the helpline placeholder NOT an unrelated LLM reply (H4), and any NSFW drift in the LLM output gets rewritten before leaving the orchestrator (A10).
+
+### LIFO middleware ordering (the only mechanical subtlety)
+Starlette/FastAPI `add_middleware()` is LIFO for the REQUEST direction — the LAST middleware added is the FIRST to see an incoming request. To get the directive's specified request order H5 → H4 → A10 → handler:
+- `add_middleware(A10)` first → innermost safety layer (last to see the request, first to inspect the response)
+- `add_middleware(H4)` second → middle safety layer
+- `add_middleware(H5)` third → outermost-of-safety
+- `add_middleware(RequestIdMiddleware)` last → outermost overall (existing convention from Day 1; the template's `CLAUDE.md` explicitly warns that new middleware must go BEFORE this line)
+
+The LIFO mapping is documented inline in `app/main.py` with the visual chain diagram + an explanation of why each layer sits where it does. The order-verification test reads the `SAFETY_AUDIT_TRAIL` ContextVar to assert the runtime flow matches the documented contract, catching future accidental reorderings.
+
+### Gate-respect (no leak via safety bypass)
+Per the directive verbatim: "Flag-off behaviour unchanged: env=production OR enable_run_turn_stub=false still 503s before middleware fires (no leak via safety bypass)."
+
+Implementation: each safety middleware checks `settings.environment == "production"` OR `not settings.enable_run_turn_stub` at the top of `dispatch()`. When either gate is closed, the middleware passes through without inspecting the body, the handler's own gate emits 503, and that 503 propagates back unchanged. A jailbreaker sending bad input to production sees the same 503 a clean message would see — no information leakage about which inputs trigger safety. Two tests assert this behaviour for both gates.
+
+### Test evidence
+- **pytest run** inside `python:3.12-slim` with `pip install -e '.[dev]'` then `pytest -v tests/`:
+  - 9/9 Day-2 tests (`test_run_turn.py`) — PASSED (regression gate per the directive: "Existing 9 Day-2 tests must still pass unchanged")
+  - 10/10 Day-3 tests (`test_safety_stack.py`) — PASSED
+  - **19/19 PASSED in 0.07s** (rootdir=/work, pytest-8.3.4, asyncio strict mode)
+- **FastAPI app-import + middleware order check** inside `python:3.12-slim` with `pip install .` then enumerating `app.user_middleware`:
+  - Routes: `/v1/turn POST` registered alongside default OpenAPI routes
+  - Middleware (Starlette stores in outer→inner order):
+    ```
+    RequestIdMiddleware
+    H5PromptInjectionMiddleware
+    H4CrisisDetectionMiddleware
+    A10NsfwFilterMiddleware
+    ```
+  - Matches the directive's request flow `RequestId → H5 → H4 → A10 → handler`.
+
+### Constraints touched
+- **A2.1** — kept scope tight: ONLY new middleware files + main.py wiring. Did NOT touch `run_turn.py` or `models/turn.py`. Phase-1 detectors are rule-based regex (per agent def — Phase-2 swaps for ML classifier WITHOUT touching dispatch logic). Each layer is ONE file; helpers (`_safety_audit.py`, `_body_replay.py`) are private (`_`-prefixed) so other services can't accidentally import.
+- **A10 (LLM-agnostic abstraction)** — A10 NSFW middleware is OUTPUT-SIDE; it inspects whatever the handler returns (Day-2 stub today, Day-5+ real LLM output tomorrow). The dispatch path is LLM-provider-agnostic.
+- **B1 + B2 + B4** — every name reads as English; only B2-allowlist abbreviations (`api`, `id`, `http`, `json`, `nsfw`, `uuid`); B4 DOLR vocab honoured (H5 includes a `soul file` reveal-probe pattern using product vocab so attackers learning our internal terminology from public commits also get blocked).
+- **B7** — every new file has the file-header block + function `WHAT/WHEN/WHY` blocks + role-comments-not-syntax + RELATED FILES footer. Tests follow B7 doc shape (plain-English names, WHAT/WHEN/WHY docstring, priority order).
+- **D4** — each middleware emits an `X-Safety-Decision` + `X-Safety-Reason` response header so Sentry / Session 3 / triage tools can branch on the decision without parsing the body. Day-5+ wires the same decisions into Langfuse trace span attributes (this is the structured-log scaffolding for that wiring).
+- **E4** — safety-blocked turns flip `count_toward_paywall=False` so a user who happens to type a self-harm phrase isn't billed a paywall slot for an auto-reply.
+- **F11** — feature flag (`enable_run_turn_stub`) determines whether the stub OR safety stack engages at all. Defaults OFF everywhere.
+- **F12** — Python 3.12 verified via Docker (laptop only has 3.9.6).
+- **H4 + H5 + A10** — the three layers ship at Day 3 per agent def "safety stack BEFORE any real LLM call". H4 + H5 are request-side input filters; A10 is output-side response filter. H4's false-positive bias matches agent def "lean toward over-routing to Claude on uncertain cases."
+- **H6** — middleware logs NEVER carry user-message content. We log: `safety_layer` (H5/H4/A10), `reason` (h5_regex_match / h5_base64_blob / h4_crisis_language / a10_nsfw_keyword), `conversation_id`, `user_message_length` (NOT the content). Length is not PII; content is.
+- **I11** — LOG + STATE updated in the same commit (state-hygiene lint pass).
+- **J1** — orchestrator is HOT-tier (75-80% floor). The 10 new tests + 9 inherited Day-2 tests exercise: all 3 layers' happy paths × all 3 layers' short-circuit paths × the order-verification regression gate × both gate-respect/no-bypass paths.
+- **J2** — zero-flake: no time-dependence beyond ISO-format checks already in Day-2 tests; no unmocked network; no race conditions. Audit-trail ContextVar is per-request-scoped.
+- **J3** — every test follows B7 doc shape (priority order: happy paths first; plain-English names; WHAT/WHEN/WHY docstring; role-not-syntax inline comments).
+
+### Notes
+- **Codex Day-2 flags acknowledged in Day-3 design:** Day-2 PR #95 carried two coordinator-confirmed template-inherited Codex findings (F9 health endpoints + bridge-script test fixtures) being queued as DEPs against Session 2. Day-3 doesn't address those (out of Session 4 scope; Session 2 owns the template).
+- **Pre-existing deprecation warning carries forward:** pytest-asyncio's `asyncio_default_fixture_loop_scope` warning still surfaces (unset config option). Harmless today (all tests sync); worth setting before the first async test lands. Day-5+ middleware tests may add async fixtures — flagging then.
+- **Three Day-3 design carve-outs called out for coordinator review:**
+  1. **A10 records the synthetic `handler` audit marker** between its own entry + exit (because the handler is out-of-scope to modify per directive). Documented in A10's file header.
+  2. **Gate-respect lives INSIDE each safety middleware** (each calls `get_settings()` at top of dispatch + passes through when gate is closed) rather than as a separate "gate middleware" outside the stack. This avoids duplicating the handler's gate logic in a fourth middleware. The end-user-visible behaviour is identical: jailbreak in production returns 503.
+  3. **H5 includes a `soul file` pattern** in addition to `system prompt` because our internal B4 vocab is public on GitHub. Defends against attackers learning our terminology from commits.
+- **Branched off PR #96 tip, not main:** PR #96 (Day-2 `POST /v1/turn`) is still open at PR-open time of this Day-3 PR. The Day-3 branch is based on PR #96's tip so the diff scopes to Day-3 work only. PR base will be set to `session-4/orchestrator-run-turn-rpc-handler`; coordinator can merge Day-3 after Day-2 lands.
+- **Next:** Day 4 — Soul-File library (yral-rishi-agent-soul-file-library): Postgres schema (`soul_file` table) + Alembic migration + CRUD endpoints (`GET` + `PATCH /soul-files/{influencer_id}`). Tests: insert+read fixture roundtrip; PATCH rejects non-creator; version bumps correctly.
+
+---
+
 ## 2026-05-18 — Day 2, PR: orchestrator `POST /v1/turn` RPC handler skeleton (JSON, NOT SSE)
 
 ### Action
