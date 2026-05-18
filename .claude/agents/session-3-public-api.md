@@ -139,20 +139,27 @@ The plan targets a **Phase 1 working window** ending around 2026-06-07 — Rishi
 - **D8**: every secret declared in `secrets.yaml` with full schema. Use the validate-secrets.sh + sync-github-secrets.sh + gen-env-example.sh scripts the template provides.
 - **E9**: JWT signature validation in SHADOW mode default. Strict mode flag flips later after divergence < 0.01% for 7 days.
 
-## Auto-merge regime (per `.claude/AUTONOMOUS-OPERATION-CHARTER.md` + I14)
+## Auto-merge regime
 
-Your small fix-PRs auto-merge when the mechanical gate passes:
-- Branch matches `^session-3/`
-- Total diff ≤ 400 lines
-- All 3 required lints PASS (scope, naming, state-hygiene)
-- PR is OPEN, not draft, mergeable
-- No `coordinator-review-needed` label
+There are TWO sources of policy here and they currently DIFFER (governance drift to surface to Rishi):
 
-Codex review is NOT a mechanical gate in the auto-merge workflow — that's a deliberate I14 design choice from when the truncation FP issue was poisoning all reviews (now fixed via PR #87 + OpenAI quota top-up 2026-05-18). **BUT** — Codex's substantive findings are treated as REQUIRED feedback equivalent to coordinator review. If Codex flags a BLOCKER or CONCERN with a real issue (not truncation noise), you MUST address it before merge — push a follow-up commit that fixes the issue + cites the Codex feedback in your commit body, just like you'd address coordinator review.
+### Locked I14 policy (per CONSTRAINTS.md row I14, Rishi 2026-04-27)
+ALL of (a) .md-only OR test-only OR lint/format-only OR comment-update-only; (b) Codex APPROVE with no concerns/blockers; (c) all CI checks green; (d) diff size < 200 lines; (e) session-N branch; (f) no critical-scope files. ANY one false → standard Rishi YES flow per I10.
 
-The auto-merge workflow does not BLOCK on Codex programmatically, but it does post Codex's verdict as a PR comment + the audit-trail merge commit body includes the Codex result. Rishi reviews these in the daily report. If a PR auto-merged with an unaddressed Codex BLOCKER, that's a process violation — surface immediately.
+### Currently DEPLOYED workflow (per `.github/workflows/auto-merge-small-session-fix-prs.yml`, shipped PR #50 2026-05-15)
+Gates: session-N branch; diff ≤ 400 lines; 3 required lints (scope/naming/state-hygiene) PASS; not draft + mergeable; no `coordinator-review-needed` label. Codex is INFORMATIONAL but NOT mechanical-gate (was deliberate while Codex truncation FP was poisoning reviews; now functionally restored 2026-05-18).
 
-When a PR exceeds 400 lines OR you want explicit coordinator eyes (architecture decision, scope question, Codex disagreement worth discussing), add the `coordinator-review-needed` label BEFORE all 3 lints finish — workflow honors it as a manual-merge veto.
+### Drift acknowledgment
+The deployed workflow is more lenient than I14 on three dimensions (size cap, Codex gating, PR category). This is a real governance question Rishi needs to resolve: tighten workflow to match I14, OR update I14 to ratify the deployed policy. Coordinator has surfaced this for separate resolution; until resolved, **Session 3 follows the STRICTER of the two policies** — i.e., for any PR, ask "would this pass BOTH I14 and the deployed workflow?" If yes, auto-merge fires + matches I14 spirit. If only the deployed workflow would pass: pause + add the `coordinator-review-needed` label so coordinator manually reviews instead.
+
+### What Session 3 does in practice
+- Keep PRs as small as feasible (< 200 lines preferred; the workflow allows up to 400 but I14 caps at 200)
+- After Codex returns its verdict on each PR: if Codex APPROVED with no concerns, auto-merge is honest. If Codex REQUEST_CHANGES or flagged a real BLOCKER/CONCERN, address it via a follow-up commit BEFORE the workflow merges (push the fix; the workflow's next re-evaluation will see the latest state)
+- For any PR that touches files near (but not in) critical scopes — e.g., the spawned service's secrets.yaml manifest — add `coordinator-review-needed` proactively
+- Cite the specific I14 clause(s) your PR satisfies in the PR body so the audit trail is clear
+
+### Substantive Codex findings = blocking by policy
+Codex review is not the mechanical workflow gate today, but Codex's substantive findings (BLOCKER, CONCERN with real issues — not truncation noise) are TREATED as blocking equivalent to coordinator review. If a Session 3 PR auto-merges with an unaddressed Codex BLOCKER, that's a process violation; surface to coordinator immediately for retroactive review + a follow-up fix PR.
 
 ## Workflow per task
 
