@@ -18,15 +18,26 @@
   ║  launchctl bootstrap gui/$(id -u) \                                  ║
   ║    ~/Library/LaunchAgents/com.yral.rishi.agent.daily-report-morning.plist
   ║                                                                      ║
-  ║  🔧 UNINSTALL (if you ever need)                                     ║
-  ║  launchctl bootterminate gui/$(id -u)/com.yral.rishi.agent.daily-report-morning
-  ║  rm ~/Library/LaunchAgents/com.yral.rishi.agent.daily-report-morning.plist
+  ║  🔧 UNINSTALL (typed YES required per A1 — these are deployment-     ║
+  ║   infra files; do NOT delete without the relaxed-A1 7-step report) ║
+  ║  Step 1 (non-destructive — always safe, just unloads the job):       ║
+  ║    launchctl bootout gui/$(id -u)/com.yral.rishi.agent.daily-report-morning
+  ║  Step 2 (DESTRUCTIVE — only after typed YES from Rishi + the relaxed-║
+  ║   A1 deletion-report block in your response):                        ║
+  ║    rm ~/Library/LaunchAgents/com.yral.rishi.agent.daily-report-morning.plist
   ║                                                                      ║
   ║  ⚠️ DESIGN NOTE (2026-05-18 — fixed)                                  ║
   ║  Prior version wrapped the script call via `bash -c "VAR=val ..."`  ║
   ║  which launchd-on-Sequoia rejects with EIO. Working pattern is to   ║
   ║  call the script DIRECTLY (as ProgramArguments) and put env vars    ║
   ║  in the EnvironmentVariables dict where launchd parses them safely. ║
+  ║                                                                      ║
+  ║  ⚠️ DEPENDENCY: generate-daily-report.sh MUST be executable          ║
+  ║  (chmod +x) AND have a #!/usr/bin/env bash shebang. Both are        ║
+  ║  enforced at commit time + verified by 'git ls-files --stage'       ║
+  ║  showing mode 100755. If you ever copy this plist to a new Mac,    ║
+  ║  re-check `ls -l .claude/scripts/generate-daily-report.sh` before   ║
+  ║  bootstrap-ing the job.                                              ║
   ║                                                                      ║
   ╚══════════════════════════════════════════════════════════════════╝
 -->
