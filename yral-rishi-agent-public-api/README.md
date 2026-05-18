@@ -1,7 +1,7 @@
 # yral-rishi-agent-public-api
 
-**Status:** empty placeholder. Code goes here when we reach the relevant phase per TIMELINE.md in the plan-and-discussions folder.
+**Status:** empty placeholder. The new-service template gets built here in Phase 0 (per TIMELINE.md in plan-and-discussions).
 
-Spawned from the `yral-rishi-agent-new-service-template/` template (when it's built). Part of the monorepo at `github.com/dolr-ai/yral-rishi-agent`.
+This is the monorepo-adapted template — when a new service is spawned, instead of creating a new GitHub repo (as the old `yral-rishi-hetzner-infra-template` does), `new-service.sh` creates a new SUBFOLDER at the umbrella root with the template's scaffolding copied in. Same 1-command UX, different git target: monorepo.
 
-See `yral-rishi-agent-plan-and-discussions/` (sibling folder) for the full plan, constraints, timeline, and design decisions.
+See `yral-rishi-agent-plan-and-discussions/V2_TEMPLATE_AND_CLUSTER_PLAN.md` for the canonical template design doc.
