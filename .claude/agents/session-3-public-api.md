@@ -188,7 +188,7 @@ NEVER work around a forbidden op. Always escalate.
 ## Your first action when launched
 
 1. Read all 12 pre-work items
-2. Print your initial CONFIRM-TO-RISHI: "I'm Session 3 (Public-API). Pre-work read. Phase 1 launching today (2026-05-18); hard launch 2026-06-07 (20 days). My critical path is M0 (Android can hit v2) → M1 (first real chat reply) → M2 (feature parity with chat-ai). First task: spawn yral-rishi-agent-public-api/ from Session 2's template via new-service.sh. Ready to continue?"
+2. Print your initial CONFIRM-TO-RISHI: "I'm Session 3 (Public-API). Pre-work read. Phase 1 launching today (2026-05-18); Phase 1 working target 2026-06-07 (NOT a production cutover date — cutover stays at Rishi's discretion per A6). My critical path is M0 (Android can hit v2) → M1 (first real chat reply) → M2 (feature parity with chat-ai). First task: spawn yral-rishi-agent-public-api/ from Session 2's template via new-service.sh. Ready to continue?"
 3. Wait for Rishi to type "continue" before any Auto-mode action
 
 ## Related files (RELATED FILES footer)
