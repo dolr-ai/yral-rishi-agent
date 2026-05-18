@@ -14,7 +14,7 @@ Full agent definition: `.claude/agents/session-3-public-api.md`.
 
 ## LAST THING I DID
 
-**2026-05-18 — Day 2 endpoint handlers + 32 contract tests green.** Implemented every Day-2 endpoint from `interface-contracts/00-api-contract.md`: 7 chat handlers (POST/GET conversations, POST/GET conv/{id}/messages, POST conv/{id}/read, DELETE conv/{id}, GET /api/v2/conversations), 3 influencer-read handlers (list, trending, single), 3 health handlers (/health/{live,ready,deep} — local bridge with DEP-004 raised for Session 2 template mirror per F9). All chat + influencer endpoints gated behind feature flag `enable_session_3_phase_1_day_2_placeholder_responses` (default False); flag-off returns HTTP 503 with envelope-shaped error body; flag-on returns SCHEMA-VALID stubs with the `[v2 phase-1 day-2 placeholder ...]` non-confusable text. Envelope-aware HTTPException handler in `app/main.py` so 503 body keeps the `{success, msg, error, data}` shape mobile parses. 32/32 contract tests pass in 0.09s. Live HTTP smoke against `docker run` validated both flag states + all 11 OpenAPI paths registered. PR drafted on branch `session-3/day-2-endpoint-handlers`.
+**2026-05-18 — Day 2 endpoint handlers + 32 contract tests green.** Implemented every Day-2 endpoint from `interface-contracts/00-api-contract.md`: 7 chat handlers (POST/GET conversations, POST/GET conv/{id}/messages, POST conv/{id}/read, DELETE conv/{id}, GET /api/v2/conversations), 3 influencer-read handlers (list, trending, single), 3 health handlers (/health/{live,ready,deep} — local bridge with DEP-005 raised for Session 2 template mirror per F9). All chat + influencer endpoints gated behind feature flag `enable_session_3_phase_1_day_2_placeholder_responses` (default False); flag-off returns HTTP 503 with envelope-shaped error body; flag-on returns SCHEMA-VALID stubs with the `[v2 phase-1 day-2 placeholder ...]` non-confusable text. Envelope-aware HTTPException handler in `app/main.py` so 503 body keeps the `{success, msg, error, data}` shape mobile parses. 32/32 contract tests pass in 0.09s. Live HTTP smoke against `docker run` validated both flag states + all 11 OpenAPI paths registered. PR drafted on branch `session-3/day-2-endpoint-handlers`.
 
 ## CURRENT TASK
 
@@ -31,7 +31,7 @@ ETA to merge: dependent on Codex turnaround + coordinator routing.
 
 ## BLOCKERS
 
-None hard. Day-4 orchestrator-RPC integration depends on Session 4 shipping the `run_turn` RPC handler stub; Session 4 Day-1 spawned 3 services per commit `6d8c597` so they're on track for Day 4. DEP-004 (template health endpoints) is in flight but doesn't block Session 3 since the local bridge ships.
+None hard. Day-4 orchestrator-RPC integration depends on Session 4 shipping the `run_turn` RPC handler stub; Session 4 Day-1 spawned 3 services per commit `6d8c597` so they're on track for Day 4. DEP-005 (template health endpoints) is in flight but doesn't block Session 3 since the local bridge ships.
 
 ## PENDING PRs (mine)
 
@@ -39,7 +39,7 @@ None hard. Day-4 orchestrator-RPC integration depends on Session 4 shipping the 
 
 ## CROSS-SESSION DEPS (mine)
 
-- **Open:** DEP-004 (raised 2026-05-18) — Session 2 to mirror `/health/{live,ready,deep}` in the template per F9. Not a hard block for Session 3 (local bridge in `app/api/health_routes.py` ships); is a hard block for Sessions 4 + 5 + other deferred services before their first Day-5 cluster deploy.
+- **Open:** DEP-005 (raised 2026-05-18) — Session 2 to mirror `/health/{live,ready,deep}` in the template per F9. Not a hard block for Session 3 (local bridge in `app/api/health_routes.py` ships); is a hard block for Sessions 4 + 5 + other deferred services before their first Day-5 cluster deploy.
 - **Pending raise:** Will raise DEP-xxx once I need Session 4's `run_turn` RPC stub (Day 4). Until then, no other open deps.
 - **Inbound deps:** none yet.
 

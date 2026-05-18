@@ -5,7 +5,7 @@
 ## 2026-05-18 — Day 2, PR 2 (endpoint handlers per the locked API contract + 32 contract tests)
 
 ### Action
-Day 2 of Phase 1, off the back of PR #94 merge. Implemented every endpoint listed in `interface-contracts/00-api-contract.md` that the Day-2 scope calls out (per the agent definition + Rishi's "go" message), wired the ApiResponse<T> envelope verbatim, gated every chat + influencer handler behind a new feature flag so production cannot serve stubs, added a local bridge for the F9 health endpoints the template doesn't yet ship (raised DEP-004 for Session 2 to mirror), and shipped 32 contract tests that all pass (0.09s wall-clock).
+Day 2 of Phase 1, off the back of PR #94 merge. Implemented every endpoint listed in `interface-contracts/00-api-contract.md` that the Day-2 scope calls out (per the agent definition + Rishi's "go" message), wired the ApiResponse<T> envelope verbatim, gated every chat + influencer handler behind a new feature flag so production cannot serve stubs, added a local bridge for the F9 health endpoints the template doesn't yet ship (raised DEP-005 for Session 2 to mirror), and shipped 32 contract tests that all pass (0.09s wall-clock).
 
 ### Endpoints implemented
 - `POST   /api/v1/chat/conversations` → `ApiResponse<ConversationDto>`
@@ -32,7 +32,7 @@ Day 2 of Phase 1, off the back of PR #94 merge. Implemented every endpoint liste
 - **Stub helper factories** — `_stub_message()`, `_stub_conversation()`, `_stub_influencer()` centralize the SCHEMA-VALID placeholder shapes. Day-4 RPC integration swaps a single function (or removes it) instead of editing 10 handlers.
 - **Placeholder content text is OBVIOUS** — every stub message body contains `"[v2 phase-1 day-2 placeholder — real response from day-4 once orchestrator RPC is wired]"`. If a feature-flag misconfiguration ever slips a stub into production, mobile users see the literal placeholder string in the chat bubble — non-confusable with real LLM output (per agent definition Day-2 spec).
 - **Request DTOs live in `chat_routes.py`, response DTOs in `dtos.py`** — response DTOs are cross-cutting (Sessions 4 + 5 reference them); request DTOs are route-internal. Per A2.1 — don't speculatively share until two callsites need the same shape.
-- **Health endpoints local bridge** — template doesn't ship them yet; raised DEP-004 so Session 2 mirrors. Kept in `app/api/health_routes.py` instead of `app/health_routes.py` for symmetry with the other route files; the template's mirror should live at `app/health_routes.py` top-level (no `api/` nest) since the template stays minimal per A2.1.
+- **Health endpoints local bridge** — template doesn't ship them yet; raised DEP-005 so Session 2 mirrors. Kept in `app/api/health_routes.py` instead of `app/health_routes.py` for symmetry with the other route files; the template's mirror should live at `app/health_routes.py` top-level (no `api/` nest) since the template stays minimal per A2.1.
 - **Contract-test fixtures derived from the contract doc, NOT from chat-ai pulls** — per A14 + the agent definition Day 6-7 plan, live chat-ai pulls need typed Rishi YES every time. Day-2 tests assert shape against `interface-contracts/00-api-contract.md`; Day 6-7 parity sprint replaces these with captured chat-ai JSON.
 
 ### Files touched
@@ -45,7 +45,7 @@ Day 2 of Phase 1, off the back of PR #94 merge. Implemented every endpoint liste
 - `yral-rishi-agent-public-api/app/api/feature_flag.py` (new) — `require_day_2_placeholder_flag_enabled` dependency
 - `yral-rishi-agent-public-api/app/api/chat_routes.py` (new) — 7 chat handlers + 3 request-DTO classes + 2 stub factories
 - `yral-rishi-agent-public-api/app/api/influencer_routes.py` (new) — 3 influencer-read handlers + 1 stub factory
-- `yral-rishi-agent-public-api/app/api/health_routes.py` (new) — 3 health handlers (LOCAL BRIDGE — DEP-004 raised)
+- `yral-rishi-agent-public-api/app/api/health_routes.py` (new) — 3 health handlers (LOCAL BRIDGE — DEP-005 raised)
 - `yral-rishi-agent-public-api/pyproject.toml` — added `[tool.pytest.ini_options]` block (`testpaths = ["tests"]`, `asyncio_mode = "auto"`)
 - `yral-rishi-agent-public-api/tests/__init__.py` (new)
 - `yral-rishi-agent-public-api/tests/contract/__init__.py` (new)
@@ -53,7 +53,7 @@ Day 2 of Phase 1, off the back of PR #94 merge. Implemented every endpoint liste
 - `yral-rishi-agent-public-api/tests/contract/test_chat_routes.py` (new) — 20 tests
 - `yral-rishi-agent-public-api/tests/contract/test_influencer_routes.py` (new) — 9 tests
 - `yral-rishi-agent-public-api/tests/contract/test_health_routes.py` (new) — 3 tests
-- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/cross-session-dependencies.md` — DEP-004 raised
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/cross-session-dependencies.md` — DEP-005 raised
 - `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-3-LOG.md` (this entry)
 - `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-state/SESSION-3-STATE.md` — advanced to Day-3 next-action
 
@@ -90,13 +90,13 @@ Per the agent definition Day 2 deliverable (verbatim): "Read `interface-contract
 - **C7** — feature flag goes through `app/config.py` (the pydantic-settings singleton), not a hardcoded global. shared-config.yaml loader still deferred to its first consumer per A2.1 (no nested config shape needed today).
 - **E5** — `conversation_type` Literal supports `ai_chat`, `human_chat`, `chat_as_human` — H2H + AI + Chat-as-Human in one schema from day 1, as locked.
 - **E7** — `ChatAccessDataDto` in dtos.py preserves the camelCase `hasAccess` / `expiresAt` from the chat-ai contract (per CURRENT-TRUTH paywall section + A8 — chat-ai wins on wire format).
-- **F9** — three-tier health split shipped via the local bridge; DEP-004 raised for Session 2 to mirror in the template so all 13 services get them by default.
+- **F9** — three-tier health split shipped via the local bridge; DEP-005 raised for Session 2 to mirror in the template so all 13 services get them by default.
 - **F10** — idempotency middleware deferred to Day 4 per agent spec; no idempotency claims in Day-2 stubs.
 - **F16** — all changes inside `yral-rishi-agent-public-api/` (path-scoped to my session scope) + the cross-session-dependencies.md append.
 - **I9** — no edits to `.github/workflows/` at repo root. The per-service workflow inside `yral-rishi-agent-public-api/.github/workflows/per-service-ci.yml` is unchanged (it picks up `tests/` via pytest auto-discovery).
 
 ### Blockers raised
-- **DEP-004** — Session 2 to mirror `/health/{live,ready,deep}` in the template. Not a hard block for Session 3 (local bridge ships), but a hard block for Sessions 4 + 5 + other deferred services before their first Day-5 cluster deploy. Detail in cross-session-dependencies.md.
+- **DEP-005** — Session 2 to mirror `/health/{live,ready,deep}` in the template. Not a hard block for Session 3 (local bridge ships), but a hard block for Sessions 4 + 5 + other deferred services before their first Day-5 cluster deploy. Detail in cross-session-dependencies.md.
 
 ### Next
 Day 3 — JWT auth middleware in SHADOW mode per E9 (JWKS fetch from `https://auth.yral.com/.well-known/jwks.json`, Redis 1hr cache, `enable_strict_jwt_signature_validation: false` default, validate-but-don't-enforce, log mismatch metric to Sentry per the 7-day-divergence-rollout plan). Separate branch + PR.

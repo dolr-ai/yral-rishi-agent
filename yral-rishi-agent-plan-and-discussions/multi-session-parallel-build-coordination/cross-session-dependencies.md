@@ -3,7 +3,7 @@
 
 ## OPEN
 
-### DEP-004 — Session 2 needs to mirror `/health/{live,ready,deep}` in the template (per F9)
+### DEP-005 — Session 2 needs to mirror `/health/{live,ready,deep}` in the template (per F9)
 
 Raised: 2026-05-18 by Session 3
 
