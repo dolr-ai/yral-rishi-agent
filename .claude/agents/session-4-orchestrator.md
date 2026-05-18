@@ -134,8 +134,8 @@ Phase 1 working target ends around 2026-06-07 (Rishi's stated push date, NOT a c
 
 ### Day 7 — Feature parity sprint with Session 3
 - Coordinate with Session 3 to validate the contract-test harness end-to-end (mobile → Session 3 → you → LLM → Langfuse → back)
-- Pull chat-ai's actual OpenAPI for any endpoints that aren't yet implemented; capture as contract fixtures
-- Shadow-traffic: log per-turn divergence to Langfuse with the request-ID correlation
+- For endpoint details you need to verify against live chat-ai: USE COMMITTED AUDIT DOCS FIRST. The `live-chat-ai-feature-audit-v2-must-preserve-everything-we-found-here/` folder + the locked `interface-contracts/00-api-contract.md` are the primary references. If those don't cover what you need AND a live chat-ai read seems necessary: STOP per A14, write to `cross-session-dependencies.md` describing the exact read operation, and ask coordinator to obtain Rishi's typed YES BEFORE making any live chat-ai HTTP call. A14 requires explicit per-read approval for every live yral-chat-ai production data/API read; Sentry API aggregated reads pre-authorized; everything else needs typed YES.
+- Shadow-traffic harness: use the committed contract fixtures + your own Phase-1 v2 service as the two endpoints to compare (NOT live chat-ai); log per-turn divergence to Langfuse with the request-ID correlation. Live shadow against chat-ai requires explicit A14 approval + separate design (paywall semantics, rate-limit interactions, billing-state mirroring).
 
 ### Day 8-14 — Session 5 user-memory integration + performance + safety-stack hardening
 - Session 5's user-memory service ships ~Day 10; your `run_turn` calls user-memory's RPC to fetch the user's conversation context (last N messages, persona prefs)
