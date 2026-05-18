@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Evening daily-report launchd job — fires 21:00 IST.
+  See com.yral.rishi.agent.daily-report-morning.plist for full rationale +
+  doc block. This file is the evening twin.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.yral.rishi.agent.daily-report-evening</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>REPORT_KIND=evening /Users/rishichadha/Claude\ Projects/yral-rishi-agent/.claude/scripts/generate-daily-report.sh</string>
+    </array>
+
+    <!-- 21:00 IST (9pm) -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>21</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>/Users/rishichadha</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/yral-v2-daily-report-evening.out</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/yral-v2-daily-report-evening.err</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
