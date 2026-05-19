@@ -96,26 +96,28 @@ jobs:
       # CODEX_REVIEW_MAX_PROMPT_CHARACTERS history:
       # - Default 80,000 (~20k tokens) — original conservative tier.
       # - Bumped to 250,000 (2026-05-18) so CONSTRAINTS.md (~66k) + the
-      #   SHARDING doc (~14k) could land alongside diff + room for the
-      #   model's response.
-      # - Bumped to 400,000 (2026-05-19) because Day-4 Soul-File library
-      #   (PR #104, 3593 insertions / 37 files / ~180k chars of diff) was
-      #   still triggering truncation fail-closed even at 250k. Day-2
-      #   public-api handlers (PR #97, 2122 insertions) also hit the
-      #   truncation BLOCKER on round-3 Codex re-review of the stacked
-      #   shape. Per the diff-budget allocator in codex-review.py
-      #   (diff gets max(8000, remaining/2) after critical context),
-      #   the math is:
-      #     400k total
-      #     − 80k critical context (CONSTRAINTS + SHARDING)
-      #     − 3k system prompt + response margin
-      #     − ~10-20k non-critical context (other docs)
-      #     = ~300k remaining → diff gets ~150k → still room for a
-      #       250-file extreme PR, comfortable for the 37-file PR #104.
+      #   SHARDING doc (~14k) could land alongside diff + response margin.
+      # - Bumped to 400,000 (2026-05-19) AND allocator changed from 50/50
+      #   diff/other-context to 75/25 (favoring the diff). Trigger: Day-4
+      #   Soul-File library (PR #104, 3593 insertions / ~180k chars of
+      #   diff) was still truncating at 250k even after the bump, because
+      #   the original 50/50 allocator was leaving only ~75k for the
+      #   diff. Codex correctly pushed back on the first 400k bump
+      #   (PR #105 round-1) noting the math didn't fit; this version
+      #   ships both the budget bump AND the allocator tilt together.
       #
-      # 400k chars ≈ 100k tokens. gpt-4o's input context window is 128k
-      # tokens; gpt-5.5 is also 128k. We have ~28k tokens of headroom
-      # before hitting the model's hard ceiling.
+      # Final math (with new 75/25 allocator in codex-review.py):
+      #   400k total
+      #   − 80k critical context (CONSTRAINTS + SHARDING)
+      #   − 8k system prompt + response margin
+      #   = 312k remaining
+      #     → diff gets 234k (75%)  ← fits 180k PR #104 with 30% margin
+      #     → other gets 78k (25%)  ← fits api-contract + rpc-contract
+      #                               + other docs without truncation
+      #
+      # 400k chars ≈ 100k tokens. gpt-4o + gpt-5.5 both have 128k token
+      # input context windows. Output is separate (response tokens come
+      # from a different budget). ~28k tokens of headroom on input.
       #
       # TPM impact (Tier 1 cap = 30k tokens/minute):
       # - Each Codex call burns ~100k tokens of TPM budget.
@@ -124,9 +126,12 @@ jobs:
       #   resolve in <30 minutes. OpenAI auto-promotes tiers based on
       #   spend, so this self-corrects as the project grows.
       #
-      # Future bump trigger: if a single PR exceeds ~250 files OR ~7000
-      # insertions (whichever first), revisit the diff allocator OR split
-      # the PR. 400k is the recommended ceiling at our current model tier.
+      # Future bump trigger: if a single PR exceeds ~4,600 diff lines
+      # (≈ 230k diff chars) OR the cumulative critical context grows
+      # past 100k, revisit the budget AND the allocator together. Do
+      # not bump one without the other — Codex caught that asymmetry
+      # in the round-1 fixup; bumping total without re-tilting the
+      # allocator leaves the diff slot starving.
       - name: Run Codex review
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_CODEX_API_KEY }}

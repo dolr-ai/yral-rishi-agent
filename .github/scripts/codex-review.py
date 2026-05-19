@@ -280,8 +280,25 @@ def assemble_messages(
     critical_truncated = used_chars > maximum_prompt_characters
 
     # Pass 2: budget remaining for non-critical context + diff
+    #
+    # The diff IS the primary review target — Codex's job is to read the
+    # code change. Non-critical context (e.g. interface contracts,
+    # ownership docs) supports interpretation but should never crowd out
+    # the diff. Original 50/50 split caused false-positive truncation
+    # BLOCKERs on large code PRs (PR #97 2122 insertions / PR #104 3593
+    # insertions, both Day-4 2026-05-19) where the back half of the diff
+    # was invisible to Codex and triggered fail-closed.
+    #
+    # 75/25 split (diff/other) makes the diff the load-bearing slot.
+    # At maximum_prompt_characters=400_000 with ~80k critical context:
+    #   remaining_budget = ~312k
+    #   diff_reserved    = ~234k (≈ 4,680 diff lines at 50 chars/line)
+    #   other_context    = ~78k
+    # Comfortably fits PR #104's 180k-char diff with ~30% margin while
+    # leaving ~78k for other-context docs (api contracts ~3k, internal
+    # rpc contracts ~7k, etc — each well under the per-file cap).
     remaining_budget = maximum_prompt_characters - used_chars
-    diff_reserved = max(8_000, remaining_budget // 2)  # at least 8k for diff
+    diff_reserved = max(8_000, (remaining_budget * 3) // 4)  # 75% to diff
     other_context_budget = max(0, remaining_budget - diff_reserved)
 
     # Distribute non-critical context across the remaining budget
