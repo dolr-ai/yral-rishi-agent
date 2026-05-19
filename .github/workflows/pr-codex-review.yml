@@ -92,21 +92,48 @@ jobs:
           cp .github/scripts/codex-prompt.txt /tmp/context/
 
       # The actual Codex call — see codex-review.py for the prompt logic.
-      # CODEX_REVIEW_MAX_PROMPT_CHARACTERS bumped from default 80,000 to
-      # 250,000 (2026-05-18) because CONSTRAINTS.md alone is now ~66k chars
-      # and the SHARDING doc is ~14k — together they exceeded the prior
-      # budget, leaving 0 chars for the diff and triggering truncation
-      # fail-closed on EVERY PR. 250k chars ≈ 62k tokens, well within
-      # gpt-4o's 128k context window. TPM impact: at our PR rate (~5-10/hr
-      # peak), single-call budget × queueing is fine; OpenAI's tier
-      # auto-promotion handles bursts.
+      #
+      # CODEX_REVIEW_MAX_PROMPT_CHARACTERS history:
+      # - Default 80,000 (~20k tokens) — original conservative tier.
+      # - Bumped to 250,000 (2026-05-18) so CONSTRAINTS.md (~66k) + the
+      #   SHARDING doc (~14k) could land alongside diff + room for the
+      #   model's response.
+      # - Bumped to 400,000 (2026-05-19) because Day-4 Soul-File library
+      #   (PR #104, 3593 insertions / 37 files / ~180k chars of diff) was
+      #   still triggering truncation fail-closed even at 250k. Day-2
+      #   public-api handlers (PR #97, 2122 insertions) also hit the
+      #   truncation BLOCKER on round-3 Codex re-review of the stacked
+      #   shape. Per the diff-budget allocator in codex-review.py
+      #   (diff gets max(8000, remaining/2) after critical context),
+      #   the math is:
+      #     400k total
+      #     − 80k critical context (CONSTRAINTS + SHARDING)
+      #     − 3k system prompt + response margin
+      #     − ~10-20k non-critical context (other docs)
+      #     = ~300k remaining → diff gets ~150k → still room for a
+      #       250-file extreme PR, comfortable for the 37-file PR #104.
+      #
+      # 400k chars ≈ 100k tokens. gpt-4o's input context window is 128k
+      # tokens; gpt-5.5 is also 128k. We have ~28k tokens of headroom
+      # before hitting the model's hard ceiling.
+      #
+      # TPM impact (Tier 1 cap = 30k tokens/minute):
+      # - Each Codex call burns ~100k tokens of TPM budget.
+      # - At Tier 1 = 30k TPM = ~3.3 minute "cooldown" per call.
+      # - At our PR rate (~5-10 reviews/hr peak), queueing is fine; bursts
+      #   resolve in <30 minutes. OpenAI auto-promotes tiers based on
+      #   spend, so this self-corrects as the project grows.
+      #
+      # Future bump trigger: if a single PR exceeds ~250 files OR ~7000
+      # insertions (whichever first), revisit the diff allocator OR split
+      # the PR. 400k is the recommended ceiling at our current model tier.
       - name: Run Codex review
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_CODEX_API_KEY }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_BRANCH: ${{ github.event.pull_request.head.ref }}
           PR_TITLE: ${{ github.event.pull_request.title }}
-          CODEX_REVIEW_MAX_PROMPT_CHARACTERS: '250000'
+          CODEX_REVIEW_MAX_PROMPT_CHARACTERS: '400000'
         run: |
           python .github/scripts/codex-review.py \
             --diff /tmp/pr.diff \
