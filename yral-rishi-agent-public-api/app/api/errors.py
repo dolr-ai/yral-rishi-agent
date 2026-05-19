@@ -28,8 +28,14 @@
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
 
+# typing.Literal — locks the ErrorCode set so a typo at a callsite
+# ("paywall-required" with a hyphen) is a type-check error before it
+# ships + breaks mobile's IAP-trigger switch. Optional — the helper's
+# `data` parameter accepts None on the typical error path.
 from typing import Literal, Optional
 
+# ApiResponse envelope shape — error_response() builds one of these on
+# every error path so handlers stay one-liners.
 from app.api.envelope import ApiResponse
 
 # The exact 8 strings the contract locks in. Mobile pattern-matches on

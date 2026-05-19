@@ -7,13 +7,13 @@
 # RPC calls without touching the handler signatures or response shapes.
 #
 # THE 7 ENDPOINTS THIS FILE OWNS (per interface-contracts/00-api-contract.md):
-#   POST   /api/v1/chat/conversations                         → ConversationDto
-#   GET    /api/v1/chat/conversations                         → list[ConversationDto]
-#   POST   /api/v1/chat/conversations/{conversation_id}/messages → MessageDto
-#   GET    /api/v1/chat/conversations/{conversation_id}/messages → list[MessageDto]
+#   POST   /api/v1/chat/conversations                         → ConversationResponse
+#   GET    /api/v1/chat/conversations                         → list[ConversationResponse]
+#   POST   /api/v1/chat/conversations/{conversation_id}/messages → MessageResponse
+#   GET    /api/v1/chat/conversations/{conversation_id}/messages → list[MessageResponse]
 #   POST   /api/v1/chat/conversations/{conversation_id}/read  → {} (empty)
 #   DELETE /api/v1/chat/conversations/{conversation_id}       → {} (empty)
-#   GET    /api/v2/chat/conversations                         → list[ConversationDto]
+#   GET    /api/v2/chat/conversations                         → list[ConversationResponse]
 #
 # The WebSocket inbox endpoint (`WS /api/v1/chat/ws/inbox/{user_id}`)
 # lands Days 14-18 per the agent definition.
@@ -24,9 +24,9 @@
 # /api/v2/chat/* additions land in chat_v2_router without route-path
 # conflicts.
 #
-# WHY MINIMAL REQUEST MODELS IN THIS FILE (not in dtos.py)?
+# WHY MINIMAL REQUEST MODELS IN THIS FILE (not in response_models.py)?
 # Request DTOs are route-internal — they describe what mobile sends to
-# THIS endpoint. Response DTOs (dtos.py) are cross-cutting because
+# THIS endpoint. Response models (response_models.py) are cross-cutting because
 # Sessions 4 + 5 reference them. Per A2.1 — keep request shapes next to
 # the handler that owns them; don't speculatively share until two
 # callsites need the same shape.
@@ -40,16 +40,45 @@
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
 
+# datetime / timezone — stub factories stamp ISO8601 UTC timestamps
+# onto the placeholder response bodies.
 from datetime import datetime, timezone
-from typing import Optional
+
+# typing.Literal — used for the conversation_type field per Codex
+# PR #97 BLOCKER 3 (E5 mandates the 3 locked modes; previously str
+# accepted any value). typing.Optional — nullable request fields.
+from typing import Literal, Optional
+
+# uuid4 — generates per-message + per-conversation IDs the stub
+# factories return so each call produces a unique-but-syntactically-
+# valid ID mobile can store.
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Path, Query
-from pydantic import BaseModel
+# fastapi — APIRouter groups endpoints; Depends wires the per-handler
+# feature-flag gate; Path / Query map URL components to parameters;
+# WebSocket signals the inbox stub added in BLOCKER 4.
+from fastapi import APIRouter, Depends, Path, Query, WebSocket
 
-from app.api.dtos import ConversationDto, MessageDto
+# pydantic — BaseModel for request bodies; model_validator enforces
+# the per-mode participant-id rule added in Codex PR #97 BLOCKER 3.
+from pydantic import BaseModel, model_validator
+
+# Response models the handlers return (renamed from `*Dto` per Codex
+# PR #97 BLOCKER 1 + Rishi 2026-05-19 Option-A).
+from app.api.response_models import ConversationResponse, MessageResponse
+
+# ApiResponse envelope every endpoint wraps its payload in (locked
+# contract per A8 + A16).
 from app.api.envelope import ApiResponse
+
+# Feature-flag dependency gating the Day-2 placeholder bodies so they
+# can't accidentally ship to production traffic.
 from app.api.feature_flag import require_day_2_placeholder_flag_enabled
+
+# Error helper + status map — used by the influencer-write stubs added
+# in BLOCKER 4 that return `service_unavailable` envelopes instead of
+# letting the locked paths 404.
+from app.api.errors import HTTP_STATUS_FOR_ERROR_CODE, error_response
 
 # Router for the v1 surface every existing mobile build talks to. The
 # prefix means handlers below declare paths relative to `/api/v1/chat/`.
@@ -61,7 +90,7 @@ chat_v2_router = APIRouter(prefix="/api/v2/chat", tags=["chat-v2"])
 
 # ===========================================================================
 # Request models (route-internal — kept here per A2.1, not promoted to
-# dtos.py until a second callsite needs the same shape)
+# response_models.py until a second callsite needs the same shape)
 # ===========================================================================
 
 
@@ -74,21 +103,63 @@ class CreateConversationRequest(BaseModel):
           messages reuse the returned conversation_id.
     WHY:  mobile pattern — open the conversation FIRST, then POST the
           first message into it (per chat-ai's current flow per A8).
+
+    PER-MODE PARTICIPANT VALIDATION (Codex PR #97 BLOCKER 3):
+      - ai_chat        → requires `ai_influencer_id`; `participant_b_id` MUST be null
+      - human_chat     → requires `participant_b_id`; `ai_influencer_id` MUST be null
+      - chat_as_human  → requires `ai_influencer_id`; `participant_b_id` MUST be null
+        (per the contract field comment "ai_influencer_id: for AI chat";
+        chat_as_human is the AI-Influencer-adopts-human-persona mode,
+        still anchored to an AI Influencer entity. If coordinator's
+        interpretation differs, the model_validator below is the single
+        place to flip.)
+
+    Validation failures raise ValueError → FastAPI's
+    RequestValidationError → main.py's envelope-shaped validation
+    handler (Codex BLOCKER 2) → HTTP 400 with `error="validation_failed"`.
     """
 
-    # AI Influencer the user wants to talk to. Null for H2H threads
-    # (where `participant_b_id` is set instead). Per the contract,
-    # exactly one of these two must be non-null.
+    # AI Influencer the user wants to talk to. Required for ai_chat +
+    # chat_as_human modes; MUST be null for human_chat.
     ai_influencer_id: Optional[str] = None
 
-    # The OTHER user (per E5 — H2H + AI + Chat-as-Human in one schema).
-    # Null for AI chats.
+    # The OTHER user. Required for human_chat; MUST be null for the
+    # two AI-anchored modes.
     participant_b_id: Optional[str] = None
 
-    # Locked enum matching ConversationDto.conversation_type so the
-    # server doesn't have to infer the thread kind from which ID is
-    # populated. Mobile sends this explicitly.
-    conversation_type: str = "ai_chat"
+    # Locked enum per E5 — H2H + AI + Chat-as-Human in one schema.
+    # Codex PR #97 BLOCKER 3 tightened this from `str` to a Literal so
+    # unknown modes fail validation instead of silently routing as
+    # ai_chat.
+    conversation_type: Literal["ai_chat", "human_chat", "chat_as_human"] = "ai_chat"
+
+    @model_validator(mode="after")
+    def _validate_participant_for_mode(self) -> "CreateConversationRequest":
+        """Enforce the per-mode participant-id rule (Codex BLOCKER 3).
+
+        WHAT: rejects the request when the participant fields don't
+              match the conversation_type.
+        WHEN: runs automatically after Pydantic populates every field.
+        WHY:  prevents mobile from accidentally opening an "ai_chat"
+              with a participant_b_id (which would silently misroute
+              the turn at the orchestrator).
+        """
+        if self.conversation_type == "ai_chat":
+            if not self.ai_influencer_id:
+                raise ValueError("ai_chat requires ai_influencer_id")
+            if self.participant_b_id is not None:
+                raise ValueError("ai_chat must not set participant_b_id")
+        elif self.conversation_type == "human_chat":
+            if not self.participant_b_id:
+                raise ValueError("human_chat requires participant_b_id")
+            if self.ai_influencer_id is not None:
+                raise ValueError("human_chat must not set ai_influencer_id")
+        elif self.conversation_type == "chat_as_human":
+            if not self.ai_influencer_id:
+                raise ValueError("chat_as_human requires ai_influencer_id")
+            if self.participant_b_id is not None:
+                raise ValueError("chat_as_human must not set participant_b_id")
+        return self
 
 
 class SendMessageRequest(BaseModel):
@@ -131,7 +202,7 @@ class MarkReadRequest(BaseModel):
 
 
 # ===========================================================================
-# Helper: build a SCHEMA-VALID stub MessageDto for Day-2 responses
+# Helper: build a SCHEMA-VALID stub MessageResponse for Day-2 responses
 # ===========================================================================
 
 
@@ -143,8 +214,8 @@ def _stub_message(
         "once orchestrator RPC is wired]"
     ),
     client_message_id: Optional[str] = None,
-) -> MessageDto:
-    """Build a stub MessageDto with a fresh UUID + current timestamp.
+) -> MessageResponse:
+    """Build a stub MessageResponse with a fresh UUID + current timestamp.
 
     WHAT: factory for SCHEMA-VALID placeholder messages used by Day-2
           chat handlers.
@@ -154,7 +225,7 @@ def _stub_message(
           so when Day-4 RPC integration lands, only ONE function changes
           to call orchestrator.run_turn() instead of producing this stub.
     """
-    return MessageDto(
+    return MessageResponse(
         id=str(uuid4()),
         conversation_id=conversation_id,
         role=role,  # type: ignore[arg-type] — Literal narrowed by caller
@@ -173,8 +244,9 @@ def _stub_conversation(
     user_id: str = "stub-user-id",
     ai_influencer_id: Optional[str] = "stub-influencer-id",
     participant_b_id: Optional[str] = None,
-) -> ConversationDto:
-    """Build a stub ConversationDto with a fresh UUID + current timestamp.
+    conversation_type: Literal["ai_chat", "human_chat", "chat_as_human"] = "ai_chat",
+) -> ConversationResponse:
+    """Build a stub ConversationResponse with a fresh UUID + current timestamp.
 
     WHAT: factory for SCHEMA-VALID placeholder conversations used by
           Day-2 inbox + create handlers.
@@ -184,12 +256,12 @@ def _stub_conversation(
     """
     new_id = str(uuid4())
     now = datetime.now(timezone.utc).isoformat()
-    return ConversationDto(
+    return ConversationResponse(
         id=new_id,
         user_id=user_id,
         participant_b_id=participant_b_id,
         ai_influencer_id=ai_influencer_id,
-        conversation_type="ai_chat",
+        conversation_type=conversation_type,
         last_message=_stub_message(new_id),
         last_message_at=now,
         unread_count=0,
@@ -204,16 +276,16 @@ def _stub_conversation(
 
 @chat_v1_router.post(
     "/conversations",
-    response_model=ApiResponse[ConversationDto],
+    response_model=ApiResponse[ConversationResponse],
     summary="Create or fetch the conversation for a given user + AI Influencer",
 )
 async def create_or_get_conversation(
     body: CreateConversationRequest,
     _: None = Depends(require_day_2_placeholder_flag_enabled),
-) -> ApiResponse[ConversationDto]:
+) -> ApiResponse[ConversationResponse]:
     """Create-or-get a conversation thread (Day-2 stub).
 
-    WHAT: returns a fresh ConversationDto with the influencer_id mobile
+    WHAT: returns a fresh ConversationResponse with the influencer_id mobile
           asked for. Real impl (Day 4) calls Session 4's
           influencer-directory + persists a row in the conversations table.
     WHEN: mobile opens a chat for the first time (or rejoins one whose
@@ -221,13 +293,15 @@ async def create_or_get_conversation(
     WHY:  the inbox + messages endpoints all need a stable conversation
           ID; this is where it comes from.
     """
-    # Pull the influencer/participant from the request so the stub's
-    # output reflects what mobile asked for (NOT a blanket stub-influencer).
+    # Pull the influencer/participant + conversation_type from the request
+    # so the stub's output reflects what mobile asked for (NOT a blanket
+    # stub-influencer with hardcoded "ai_chat" — Codex PR #97 BLOCKER 3).
     conv = _stub_conversation(
         ai_influencer_id=body.ai_influencer_id,
         participant_b_id=body.participant_b_id,
+        conversation_type=body.conversation_type,
     )
-    return ApiResponse[ConversationDto](
+    return ApiResponse[ConversationResponse](
         success=True,
         msg="OK",
         error=None,
@@ -237,12 +311,12 @@ async def create_or_get_conversation(
 
 @chat_v1_router.get(
     "/conversations",
-    response_model=ApiResponse[list[ConversationDto]],
+    response_model=ApiResponse[list[ConversationResponse]],
     summary="v1 inbox — all conversations for the authenticated user",
 )
 async def list_conversations_v1(
     _: None = Depends(require_day_2_placeholder_flag_enabled),
-) -> ApiResponse[list[ConversationDto]]:
+) -> ApiResponse[list[ConversationResponse]]:
     """List the authenticated user's conversations (Day-2 stub).
 
     WHAT: returns a 1-element list with a stub conversation. The real
@@ -251,7 +325,7 @@ async def list_conversations_v1(
     WHEN: mobile loads the inbox screen.
     WHY:  inbox is the entry point for every chat flow.
     """
-    return ApiResponse[list[ConversationDto]](
+    return ApiResponse[list[ConversationResponse]](
         success=True,
         msg="OK",
         error=None,
@@ -261,17 +335,17 @@ async def list_conversations_v1(
 
 @chat_v1_router.post(
     "/conversations/{conversation_id}/messages",
-    response_model=ApiResponse[MessageDto],
+    response_model=ApiResponse[MessageResponse],
     summary="Send a message; receive the assistant reply",
 )
 async def send_message(
     body: SendMessageRequest,
     conversation_id: str = Path(..., description="Conversation UUID"),
     _: None = Depends(require_day_2_placeholder_flag_enabled),
-) -> ApiResponse[MessageDto]:
+) -> ApiResponse[MessageResponse]:
     """Send a user message + return the assistant's reply (Day-2 stub).
 
-    WHAT: produces a stub assistant MessageDto echoing the conversation_id
+    WHAT: produces a stub assistant MessageResponse echoing the conversation_id
           mobile gave us. Day-4 RPC integration calls
           orchestrator.run_turn(...) instead and streams back the real
           assistant content.
@@ -285,7 +359,7 @@ async def send_message(
         conversation_id=conversation_id,
         client_message_id=body.client_message_id,
     )
-    return ApiResponse[MessageDto](
+    return ApiResponse[MessageResponse](
         success=True,
         msg="OK",
         error=None,
@@ -295,7 +369,7 @@ async def send_message(
 
 @chat_v1_router.get(
     "/conversations/{conversation_id}/messages",
-    response_model=ApiResponse[list[MessageDto]],
+    response_model=ApiResponse[list[MessageResponse]],
     summary="Paginated message history for the given conversation",
 )
 async def list_messages(
@@ -303,7 +377,7 @@ async def list_messages(
     limit: int = Query(20, ge=1, le=100, description="Page size; default 20, max 100"),
     before: Optional[str] = Query(None, description="Message UUID; returns older-than-this"),
     _: None = Depends(require_day_2_placeholder_flag_enabled),
-) -> ApiResponse[list[MessageDto]]:
+) -> ApiResponse[list[MessageResponse]]:
     """Paginated message history (Day-2 stub).
 
     WHAT: returns a stub list with one assistant + one user message
@@ -319,7 +393,7 @@ async def list_messages(
     # stub list is fixed. Day-4 wires them into the real query.
     _ = limit
     _ = before
-    return ApiResponse[list[MessageDto]](
+    return ApiResponse[list[MessageResponse]](
         success=True,
         msg="OK",
         error=None,
@@ -392,12 +466,12 @@ async def delete_conversation(
 
 @chat_v2_router.get(
     "/conversations",
-    response_model=ApiResponse[list[ConversationDto]],
+    response_model=ApiResponse[list[ConversationResponse]],
     summary="v2 bot-aware inbox — what current mobile build hits",
 )
 async def list_conversations_v2(
     _: None = Depends(require_day_2_placeholder_flag_enabled),
-) -> ApiResponse[list[ConversationDto]]:
+) -> ApiResponse[list[ConversationResponse]]:
     """v2 inbox (Day-2 stub).
 
     WHAT: returns a 1-element stub list. The v2 inbox differs from v1 by
@@ -408,12 +482,58 @@ async def list_conversations_v2(
           contract, mobile uses v2 — v1 stays for backward compat).
     WHY:  v2 is the actual hot path mobile takes today.
     """
-    return ApiResponse[list[ConversationDto]](
+    return ApiResponse[list[ConversationResponse]](
         success=True,
         msg="OK",
         error=None,
         data=[_stub_conversation()],
     )
+
+
+# ===========================================================================
+# Codex PR #97 BLOCKER 4 — WebSocket inbox stub
+# ===========================================================================
+#
+# `WS /api/v1/chat/ws/inbox/{user_id}` is in the locked contract; real
+# implementation lands Days 14-18 per the agent definition. Until then
+# the route exists so mobile (or contract tests) don't see a 404 on
+# upgrade. The stub accepts the WebSocket handshake, sends a single
+# envelope-shaped error frame, then closes with code 1011 (server
+# error). Mobile reads the close-reason + payload to surface "feature
+# not yet available."
+
+
+@chat_v1_router.websocket("/ws/inbox/{user_id}")
+async def ws_inbox_stub(websocket: WebSocket, user_id: str) -> None:
+    """WebSocket inbox stream — BLOCKER 4 stub.
+
+    WHAT: accepts the upgrade, sends one envelope-shaped error frame
+          (`error="service_unavailable"`), closes with code 1011 +
+          reason "service_unavailable_stub_days_14_18". Mobile reads
+          the close-reason to know the feature isn't live yet.
+    WHEN: any client (mobile or contract test) connecting to
+          /api/v1/chat/ws/inbox/{user_id} before Days 14-18 lands.
+    WHY:  locked contract path; without registration the route 404s
+          on upgrade which mobile would surface as a routing bug
+          rather than "feature not implemented yet."
+    """
+    _ = user_id  # accepted-and-ignored until the real impl lands
+    await websocket.accept()
+    await websocket.send_json(
+        {
+            "success": False,
+            "msg": (
+                "WebSocket inbox not yet implemented (Days 14-18 per agent "
+                "definition). Falling back to the v2 polling inbox."
+            ),
+            "error": "service_unavailable",
+            "data": None,
+        },
+    )
+    # Close code 1011 = server error per RFC 6455; reason carries the
+    # machine-readable signal so mobile can pattern-match without
+    # parsing the JSON frame.
+    await websocket.close(code=1011, reason="service_unavailable_stub_days_14_18")
 
 
 # ===========================================================================
@@ -423,7 +543,7 @@ async def list_conversations_v2(
 #   feature_flag.py          — every handler depends on
 #                              require_day_2_placeholder_flag_enabled
 #   envelope.py              — ApiResponse[T] wrapper EVERY response uses
-#   dtos.py                  — ConversationDto + MessageDto shapes
+#   response_models.py                  — ConversationResponse + MessageResponse shapes
 #   ../../tests/contract/test_chat_routes.py
 #                            — asserts envelope + DTO shape + feature-flag gating
 #   yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/interface-contracts/00-api-contract.md

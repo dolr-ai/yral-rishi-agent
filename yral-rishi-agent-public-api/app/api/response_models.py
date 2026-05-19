@@ -1,16 +1,25 @@
 # ---------------------------------------------------------------------------
-# dtos.py — Pydantic models for every response payload mobile receives.
+# response_models.py — Pydantic models for every response payload mobile receives.
 #
-# ⭐ START HERE: each class below is a 1:1 Python copy of a DTO listed
-# in interface-contracts/00-api-contract.md "Response DTOs" section.
-# Field names + types match the contract EXACTLY — mobile parses these
-# shapes verbatim, and per A8 v2 must preserve chat-ai's wire format.
+# ⭐ START HERE: each class below is a 1:1 Python copy of a response
+# shape listed in interface-contracts/00-api-contract.md's response-
+# models section. Field names + types match the contract EXACTLY —
+# mobile parses these shapes verbatim, and per A8 v2 must preserve
+# chat-ai's wire format.
+#
+# WHY THE FILE IS CALLED response_models.py (NOT dtos.py)?
+# Per Rishi's 2026-05-19 Option-A decision (Codex PR #97 BLOCKER 1):
+# "DTO" is not on the B2 allowed-abbreviation list and B1's English-
+# naming rule covers Python class identifiers, not just JSON fields.
+# Day-2 originally landed as `dtos.py` + `*Dto` classes; this fixup
+# renames everything (file + classes + every import + every test
+# reference) without touching the wire shape.
 #
 # WHY Pydantic INSTEAD OF dataclass / plain dict?
 # FastAPI uses Pydantic models to (a) validate request bodies, (b)
 # serialize response objects to JSON, and (c) auto-generate OpenAPI
-# schema entries. Defining the DTOs as BaseModel gives us validation +
-# serialization + docs for free.
+# schema entries. Defining the response models as BaseModel gives us
+# validation + serialization + docs for free.
 #
 # WHY OPTIONAL FIELDS NOT REQUIRED?
 # The contract marks several fields as nullable (e.g. `media_urls`,
@@ -33,17 +42,25 @@
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
 
+# typing.Literal — used for the locked enum strings (`role`,
+# `conversation_type`, `is_active`) so a typo at a v2 callsite is a
+# type-check error before deploy. typing.Optional — marks the
+# nullable fields the contract calls out so v2 always emits them,
+# even as null, per the file header rationale.
 from typing import Literal, Optional
 
+# pydantic.BaseModel — FastAPI's request + response serializer +
+# validator. Each class below subclasses it so FastAPI auto-builds
+# OpenAPI schemas + per-request input validation comes for free.
 from pydantic import BaseModel
 
 
-class MessageDto(BaseModel):
+class MessageResponse(BaseModel):
     """One chat message — user-written OR assistant-generated.
 
     WHAT: the unit returned by POST messages (the assistant's reply) +
           inside GET messages history arrays + as the `last_message`
-          field inside ConversationDto.
+          field inside ConversationResponse.
     WHEN: every chat turn produces one of these on the assistant side;
           mobile composes one before POSTing for the user side.
     WHY:  the contract requires exact field names + types per A8 — break
@@ -55,7 +72,7 @@ class MessageDto(BaseModel):
     id: str
 
     # The conversation this message belongs to. UUID matching one of the
-    # ConversationDto.id values from the inbox endpoint.
+    # ConversationResponse.id values from the inbox endpoint.
     conversation_id: str
 
     # "user" for human-typed messages, "assistant" for AI replies.
@@ -90,7 +107,7 @@ class MessageDto(BaseModel):
     count_toward_paywall: bool
 
 
-class ConversationDto(BaseModel):
+class ConversationResponse(BaseModel):
     """One conversation thread between a user and one other participant.
 
     WHAT: a row in the inbox + the return value of POST
@@ -123,7 +140,7 @@ class ConversationDto(BaseModel):
     # Preview of the most recent message — shown in the inbox row's
     # subtitle. Null when the conversation was just created with no
     # messages yet.
-    last_message: Optional[MessageDto] = None
+    last_message: Optional[MessageResponse] = None
 
     # ISO8601 timestamp of last_message. Mobile sorts inbox by this.
     last_message_at: str
@@ -133,7 +150,7 @@ class ConversationDto(BaseModel):
     unread_count: int
 
 
-class InfluencerDto(BaseModel):
+class InfluencerResponse(BaseModel):
     """One AI Influencer's public profile (per B4 — "AI Influencer",
     not "bot").
 
@@ -189,7 +206,7 @@ class InfluencerDto(BaseModel):
     is_active: Literal["active", "discontinued"]
 
 
-class ChatAccessDataDto(BaseModel):
+class ChatAccessDataResponse(BaseModel):
     """The paywall access check payload mobile receives BEFORE sending a
     chat message — per E7 + CURRENT-TRUTH's paywall contract section.
 
@@ -215,7 +232,7 @@ class ChatAccessDataDto(BaseModel):
 
 # ===========================================================================
 # RELATED FILES:
-#   envelope.py              — ApiResponse[MessageDto], ApiResponse[list[InfluencerDto]], ...
+#   envelope.py              — ApiResponse[MessageResponse], ApiResponse[list[InfluencerResponse]], ...
 #   chat_routes.py           — assembles + returns these DTOs (stub data Day 2)
 #   influencer_routes.py     — same, for the influencer read set
 #   yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/interface-contracts/00-api-contract.md

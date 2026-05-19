@@ -38,9 +38,22 @@
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
 
+# fastapi.HTTPException — raised by the dependency on flag-off so
+# FastAPI short-circuits BEFORE the handler body runs. `status` is
+# re-exported for symmetry with `app.api.feature_flag.__all__` so
+# callers can `from app.api.feature_flag import status` without
+# pulling in fastapi directly.
 from fastapi import HTTPException, status
 
+# Error helper + status-code map — the dependency builds an
+# envelope-shaped 503 body via error_response() + reads the HTTP
+# status from HTTP_STATUS_FOR_ERROR_CODE so the locked contract
+# governs both shape AND status.
 from app.api.errors import HTTP_STATUS_FOR_ERROR_CODE, error_response
+
+# Singleton settings accessor — reads the
+# enable_session_3_phase_1_day_2_placeholder_responses flag the
+# dependency gates on.
 from app.config import get_settings
 
 

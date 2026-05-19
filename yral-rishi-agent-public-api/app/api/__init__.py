@@ -10,9 +10,9 @@
 #                         parses per the contract)
 #   errors.py           — error code strings + helper for building
 #                         envelope-shaped error responses
-#   dtos.py             — Pydantic models for the response payloads
-#                         (MessageDto, ConversationDto, InfluencerDto,
-#                         ChatAccessDataDto) — copied 1:1 from
+#   response_models.py             — Pydantic models for the response payloads
+#                         (MessageResponse, ConversationResponse, InfluencerResponse,
+#                         ChatAccessDataResponse) — copied 1:1 from
 #                         interface-contracts/00-api-contract.md
 #   feature_flag.py     — FastAPI dependency that gates Day-2 placeholder
 #                         handlers behind the

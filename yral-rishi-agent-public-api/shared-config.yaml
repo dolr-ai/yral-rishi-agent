@@ -98,7 +98,7 @@ auth:
 billing:
   # The yral-billing service's pre-chat access-check endpoint.
   # Per E7: paywall is NOT a 402 HTTP response; it's
-  # ApiResponse<ChatAccessDataDto{hasAccess, expiresAt}>.
+  # ApiResponse<ChatAccessDataResponse{hasAccess, expiresAt}>.
   access_check_url: "https://api.yral.com/billing/google/chat-access/check"
 
   # Redis TTL for cached access decisions. 60 seconds per E7 — short

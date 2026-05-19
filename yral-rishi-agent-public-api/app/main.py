@@ -23,10 +23,33 @@
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
 
+# contextlib.asynccontextmanager — wraps the lifespan generator below
+# in the FastAPI-expected async-context-manager shape (startup before
+# yield, shutdown after).
 from contextlib import asynccontextmanager
 
+# fastapi — FastAPI builds the ASGI app; HTTPException lets dependencies
+# raise envelope-shaped errors; Request gives exception handlers access
+# to the original request object for logging.
 from fastapi import FastAPI, HTTPException, Request
+
+# fastapi.exceptions.RequestValidationError — raised by FastAPI when
+# Pydantic input validation fails. We catch it in a custom handler so
+# every validation error returns the ApiResponse envelope per A8 +
+# Codex PR #97 BLOCKER 2 (mobile parses the envelope shape; raw
+# {"detail": [...]} breaks the parser).
+from fastapi.exceptions import RequestValidationError
+
+# fastapi.responses.JSONResponse — emit the envelope dict directly as
+# the response body without FastAPI's default wrapping.
 from fastapi.responses import JSONResponse
+
+# fastapi.encoders.jsonable_encoder — coerces arbitrary Python objects
+# (incl. Pydantic v2 ValueError instances inside `exc.errors()`'s
+# `ctx` field) into JSON-serializable shapes. Used by the
+# RequestValidationError handler so the per-field error detail
+# survives serialization in the envelope's data.errors field.
+from fastapi.encoders import jsonable_encoder
 
 # Sentry MUST init before the FastAPI object exists. See the file header
 # rationale above and sentry_middleware.py's own header. This is the one
@@ -52,7 +75,12 @@ from app.request_id_middleware import RequestIdMiddleware
 # why those endpoints sit there vs elsewhere.
 from app.api.chat_routes import chat_v1_router, chat_v2_router
 from app.api.health_routes import health_router
-from app.api.influencer_routes import influencer_router
+from app.api.influencer_routes import admin_influencer_router, influencer_router
+
+# Error-helper + HTTP-status map — used by the RequestValidationError
+# handler below to build the envelope-shaped 400 body per Codex
+# BLOCKER 2 + the locked error-codes table.
+from app.api.errors import HTTP_STATUS_FOR_ERROR_CODE, error_response
 
 
 # Run Sentry init now, at module import time. After this line, every
@@ -106,6 +134,9 @@ app = FastAPI(
 app.include_router(chat_v1_router)
 app.include_router(chat_v2_router)
 app.include_router(influencer_router)
+# Codex PR #97 BLOCKER 4 — admin influencer stubs separate router so
+# OpenAPI groups them + future PR can wire a different auth path.
+app.include_router(admin_influencer_router)
 app.include_router(health_router)
 
 
@@ -133,10 +164,59 @@ async def envelope_aware_http_exception_handler(
     if isinstance(exc.detail, dict):
         return JSONResponse(status_code=exc.status_code, content=exc.detail)
     # Fallback: FastAPI's default {"detail": <str>} for non-envelope
-    # callsites (e.g. 422 validation errors from Pydantic).
+    # callsites that didn't opt in to the envelope (currently none in
+    # this service, but cheap insurance against accidental regression).
     return JSONResponse(
         status_code=exc.status_code,
         content={"detail": exc.detail},
+    )
+
+
+# FastAPI's default RequestValidationError response is
+# {"detail": [...]} with HTTP 422 — fine for a generic JSON API but
+# fatal for THIS service because the locked contract (per A8 + A16)
+# requires every endpoint INCLUDING validation errors to return the
+# ApiResponse envelope. Without this handler, mobile's parser would
+# crash on any malformed request body. Per the contract's locked
+# error-codes table, validation_failed → HTTP 400 (not 422).
+#
+# Added per Codex PR #97 BLOCKER 2 (Rishi 2026-05-19).
+@app.exception_handler(RequestValidationError)
+async def envelope_validation_error_handler(
+    _request: Request,
+    exc: RequestValidationError,
+) -> JSONResponse:
+    """Convert Pydantic validation failures into envelope-shaped 400 responses.
+
+    WHAT: builds ApiResponse(success=False, msg=<human-readable>,
+          error="validation_failed", data={"errors": <Pydantic detail>})
+          and returns HTTP 400 (per the contract error-codes table —
+          NOT FastAPI's default 422; chat-ai uses 400 for validation
+          failures and mobile expects that status per A8).
+    WHEN: invoked automatically whenever FastAPI-side Pydantic
+          validation fails (request body shape mismatch, query-param
+          coercion failure, missing required field, Literal value out
+          of range, etc.).
+    WHY:  keeps the envelope contract uniform across every endpoint;
+          mobile's parser pattern-matches on `error="validation_failed"`
+          to surface user-facing input-correction prompts. The Pydantic
+          `errors()` detail flows through inside `data.errors` so a
+          debug build / dev tool can still surface the per-field cause
+          without breaking the wire shape.
+    """
+    # jsonable_encoder coerces Pydantic's per-field error dicts —
+    # which include raw ValueError instances inside `ctx` when a
+    # model_validator raises — into JSON-serializable plain shapes.
+    # Without it, the json encoder crashes on the ValueError object
+    # and the response itself fails to serialize.
+    body = error_response(
+        "validation_failed",
+        "Request validation failed; see data.errors for per-field detail.",
+        data={"errors": jsonable_encoder(exc.errors())},
+    ).model_dump()
+    return JSONResponse(
+        status_code=HTTP_STATUS_FOR_ERROR_CODE["validation_failed"],
+        content=body,
     )
 
 
@@ -162,7 +242,7 @@ app.add_middleware(RequestIdMiddleware)
 #   api/health_routes.py     — health_router (/health/{live,ready,deep})
 #   api/feature_flag.py      — dependency that raises 503 when Day-2 stubs are off
 #   api/envelope.py          — ApiResponse[T] every endpoint returns
-#   api/dtos.py              — MessageDto / ConversationDto / InfluencerDto / ChatAccessDataDto
+#   api/response_models.py              — MessageResponse / ConversationResponse / InfluencerResponse / ChatAccessDataResponse
 #   api/errors.py            — error code Literal + error_response() helper
 #   pyproject.toml           — fastapi + sentry-sdk + langfuse + structlog
 #   Dockerfile               — CMD ["uvicorn", "app.main:app", ...]

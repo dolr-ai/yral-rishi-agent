@@ -17,7 +17,7 @@
 # WHY pydantic.Generic[T] INSTEAD OF A PLAIN DICT?
 # Three wins:
 #   1. FastAPI auto-generates OpenAPI schema entries per concrete type
-#      (ApiResponse[MessageDto] vs ApiResponse[ConversationDto]) so the
+#      (ApiResponse[MessageResponse] vs ApiResponse[ConversationResponse]) so the
 #      docs page is self-describing.
 #   2. Pydantic validates the envelope shape on construction — a typo in
 #      `success` vs `succes` is caught at code-write time, not at the
@@ -33,7 +33,7 @@ from typing import Generic, Optional, TypeVar
 from pydantic import BaseModel
 
 # T = the payload type the endpoint returns inside `data`. Concrete
-# instantiations include ApiResponse[MessageDto], ApiResponse[list[...]],
+# instantiations include ApiResponse[MessageResponse], ApiResponse[list[...]],
 # and ApiResponse[dict] (for the read / delete endpoints that return {}).
 T = TypeVar("T")
 
@@ -78,9 +78,9 @@ class ApiResponse(BaseModel, Generic[T]):
 # ===========================================================================
 # RELATED FILES:
 #   errors.py                — helper that builds ApiResponse error variants
-#   dtos.py                  — the concrete T types (MessageDto, ConversationDto, ...)
-#   chat_routes.py           — uses ApiResponse[MessageDto] etc.
-#   influencer_routes.py     — uses ApiResponse[list[InfluencerDto]] etc.
+#   response_models.py                  — the concrete T types (MessageResponse, ConversationResponse, ...)
+#   chat_routes.py           — uses ApiResponse[MessageResponse] etc.
+#   influencer_routes.py     — uses ApiResponse[list[InfluencerResponse]] etc.
 #   health_routes.py         — does NOT use this envelope (per F9 — health
 #                              probes return raw {"status": "..."} so
 #                              kubelet/docker/uptime-kuma can parse without
