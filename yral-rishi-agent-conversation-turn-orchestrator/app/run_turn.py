@@ -92,11 +92,20 @@ import logging
 # parameters and FastAPI plans to deprecate for headers).
 from typing import Annotated
 
-# `uuid4` generates the per-reply `id` field on the MessageResponse.
-# Round-3 fixup removed the server-generated fallback X-Idempotency-Key
-# path entirely (Codex BLOCKER 1a); the header is required from the
-# caller now.
+# `uuid` — module-level access to `uuid.UUID(...)` for the round-4
+# X-Idempotency-Key validation (BLOCKER 3). `uuid4` generates the
+# per-reply `id` field on the MessageResponse. Round-3 fixup removed
+# the server-generated fallback X-Idempotency-Key path entirely
+# (BLOCKER 1a); the header is required from the caller now AND must
+# parse as a UUID per BLOCKER 3.
+import uuid
 from uuid import uuid4
+
+# stdlib SHA-256 — round-4 BLOCKER 3: invalid X-Idempotency-Key values
+# are logged as their first-16-chars-of-sha256 hash, NEVER as the
+# raw value (H6 defence-in-depth even on the reject path; the
+# caller could have stuffed PII into the header).
+import hashlib
 
 # FastAPI's `APIRouter` lets us hang this module's routes off the
 # service's `app` object without polluting `main.py` with imports.
@@ -252,7 +261,36 @@ async def run_turn(
         )
 
     # -----------------------------------------------------------------------
-    # X-Idempotency-Key REQUIRED (Codex round-3 BLOCKER 1a).
+    # X-User-Id REQUIRED (Codex round-4 BLOCKER 2).
+    # -----------------------------------------------------------------------
+    # The previous round-3 code fell back to an "unknown-user" sentinel
+    # when X-User-Id was absent. That collapsed the idempotency cache
+    # scope — two unrelated callers with missing headers could replay
+    # each other's cached responses (a cross-tenant data-leak shape).
+    # Public-api forwards X-User-Id after JWT validation per E6; a
+    # missing header here means the caller bypassed public-api OR
+    # public-api has a wiring bug. Either way: reject with 400 envelope.
+    if user_id is None:
+        _log.warning(
+            "user_id_header_required_but_missing",
+            extra={"conversation_id": request.conversation_id},
+        )
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content=_api_response_envelope(
+                error_code="user_id_header_required",
+                message_text=(
+                    "X-User-Id header is required for POST /v1/turn "
+                    "(per E6 — public-api forwards the JWT-validated user_id "
+                    "to every internal RPC; missing here = caller bypassed "
+                    "public-api OR public-api has a wiring bug)."
+                ),
+            ),
+        )
+
+    # -----------------------------------------------------------------------
+    # X-Idempotency-Key REQUIRED + must be a UUID
+    # (Codex round-3 BLOCKER 1a + round-4 BLOCKER 3).
     # -----------------------------------------------------------------------
     # Missing header → 400 with ApiResponse-shaped envelope (NOT a bare
     # HTTPException detail). F10 + the contract at PR #98 31d1dac say
@@ -263,7 +301,7 @@ async def run_turn(
             "idempotency_key_required_but_missing",
             extra={
                 "conversation_id": request.conversation_id,
-                "user_id_present": user_id is not None,
+                "user_id_present": True,  # user_id check already passed
             },
         )
         return JSONResponse(
@@ -278,17 +316,47 @@ async def run_turn(
             ),
         )
 
-    # -----------------------------------------------------------------------
-    # USER SCOPING + KEY + FINGERPRINT.
-    # -----------------------------------------------------------------------
-    # `effective_user_id` falls back to a sentinel when X-User-Id is
-    # absent. Public-api forwards X-User-Id after JWT validation per
-    # E6; Day-5+ tightens this to 400-on-missing once Session 3
-    # always sends the header.
-    effective_user_id = user_id or "unknown-user"
+    # Validate as UUID (Codex round-4 BLOCKER 3). Without this gate a
+    # malicious or buggy client can pass arbitrary text (including PII
+    # or message-content) in the header — that text would then land in
+    # Redis keys + structured logs (H6 violation surface). The UUID
+    # constraint bounds the value to a known-non-PII shape by
+    # construction. `uuid.UUID(...)` raises ValueError on invalid
+    # input; we catch + emit a 400 envelope instead of a 5xx.
+    try:
+        uuid.UUID(idempotency_key)
+    except ValueError:
+        # Log the HASH of the offending value, never the value itself
+        # (Codex round-4 BLOCKER 3 — H6 defence-in-depth even on the
+        # reject path).
+        offending_value_hash_prefix = hashlib.sha256(
+            idempotency_key.encode("utf-8"),
+        ).hexdigest()[:16]
+        _log.warning(
+            "idempotency_key_invalid_format",
+            extra={
+                "conversation_id": request.conversation_id,
+                "idempotency_key_hash_prefix": offending_value_hash_prefix,
+            },
+        )
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content=_api_response_envelope(
+                error_code="idempotency_key_invalid_format",
+                message_text=(
+                    "X-Idempotency-Key must be a UUID (RFC 4122). "
+                    "Mobile clients should generate it via the standard "
+                    "platform UUID API; arbitrary text is rejected so the "
+                    "header value cannot leak PII into Redis keys or logs."
+                ),
+            ),
+        )
 
+    # -----------------------------------------------------------------------
+    # KEY + FINGERPRINT.
+    # -----------------------------------------------------------------------
     redis_key = compute_idempotency_key(
-        user_id=effective_user_id,
+        user_id=user_id,
         idempotency_key=idempotency_key,
     )
 

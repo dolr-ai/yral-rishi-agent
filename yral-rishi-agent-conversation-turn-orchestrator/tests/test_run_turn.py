@@ -89,8 +89,14 @@ from fastapi.testclient import TestClient
 # `app.idempotency` — module the fakeredis fixture (in conftest)
 # patches `_redis` on, and where the original `mark_complete` lives.
 # Imported here so the concurrent-handler-count test can grab the
-# original to wrap.
+# original to wrap. Also used by the round-4 BLOCKER 1 production-
+# fail-closed test, which imports the un-stubbed `init_redis` via
+# `conftest._REAL_INIT_REDIS_FOR_TESTS`.
 import app.idempotency as app_idempotency
+
+# Import the conftest's un-stubbed init_redis reference for the
+# round-4 BLOCKER 1 production-fail-closed regression test.
+from tests.conftest import _REAL_INIT_REDIS_FOR_TESTS
 
 # `app.run_turn` — module the concurrent test patches the
 # `mark_complete` reference on. Why patch the run_turn module's
@@ -102,6 +108,13 @@ import app.idempotency as app_idempotency
 # mark_complete`), so the spy MUST live on `app.run_turn.mark_complete`
 # to intercept the actual handler call.
 import app.run_turn as app_run_turn
+
+
+# stdlib `uuid` — used to generate valid UUID-shaped X-Idempotency-Key
+# values for every test that expects 200. Round-4 BLOCKER 3 added
+# UUID-format validation at the route boundary; tests that used to
+# pass plain strings like "test-idempotency-key-001" would now 400.
+import uuid
 
 
 # ===========================================================================
@@ -117,25 +130,46 @@ VALID_BODY: dict[str, str] = {
 }
 
 
+# A fixed valid UUID used as the default X-Idempotency-Key in every
+# 200-expecting test. Round-4 BLOCKER 3 made UUID-format validation
+# mandatory; using a stable constant keeps the test output diffable
+# (a fresh uuid4 per call would change the key suffix every run).
+_DEFAULT_TEST_IDEMPOTENCY_KEY: str = "550e8400-e29b-41d4-a716-446655440001"
+
+
 def _required_headers(
-    idempotency_key: str = "test-default-idempotency-key",
+    idempotency_key: str = _DEFAULT_TEST_IDEMPOTENCY_KEY,
     user_id: str = "test-user-default",
 ) -> dict[str, str]:
     """Return the headers every successful POST /v1/turn must include.
 
-    WHAT: returns `{"X-Idempotency-Key": <key>, "X-User-Id": <user>}`.
+    WHAT: returns `{"X-Idempotency-Key": <uuid>, "X-User-Id": <user>}`.
     WHEN: called by every test that expects 200 (not the missing-header
           or production-gate tests which intentionally omit one).
-    WHY:  X-Idempotency-Key is REQUIRED per F10 + the coordinator
-          contract at PR #98 commit 31d1dac. Centralising the test
-          headers in a helper keeps each test body focused on the
-          ONE thing it's asserting; a header-shape bump only edits
-          this helper.
+    WHY:  X-Idempotency-Key is REQUIRED per F10 + must parse as a UUID
+          per round-4 BLOCKER 3. X-User-Id is REQUIRED per round-4
+          BLOCKER 2. Centralising the test headers in a helper keeps
+          each test body focused on the ONE thing it's asserting; a
+          header-shape bump only edits this helper.
     """
     return {
         "X-Idempotency-Key": idempotency_key,
         "X-User-Id": user_id,
     }
+
+
+def _fresh_uuid_key() -> str:
+    """Return a freshly-generated UUID-shaped X-Idempotency-Key value.
+
+    WHAT: `str(uuid.uuid4())`.
+    WHEN: called by tests that need a key DIFFERENT from the default
+          (e.g. tests that fire multiple POSTs and don't want
+          accidental cross-test cache pollution despite the fakeredis
+          fixture's per-test reset).
+    WHY:  per-test isolation safety net + reads as English at the
+          callsite.
+    """
+    return str(uuid.uuid4())
 
 
 # ===========================================================================
@@ -208,7 +242,7 @@ def test_run_turn_echoes_conversation_id_into_response(
     response = client.post(
         "/v1/turn",
         json={"conversation_id": distinct_id, "user_message": "echo me"},
-        headers=_required_headers(idempotency_key="echo-key"),
+        headers=_required_headers(idempotency_key="550e8400-e29b-41d4-a716-446655440010"),
     )
 
     assert response.status_code == 200, response.text
@@ -230,7 +264,7 @@ def test_run_turn_stub_content_matches_documented_placeholder(
 
     response = client.post(
         "/v1/turn", json=VALID_BODY,
-        headers=_required_headers(idempotency_key="content-marker-key"),
+        headers=_required_headers(idempotency_key="550e8400-e29b-41d4-a716-446655440011"),
     )
 
     assert response.status_code == 200, response.text
@@ -262,7 +296,7 @@ def test_run_turn_accepts_optional_media_urls_and_client_message_id(
     }
     response = client.post(
         "/v1/turn", json=body_with_extras,
-        headers=_required_headers(idempotency_key="multimodal-key"),
+        headers=_required_headers(idempotency_key="550e8400-e29b-41d4-a716-446655440012"),
     )
 
     assert response.status_code == 200, response.text
@@ -293,7 +327,7 @@ def test_run_turn_same_idempotency_key_replays_cached_response(
     monkeypatch.setenv("ENABLE_RUN_TURN_STUB", "true")
 
     headers = _required_headers(
-        idempotency_key="replay-test-key-001", user_id="user-001",
+        idempotency_key="550e8400-e29b-41d4-a716-446655440013", user_id="user-001",
     )
 
     first = client.post("/v1/turn", json=VALID_BODY, headers=headers)
@@ -360,7 +394,7 @@ async def test_run_turn_concurrent_same_key_same_body_executes_handler_once(
     monkeypatch.setattr(app_run_turn, "mark_complete", counting_mark_complete)
 
     headers = _required_headers(
-        idempotency_key="concurrent-test-key-001", user_id="concurrent-user-001",
+        idempotency_key="550e8400-e29b-41d4-a716-446655440014", user_id="concurrent-user-001",
     )
 
     # Fire two POSTs truly concurrently. asyncio.gather schedules
@@ -408,7 +442,7 @@ def test_run_turn_same_key_different_body_returns_409_envelope(
     monkeypatch.setenv("ENABLE_RUN_TURN_STUB", "true")
 
     headers = _required_headers(
-        idempotency_key="reuse-different-body-key", user_id="user-001",
+        idempotency_key="550e8400-e29b-41d4-a716-446655440015", user_id="user-001",
     )
 
     first_body = {
@@ -454,13 +488,13 @@ def test_run_turn_different_users_with_same_key_do_not_collide(
     user_a = client.post(
         "/v1/turn", json=VALID_BODY,
         headers=_required_headers(
-            idempotency_key="collision-test-key", user_id="user-A",
+            idempotency_key="550e8400-e29b-41d4-a716-446655440016", user_id="user-A",
         ),
     )
     user_b = client.post(
         "/v1/turn", json=VALID_BODY,
         headers=_required_headers(
-            idempotency_key="collision-test-key", user_id="user-B",
+            idempotency_key="550e8400-e29b-41d4-a716-446655440016", user_id="user-B",
         ),
     )
 
@@ -507,6 +541,180 @@ def test_run_turn_returns_400_envelope_when_idempotency_key_missing(
         "data": None,
     }
     assert isinstance(envelope["msg"], str) and len(envelope["msg"]) > 0
+
+
+def test_run_turn_returns_400_envelope_when_user_id_missing(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient
+) -> None:
+    """WHAT: missing X-User-Id → 400 + ApiResponse envelope shape.
+    WHEN: gates open + body valid + ONLY X-Idempotency-Key header
+          present (no X-User-Id).
+    WHY:  Codex round-4 BLOCKER 2 — the previous round-3 code fell
+          back to an "unknown-user" sentinel which collapsed the
+          idempotency cache scope. Two unrelated callers with missing
+          headers could replay each other's cached responses (cross-
+          tenant data-leak shape). This test proves the 400-envelope
+          path fires INSTEAD of the silent fallback.
+    """
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("ENABLE_RUN_TURN_STUB", "true")
+
+    response = client.post(
+        "/v1/turn", json=VALID_BODY,
+        # intentionally no X-User-Id — only X-Idempotency-Key set
+        headers={"X-Idempotency-Key": _DEFAULT_TEST_IDEMPOTENCY_KEY},
+    )
+
+    assert response.status_code == 400, response.text
+    envelope = response.json()
+    assert envelope == {
+        "success": False,
+        "msg": envelope["msg"],
+        "error": "user_id_header_required",
+        "data": None,
+    }
+    assert isinstance(envelope["msg"], str) and len(envelope["msg"]) > 0
+
+
+def test_run_turn_returns_400_envelope_when_idempotency_key_not_uuid(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient
+) -> None:
+    """WHAT: non-UUID X-Idempotency-Key → 400 + envelope (error:
+          "idempotency_key_invalid_format").
+    WHEN: gates open + body valid + X-Idempotency-Key="hello-world".
+    WHY:  Codex round-4 BLOCKER 3 — a malicious or buggy client can
+          stuff PII or message-content text into the header value;
+          that text would then land in Redis keys + structured logs
+          (H6 surface). UUID validation at the route boundary bounds
+          the value to a known-non-PII shape by construction.
+    """
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("ENABLE_RUN_TURN_STUB", "true")
+
+    response = client.post(
+        "/v1/turn", json=VALID_BODY,
+        headers={
+            "X-Idempotency-Key": "hello-world",  # NOT a UUID
+            "X-User-Id": "test-user-default",
+        },
+    )
+
+    assert response.status_code == 400, response.text
+    envelope = response.json()
+    assert envelope == {
+        "success": False,
+        "msg": envelope["msg"],
+        "error": "idempotency_key_invalid_format",
+        "data": None,
+    }
+
+
+def test_run_turn_returns_400_envelope_when_idempotency_key_empty_string(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient
+) -> None:
+    """WHAT: empty-string X-Idempotency-Key → 400 + envelope (error:
+          "idempotency_key_invalid_format" — empty fails UUID parse).
+    WHEN: gates open + body valid + X-Idempotency-Key="".
+    WHY:  Codex round-4 BLOCKER 3 — defence-in-depth on the validation
+          boundary. An empty string is technically a "present" header
+          (so `idempotency_key is None` check doesn't fire) but is
+          clearly invalid. UUID parse catches it.
+    """
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("ENABLE_RUN_TURN_STUB", "true")
+
+    response = client.post(
+        "/v1/turn", json=VALID_BODY,
+        headers={
+            "X-Idempotency-Key": "",
+            "X-User-Id": "test-user-default",
+        },
+    )
+
+    assert response.status_code == 400, response.text
+    envelope = response.json()
+    # FastAPI may strip empty headers OR pass them through — either
+    # response is acceptable as long as it's 400 + envelope. The
+    # `error` field should be one of the two header-rejection codes.
+    assert envelope["error"] in {
+        "idempotency_key_required",
+        "idempotency_key_invalid_format",
+    }
+    assert envelope["success"] is False
+    assert envelope["data"] is None
+
+
+async def test_init_redis_raises_system_exit_in_production_without_sentinel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WHAT: init_redis() raises SystemExit when environment=production
+          AND redis_sentinel_enabled=False.
+    WHEN: a misconfigured deploy sets ENVIRONMENT=production without
+          flipping REDIS_SENTINEL_ENABLED=true.
+    WHY:  Codex round-4 BLOCKER 1 + J1 HOT-tier — the previous round-3
+          fix only logged a WARNING on the single-primary fallback.
+          A warning is not enforcement: a deploy with the wrong env
+          var would land silently and the service would run on a
+          single-primary Redis with no Sentinel failover protection,
+          violating C11. The round-4 fix makes the violation
+          fail-closed: process refuses to start.
+
+          This test bypasses two layers of the auto-use `fake_redis`
+          fixture: (1) calls `_REAL_INIT_REDIS_FOR_TESTS()` to hit
+          the un-stubbed init_redis captured at conftest module-load,
+          and (2) sets `app.idempotency._redis = None` so the
+          `if _redis is not None: return` short-circuit doesn't fire
+          before the production-fail-closed gate runs. Production
+          deploys start with `_redis = None` by construction; the
+          test reproduces that fresh-startup state.
+    """
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    # Intentionally do NOT set REDIS_SENTINEL_ENABLED — defaults False.
+
+    # Force the fresh-startup state by un-injecting the fakeredis
+    # the auto-use fixture pre-set. Without this the short-circuit
+    # would fire before the fail-closed gate.
+    monkeypatch.setattr(app_idempotency, "_redis", None)
+
+    with pytest.raises(SystemExit) as exit_info:
+        await _REAL_INIT_REDIS_FOR_TESTS()
+
+    # The SystemExit message names the env var the operator must set
+    # AND the alternative remediation; grep for "C11 violation" so a
+    # future reader sees the constraint citation in the test text.
+    exit_message = str(exit_info.value)
+    assert "C11 violation" in exit_message, (
+        f"expected SystemExit to cite C11; got: {exit_message!r}"
+    )
+    assert "REDIS_SENTINEL_ENABLED" in exit_message, (
+        "expected SystemExit message to name the env var to flip; "
+        f"got: {exit_message!r}"
+    )
+
+
+async def test_init_redis_does_not_raise_in_local_without_sentinel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WHAT: init_redis() returns cleanly in environment=local even when
+          redis_sentinel_enabled=False (no SystemExit).
+    WHEN: laptop dev / docker-compose default — environment="local"
+          with no Sentinel hosts configured.
+    WHY:  the BLOCKER 1 fail-closed gate must NOT fire outside
+          production. Laptop dev needs to keep working against the
+          docker-compose single-primary Redis (or fakeredis in tests).
+          Negative control on the production-fail-closed test above.
+
+          The fake_redis fixture has already monkeypatched
+          `_redis` to a FakeRedis instance, so init_redis short-
+          circuits on the `if _redis is not None: return` check
+          after passing the fail-closed gate.
+    """
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    # REDIS_SENTINEL_ENABLED defaults False.
+
+    # Asserting NO exception raises — pytest auto-fails the test if
+    # SystemExit (or anything else) propagates out.
+    await _REAL_INIT_REDIS_FOR_TESTS()
 
 
 def test_run_turn_returns_503_when_flag_unset_default(

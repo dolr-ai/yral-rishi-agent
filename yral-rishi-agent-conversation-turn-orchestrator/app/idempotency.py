@@ -122,9 +122,15 @@ from app.config import get_settings
 _redis: redis_asyncio.Redis | None = None
 
 
-# 24 hours in seconds. Locked per F10 verbatim ("dedupes via Redis 24hr
-# TTL"). Changing requires a CONSTRAINTS amendment.
-_IDEMPOTENCY_TTL_SECONDS: Final[int] = 24 * 60 * 60
+# 24 hours in seconds — the F10 dedup window. Locked per F10 verbatim
+# ("dedupes via Redis 24hr TTL"). The Redis-side TTL is just the
+# storage mechanism that backs this app-semantic dedup window;
+# renamed from `_IDEMPOTENCY_TTL_SECONDS` per Codex PR-#96 round-4
+# BLOCKER 4 (B2 disallows the `TTL` abbreviation in our identifier
+# names — the application-level concept is "dedup window", the
+# Redis-side concept is its `EX` parameter). Changing the duration
+# value requires a CONSTRAINTS amendment.
+_IDEMPOTENCY_DEDUP_WINDOW_SECONDS: Final[int] = 24 * 60 * 60
 
 
 # Key prefix shape — `idempotency:orchestrator:run-turn:{user_id}:{key}`.
@@ -147,6 +153,29 @@ _STATE_DONE: Final[str] = "done"
 
 
 _log = logging.getLogger("app.idempotency")
+
+
+# ===========================================================================
+# H6-safe log helpers
+# ===========================================================================
+
+
+def _idempotency_key_hash_prefix(redis_key: str) -> str:
+    """Return the first 16 hex chars of sha256(redis_key) — the H6-safe log id.
+
+    WHAT: sha256-hashes the fully-qualified Redis key, returns the first
+          16 hex chars.
+    WHEN: called from every log site that previously emitted the raw
+          last segment of the Redis key (the idempotency key value).
+    WHY:  Codex PR-#96 round-4 BLOCKER 3 — a malicious or buggy client
+          can pass arbitrary text in the X-Idempotency-Key header before
+          the UUID-format validation lands. Even POST-validation, the
+          raw key bytes shouldn't reach Sentry / Langfuse / structured
+          logs by default (H6 PII-allowlist defence-in-depth). The
+          16-char hash prefix is enough entropy for grep-correlation
+          across services without leaking the original value.
+    """
+    return hashlib.sha256(redis_key.encode("utf-8")).hexdigest()[:16]
 
 
 # ===========================================================================
@@ -231,18 +260,64 @@ async def init_redis() -> None:
           while the cluster's Sentinel hostnames stabilise.
 
     Raises:
+        SystemExit when `environment="production"` AND
+        `redis_sentinel_enabled=False` — C11 fail-closed gate (Codex
+        PR-#96 round-4 BLOCKER 1). Production MUST run on Sentinel;
+        the previous round-3 single-primary fallback's WARNING was
+        not enforcement. Laptop dev (`environment="local"`) keeps
+        the fallback path.
         RuntimeError when sentinel-enabled but the shared-config.yaml
         `redis:` section is missing the master name or hosts.
     """
     global _redis
 
     if _redis is not None:
-        # Already initialised — idempotent no-op (helpful for tests that
-        # spin the lifespan up + down multiple times).
+        # Already initialised — idempotent no-op (helpful for tests
+        # that pre-inject a fakeredis instance via monkeypatch).
+        # Tests that explicitly want to exercise the production-fail-
+        # closed gate set `_redis = None` BEFORE calling init_redis;
+        # production deploys start with `_redis = None` by construction.
         _log.debug("init_redis called but already initialised; skipping")
         return
 
     settings = get_settings()
+
+    # -----------------------------------------------------------------
+    # BLOCKER 1 (round-4) — fail-closed in production.
+    # -----------------------------------------------------------------
+    # The previous round-3 fix logged a WARNING on the single-primary
+    # fallback path. Codex correctly flagged that a warning is not
+    # enforcement — a production deploy with the wrong env var lands
+    # silently. This block raises SystemExit instead so the process
+    # refuses to start, and the operator-facing message names the
+    # exact env var to set + the alternative remediation.
+    #
+    # Check runs AFTER the `_redis is not None` short-circuit so the
+    # auto-use `fake_redis` fixture in tests (which pre-injects a
+    # FakeRedis instance) bypasses this gate cleanly. The
+    # production-fail-closed regression test explicitly sets
+    # `_redis = None` before calling `_REAL_INIT_REDIS_FOR_TESTS()`
+    # so the gate fires the way it would on a fresh production
+    # process startup.
+    if (
+        settings.environment == "production"
+        and not settings.redis_sentinel_enabled
+    ):
+        critical_message = (
+            "C11 violation: production environment requires Redis "
+            "Sentinel; set REDIS_SENTINEL_ENABLED=true OR fix "
+            "shared-config.yaml's `redis.sentinel_master_name` + "
+            "`redis.sentinel_hosts` populated by Session 1's cluster "
+            "bootstrap. Refusing to start."
+        )
+        _log.critical(
+            "c11_violation_production_requires_sentinel",
+            extra={
+                "environment": settings.environment,
+                "redis_sentinel_enabled": settings.redis_sentinel_enabled,
+            },
+        )
+        raise SystemExit(critical_message)
 
     if settings.redis_sentinel_enabled:
         # C11-compliant Sentinel path.
@@ -437,13 +512,13 @@ async def acquire_or_check(
         redis_key,
         in_progress_payload,
         nx=True,
-        ex=_IDEMPOTENCY_TTL_SECONDS,
+        ex=_IDEMPOTENCY_DEDUP_WINDOW_SECONDS,
     )
 
     if acquired:
         _log.info(
             "idempotency_lock_acquired",
-            extra={"redis_key_suffix": redis_key.rsplit(":", 1)[-1]},
+            extra={"idempotency_key_hash_prefix": _idempotency_key_hash_prefix(redis_key)},
         )
         return IdempotencyDecision(state="acquired")
 
@@ -451,7 +526,7 @@ async def acquire_or_check(
     # to done (or fingerprint mismatches, or we hit the ceiling).
     _log.info(
         "idempotency_lock_held_polling",
-        extra={"redis_key_suffix": redis_key.rsplit(":", 1)[-1]},
+        extra={"idempotency_key_hash_prefix": _idempotency_key_hash_prefix(redis_key)},
     )
 
     for attempt_index in range(_POLL_MAX_ATTEMPTS):
@@ -468,7 +543,7 @@ async def acquire_or_check(
                 # if it happens in volume.
                 _log.warning(
                     "idempotency_lock_corrupt",
-                    extra={"redis_key_suffix": redis_key.rsplit(":", 1)[-1]},
+                    extra={"idempotency_key_hash_prefix": _idempotency_key_hash_prefix(redis_key)},
                 )
                 parsed_lock_payload = None
 
@@ -483,7 +558,7 @@ async def acquire_or_check(
                     _log.warning(
                         "idempotency_fingerprint_mismatch",
                         extra={
-                            "redis_key_suffix": redis_key.rsplit(":", 1)[-1],
+                            "idempotency_key_hash_prefix": _idempotency_key_hash_prefix(redis_key),
                         },
                     )
                     return IdempotencyDecision(state="fingerprint_mismatch")
@@ -494,7 +569,7 @@ async def acquire_or_check(
                     _log.info(
                         "idempotency_replay_done",
                         extra={
-                            "redis_key_suffix": redis_key.rsplit(":", 1)[-1],
+                            "idempotency_key_hash_prefix": _idempotency_key_hash_prefix(redis_key),
                         },
                     )
                     return IdempotencyDecision(
@@ -515,7 +590,7 @@ async def acquire_or_check(
     _log.warning(
         "idempotency_in_flight_timeout",
         extra={
-            "redis_key_suffix": redis_key.rsplit(":", 1)[-1],
+            "idempotency_key_hash_prefix": _idempotency_key_hash_prefix(redis_key),
             "polled_attempts": _POLL_MAX_ATTEMPTS,
         },
     )
@@ -558,12 +633,12 @@ async def mark_complete(
     await redis_client.set(
         redis_key,
         done_payload,
-        ex=_IDEMPOTENCY_TTL_SECONDS,
+        ex=_IDEMPOTENCY_DEDUP_WINDOW_SECONDS,
     )
 
     _log.info(
         "idempotency_marked_complete",
-        extra={"redis_key_suffix": redis_key.rsplit(":", 1)[-1]},
+        extra={"idempotency_key_hash_prefix": _idempotency_key_hash_prefix(redis_key)},
     )
 
 

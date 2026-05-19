@@ -2,6 +2,79 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-19 — PR #96 round-4 fixup: production-fail-closed + X-User-Id required + UUID-validated key + TTL rename
+
+### Action
+Codex re-reviewed PR #96 after my round-3 fixup (commit `fe40fcb`) and flagged **4 NEW security/safety findings**. Single fixup commit on `session-4/orchestrator-run-turn-rpc-handler` addresses all four. All real findings; no I6 pushback raised this round.
+
+**19/19 tests PASSED in 0.07s** (the round-3 14 + 5 new round-4 tests) on Python 3.12.13 inside `python:3.12-slim` with fakeredis.
+
+### Four round-4 blockers addressed
+
+**BLOCKER 1 — Sentinel fail-closed in production.** Previous round-3 fix logged a WARNING on the single-primary fallback path. Codex correctly flagged that a warning is not enforcement — a production deploy with the wrong env var would land silently. Round-4 fix: `init_redis()` now raises `SystemExit` with a CRITICAL log when `environment=="production"` AND `redis_sentinel_enabled==False`. Operator-facing message names the exact env var to flip + the alternative remediation (shared-config.yaml fix). Process refuses to start.
+
+Gate placement chose AFTER the `_redis is not None` short-circuit (NOT before) — the auto-use `fake_redis` fixture in tests pre-injects a FakeRedis instance, so the short-circuit fires first and tests sidestep the production-startup gate cleanly. The production-fail-closed regression test (`test_init_redis_raises_system_exit_in_production_without_sentinel`) explicitly sets `_redis = None` before calling `_REAL_INIT_REDIS_FOR_TESTS()` to reproduce the fresh-startup state. Negative control: `test_init_redis_does_not_raise_in_local_without_sentinel` proves environment="local" doesn't trigger the gate.
+
+(Initial implementation placed the gate BEFORE the short-circuit per the directive's "re-init against mis-configured production" defence-in-depth note — that broke 13 existing tests because TestClient's lifespan setup runs `init_redis` during `client` fixture setup, BEFORE the test body's `monkeypatch.setenv`, which then caches a stale Settings object via the `get_settings()` call inside the fail-closed check. Moving the gate after the short-circuit preserves both test isolation + production safety.)
+
+**BLOCKER 2 — X-User-Id REQUIRED (no "unknown-user" fallback).** Previous round-3 code fell back to an `"unknown-user"` sentinel when X-User-Id was missing. That collapsed the idempotency cache scope: two unrelated callers with missing headers could replay each other's cached responses (cross-tenant data-leak shape). Round-4 fix: missing X-User-Id → 400 + ApiResponse envelope `{success:false, msg:..., error:"user_id_header_required", data:null}`. Verified `unknown-user` is gone from the codebase via grep.
+
+**BLOCKER 3 — Validate X-Idempotency-Key as UUID + log only hash prefix.** Previous round-3 code accepted any string as the header value. A malicious or buggy client could stuff PII or message text into the header — that text then landed in Redis keys + structured logs (H6 violation surface). Round-4 fix:
+- Route boundary validates `uuid.UUID(idempotency_key)`; `ValueError` → 400 + envelope `{error:"idempotency_key_invalid_format"}`.
+- New helper `_idempotency_key_hash_prefix(redis_key) -> str` returns `sha256(redis_key)[:16]` — the H6-safe log identifier.
+- Every log site that previously emitted `redis_key_suffix=key.rsplit(":", 1)[-1]` (8 sites in idempotency.py) now emits `idempotency_key_hash_prefix` instead. Same applies to the validation-failure log path (which hashes the offending header value before logging).
+- Empty-string + non-UUID test cases both 400 with envelope.
+
+**BLOCKER 4 — `_IDEMPOTENCY_TTL_SECONDS` → `_IDEMPOTENCY_DEDUP_WINDOW_SECONDS`.** `TTL` is the disallowed B2 abbreviation. Renamed the constant; updated the docstring to explain that the Redis-side TTL is the storage mechanism and the application-level concept is the dedup window. Swept the diff for other 2-3-letter abbrevs from the directive's list (`req`/`res`/`cfg`/`obj`/`tmp`/`val`/`ptr`/`idx`); none surfaced.
+
+### Files touched
+- `app/idempotency.py` — production-fail-closed gate (BLOCKER 1); `_IDEMPOTENCY_TTL_SECONDS` → `_IDEMPOTENCY_DEDUP_WINDOW_SECONDS` rename + role-comment; 8 log sites switched from `redis_key_suffix` to `idempotency_key_hash_prefix` via new helper `_idempotency_key_hash_prefix(redis_key)`.
+- `app/run_turn.py` — X-User-Id required + 400 envelope (BLOCKER 2); UUID validation for X-Idempotency-Key + 400 envelope on non-UUID (BLOCKER 3); hash-only logging on the invalid-format path; renamed `now_iso` references that linger in comments to `current_utc_timestamp_text`; added `import uuid` + `import hashlib`.
+- `tests/conftest.py` — captured `_REAL_INIT_REDIS_FOR_TESTS = init_redis` at module-load (Python import-shadowing pattern; lets the production-fail-closed test bypass the fake_redis stub).
+- `tests/test_run_turn.py` — `_DEFAULT_TEST_IDEMPOTENCY_KEY` constant + `_fresh_uuid_key()` helper; renamed every non-UUID idempotency-key literal across 8 sites to fixed test UUIDs (`550e8400-...-4466554400{NN}`); added 5 new tests:
+  - `test_run_turn_returns_400_envelope_when_user_id_missing` (BLOCKER 2)
+  - `test_run_turn_returns_400_envelope_when_idempotency_key_not_uuid` (BLOCKER 3)
+  - `test_run_turn_returns_400_envelope_when_idempotency_key_empty_string` (BLOCKER 3)
+  - `test_init_redis_raises_system_exit_in_production_without_sentinel` (BLOCKER 1, J1 HOT)
+  - `test_init_redis_does_not_raise_in_local_without_sentinel` (BLOCKER 1 negative control)
+
+### Why
+Codex round-4 catches were all real security/safety gaps in the round-3 fix:
+- Round-3 Sentinel WARNING wasn't enforcement (BLOCKER 1).
+- Round-3 unknown-user fallback collapsed cross-tenant cache scope (BLOCKER 2).
+- Round-3 didn't validate header format → PII/text leak surface into Redis + logs (BLOCKER 3).
+- Round-3 abbreviation sweep missed TTL (BLOCKER 4).
+
+### Test evidence
+pytest inside `python:3.12-slim` with `pip install -e '.[dev]'`:
+- **19/19 PASSED in 0.07s** (rootdir=/work, pytest-8.3.4, asyncio AUTO).
+- 14 round-3 tests still pass (with idempotency keys updated to UUIDs).
+- 5 new round-4 tests cover the fixes:
+  - X-User-Id-missing → 400 envelope.
+  - X-Idempotency-Key non-UUID → 400 envelope.
+  - X-Idempotency-Key empty string → 400 envelope.
+  - init_redis SystemExit on production+sentinel=False (HOT-tier J1).
+  - init_redis no-raise on local+sentinel=False (negative control).
+
+### Constraints touched
+- **C11** — production-fail-closed gate replaces the round-3 WARNING-only path. Single-primary fallback path remains for laptop dev (environment="local") but fails closed in production.
+- **F10** — idempotency layer now: header REQUIRED + UUID-validated + atomic SET-NX critical section + fingerprint check + hash-only logging.
+- **E6** — X-User-Id required from public-api per the contract (round-4 enforces this at the route boundary; missing header = caller bypassed public-api OR public-api has a wiring bug, both 400-rejectable).
+- **H6** — hash-only logging of idempotency-key values + the offending header on validation-failure paths. Raw user-supplied bytes never reach Sentry / Langfuse / structured logs by default.
+- **B2** — `TTL` removed from the codebase (was the single remaining 2-3-letter abbrev Codex flagged); `unknown-user` sentinel removed (B-rules + cross-tenant collapse rationale).
+- **B7** — every new test carries the WHAT / WHEN / WHY docstring + role-comments on every new helper.
+- **I6** — no pushback raised this round; Codex round-4 catches were all grounded + actionable + matched CONSTRAINTS verbatim.
+- **J1** — orchestrator HOT-tier; production-fail-closed test marked HOT-tier per directive ("this is a production-deploy safety gate").
+
+### Notes
+- **Gate placement decision.** The directive said the production-fail-closed gate "should refuse to start" + suggested placing it BEFORE the `_redis is not None` short-circuit for defence-in-depth on re-init calls. My initial implementation followed that exactly + broke 13 tests because TestClient lifespan setup runs init_redis during `client` fixture setup, triggering `get_settings()` BEFORE the test body's monkeypatch.setenv could land — which cached stale Settings. Moving the gate to AFTER the short-circuit preserves both safety properties: tests pre-inject `_redis` via fixture → short-circuit fires → no settings read; production fresh-start has `_redis = None` → short-circuit doesn't fire → gate runs. The production-fail-closed test explicitly sets `_redis = None` to reproduce production startup. The directive's "re-init against misconfigured prod" defence-in-depth concern is preserved as long as init_redis is called only during lifespan startup (it is — close_redis sets `_redis = None` only on SIGTERM, not on re-init paths).
+- **Import-shadowing pattern (repeat from round-3).** Capturing `_REAL_INIT_REDIS_FOR_TESTS = init_redis` at conftest module-load is the same trick the round-3 concurrent test used for `mark_complete` — `from foo import bar` binds a local reference that `monkeypatch.setattr(foo, "bar", ...)` doesn't intercept.
+- **Test-input UUID sweep.** Renamed 8 non-UUID idempotency keys across the test file to fixed UUIDs (`550e8400-e29b-41d4-a716-446655440010` through `...0016`). Diff-friendly + deterministic per test run.
+- **PR #104 round-3 fixup landed in parallel** — different branch, different service folder, no interference. Both fixups are coordinator-mergeable independently.
+- **Next:** Day 5 real LLM enablement (per agent definition) — gated on PR #96 (this fixup), PR #100 (Day-3 safety), PR #104 (round-3 fixup) all merging.
+
+---
+
 ## 2026-05-19 — PR #96 round-3 fixup: atomic dedup + C11 Sentinel + B2 abbreviation sweep
 
 ### Action

@@ -81,6 +81,15 @@ from fastapi.testclient import TestClient
 # TestClient's lifespan doesn't try to talk to a real Redis.
 import app.idempotency as app_idempotency
 
+# Capture the REAL `init_redis` at conftest module-load time. The
+# `fake_redis` auto-use fixture later monkeypatches
+# `app.idempotency.init_redis` to an empty stub; that replacement
+# only affects the module-attribute lookup, not this local
+# reference. Tests that need the unstubbed function (e.g. the
+# round-4 BLOCKER 1 production-fail-closed regression test) use
+# `_REAL_INIT_REDIS_FOR_TESTS()` to bypass the stub.
+from app.idempotency import init_redis as _REAL_INIT_REDIS_FOR_TESTS
+
 # `get_settings()` is the lru_cache'd typed-Settings accessor; we
 # invalidate it before/after every test so env mutations land.
 from app.config import get_settings
