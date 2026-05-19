@@ -73,7 +73,7 @@ from app.request_id_middleware import RequestIdMiddleware
 # Day-2 API surface: three routers (v1 chat, v2 chat, influencer) +
 # the health probes. Each router file documents its own endpoints +
 # why those endpoints sit there vs elsewhere.
-from app.api.chat_routes import chat_v1_router, chat_v2_router
+from app.api.chat_routes import chat_v1_router, chat_v1_ws_router, chat_v2_router
 from app.api.health_routes import health_router
 from app.api.influencer_routes import admin_influencer_router, influencer_router
 
@@ -132,6 +132,11 @@ app = FastAPI(
 # owns a distinct path prefix); declared in mobile call-frequency
 # order so the OpenAPI docs page is sensibly grouped.
 app.include_router(chat_v1_router)
+# WebSocket inbox stub lives on a separate router (see chat_routes.py
+# comment) so router-level HTTP-Request-typed auth deps don't bleed
+# into the WS resolution path. The WS stub does its own auth check
+# inline on the WebSocket's headers.
+app.include_router(chat_v1_ws_router)
 app.include_router(chat_v2_router)
 app.include_router(influencer_router)
 # Codex PR #97 BLOCKER 4 — admin influencer stubs separate router so
@@ -140,35 +145,95 @@ app.include_router(admin_influencer_router)
 app.include_router(health_router)
 
 
+# Codex PR #97 round-5 ITEM 6 — refuse to start in production when
+# the C11 Sentinel flag is OFF. Mirrors Session 4's PR #96 round-4
+# pattern. Logs CRITICAL + sys.exit(1) on violation; no-op in local /
+# staging where single-primary fallback is allowed for laptop dev.
+# Called HERE (after routers, before app starts serving) so it runs
+# at module load (uvicorn worker startup) BUT only after the import
+# graph is settled — keeps the failure mode loud + early.
+from app.api.health_routes import verify_production_sentinel_or_die  # noqa: E402
+
+verify_production_sentinel_or_die()
+
+
+# Map common HTTP status codes to the locked ErrorCode strings the
+# contract whitelists (per `app/api/errors.py` ErrorCode + the
+# error-codes table in interface-contracts/00-api-contract.md). Used
+# by the HTTPException handler below to wrap non-dict details — a raw
+# `HTTPException(404, "string")` would otherwise serialize as
+# `{"detail": "string"}` which breaks A8/A16 (mobile's parser hard-
+# requires the envelope shape on EVERY response).
+#
+# Added per Codex PR #97 round-5 ITEM 3. Statuses not in this map fall
+# back to "service_unavailable" — the closest locked code for an
+# unknown server-side failure.
+_STATUS_TO_LOCKED_ERROR_CODE: dict[int, str] = {
+    400: "validation_failed",
+    401: "unauthorized",
+    403: "forbidden",
+    404: "not_found",
+    409: "conflict",
+    422: "validation_failed",
+    503: "service_unavailable",
+}
+
+
 # When a handler's dependency raises HTTPException with a dict-shaped
 # detail (the feature_flag dependency does this — it builds an
 # ApiResponse-shaped body), FastAPI's default behavior would wrap it
 # as {"detail": <dict>} which breaks mobile's envelope parser. This
-# handler emits the dict verbatim instead, preserving the envelope
-# shape for mobile per A8 + the contract.
+# handler emits the dict verbatim if it's already envelope-shaped,
+# OR wraps non-dict details into a fresh envelope per the locked
+# contract (Codex PR #97 round-5 ITEM 3).
 @app.exception_handler(HTTPException)
 async def envelope_aware_http_exception_handler(
     _request: Request,
     exc: HTTPException,
 ) -> JSONResponse:
-    """Preserve dict-shaped HTTPException details verbatim (no wrapping).
+    """Wrap every HTTPException in the locked ApiResponse envelope shape.
 
-    WHAT: when an HTTPException's detail is a dict, emit it as the
-          response body unchanged; otherwise emit FastAPI's default
-          {"detail": <str>} shape so non-envelope error paths still work.
-    WHEN: every time a dependency or handler raises HTTPException.
-    WHY:  the feature_flag dependency raises HTTPException(503, detail=<envelope-dict>);
-          mobile expects the dict body verbatim per the contract; this
-          handler stops FastAPI from re-wrapping it.
+    WHAT: when an HTTPException's detail is a dict that already has the
+          envelope's 4 keys (`success`, `msg`, `error`, `data`), emit
+          it verbatim. Otherwise wrap the detail in a fresh envelope
+          with `success=False`, the locked error code from
+          `_STATUS_TO_LOCKED_ERROR_CODE`, and the original detail as
+          the user-facing `msg`.
+    WHEN: every time a dependency or handler raises HTTPException —
+          whether it built the envelope itself (feature_flag dep,
+          auth dep) or just raised a bare `HTTPException(404, "...")`.
+    WHY:  A8 + A16 require EVERY error response to use the envelope
+          shape mobile parses. Pre-round-5 the fallback path emitted
+          the FastAPI default `{"detail": <str>}` which silently
+          broke parity for any handler that raised a bare
+          HTTPException. This handler now guarantees the envelope
+          contract uniformly.
     """
-    if isinstance(exc.detail, dict):
+    if isinstance(exc.detail, dict) and {"success", "msg", "error", "data"} <= exc.detail.keys():
+        # Already envelope-shaped — emit verbatim. The 4-key subset
+        # check guards against accidentally emitting an unrelated
+        # dict as if it were an envelope.
         return JSONResponse(status_code=exc.status_code, content=exc.detail)
-    # Fallback: FastAPI's default {"detail": <str>} for non-envelope
-    # callsites that didn't opt in to the envelope (currently none in
-    # this service, but cheap insurance against accidental regression).
+
+    # Wrap into the locked envelope shape (Codex PR #97 round-5 ITEM 3).
+    # Pick the error code from the locked map; fall back to
+    # `service_unavailable` for unknown statuses.
+    locked_error_code = _STATUS_TO_LOCKED_ERROR_CODE.get(
+        exc.status_code, "service_unavailable",
+    )
+    # The `msg` field carries the original detail (string) so a
+    # debug build / on-call dashboard still sees the underlying
+    # message; mobile-facing tooling reads `error` for the locked
+    # code mobile pattern-matches on.
+    msg_text = str(exc.detail) if exc.detail is not None else "HTTP error"
     return JSONResponse(
         status_code=exc.status_code,
-        content={"detail": exc.detail},
+        content={
+            "success": False,
+            "msg": msg_text,
+            "error": locked_error_code,
+            "data": None,
+        },
     )
 
 

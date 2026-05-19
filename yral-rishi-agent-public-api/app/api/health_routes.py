@@ -159,6 +159,55 @@ def _load_redis_section_from_shared_config() -> dict:
     return redis_section
 
 
+def verify_production_sentinel_or_die() -> None:
+    """Refuse to start if production env runs without C11 Sentinel (R5 ITEM 6).
+
+    WHAT: at app construction time, reads `settings.environment` +
+          `settings.redis_sentinel_enabled`. If env=="production" AND
+          sentinel_enabled is False, logs CRITICAL +
+          `sys.exit(1)` — refusing to boot a production service that
+          would silently fall back to single-primary Redis.
+    WHEN: called once from `app/main.py` after the routers are wired
+          but before the FastAPI app starts serving. Idempotent — safe
+          to call multiple times (logs + exits on every call when the
+          violation holds).
+    WHY:  Codex PR #97 round-5 ITEM 6 — mirrors Session 4's PR #96
+          round-4 pattern. Production MUST use Sentinel for C11
+          compliance + failover safety. A misconfigured deploy that
+          slipped through with the flag OFF would silently degrade
+          to single-primary; this check makes that combination LOUD
+          + impossible to ship rather than a quiet C11 violation.
+          Local dev (`environment="local"`) is still allowed to fall
+          back to single-primary — the C11-fallback LOUD warning in
+          `_check_redis_reachable` is the dev-time signal there.
+
+    Raises:
+        SystemExit(1) when env=="production" + sentinel_enabled=False.
+    """
+    import sys
+
+    settings = get_settings()
+    if settings.environment == "production" and not settings.redis_sentinel_enabled:
+        _log.critical(
+            (
+                "C11 violation: production environment requires Redis "
+                "Sentinel; set REDIS_SENTINEL_ENABLED=true OR fix "
+                "shared-config.yaml."
+            ),
+            extra={
+                "environment": settings.environment,
+                "redis_sentinel_enabled": settings.redis_sentinel_enabled,
+                "remediation": (
+                    "set REDIS_SENTINEL_ENABLED=true in the production "
+                    "Swarm env injection + confirm shared-config.yaml's "
+                    "redis.sentinel_master_name + redis.sentinel_hosts "
+                    "are populated by the cluster bootstrap"
+                ),
+            },
+        )
+        sys.exit(1)
+
+
 async def _check_redis_reachable() -> bool:
     """Ping Redis (Sentinel-aware or single-primary fallback).
 

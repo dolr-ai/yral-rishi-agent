@@ -28,8 +28,16 @@
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
 
+# typing.Generic / TypeVar — make ApiResponse parametric over the
+# payload type T so FastAPI auto-generates per-endpoint OpenAPI
+# schemas (ApiResponse[MessageResponse] vs ApiResponse[InfluencerResponse]).
+# Optional — `error` + `data` are None on the success / failure paths
+# respectively per the locked contract.
 from typing import Generic, Optional, TypeVar
 
+# pydantic.BaseModel — gives the envelope free Pydantic validation +
+# JSON serialization + OpenAPI schema generation. FastAPI's
+# response_model= reads the type annotations off this base.
 from pydantic import BaseModel
 
 # T = the payload type the endpoint returns inside `data`. Concrete

@@ -143,6 +143,86 @@ def test_health_ready_returns_503_envelope_when_redis_ping_fails(
     assert body["data"]["dependencies"]["redis"] == "unreachable"
 
 
+def test_verify_production_sentinel_or_die_raises_when_flag_off(monkeypatch):
+    """Codex PR #97 round-5 ITEM 6: production env + Sentinel OFF → SystemExit.
+
+    WHAT: monkey-patches `settings.environment` to "production" +
+          `settings.redis_sentinel_enabled` to False via env vars;
+          calls `health_routes.verify_production_sentinel_or_die()`;
+          asserts SystemExit(1) is raised.
+    WHEN: at app construction time on a misconfigured production
+          deploy. The check is wired into `app/main.py` so the worker
+          exits at startup rather than serving with a silent C11
+          violation.
+    WHY:  Codex PR #97 round-5 ITEM 6 — production MUST use Sentinel
+          per C11. Without this fail-closed check, a misconfigured
+          deploy with the flag OFF would silently degrade to single-
+          primary (catastrophic on Redis failover); SystemExit makes
+          the combination impossible to ship.
+    """
+    import sys
+    from app.config import get_settings
+
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("REDIS_SENTINEL_ENABLED", "false")
+    get_settings.cache_clear()
+
+    import pytest as _pytest
+
+    with _pytest.raises(SystemExit) as exc_info:
+        health_routes.verify_production_sentinel_or_die()
+
+    assert exc_info.value.code == 1
+
+    # Cleanup — restore the cached settings to the test defaults so
+    # subsequent tests in the session don't see the production env.
+    get_settings.cache_clear()
+
+
+def test_verify_production_sentinel_or_die_passes_when_flag_on(monkeypatch):
+    """Production env + Sentinel ON → check passes (no exit).
+
+    WHAT: monkey-patches env to production + Sentinel ON; calls the
+          check; asserts no SystemExit is raised.
+    WHEN: the happy-path production deploy.
+    WHY:  proves the check is a TARGETED gate (only env=production +
+          flag=False combination), not a blanket production block.
+    """
+    from app.config import get_settings
+
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("REDIS_SENTINEL_ENABLED", "true")
+    get_settings.cache_clear()
+
+    # Should NOT raise. Just call + let the test continue.
+    health_routes.verify_production_sentinel_or_die()
+
+    get_settings.cache_clear()
+
+
+def test_verify_production_sentinel_or_die_passes_in_local_env(monkeypatch):
+    """Local env + Sentinel OFF → check passes (laptop dev fallback OK).
+
+    WHAT: monkey-patches env to local + Sentinel OFF; calls the check;
+          asserts no SystemExit.
+    WHEN: laptop dev + docker-compose + CI all run with the flag OFF
+          per the default. The C11-fallback LOUD warning in
+          `_check_redis_reachable` is the dev-time signal there.
+    WHY:  the production fail-closed gate must NOT block local
+          development. Codex PR #97 round-5 ITEM 6 directive: "Local
+          dev (environment='local') still allowed to fall back."
+    """
+    from app.config import get_settings
+
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("REDIS_SENTINEL_ENABLED", "false")
+    get_settings.cache_clear()
+
+    health_routes.verify_production_sentinel_or_die()
+
+    get_settings.cache_clear()
+
+
 def test_health_deep_returns_503_envelope_with_explanation(client_flag_off):
     """/health/deep: returns 503 envelope (BLOCKER 5 F9-honest fallback).
 

@@ -68,9 +68,22 @@ from app.api.feature_flag import require_day_2_placeholder_flag_enabled
 # instead of accidental 404s that look like routing bugs to mobile.
 from app.api.errors import HTTP_STATUS_FOR_ERROR_CODE, error_response
 
+# Placeholder auth dependency (Codex PR #97 round-5 ITEM 4) — applied
+# to BOTH influencer routers (public + admin) via `dependencies=` so
+# every endpoint requires `Authorization: Bearer <...>` until PR #102
+# swaps in the real JWT-validating dependency.
+from app.api.auth_placeholder import require_authorization_header
+from fastapi import Depends as _Depends_for_router
+
 # Router for the influencer read endpoints. Prefix means handlers
-# declare paths relative to `/api/v1/influencers/`.
-influencer_router = APIRouter(prefix="/api/v1/influencers", tags=["influencers"])
+# declare paths relative to `/api/v1/influencers/`. Codex PR #97
+# round-5 ITEM 4: router-level `dependencies=` applies the placeholder
+# auth check to every endpoint on this router.
+influencer_router = APIRouter(
+    prefix="/api/v1/influencers",
+    tags=["influencers"],
+    dependencies=[_Depends_for_router(require_authorization_header)],
+)
 
 
 # ===========================================================================
@@ -235,6 +248,19 @@ def _service_unavailable_stub(handler_name: str) -> JSONResponse:
     )
 
 
+# F10 DEFERRAL NOTE — Codex PR #97 round-5 ITEM 5:
+# Every BLOCKER-4 stub below returns `service_unavailable` immediately
+# WITHOUT mutating any state (no DB writes, no Redis writes, no
+# downstream RPC calls). Per F10's "per-endpoint opt-out for truly
+# stateless" carve-out + the round-5 directive's "If the endpoint is a
+# stub returning service_unavailable: no idempotency needed because
+# there's no state mutation. Document this in each stub's docstring":
+# the stubs in this section do NOT require X-Idempotency-Key. The real
+# implementations (Day 6-7 parity sprint for the write set + admin
+# sprint for ban/unban) will add F10 dedup at the same time they
+# add the real state-mutation paths.
+
+
 # --- 3-step creation flow ----------------------------------------------------
 
 
@@ -323,7 +349,12 @@ async def delete_influencer_stub(
 
 
 admin_influencer_router = APIRouter(
-    prefix="/api/v1/admin/influencers", tags=["admin-influencers"],
+    prefix="/api/v1/admin/influencers",
+    tags=["admin-influencers"],
+    # Codex PR #97 round-5 ITEM 4: same placeholder auth gate as the
+    # public influencer router. PR #102 will likely add a stricter
+    # admin-only auth layer (e.g., X-Admin-Key validation) on top.
+    dependencies=[_Depends_for_router(require_authorization_header)],
 )
 
 

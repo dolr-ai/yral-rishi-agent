@@ -80,12 +80,52 @@ from app.api.feature_flag import require_day_2_placeholder_flag_enabled
 # letting the locked paths 404.
 from app.api.errors import HTTP_STATUS_FOR_ERROR_CODE, error_response
 
+# Placeholder auth dependency (Codex PR #97 round-5 ITEM 4) — applied
+# to BOTH chat routers via the `dependencies=` parameter so every HTTP
+# endpoint on these routers requires `Authorization: Bearer <...>` until
+# PR #102 swaps in the real JWT-validating dependency.
+from app.api.auth_placeholder import require_authorization_header
+from fastapi import Depends as _Depends_for_router
+
 # Router for the v1 surface every existing mobile build talks to. The
 # prefix means handlers below declare paths relative to `/api/v1/chat/`.
-chat_v1_router = APIRouter(prefix="/api/v1/chat", tags=["chat-v1"])
+# Codex PR #97 round-5 ITEM 4: router-level `dependencies=` applies the
+# placeholder auth check to every HTTP route on this router. WebSocket
+# routes (the BLOCKER-4 ws_inbox_stub at the bottom of this file) check
+# auth inline inside the handler body since FastAPI's Request-typed
+# Depends doesn't apply to WebSocket routes.
+#
+# F10 DEFERRAL — Codex PR #97 round-5 ITEM 5:
+# Per F10 idempotency is default-on for all non-GET endpoints. The 4
+# non-GET chat handlers below (POST conversations, POST messages,
+# POST read, DELETE conv) do NOT yet enforce X-Idempotency-Key
+# because the Day-2 stub responses don't mutate persistent state
+# (no DB, no Redis writes). When PR #103 (Day 4C) lands the
+# orchestrator RPC + the F10 Redis-backed dedup cache, those
+# handlers grow real state-mutation paths AND the idempotency
+# dependency at the same time. Tracked in PR #103 commit body.
+chat_v1_router = APIRouter(
+    prefix="/api/v1/chat",
+    tags=["chat-v1"],
+    dependencies=[_Depends_for_router(require_authorization_header)],
+)
 
 # Router for the v2 surface mobile uses for the bot-aware inbox.
-chat_v2_router = APIRouter(prefix="/api/v2/chat", tags=["chat-v2"])
+chat_v2_router = APIRouter(
+    prefix="/api/v2/chat",
+    tags=["chat-v2"],
+    dependencies=[_Depends_for_router(require_authorization_header)],
+)
+
+# Router for the WebSocket inbox stub (BLOCKER 4 + round-5 ITEM 4 inline
+# auth check). SEPARATE from `chat_v1_router` because router-level
+# `dependencies=` on the chat_v1_router includes the
+# `require_authorization_header` HTTP-Request-typed dep — FastAPI tries
+# to resolve it on WebSocket routes too and crashes with a TypeError.
+# The WS stub does its own auth check on the WebSocket's headers
+# (which expose them as a lowercase-keyed mapping) — kept on a
+# dedicated router so router-level HTTP-Request deps don't bleed in.
+chat_v1_ws_router = APIRouter(prefix="/api/v1/chat", tags=["chat-v1-ws"])
 
 
 # ===========================================================================
@@ -503,21 +543,43 @@ async def list_conversations_v2(
 # not yet available."
 
 
-@chat_v1_router.websocket("/ws/inbox/{user_id}")
+@chat_v1_ws_router.websocket("/ws/inbox/{user_id}")
 async def ws_inbox_stub(websocket: WebSocket, user_id: str) -> None:
-    """WebSocket inbox stream — BLOCKER 4 stub.
+    """WebSocket inbox stream — BLOCKER 4 stub with inline auth check.
 
-    WHAT: accepts the upgrade, sends one envelope-shaped error frame
-          (`error="service_unavailable"`), closes with code 1011 +
-          reason "service_unavailable_stub_days_14_18". Mobile reads
-          the close-reason to know the feature isn't live yet.
+    WHAT: validates `Authorization: Bearer <...>` from the upgrade
+          request's headers (Codex PR #97 round-5 ITEM 4 — WS routes
+          can't use the Request-typed `require_authorization_header`
+          Depends, so the check is inlined here). On missing/malformed
+          auth, closes the connection with code 1008 ("policy
+          violation") and reason `unauthorized_stub_placeholder` BEFORE
+          accepting. On valid auth, accepts the upgrade, sends one
+          envelope-shaped service_unavailable frame, then closes with
+          code 1011 ("server error") and reason
+          `service_unavailable_stub_days_14_18`. Real WS impl lands
+          Days 14-18; this stub holds the wire contract per BLOCKER 4.
     WHEN: any client (mobile or contract test) connecting to
           /api/v1/chat/ws/inbox/{user_id} before Days 14-18 lands.
     WHY:  locked contract path; without registration the route 404s
           on upgrade which mobile would surface as a routing bug
           rather than "feature not implemented yet."
+          The auth check matches the HTTP routes' placeholder gate
+          so unauthenticated WebSocket upgrades close the same way
+          (close code 1008 close-reason "unauthorized_stub_placeholder").
     """
     _ = user_id  # accepted-and-ignored until the real impl lands
+    auth_header = websocket.headers.get("authorization")  # WS headers lowercase
+    if not auth_header or not auth_header.startswith("Bearer "):
+        # Close with policy-violation code 1008 BEFORE accepting so an
+        # unauthenticated client never sees the stub payload. Matches
+        # the HTTP routes' placeholder 401 envelope semantics.
+        await websocket.close(code=1008, reason="unauthorized_stub_placeholder")
+        return
+    raw_token = auth_header[len("Bearer ") :].strip()
+    if not raw_token:
+        await websocket.close(code=1008, reason="unauthorized_stub_placeholder")
+        return
+
     await websocket.accept()
     await websocket.send_json(
         {
