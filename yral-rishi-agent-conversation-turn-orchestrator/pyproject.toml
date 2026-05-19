@@ -142,6 +142,12 @@ dev = [
     # pytest-asyncio — lets pytest run `async def test_*()` functions.
     # Required because every endpoint in this template is async.
     "pytest-asyncio==0.25.2",
+
+    # fakeredis — pure-Python in-memory Redis the conftest's
+    # `fake_redis` fixture binds to `app.idempotency._redis` so the
+    # F10 dedup layer (Codex PR-#96 BLOCKER 1 fix) works in tests
+    # without a real Redis container.
+    "fakeredis==2.27.0",
 ]
 
 # ===========================================================================

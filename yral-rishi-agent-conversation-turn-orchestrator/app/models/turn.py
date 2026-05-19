@@ -6,17 +6,26 @@
 #   1. `RunTurnRequest` — what Session 3's public-api sends to the
 #      orchestrator's `POST /v1/turn` endpoint. Body carries the
 #      conversation_id (which the orchestrator uses to look up the
-#      user_id + ai_influencer_id via the conversation row) and the
-#      user_message text. Authentication identity + tracing IDs come
-#      via HTTP headers (X-User-Id, X-Idempotency-Key, X-Request-Id),
-#      not the body — see `../run_turn.py` for the header bindings.
+#      user_id + ai_influencer_id via the conversation row) plus the
+#      user_message text and the multi-modal `media_urls` per A8 +
+#      `client_message_id` for the user-msg dedup hint. Authentication
+#      identity + tracing IDs come via HTTP headers (X-User-Id,
+#      X-Idempotency-Key, X-Request-Id), not the body.
 #
-#   2. `MessageDto` — the response shape the orchestrator returns.
-#      BYTE-IDENTICAL to chat-ai's MessageDto from the parity contract
-#      at `interface-contracts/00-api-contract.md`. Session 3's public-
-#      api wraps this in the `ApiResponse<T>` envelope before returning
-#      to the mobile client; the orchestrator itself returns the
-#      naked MessageDto over the internal RPC.
+#   2. `MessageResponse` — the response shape the orchestrator returns.
+#      BYTE-IDENTICAL to chat-ai's `MessageResponse` from the parity
+#      contract at `interface-contracts/00-api-contract.md`. Session 3's
+#      public-api wraps this in the `ApiResponse<T>` envelope before
+#      returning to the mobile client; the orchestrator itself returns
+#      the naked `MessageResponse` over the internal RPC.
+#
+# WHY THE TYPE IS NAMED `MessageResponse`, NOT `MessageDto`
+# Per Rishi's 2026-05-19 morning decision: "DTO" is not on the B2
+# allowed-abbreviation list + English-naming applies to Python class
+# names, not only JSON field names. Coordinator-owned PR #98 renamed
+# the contract reference to `MessageResponse` at the same time. The
+# JSON wire shape is UNCHANGED — only the Python class identifier
+# moved.
 #
 # WHY PYDANTIC v2 + Field VALIDATORS?
 # pydantic 2.10.5 (pinned in pyproject.toml) gives:
@@ -30,15 +39,22 @@
 # WHY NOT INHERIT FROM A SHARED `models` PACKAGE IN
 # `shared-library-code-used-by-every-v2-service/`?
 # Per A2.1 — premature abstraction. Once Session 3 ALSO needs the
-# MessageDto shape (Day 4+), the coordinator can promote this file to
-# the shared lib and both services import. For Day 2 it lives here so
-# Session 4 can iterate the shape without coordinator gating per change.
+# `MessageResponse` shape (Day 4+), the coordinator can promote this
+# file to the shared lib and both services import. For Day 2 it lives
+# here so Session 4 can iterate the shape without coordinator gating
+# per change.
 #
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
 
+# `Literal` lets us pin the `role` field to the two-value enum
+# ("user" / "assistant") without a separate StrEnum import.
 from typing import Literal
 
+# `BaseModel` is the Pydantic class every request/response model
+# inherits from — it gives us typed parsing + validation at the
+# FastAPI route boundary. `Field` lets us attach validators
+# (`min_length=1`) without writing per-field validator methods.
 from pydantic import BaseModel, Field
 
 
@@ -51,7 +67,8 @@ class RunTurnRequest(BaseModel):
     """Body of `POST /v1/turn` from Session 3's public-api.
 
     WHAT: identifies WHICH conversation gets the new turn + carries the
-          user's typed message.
+          user's typed message, optional attachment URLs (multi-modal
+          parity per A8), and the optional client-message dedup hint.
     WHEN: deserialised by FastAPI on every run_turn call.
     WHY:  decoupling identity (HTTP headers) from intent (body fields)
           matches the public-api contract pattern + lets the orchestrator
@@ -68,14 +85,25 @@ class RunTurnRequest(BaseModel):
     # `min_length=1` rejects empty strings (matches chat-ai behaviour).
     user_message: str = Field(min_length=1)
 
+    # Multi-modal attachment URLs the user attached (images / audio /
+    # video). REQUIRED by A8 multi-modal parity — public-api forwards
+    # these inline so the orchestrator doesn't pay a second DB read per
+    # turn. `None` when the user message has no attachments.
+    media_urls: list[str] | None = None
+
+    # Optional client-side dedup id the mobile app may attach to the
+    # user message. The orchestrator echoes it onto persisted-user-msg
+    # traces (Day-5+); assistant replies do NOT carry one.
+    client_message_id: str | None = None
+
 
 # ===========================================================================
-# Response model — BYTE-IDENTICAL to chat-ai's MessageDto per the parity
-# contract at interface-contracts/00-api-contract.md
+# Response model — BYTE-IDENTICAL to chat-ai's MessageResponse per the
+# parity contract at interface-contracts/00-api-contract.md
 # ===========================================================================
 
 
-class MessageDto(BaseModel):
+class MessageResponse(BaseModel):
     """The orchestrator's response — one chat message row from chat-ai's
     schema, mirrored byte-for-byte per A8 + A16.
 
@@ -132,15 +160,19 @@ class MessageDto(BaseModel):
 #   __init__.py    — package marker
 #   ../run_turn.py — POST /v1/turn handler consuming these models
 #   ../main.py     — mounts run_turn's router on the FastAPI app
-#   ../config.py   — `enable_run_turn_stub` feature flag
+#   ../config.py   — `enable_run_turn_stub` feature flag + `redis_url`
+#   ../idempotency.py
+#                  — Redis-backed F10 dedup; reads + writes serialised
+#                    `MessageResponse` payloads keyed by user + key
 #   ../../tests/test_run_turn.py
-#                  — exercises both happy + error paths against these models
+#                  — exercises both happy + error paths + the F10
+#                    idempotency replay path against these models
 #   ../../../yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/interface-contracts/00-api-contract.md
-#                  — chat-ai parity MessageDto source-of-truth
+#                  — chat-ai parity MessageResponse source-of-truth
 #   ../../../yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/interface-contracts/01-internal-rpc-contracts.md
-#                  — internal RPC surface (Session 3 ↔ orchestrator).
-#                    Older content here shows SSE response; agent def + A16
-#                    + Rishi green-light 2026-05-18 specify JSON; DEP raised
-#                    in cross-session-dependencies.md for coordinator to
-#                    update.
+#                  — internal RPC surface (Session 3 ↔ orchestrator);
+#                    coordinator-owned. PR #98 (commit f708a49) renamed
+#                    the contract reference to `MessageResponse` + added
+#                    media_urls / client_message_id at the same time
+#                    this fixup landed in code.
 # ===========================================================================

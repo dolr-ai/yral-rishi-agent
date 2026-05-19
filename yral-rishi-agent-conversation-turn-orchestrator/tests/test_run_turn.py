@@ -2,17 +2,19 @@
 # test_run_turn.py — Day-2 coverage for the `POST /v1/turn` RPC handler.
 #
 # ⭐ START HERE: this file exercises BOTH the happy path (stub returns
-# a schema-valid MessageDto when the two gates open) AND the error
-# paths (gates closed → 503; malformed body → 422). Per J1 the
-# orchestrator is HOT-tier — these tests are the floor for Day-2's
-# only new route.
+# a schema-valid `MessageResponse` when the two gates open) AND the
+# error paths (gates closed → 503; malformed body → 422), plus the
+# F10 idempotency-replay path (same X-Idempotency-Key + same user
+# within 24h returns the cached MessageResponse byte-for-byte).
+# Per J1 the orchestrator is HOT-tier — these tests are the floor
+# for Day-2's only new route.
 #
 # WHAT EACH TEST PROVES — at-a-glance index (priority order, happy
 # paths first, then error paths, per B7):
 #
 #   HAPPY PATHS
-#     test_run_turn_returns_schema_valid_message_dto_when_both_gates_open
-#         200 + all 8 MessageDto fields present + correct types
+#     test_run_turn_returns_schema_valid_message_response_when_both_gates_open
+#         200 + all 8 MessageResponse fields present + correct types
 #     test_run_turn_idempotency_key_header_is_accepted
 #         200 when X-Idempotency-Key is set
 #     test_run_turn_request_id_header_is_accepted
@@ -21,6 +23,16 @@
 #         response.conversation_id == request.conversation_id
 #     test_run_turn_stub_content_matches_documented_placeholder
 #         content is the exact literal string the agent def specifies
+#     test_run_turn_accepts_optional_media_urls_and_client_message_id
+#         A8 multi-modal-parity fields in RunTurnRequest are accepted
+#
+#   ⭐ F10 IDEMPOTENCY (Codex PR-#96 BLOCKER 1)
+#     test_run_turn_same_idempotency_key_replays_cached_response
+#         Two POSTs with same key + same user → byte-identical replay
+#         (same id, same content, same created_at).
+#     test_run_turn_different_users_with_same_key_do_not_collide
+#         Two POSTs with same key but DIFFERENT X-User-Id headers →
+#         distinct responses (user scoping per directive).
 #
 #   ERROR PATHS
 #     test_run_turn_returns_503_when_flag_unset_default
@@ -35,9 +47,10 @@
 # WHY USE monkeypatch FOR ENV VARS?
 # pytest's `monkeypatch.setenv` is scope-limited to the test — env
 # changes auto-undo after the test exits, regardless of pass/fail.
-# Combined with the auto-use `clean_settings_cache` fixture in
-# conftest.py, this means each test starts from `enable_run_turn_stub=
-# False, environment="local"` and explicitly sets what it needs.
+# Combined with the auto-use `clean_settings_cache` + `fake_redis`
+# fixtures in conftest.py, this means each test starts from
+# `enable_run_turn_stub=False, environment="local"` + empty Redis +
+# fresh Settings parse.
 #
 # WHY NO MOCKED DOWNSTREAM (Soul-File, LLM, memory)?
 # The Day-2 stub has no downstreams — that's its point. Day-5 PRs add
@@ -46,7 +59,13 @@
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
 
+# `pytest` — the test runner; we use `pytest.MonkeyPatch` as a typed
+# parameter annotation for tests that mutate env vars.
 import pytest
+
+# `TestClient` — same FastAPI client the conftest's `client` fixture
+# yields; importing here is just for the type annotation on test
+# parameters (mypy / IDE friendliness, no runtime dependency).
 from fastapi.testclient import TestClient
 
 
@@ -68,13 +87,13 @@ VALID_BODY: dict[str, str] = {
 # ===========================================================================
 
 
-def test_run_turn_returns_schema_valid_message_dto_when_both_gates_open(
+def test_run_turn_returns_schema_valid_message_response_when_both_gates_open(
     monkeypatch: pytest.MonkeyPatch, client: TestClient
 ) -> None:
-    """WHAT: 200 + every MessageDto field present with the right type.
+    """WHAT: 200 + every MessageResponse field present with the right type.
     WHEN: env != production AND enable_run_turn_stub=true.
     WHY:  proves the stub is byte-shape-compatible with chat-ai's
-          MessageDto contract so Session 3 can wire its handler.
+          MessageResponse contract so Session 3 can wire its handler.
     """
     # Open both gates explicitly. Default settings keep them closed.
     monkeypatch.setenv("ENVIRONMENT", "local")
@@ -85,7 +104,7 @@ def test_run_turn_returns_schema_valid_message_dto_when_both_gates_open(
     assert response.status_code == 200, response.text
     body = response.json()
 
-    # Every chat-ai MessageDto field appears and has the right type.
+    # Every chat-ai MessageResponse field appears and has the right type.
     # `id` is a UUID-shaped string; we don't assert the exact value
     # (the stub generates a fresh one per call) but we do assert it's
     # a non-empty string.
@@ -105,9 +124,9 @@ def test_run_turn_idempotency_key_header_is_accepted(
 ) -> None:
     """WHAT: X-Idempotency-Key header is accepted without 4xx.
     WHEN: both gates open + header set.
-    WHY:  Day-3 wires this header into the safety stack + Langfuse;
-          Day-2 must accept it without erroring so Session 3 can send
-          it from Day-2 onwards without breaking integration tests.
+    WHY:  F10 fixup wires this header into Redis dedup; the bare
+          shape-accepted gate stays so a regression in F10 wiring
+          doesn't silently break this contract.
     """
     monkeypatch.setenv("ENVIRONMENT", "local")
     monkeypatch.setenv("ENABLE_RUN_TURN_STUB", "true")
@@ -126,9 +145,9 @@ def test_run_turn_request_id_header_is_accepted(
 ) -> None:
     """WHAT: X-Request-Id header is accepted without 4xx.
     WHEN: both gates open + header set.
-    WHY:  same rationale as idempotency-key — Session 3 sends a
-          correlation ID with every internal RPC for Langfuse trace
-          joining.
+    WHY:  Session 3 sends a correlation ID with every internal RPC
+          for Langfuse trace joining; the handler must accept it
+          without erroring.
     """
     monkeypatch.setenv("ENVIRONMENT", "local")
     monkeypatch.setenv("ENABLE_RUN_TURN_STUB", "true")
@@ -181,6 +200,129 @@ def test_run_turn_stub_content_matches_documented_placeholder(
     assert response.status_code == 200, response.text
     assert response.json()["content"] == (
         "[v2 phase-1 day-2 orchestrator stub — real LLM response from day-5]"
+    )
+
+
+def test_run_turn_accepts_optional_media_urls_and_client_message_id(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient
+) -> None:
+    """WHAT: RunTurnRequest accepts the two new optional fields without 422.
+    WHEN: body includes media_urls + client_message_id per the updated
+          contract (coordinator PR #98 / commit f708a49).
+    WHY:  A8 multi-modal parity — public-api forwards media_urls inline
+          so the orchestrator doesn't pay a second DB read per turn.
+    """
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("ENABLE_RUN_TURN_STUB", "true")
+
+    body_with_extras = {
+        "conversation_id": "test-conversation-uuid-002",
+        "user_message": "hello with attachments",
+        "media_urls": [
+            "https://example.invalid/image-001.png",
+            "https://example.invalid/image-002.png",
+        ],
+        "client_message_id": "client-msg-id-001",
+    }
+    response = client.post("/v1/turn", json=body_with_extras)
+
+    assert response.status_code == 200, response.text
+    # The assistant reply doesn't echo the request's media_urls /
+    # client_message_id — those are user-msg fields (per contract).
+    body = response.json()
+    assert body["media_urls"] is None
+    assert body["client_message_id"] is None
+
+
+# ===========================================================================
+# ⭐ F10 IDEMPOTENCY (Codex PR-#96 BLOCKER 1 — the load-bearing test)
+# ===========================================================================
+
+
+def test_run_turn_same_idempotency_key_replays_cached_response(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient
+) -> None:
+    """WHAT: two POSTs with same X-Idempotency-Key + same X-User-Id +
+          same body → byte-identical response (id, content, created_at).
+    WHEN: both gates open + headers set on both calls.
+    WHY:  F10 verbatim: "default-on on all non-GET endpoints; dedupes
+          via Redis 24hr TTL". Codex PR-#96 review caught the original
+          handler accepting X-Idempotency-Key but never reading or
+          writing Redis around it. This test is the regression gate.
+    """
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("ENABLE_RUN_TURN_STUB", "true")
+
+    headers = {
+        "X-Idempotency-Key": "replay-test-key-001",
+        "X-User-Id": "user-001",
+    }
+
+    first = client.post("/v1/turn", json=VALID_BODY, headers=headers)
+    second = client.post("/v1/turn", json=VALID_BODY, headers=headers)
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+
+    first_body = first.json()
+    second_body = second.json()
+
+    # Byte-identical replay — every field on the second response
+    # matches the first. Without F10 dedup the `id` would differ
+    # (fresh UUID per call) and `created_at` would differ (fresh
+    # timestamp per call), so these two asserts ARE the dedup proof.
+    assert first_body["id"] == second_body["id"], (
+        "F10 idempotency replay regression: `id` drifted between calls "
+        "with the same X-Idempotency-Key"
+    )
+    assert first_body["created_at"] == second_body["created_at"], (
+        "F10 idempotency replay regression: `created_at` drifted between "
+        "calls with the same X-Idempotency-Key"
+    )
+    assert first_body["content"] == second_body["content"]
+    assert first_body == second_body, (
+        "F10 idempotency replay regression: full response payload "
+        "drifted between calls with the same X-Idempotency-Key"
+    )
+
+
+def test_run_turn_different_users_with_same_key_do_not_collide(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient
+) -> None:
+    """WHAT: same X-Idempotency-Key but different X-User-Id → distinct responses.
+    WHEN: two users send chats with the same client-generated key
+          (e.g. same content-hash key from popular phrases).
+    WHY:  user-scoping per the Day-2-fixup directive — without it, a
+          popular phrase would dedupe across users + user B would see
+          user A's response. Distinct `id` proves the user scoping
+          actually splits the cache key.
+    """
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("ENABLE_RUN_TURN_STUB", "true")
+
+    user_a = client.post(
+        "/v1/turn",
+        json=VALID_BODY,
+        headers={
+            "X-Idempotency-Key": "collision-test-key",
+            "X-User-Id": "user-A",
+        },
+    )
+    user_b = client.post(
+        "/v1/turn",
+        json=VALID_BODY,
+        headers={
+            "X-Idempotency-Key": "collision-test-key",
+            "X-User-Id": "user-B",
+        },
+    )
+
+    assert user_a.status_code == 200
+    assert user_b.status_code == 200
+    # Distinct UUIDs prove the cache key is user-scoped.
+    assert user_a.json()["id"] != user_b.json()["id"], (
+        "user-scoping regression: same idempotency key collided across "
+        "users — F10 cache key needs `{user_id}` in the prefix"
     )
 
 
@@ -267,12 +409,22 @@ def test_run_turn_returns_422_when_user_message_is_empty_string(
 
 # ===========================================================================
 # RELATED FILES:
-#   conftest.py            — `client` + `clean_settings_cache` fixtures
-#   ../app/run_turn.py     — handler under test (the two gates + stub)
-#   ../app/models/turn.py  — Pydantic models whose validation surface
-#                            the 422 tests exercise
-#   ../app/config.py       — `enable_run_turn_stub` + `environment` settings
+#   conftest.py              — `client` + `clean_settings_cache` +
+#                               `fake_redis` fixtures
+#   ../app/run_turn.py       — handler under test (the two gates +
+#                               F10 dedup + stub)
+#   ../app/models/turn.py    — Pydantic models whose validation surface
+#                               the 422 tests exercise
+#   ../app/config.py         — `enable_run_turn_stub` + `environment` +
+#                               `redis_url` settings
+#   ../app/idempotency.py    — F10 Redis dedup layer; tests above prove
+#                               the dedup-replay path
 #   ../../yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/interface-contracts/00-api-contract.md
-#                          — chat-ai MessageDto parity contract that the
-#                            schema-shape happy-path test validates against
+#                            — chat-ai MessageResponse parity contract
+#                               that the schema-shape happy-path test
+#                               validates against
+#   ../../yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/interface-contracts/01-internal-rpc-contracts.md
+#                            — internal RPC contract (PR #98 commit
+#                               f708a49 added idempotency-required-
+#                               day-1 + media_urls / client_message_id)
 # ===========================================================================

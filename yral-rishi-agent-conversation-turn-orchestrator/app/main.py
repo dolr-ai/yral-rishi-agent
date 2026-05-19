@@ -51,6 +51,13 @@ from app.request_id_middleware import RequestIdMiddleware
 # gate refusal logic that keeps the stub out of production traffic.
 from app.run_turn import router as run_turn_router
 
+# Day-2 fixup (Codex PR-#96 BLOCKER 1) — F10 default-on idempotency.
+# Lifespan opens the async Redis client at startup + closes it on
+# SIGTERM. Every POST /v1/turn does a Redis dedup lookup before any
+# work; same X-Idempotency-Key + X-User-Id within 24h replays the
+# previously cached MessageResponse byte-for-byte.
+from app.idempotency import close_redis, init_redis
+
 
 # Run Sentry init now, at module import time. After this line, every
 # unhandled exception below is shipped to sentry.rishi.yral.com (per A7).
@@ -78,9 +85,17 @@ async def lifespan(_app: FastAPI):
           renaming anything or touching the signature.
     """
     # --- startup --------------------------------------------------------
-    # (filled in by later Day-2 PRs — database pool, redis client, etc.)
+    # Open the async Redis client — the F10 idempotency layer (Codex
+    # PR-#96 BLOCKER 1 fix) needs it ready before any request handler
+    # runs. The connection is pooled internally by redis-py; one
+    # client serves every concurrent request.
+    await init_redis()
     yield
     # --- shutdown -------------------------------------------------------
+    # Close Redis cleanly so connections don't linger on the server
+    # side past their idle timeout. Cleaner shutdown == faster Swarm
+    # rolling updates.
+    await close_redis()
     # Drain pending Langfuse traces so SIGTERM (Swarm rolling update,
     # scale-down) doesn't lose seconds of in-flight LLM trace data.
     # No-op when Langfuse is disabled.
@@ -121,7 +136,9 @@ app.add_middleware(RequestIdMiddleware)
 #   request_id_middleware.py — RequestIdMiddleware mounted above
 #   run_turn.py              — Day-2 POST /v1/turn router mounted above
 #   models/turn.py           — Pydantic models the run_turn router consumes
-#   pyproject.toml           — fastapi + sentry-sdk + langfuse + structlog
+#   idempotency.py           — F10 Redis dedup; init_redis/close_redis above
+#   config.py                — redis_url + enable_run_turn_stub settings
+#   pyproject.toml           — fastapi + sentry-sdk + langfuse + structlog + redis
 #   Dockerfile               — CMD ["uvicorn", "app.main:app", ...]
-#   docker-compose.yml       — local-dev runner with --reload
+#   docker-compose.yml       — local-dev runner with --reload (includes redis)
 # ===========================================================================

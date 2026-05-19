@@ -111,6 +111,14 @@ class Settings(BaseSettings):
     # the stub.
     enable_run_turn_stub: bool = False
 
+    # -- Redis (F10 idempotency + future C11 Sentinel discovery) ---------
+    # `redis://` URL read by `app/idempotency.py` to build the async
+    # Redis client at lifespan startup. Local default points at the
+    # docker-compose sibling container; production swaps in a Sentinel-
+    # aware URL per C11. The 24h F10 idempotency TTL is hardcoded in
+    # `app/idempotency.py` — no need to expose it as a setting.
+    redis_url: str = "redis://localhost:6379/0"
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

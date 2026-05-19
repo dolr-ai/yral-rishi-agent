@@ -2,6 +2,64 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-19 — PR #96 fixup: F10 idempotency + B7 import role comments + DTO→Response rename
+
+### Action
+Single fixup commit on `session-4/orchestrator-run-turn-rpc-handler` addressing the three Codex BLOCKERs surfaced overnight on PR #96. Coordinator authorised the approach + cross-referenced coordinator PR #98's f708a49 commit on `coordinator/dep-004-update-rpc-contracts-public-api-to-orchestrator-from-sse-to-json` for the contract update.
+
+12/12 tests PASSED (9 Day-2 regression + 1 multi-modal-fields acceptance + 2 F10 idempotency replay/user-scoping) on Python 3.12.13 in `python:3.12-slim` with `fakeredis==2.27.0` as a new dev dep.
+
+### Three blockers addressed
+**BLOCKER 1 — F10 default-on idempotency on `POST /v1/turn`.** Added `app/idempotency.py` with async Redis client lifecycle + key-compute + cache-read/write helpers. Wired into `app/main.py` lifespan (init_redis / close_redis). Handler now: computes user-scoped key `idempotency:orchestrator:run-turn:{user_id}:{idempotency_key}` → reads Redis BEFORE any work → on HIT replays cached MessageResponse byte-for-byte → on MISS processes + caches with 24h TTL. Missing `X-Idempotency-Key` → server-generated UUID4 + structured log marker `client_provided_key=false` for future Langfuse trace correlation. Two new tests: byte-identical replay (same key + same user) + user-scoping (same key but different user_id ≠ collision).
+
+**BLOCKER 2 — B7 import role comments on every import in the 4 new Python files** (`app/run_turn.py` / `app/models/turn.py` / `tests/conftest.py` / `tests/test_run_turn.py`). Each import has a one-line role comment explaining what role this import plays in the file's bigger flow, not just what the import IS. stdlib imports included (`datetime`, `logging`, `typing.Annotated`, `uuid.uuid4`, `json`).
+
+**BLOCKER 3 — Rename `MessageDto` → `MessageResponse`** per Rishi's 2026-05-19 morning decision (DTO not on B2 allowlist; English-naming applies to Python class names). Also added the two new RunTurnRequest fields per the coordinator's PR #98 contract update: `media_urls: list[str] | None` + `client_message_id: str | None`. Wire shape unchanged — only the Python identifier moved. Updated every reference in `app/run_turn.py` + `tests/test_run_turn.py` + docstrings + the renamed happy-path test.
+
+### Files touched
+- **Added (1):**
+  - `app/idempotency.py` — async Redis client + F10 dedup helpers (init_redis / close_redis / get_redis / compute_idempotency_key / get_cached_response / cache_response). All callsites have B7 role-comments on imports.
+- **Modified (6):**
+  - `app/models/turn.py` — class rename + 2 new request fields + B7 import role comments + updated docstrings & RELATED FILES footer.
+  - `app/run_turn.py` — wired idempotency (cache read → MISS process → cache write), added X-User-Id Header binding, server-side UUID4 fallback for missing X-Idempotency-Key, structured-log markers for client-provided vs server-generated key. B7 role comments on every import.
+  - `app/main.py` — imports `init_redis` + `close_redis`; lifespan opens Redis at startup + closes on shutdown; added role comments on the new imports; updated RELATED FILES footer.
+  - `app/config.py` — added `redis_url: str = "redis://localhost:6379/0"` setting with role comment.
+  - `tests/conftest.py` — added `fake_redis` auto-use fixture (patches `app.idempotency._redis` to fakeredis async instance + stubs init_redis/close_redis to no-ops so TestClient lifespan doesn't try to connect to real Redis). B7 role comments on every import.
+  - `tests/test_run_turn.py` — renamed happy-path test; added 1 multi-modal acceptance test + 2 F10 idempotency tests (replay + user-scoping); B7 role comments on imports.
+  - `pyproject.toml` — added `fakeredis==2.27.0` to dev deps with role comment.
+
+### Why
+Codex PR #96 review flagged F10 violation as a hard BLOCKER (idempotency was accepted-but-ignored; F10 says default-on day 1). B7 + B2 also need to be airtight before merge so Codex + Session 5 contract tests + future readers don't trip on inherited drift.
+
+### Test evidence
+pytest inside `python:3.12-slim` with `pip install -e '.[dev]'` then `pytest -v tests/`:
+- 12/12 PASSED in 0.05s (rootdir=/work, pytest-8.3.4, asyncio-strict)
+- New tests:
+  - `test_run_turn_accepts_optional_media_urls_and_client_message_id` — A8 multi-modal-parity fields land cleanly
+  - `test_run_turn_same_idempotency_key_replays_cached_response` — proves `id` + `created_at` + full body are byte-equal between two POSTs with same X-Idempotency-Key + X-User-Id (the load-bearing F10 regression gate)
+  - `test_run_turn_different_users_with_same_key_do_not_collide` — same key, different X-User-Id → distinct `id` (proves user-scoping in the Redis key)
+
+### Constraints touched
+- **F10** — fixed; idempotency is now default-on, Redis-backed, 24h TTL, user-scoped. 2 new tests guard the contract.
+- **B7** — every import in the 4 NEW PR-#96 files has a one-line role comment + new file `app/idempotency.py` has the same shape.
+- **B1 + B2** — Python class names use English now (`MessageResponse` not `MessageDto`). Module + symbol names everywhere honour the B2 allowlist.
+- **A8** — RunTurnRequest now accepts `media_urls: list[str] | None` for multi-modal parity per the updated coordinator contract.
+- **C7** — `redis_url` setting in typed config; no hardcoded URL in code.
+- **C11** — pgBouncer-style note kept (idempotency.py uses asyncpg-style `statement_cache_size=0` pattern is N/A here, but Sentinel-aware URL noted in the redis_url docstring for Day-5+).
+- **D1 + D8** — `redis_url` reads from env; no value in committed files. (Production override via Swarm secret env injection per D1.)
+- **F12** — Python 3.12 + asyncio-native `redis.asyncio.Redis`, no sync redis-py blocking the event loop.
+- **H6** — log fields are `client_provided_key`, `conversation_id`, `user_id` (opaque), `key_suffix` (just the suffix, not the full key with potentially-leaking values). NEVER the cached payload itself.
+- **I6** — accepted the coordinator's decisions on all 3 blockers without pushback; the changes are unambiguous + Codex's grounding was solid.
+
+### Notes
+- **Coordinator PR #98 (commit f708a49) cross-referenced** for the contract shape. Once #98 merges to main + this PR rebases, the contract doc + the code will be byte-aligned.
+- **fakeredis was the right pick over testcontainers-redis** — F10 dedup is one GET + one SET-with-TTL per request, well inside fakeredis's compatibility surface. Day-5+ if we add Redis Streams / pub-sub we'll revisit; today fakeredis = zero Docker requirement + pure-Python in-memory.
+- **Existing 9 Day-2 tests still pass unchanged** (regression gate) — the new conftest fixture is auto-use so existing tests don't need to know about the F10 wiring; they just get a clean fakeredis per test.
+- **DEP-004 stays open** until coordinator PR #98 merges to main; coordinator owns that doc fix.
+- **Next:** Day-5 real LLM enablement (per agent definition) — once PR #96 (this fixup) + PR #100 (Day-3 safety) + PR #104 (Day-4 soul-file) all land.
+
+---
+
 ## 2026-05-18 — Day 2, PR: orchestrator `POST /v1/turn` RPC handler skeleton (JSON, NOT SSE)
 
 ### Action
