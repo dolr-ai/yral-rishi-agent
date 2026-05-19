@@ -44,9 +44,11 @@
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
 
-# `Iterator` types the generator-style fixtures pytest expects (each
-# `yield`s once then cleans up).
-from collections.abc import Iterator
+# `Iterator` types the synchronous generator-style fixtures pytest
+# expects (each `yield`s once then cleans up). `AsyncIterator` is the
+# same shape for the `async_client` fixture used by the concurrent-
+# POST regression test.
+from collections.abc import AsyncIterator, Iterator
 
 # `fakeredis.aioredis.FakeRedis` is a drop-in pure-Python async Redis
 # client — same interface as `redis.asyncio.Redis` but stores all
@@ -54,6 +56,14 @@ from collections.abc import Iterator
 # idempotency layer in run_turn has a working backend during tests
 # without a real Redis container.
 import fakeredis.aioredis
+
+# `httpx.ASGITransport` + `httpx.AsyncClient` drive the FastAPI app
+# in-process WITHIN the test's event loop. Used by the `async_client`
+# fixture for the concurrent-POST test which can't use the sync
+# TestClient (TestClient spins its own event loop for lifespan, which
+# wouldn't share the fakeredis state correctly across two truly
+# concurrent posts under `asyncio.gather`).
+import httpx
 
 # `pytest` itself — for the `@pytest.fixture(...)` decorator and the
 # `MonkeyPatch` type that lets fixtures mutate module state safely.
@@ -67,7 +77,7 @@ from fastapi.testclient import TestClient
 
 # `app.idempotency` is where the F10 fixup lives — we override its
 # module-level `_redis` global to a fakeredis client + replace its
-# `init_redis` / `close_redis` callables with no-ops so the
+# `init_redis` / `close_redis` callables with empty stubs so the
 # TestClient's lifespan doesn't try to talk to a real Redis.
 import app.idempotency as app_idempotency
 
@@ -121,20 +131,27 @@ def fake_redis(monkeypatch: pytest.MonkeyPatch) -> Iterator[fakeredis.aioredis.F
     # get_redis() returns from inside the run_turn handler.
     monkeypatch.setattr(app_idempotency, "_redis", fake)
 
-    # Stub init_redis to a no-op so the FastAPI lifespan startup hook
-    # doesn't overwrite our patched _redis with a real connection.
-    async def _noop_init() -> None:
+    # Stub `init_redis` to an empty-body coroutine so the FastAPI
+    # lifespan startup hook doesn't overwrite our patched _redis
+    # with a real connection. Renamed from `_noop_init` per Codex
+    # round-3 BLOCKER 3 (B2 disallows the `noop` abbreviation).
+    async def empty_initialize_redis_for_tests() -> None:
         # `_redis` is already set above; idempotent like the real one.
         return None
 
-    # Stub close_redis similarly — the lifespan shutdown hook would
+    # Stub `close_redis` similarly — the lifespan shutdown hook would
     # otherwise close the fakeredis client and set _redis back to
-    # None, breaking any test that runs the lifespan twice.
-    async def _noop_close() -> None:
+    # None, breaking any test that runs the lifespan twice. Renamed
+    # from `_noop_close` per Codex round-3 BLOCKER 3.
+    async def empty_close_redis_for_tests() -> None:
         return None
 
-    monkeypatch.setattr(app_idempotency, "init_redis", _noop_init)
-    monkeypatch.setattr(app_idempotency, "close_redis", _noop_close)
+    monkeypatch.setattr(
+        app_idempotency, "init_redis", empty_initialize_redis_for_tests
+    )
+    monkeypatch.setattr(
+        app_idempotency, "close_redis", empty_close_redis_for_tests
+    )
 
     yield fake
 
@@ -154,6 +171,34 @@ def client(fake_redis: fakeredis.aioredis.FakeRedis) -> Iterator[TestClient]:
           tests reflect how production requests actually flow.
     """
     with TestClient(app) as test_client:
+        yield test_client
+
+
+@pytest.fixture()
+async def async_client(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> AsyncIterator[httpx.AsyncClient]:
+    """httpx.AsyncClient + ASGITransport for the concurrent-POST test.
+
+    WHAT: yields an `httpx.AsyncClient` driving the FastAPI app
+          in-process via `ASGITransport`. Runs in the test's event
+          loop so two `asyncio.gather`-ed POSTs share the same
+          fakeredis state + truly race on the `SET NX` critical
+          section in `app.idempotency.acquire_or_check`.
+    WHEN: requested only by the concurrent-POST test
+          (`test_run_turn_concurrent_same_key_same_body_*`); other
+          tests use the sync TestClient `client` fixture.
+    WHY:  TestClient spins its own event loop for lifespan, which
+          means two concurrent calls via TestClient.post would NOT
+          share the same loop and the SET NX race wouldn't fire as
+          a real concurrent race. AsyncClient + ASGITransport keeps
+          everything on ONE event loop — the directive's intended
+          regression gate for Codex round-3 BLOCKER 1b.
+    """
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver",
+    ) as test_client:
         yield test_client
 
 

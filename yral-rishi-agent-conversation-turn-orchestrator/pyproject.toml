@@ -125,6 +125,13 @@ dependencies = [
     # ships an allowlist-based redaction processor (in app/logging.py)
     # that drops any field key not on a known-safe list.
     "structlog==24.4.0",
+
+    # PyYAML — used by `app/idempotency.py` at lifespan startup to read
+    # the `redis:` section of `shared-config.yaml` (per C7 — sentinel
+    # master name + sentinel host:port pairs live in shared-config).
+    # Pinned same version as the soul-file-library service uses to
+    # keep monorepo dep versions consistent.
+    "PyYAML==6.0.2",
 ]
 
 # ===========================================================================
@@ -159,6 +166,25 @@ dev = [
 # to prod).
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
+
+
+# ===========================================================================
+# [tool.pytest.ini_options] — pytest config (round-3 fixup)
+# ===========================================================================
+#
+# `asyncio_mode = "auto"` — async fixtures and async tests run as
+# coroutines without each one being decorated by `@pytest.mark.asyncio`.
+# Required for the round-3 fixup's `async_client` fixture +
+# `test_run_turn_concurrent_same_key_same_body_executes_handler_once`
+# concurrent test. Without auto-mode, pytest-asyncio strict mode
+# rejects async fixtures requested by async tests.
+#
+# `asyncio_default_fixture_loop_scope = "function"` — silences the
+# pytest-asyncio deprecation warning + matches the loop-per-test
+# isolation we want for the concurrent-POST regression test.
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 
 
 # ===========================================================================

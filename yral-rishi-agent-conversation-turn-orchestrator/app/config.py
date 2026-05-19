@@ -111,12 +111,27 @@ class Settings(BaseSettings):
     # the stub.
     enable_run_turn_stub: bool = False
 
-    # -- Redis (F10 idempotency + future C11 Sentinel discovery) ---------
-    # `redis://` URL read by `app/idempotency.py` to build the async
-    # Redis client at lifespan startup. Local default points at the
-    # docker-compose sibling container; production swaps in a Sentinel-
-    # aware URL per C11. The 24h F10 idempotency TTL is hardcoded in
-    # `app/idempotency.py` — no need to expose it as a setting.
+    # -- Redis (F10 idempotency + C11 Sentinel discovery) ----------------
+    # Two settings cover the two backend modes. The Sentinel path is the
+    # C11-compliant production shape; the single-primary URL is the
+    # laptop-dev / docker-compose fallback.
+    #
+    # `redis_sentinel_enabled`: when True, `app/idempotency.py::init_redis`
+    # builds a Sentinel-aware client using `redis.asyncio.sentinel.
+    # Sentinel(...)` and reads the master name + sentinel host:port pairs
+    # from `shared-config.yaml`'s `redis:` section (C7 — single source of
+    # truth). When False, the fallback single-primary client is built
+    # from `redis_url` AND a startup WARNING is logged so the C11 gap
+    # stays loud, not silent. The flag defaults FALSE so laptop dev
+    # against the docker-compose Redis keeps working; production
+    # MUST flip this to True via env injection.
+    redis_sentinel_enabled: bool = False
+
+    # `redis://` URL — used ONLY when `redis_sentinel_enabled=False`.
+    # Local default points at the docker-compose sibling container;
+    # production wouldn't normally read this (Sentinel path is on).
+    # The 24h F10 idempotency TTL is hardcoded in `app/idempotency.py`
+    # — no need to expose it as a setting.
     redis_url: str = "redis://localhost:6379/0"
 
 

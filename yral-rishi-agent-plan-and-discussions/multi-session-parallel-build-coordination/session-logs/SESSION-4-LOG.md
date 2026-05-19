@@ -2,6 +2,83 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-19 — PR #96 round-3 fixup: atomic dedup + C11 Sentinel + B2 abbreviation sweep
+
+### Action
+Codex re-reviewed PR #96 after the round-2 fixup (commit `104873d`) and flagged **3 NEW BLOCKERs** (different from round 1). Single fixup commit on `session-4/orchestrator-run-turn-rpc-handler` addresses all three. Coordinator authorised the approaches; PR #98 commit `31d1dac` updated the contract to spec C11 + atomic-dedup + 400-reject verbatim.
+
+**14/14 tests PASSED in 0.05s** (the round-2 12 + 2 new round-3 tests — concurrent-handler-count + 409 envelope) on Python 3.12.13 in `python:3.12-slim` with fakeredis.
+
+### Three round-3 blockers addressed
+
+**BLOCKER 1 — F10 race + silent fallback (TWO sub-fixes):**
+
+*(a) X-Idempotency-Key now REQUIRED.* Removed the server-generated UUID4 fallback path entirely. Missing header → 400 with the ApiResponse-shaped envelope `{success:false, msg:..., error:"idempotency_key_required", data:null}` (NOT a bare HTTPException `detail`). The previous round-2 code's UUID4 fallback deduplicated NOTHING on retry (every header-less retry got a fresh UUID); the round-3 fix forces the caller to send a stable key.
+
+*(b) Atomic dedup via SET NX + fingerprint + poll-on-lock + 409.* Replaced the round-2 GET-then-SET flow with a single `SET key value NX EX 86400` as the critical section. The Redis value is a JSON object: `{state:"in_progress", fingerprint:<sha256>}` initially, then `{state:"done", fingerprint, response:<MessageResponse>}` after the handler completes. New `acquire_or_check(...)` helper returns a typed `IdempotencyDecision` the handler dispatches on:
+- `acquired` → proceed + mark_complete
+- `replay_done` → return cached payload byte-for-byte
+- `fingerprint_mismatch` → 409 envelope (same key, different body)
+- `in_flight_timeout` → 503 envelope (50ms × 20 = 1s poll ceiling)
+
+Fingerprint = `sha256(canonical_json(body))` with `sort_keys=True` + compact separators so equivalent JSON dicts produce the same fingerprint regardless of key order.
+
+**BLOCKER 2 — C11 Sentinel-aware client.** Replaced `redis.asyncio.Redis.from_url(...)` with `redis.asyncio.sentinel.Sentinel(...)` (Sentinel discovers current primary at connect time + reconnects on failover). New settings: `redis_sentinel_enabled` (default **False** for laptop dev) + reads `redis.sentinel_master_name` + `redis.sentinel_hosts` from `shared-config.yaml` (per C7 — single source of truth; the Sentinel hostnames were ALREADY declared by Session 1's cluster bootstrap). When flag is OFF, a LOUD startup WARNING fires: `c11_violation_single_primary_redis_no_sentinel` with remediation guidance. PyYAML added to runtime deps (matches soul-file-library's pin).
+
+**BLOCKER 3 — B1/B2 abbreviation sweep on the round-2 fixup code.** Renamed every Codex-flagged identifier:
+- `cached_str` → consumed away (the new code stores typed JSON envelopes in `IdempotencyDecision`, not raw cache_str)
+- `now_iso` → `current_utc_timestamp_text` in `app/run_turn.py`
+- `_noop_init` → `empty_initialize_redis_for_tests` in `tests/conftest.py`
+- `_noop_close` → `empty_close_redis_for_tests` in `tests/conftest.py`
+
+Swept the rest of the round-2 diff (commit `104873d`) for stray `str` / `iso` / `noop` abbreviations; the renames above were the full list.
+
+### Files touched
+
+**Rewritten:**
+- `app/idempotency.py` — full module rewrite: `IdempotencyDecision` dataclass + `acquire_or_check` (SET NX critical section + poll loop) + `mark_complete` + `compute_request_fingerprint` (SHA-256 of canonical-JSON body) + Sentinel-aware `init_redis` reading from shared-config.yaml + WARNING-on-fallback path. PyYAML loaded for the shared-config read.
+- `app/run_turn.py` — dispatches on `IdempotencyDecision.state`; returns ApiResponse-envelope 400/409/503 via `JSONResponse`; removed UUID4 fallback; renamed `now_iso` → `current_utc_timestamp_text`.
+- `tests/conftest.py` — added `async_client` fixture (httpx.AsyncClient + ASGITransport) for the concurrent-POST regression test; renamed `_noop_init` / `_noop_close`.
+- `tests/test_run_turn.py` — added `_required_headers(...)` helper; added 2 NEW tests (concurrent-handler-count + 409 envelope); rewrote `test_run_turn_returns_400_envelope_when_idempotency_key_missing` for the new envelope-shape contract; updated every 200-expecting test to send the now-required headers.
+
+**Modified:**
+- `app/config.py` — added `redis_sentinel_enabled` setting with role comment.
+- `pyproject.toml` — added `PyYAML==6.0.2` to runtime deps + `[tool.pytest.ini_options]` block with `asyncio_mode="auto"` (required for the new async concurrent test).
+- `SESSION-4-LOG.md` (this entry).
+
+### Why
+Codex round-3 review caught real safety gaps in the round-2 fix: (a) header-optional path deduplicated nothing on retry, (b) GET-then-SET race let two concurrent POSTs both execute, (c) no fingerprint check meant a reused key could replay the wrong response for a different body, (d) C11 violation (single-primary Redis). All four addressed in this fixup.
+
+### Test evidence
+
+pytest inside `python:3.12-slim` with `pip install -e '.[dev]'` then `pytest tests/`:
+- 14/14 PASSED in 0.05s (rootdir=/work, pytest-8.3.4, asyncio mode=AUTO).
+- New round-3 tests:
+  - `test_run_turn_concurrent_same_key_same_body_executes_handler_once` — uses `asyncio.gather` to fire two truly-concurrent POSTs via httpx.AsyncClient; spies on `app.run_turn.mark_complete` (NOT `app.idempotency.mark_complete` — Python import-shadowing means run_turn.py's local reference is the one the handler actually calls; documented in the test's import comments); asserts exactly ONE invocation + both responses byte-equal.
+  - `test_run_turn_same_key_different_body_returns_409_envelope` — sequential POSTs with same key + different bodies; second returns 409 with `error="idempotency_key_reused_with_different_body"`.
+- Rewrote `test_run_turn_returns_400_envelope_when_idempotency_key_missing` to assert envelope shape (replaces an older `idempotency_key_header_is_accepted` test that was now redundant with required-by-default semantics).
+- Existing 9 Day-2 + 3 round-2 tests still pass with the new `_required_headers(...)` helper.
+
+### Constraints touched
+- **F10** — round-3 atomic-dedup + required-header semantics. 4 test gates: replay-byte-equal, concurrent-single-handler, same-key-different-body-409, default-required-header-400.
+- **C11** — Sentinel-aware client + flag-gated fallback + LOUD warning when fallback fires. Production must run `redis_sentinel_enabled=True`; laptop dev keeps working against the docker-compose single-primary.
+- **B1 + B2** — renamed `now_iso` / `_noop_init` / `_noop_close` per Codex round-3 BLOCKER 3.
+- **C7** — Sentinel host list + master name now read from `shared-config.yaml` (the C7 single-source-of-truth). No env-var duplication for those values.
+- **C8** — N/A (no SSH changes).
+- **A2.1** — kept the new abstractions tight: ONE dataclass (`IdempotencyDecision`) + 4 functions (`acquire_or_check`, `mark_complete`, `compute_request_fingerprint`, `_load_redis_section_from_shared_config`). No frameworks introduced.
+- **H6** — log fields are still allowlist-safe: `redis_key_suffix`, `client_provided_key_was_provided`, `conversation_id`, `user_id`. NEVER the cached payload, NEVER the user_message content.
+- **F12** — async-native: `redis.asyncio.sentinel.Sentinel`, `asyncio.sleep`, `asyncio.gather` in the concurrent test.
+- **I6** — no I6 pushback raised this round; Sentinel hostnames already in shared-config.yaml so no Session-1 DEP needed. Codex round-3 catches were all grounded + actionable.
+
+### Notes
+- **No DEP raised** — shared-config.yaml already had `redis.sentinel_master_name` + `redis.sentinel_hosts` populated by Session 1's cluster bootstrap. No I6 to Session 1 needed.
+- **Coordinator PR #98 commit 31d1dac** is the contract source-of-truth this fixup matches. Pulled the contract at that commit for cross-reference.
+- **Fakeredis vs Sentinel** — the test fixture (`fake_redis`) monkeypatches `app.idempotency._redis` directly + stubs `init_redis` / `close_redis` to no-ops, so the Sentinel path doesn't fire during tests. The Sentinel client is exercised only in production / staging; laptop dev + tests stay on the single-primary fallback (fakeredis in tests; docker-compose Redis in dev). When Session 1's chaos tests for Redis failover land, that's the integration test surface for the Sentinel client itself.
+- **Concurrent test caveat** — the spy MUST live on `app.run_turn.mark_complete` (not `app.idempotency.mark_complete`) because `run_turn.py` does `from app.idempotency import mark_complete` which binds a local reference. Patching the idempotency-module reference doesn't intercept the run_turn-module reference. Documented inline in the test's import block.
+- **Next:** Day 5 real LLM enablement (per agent definition) — gated on PR #96 (this fixup) + PR #100 (Day-3 safety) + PR #104 (Day-4 soul-file fixup) all merging.
+
+---
+
 ## 2026-05-19 — PR #96 fixup: F10 idempotency + B7 import role comments + DTO→Response rename
 
 ### Action

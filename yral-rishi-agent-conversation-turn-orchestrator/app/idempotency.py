@@ -1,76 +1,118 @@
 # ---------------------------------------------------------------------------
-# idempotency.py — F10 default-on idempotency wiring for POST /v1/turn.
+# idempotency.py — F10 default-on idempotency for POST /v1/turn, C11-aware.
 #
-# ⭐ START HERE: this module exposes ONE async lifecycle pair —
-# `init_redis()` / `close_redis()` — plus two helpers consumed by the
-# run_turn handler:
+# ⭐ START HERE: this module exposes the lifecycle pair + the dedup
+# decision API that the run_turn handler dispatches on per request:
 #
-#   - `compute_idempotency_key(user_id, idempotency_key)` → Redis key str
-#   - `get_cached_response(key)` → MessageResponse JSON dict | None
-#   - `cache_response(key, response_payload)` → None  (24h TTL)
+#   Lifecycle:
+#     - `init_redis()` / `close_redis()`     — FastAPI lifespan wires these
+#     - `get_redis()`                        — accessor for tests + helpers
 #
-# The FastAPI lifespan in `app/main.py` calls `init_redis()` at startup
-# and `close_redis()` on SIGTERM; the run_turn handler calls the two
-# read/write helpers around its happy-path stub response.
+#   Dedup decision (call ONCE at handler entry):
+#     - `acquire_or_check(key, fingerprint)` → IdempotencyDecision
+#         The handler dispatches on `.state`:
+#           "acquired"            → proceed, build response, then mark_complete
+#           "replay_done"         → return `.cached_response` byte-for-byte
+#           "fingerprint_mismatch"→ 409 envelope (same key, different body)
+#           "in_flight_timeout"   → 503 envelope (lock held but never completed)
+#
+#   Handler success path (call ONCE after acquire="acquired" + work):
+#     - `mark_complete(key, fingerprint, response_payload)`
+#
+#   Key construction:
+#     - `compute_idempotency_key(user_id, idempotency_key)`
+#     - `compute_request_fingerprint(body_dict)`
 #
 # WHY F10 — DEFAULT-ON IDEMPOTENCY ON EVERY NON-GET ENDPOINT
 # Per CONSTRAINTS F10 verbatim: "Idempotency-key default-on on all
 # non-GET endpoints; dedupes via Redis 24hr TTL. Per-endpoint opt-out
 # for truly stateless." `POST /v1/turn` is the orchestrator's single
-# non-GET endpoint today; it MUST honour F10 from day 1. Codex PR-#96
-# review caught the original implementation accepting the
-# X-Idempotency-Key header but never reading or writing Redis around it
-# — that's the fix this module ships.
+# non-GET endpoint today; it MUST honour F10 from day 1.
 #
-# WHY THE KEY IS USER-SCOPED
-# Per the Day-2 directive's fixup guidance: scope by `user_id` so two
-# different users with the SAME client-generated key never collide
-# (mobile clients commonly generate keys from a content hash; without
-# user-scoping a popular phrase would dedupe across users).
+# WHY ATOMIC LOCK (SET NX) — Codex PR-#96 round-3 BLOCKER 1b
+# The previous round-2 fix used GET-then-SET, which is RACE-PRONE:
+# two concurrent POSTs with the same key could BOTH miss the cache,
+# BOTH execute the handler, BOTH write the response (second SET
+# silently overwriting the first). F10 + the round-3 contract update
+# at PR #98 commit 31d1dac require atomic dedup against concurrent
+# duplicate requests. We use `SET key value NX EX 86400` as the
+# in-progress lock primitive — the FIRST caller to acquire proceeds;
+# concurrent duplicates poll the key until the first caller marks
+# completion (or fingerprint-mismatch returns 409 immediately).
 #
-# Key shape (verbatim): `idempotency:orchestrator:run-turn:{user_id}:{idempotency_key}`
-# 24h TTL per F10.
+# WHY FINGERPRINT — Codex round-3 BLOCKER 1b
+# Stores `sha256(canonical_json(body))` alongside the cached response
+# so the same idempotency key reused with a DIFFERENT body cannot
+# replay the wrong reply. The orchestrator rejects with 409 instead
+# of returning a stale match. Same fingerprint = byte-identical
+# replay (the F10 happy path).
+#
+# WHY C11 SENTINEL — Codex round-3 BLOCKER 2
+# Per CONSTRAINTS C11 verbatim: "Redis HA via Sentinel (not Cluster).
+# Primary on rishi-4, replica on rishi-5, Sentinel quorum on
+# rishi-4/5/6. All Python services use `redis.sentinel.Sentinel`
+# client to discover current primary." The previous round-2 fix used
+# `redis.asyncio.Redis.from_url(...)` directly — that breaks when
+# Sentinel fails over the primary. This round wires the Sentinel-
+# aware client, reading hosts + master name from `shared-config.yaml`
+# (per C7). Behind a feature flag (`redis_sentinel_enabled`,
+# default-OFF) so laptop dev keeps working with the docker-compose
+# single-primary Redis; a startup WARNING fires when the flag is OFF
+# so the C11 gap stays loud, not silent.
 #
 # WHY redis.asyncio (NOT redis-py sync)
-# Per F12 the runtime stack is asyncio-native. Sync redis-py inside an
-# async handler would block the event loop on every cache check — the
-# composer-side latency budget per E1 is well under 100ms p95, sync
-# Redis adds ~1-3ms blocking time per call which would dominate the
-# pure-Python stub path.
-#
-# WHY MODULE-LEVEL SINGLETON (mirrors `app/db.py` pattern in soul-file-
-# library)
-# `redis.asyncio.Redis` connections are pooled internally; building one
-# pool at app startup + reusing across requests is the documented
-# pattern. The singleton is `None` before init + after close so any
-# out-of-lifecycle access raises a clear error rather than silently
-# using a stale handle.
+# Per F12 the runtime stack is asyncio-native. Sync redis-py inside
+# an async handler would block the event loop on every cache check.
 #
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
 
-# stdlib JSON serialiser — used to encode MessageResponse payloads
-# before writing to Redis + decode them back on cache hit. JSON keeps
-# the wire shape byte-identical to what FastAPI would have serialised
-# itself (so a replay-from-cache response is byte-equal to a fresh one).
+# stdlib async sleep — used by the poll-on-lock loop between Redis
+# GET attempts when another concurrent request holds the lock.
+import asyncio
+
+# stdlib SHA-256 — used by `compute_request_fingerprint` to hash the
+# canonical-JSON of the request body. SHA-256 is plenty for the
+# collision-resistance we need here (catching same-key-different-body).
+import hashlib
+
+# stdlib JSON serialiser — used to canonicalise the body for fingerprint
+# hashing AND to encode/decode the in-progress lock + done states
+# stored in Redis as JSON strings.
 import json
 
 # stdlib logger — emits structured fields the H6 PII-allowlist redactor
-# in `app/logging.py` knows about (idempotency_hit / reason / etc.).
-# We log key METADATA (hit / miss / client_provided_key), never the
-# cached payload itself.
+# in `app/logging.py` knows about (idempotency hit / lock state /
+# Sentinel enablement). We log key METADATA, never the cached payload
+# or the user message content.
 import logging
 
-# `Final` lets us mark module-level constants as immutable to type
-# checkers; both the 24h TTL and the key-prefix string are locked.
-from typing import Final
+# stdlib path helpers — used to locate `shared-config.yaml` at the
+# service folder root from this module's location (`app/idempotency.py`).
+import pathlib
 
-# `redis.asyncio.Redis` is the async Redis client. The async path
-# matches our FastAPI / asyncio runtime stack per F12.
+# `dataclass` + `field` give us a typed return object for
+# `acquire_or_check` so the handler dispatches on `.state` instead of
+# unpacking a multi-value tuple. `Final` marks the module constants
+# as immutable. `Literal` constrains `.state` to the four valid
+# string values the handler dispatches on.
+from dataclasses import dataclass
+from typing import Final, Literal
+
+# `redis.asyncio` is the async Redis client. `Sentinel` is the
+# Sentinel-aware version that discovers the current primary at
+# connect time + reconnects on failover.
 import redis.asyncio as redis_asyncio
+from redis.asyncio.sentinel import Sentinel
 
-# `get_settings()` reads the typed Settings singleton; we need
-# `redis_url` declared in `app/config.py` to build the connection.
+# PyYAML — used to read `shared-config.yaml` once at `init_redis()`
+# time so the Sentinel master name + hosts come from C7's single
+# source-of-truth, not from env vars duplicated per service.
+import yaml
+
+# `get_settings()` reads the typed Settings singleton; we need the
+# `redis_url` fallback + the `redis_sentinel_enabled` feature flag
+# declared in `app/config.py`.
 from app.config import get_settings
 
 
@@ -86,12 +128,62 @@ _IDEMPOTENCY_TTL_SECONDS: Final[int] = 24 * 60 * 60
 
 
 # Key prefix shape — `idempotency:orchestrator:run-turn:{user_id}:{key}`.
-# Stored as a format string so the per-request `compute_*` helper is the
-# one place this shape can drift.
 _KEY_PREFIX: Final[str] = "idempotency:orchestrator:run-turn"
 
 
+# Poll-on-lock retry parameters. 50ms × 20 attempts = 1s ceiling per
+# the Codex round-3 BLOCKER 1b directive. Tuned for a stub handler
+# latency budget (<<1s); Day-5+ real LLM calls may bump the ceiling
+# to match the upstream LLM provider's p99 latency.
+_POLL_INTERVAL_SECONDS: Final[float] = 0.05
+_POLL_MAX_ATTEMPTS: Final[int] = 20
+
+
+# State enum for the in-Redis JSON payload. Two terminal values; the
+# `state` key inside the JSON tells the poll loop whether to keep
+# waiting or harvest the completed response.
+_STATE_IN_PROGRESS: Final[str] = "in_progress"
+_STATE_DONE: Final[str] = "done"
+
+
 _log = logging.getLogger("app.idempotency")
+
+
+# ===========================================================================
+# Decision type
+# ===========================================================================
+
+
+@dataclass(frozen=True)
+class IdempotencyDecision:
+    """Outcome of the per-request dedup lookup.
+
+    WHAT: a typed result object the run_turn handler dispatches on. One
+          field (`state`) covers the four mutually-exclusive outcomes;
+          `cached_response` is populated only on `replay_done`.
+    WHEN: returned by `acquire_or_check(...)` once per request before
+          the handler builds + returns its MessageResponse.
+    WHY:  beats a 4-tuple return value or 4 raises-or-returns — a
+          single dataclass means callsite dispatch is `match decision.state`
+          and adding a fifth state is one new Literal value, not a new
+          throw site.
+    """
+
+    # Which of the four flows the handler should run:
+    #   "acquired"            → no concurrent dup; proceed + mark_complete
+    #   "replay_done"         → cached response in .cached_response; return it
+    #   "fingerprint_mismatch"→ same key, different body → 409 envelope
+    #   "in_flight_timeout"   → lock held but never completed → 503 envelope
+    state: Literal[
+        "acquired",
+        "replay_done",
+        "fingerprint_mismatch",
+        "in_flight_timeout",
+    ]
+
+    # Populated ONLY when `state == "replay_done"`. The handler turns
+    # this back into a `MessageResponse` via `MessageResponse(**...)`.
+    cached_response: dict | None = None
 
 
 # ===========================================================================
@@ -99,53 +191,134 @@ _log = logging.getLogger("app.idempotency")
 # ===========================================================================
 
 
-async def init_redis() -> None:
-    """Open the async Redis connection. Idempotent — safe to call once.
+def _load_redis_section_from_shared_config() -> dict:
+    """Read the `redis:` section of `shared-config.yaml` at the service root.
 
-    WHAT: builds a `redis.asyncio.Redis.from_url(...)` instance pointed
-          at `settings.redis_url`; stores it in the module-level
-          `_redis` variable.
+    WHAT: opens `shared-config.yaml` (two directories up from this
+          module's __file__), parses it, returns `data["redis"]`.
+    WHEN: invoked once at `init_redis()` time when the Sentinel-aware
+          path is enabled.
+    WHY:  C7 says "shared values live in shared-config.yaml" — the
+          Sentinel master name + the 3 sentinel host:port pairs come
+          from there, not from env vars duplicated across services.
+    """
+    config_path = (
+        pathlib.Path(__file__).resolve().parent.parent / "shared-config.yaml"
+    )
+    with config_path.open("r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle) or {}
+    redis_section = data.get("redis", {})
+    if not isinstance(redis_section, dict):
+        raise RuntimeError(
+            "shared-config.yaml `redis:` section is not a mapping; "
+            "check the file syntax."
+        )
+    return redis_section
+
+
+async def init_redis() -> None:
+    """Open the async Redis connection (Sentinel-aware or single-primary).
+
+    WHAT: builds either a Sentinel-aware client (Sentinel discovers
+          current primary at connect time + reconnects on failover)
+          or a single-primary client from `redis_url`. Stores it in
+          the module-level `_redis` variable.
     WHEN: called from the FastAPI lifespan startup hook in `app/main.py`
           BEFORE any request handler runs.
-    WHY:  central init means every callsite sees the same pooled client
-          + we can teardown cleanly via `close_redis()` on SIGTERM.
+    WHY:  central init means every callsite sees the same pooled
+          client + we can teardown cleanly via `close_redis()` on
+          SIGTERM. The flag-gated fallback keeps laptop dev working
+          while the cluster's Sentinel hostnames stabilise.
 
     Raises:
-        ValueError when `redis_url` is empty (config-load already
-        validated, so this is belt-and-suspenders).
+        RuntimeError when sentinel-enabled but the shared-config.yaml
+        `redis:` section is missing the master name or hosts.
     """
     global _redis
 
     if _redis is not None:
-        # Already initialised — idempotent no-op. Helpful for tests
-        # that spin the lifespan up + down multiple times.
+        # Already initialised — idempotent no-op (helpful for tests that
+        # spin the lifespan up + down multiple times).
         _log.debug("init_redis called but already initialised; skipping")
         return
 
     settings = get_settings()
-    url = settings.redis_url
 
-    if not url:
-        raise ValueError(
-            "redis_url is empty — set the REDIS_URL env var (or accept "
-            "the docker-compose default) before starting the orchestrator."
+    if settings.redis_sentinel_enabled:
+        # C11-compliant Sentinel path.
+        redis_section = _load_redis_section_from_shared_config()
+        master_name = redis_section.get("sentinel_master_name", "")
+        raw_hosts = redis_section.get("sentinel_hosts", [])
+
+        if not master_name or not raw_hosts:
+            raise RuntimeError(
+                "redis_sentinel_enabled=True but shared-config.yaml's "
+                "`redis.sentinel_master_name` or `redis.sentinel_hosts` "
+                "is empty. Populate from the cluster bootstrap before "
+                "flipping the flag on."
+            )
+
+        # Sentinel expects a list of (host, port) tuples. The YAML
+        # stores each entry as `{host: ..., port: ...}` for readability.
+        sentinel_targets = [
+            (entry["host"], int(entry["port"]))
+            for entry in raw_hosts
+        ]
+
+        sentinel_client = Sentinel(
+            sentinel_targets,
+            socket_timeout=0.5,
+            decode_responses=True,
         )
 
-    # `decode_responses=True` makes the client return Python `str` from
-    # GETs instead of `bytes`. Our cached payloads are JSON strings;
-    # decoding at the client boundary keeps the run_turn handler code
-    # `json.loads` on a real str.
+        # `master_for` returns a Redis client that re-resolves the
+        # current primary on every command (no stale-primary bug after
+        # failover).
+        _redis = sentinel_client.master_for(
+            master_name,
+            decode_responses=True,
+        )
+        _log.info(
+            "redis_client_initialised_via_sentinel",
+            extra={
+                "master_name": master_name,
+                "sentinel_count": len(sentinel_targets),
+            },
+        )
+        return
+
+    # Single-primary fallback path (laptop dev / docker-compose).
+    url = settings.redis_url
+    if not url:
+        raise RuntimeError(
+            "redis_url is empty AND redis_sentinel_enabled is False — "
+            "set REDIS_URL or flip redis_sentinel_enabled=True."
+        )
+
     _redis = redis_asyncio.Redis.from_url(url, decode_responses=True)
-    _log.info("redis client initialised", extra={"url_scheme": url.split("://", 1)[0]})
+
+    # LOUD warning so the C11 gap is visible in startup logs whenever
+    # this fallback path is taken. CI / prod must run with the
+    # Sentinel flag ON; this warning is the operator-side signal.
+    _log.warning(
+        "c11_violation_single_primary_redis_no_sentinel",
+        extra={
+            "url_scheme": url.split("://", 1)[0],
+            "remediation": (
+                "set redis_sentinel_enabled=True + ensure shared-config.yaml "
+                "redis.sentinel_master_name + sentinel_hosts are populated "
+                "from the cluster bootstrap"
+            ),
+        },
+    )
 
 
 async def close_redis() -> None:
     """Close the Redis client cleanly.
 
-    WHAT: awaits `_redis.aclose()` to flush pending commands + tear down
-          the connection pool, then sets `_redis = None`.
-    WHEN: called from the FastAPI lifespan shutdown hook on SIGTERM
-          (Swarm rolling update, scale-down, manual stop).
+    WHAT: awaits `_redis.aclose()` to flush pending commands + tear
+          down the connection pool, then sets `_redis = None`.
+    WHEN: called from the FastAPI lifespan shutdown hook on SIGTERM.
     WHY:  uncleaned Redis connections persist on the server side until
           their idle timeout; clean shutdown == faster Swarm rolls.
     """
@@ -156,18 +329,18 @@ async def close_redis() -> None:
 
     await _redis.aclose()
     _redis = None
-    _log.info("redis client closed")
+    _log.info("redis_client_closed")
 
 
 def get_redis() -> redis_asyncio.Redis:
     """Return the initialised async Redis client.
 
     WHAT: returns the module-level `_redis`. Raises if init hasn't run.
-    WHEN: called from `get_cached_response` + `cache_response` (any code
-          path doing a cache lookup or write).
-    WHY:  central accessor lets a future refactor swap implementations
-          (e.g. Sentinel-aware client per C11) without touching
-          callsites.
+    WHEN: called from `acquire_or_check` + `mark_complete` (any code
+          path doing a Redis read or write).
+    WHY:  central accessor — a future refactor that swaps the client
+          implementation (e.g. ACL-aware per-service Redis) only
+          touches `init_redis` + `get_redis`.
     """
     if _redis is None:
         raise RuntimeError(
@@ -178,7 +351,7 @@ def get_redis() -> redis_asyncio.Redis:
 
 
 # ===========================================================================
-# Key construction
+# Key + fingerprint construction
 # ===========================================================================
 
 
@@ -193,73 +366,219 @@ def compute_idempotency_key(user_id: str, idempotency_key: str) -> str:
     return f"{_KEY_PREFIX}:{user_id}:{idempotency_key}"
 
 
-# ===========================================================================
-# Cache read / write
-# ===========================================================================
+def compute_request_fingerprint(body_payload: dict) -> str:
+    """Return a SHA-256 hex digest of the canonical-JSON request body.
 
-
-async def get_cached_response(key: str) -> dict | None:
-    """Return the cached MessageResponse payload if any, else None.
-
-    WHAT: GET the Redis key; parse the value as JSON; return the dict.
-          `None` on cache miss OR on JSON-decode failure (corrupt cache
-          entry — we let the next call repopulate it).
-    WHEN: called at the top of the run_turn handler, before any work.
-    WHY:  cache HIT = no further LLM call (Day-5+) + byte-identical
-          response replay. Cache MISS = process normally + write through.
+    WHAT: serialises `body_payload` to canonical JSON
+          (sort_keys=True + compact separators) and hashes via SHA-256.
+          The hex digest goes into the Redis lock payload so a
+          different body with the same idempotency key produces a
+          different fingerprint and triggers the 409 path.
+    WHEN: called once per request by the run_turn handler before the
+          dedup decision.
+    WHY:  canonicalising key order means two equivalent JSON dicts
+          (which Python serialises with arbitrary key order) produce
+          the SAME fingerprint. Without that, the test for byte-equal
+          replay between two POSTs would flake.
     """
-    cached_str = await get_redis().get(key)
-    if cached_str is None:
-        return None
+    canonical_json = json.dumps(
+        body_payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
 
-    try:
-        return json.loads(cached_str)
-    except json.JSONDecodeError:
-        # Corrupt entry — treat as miss + let the next call repopulate.
-        # Don't raise; falling through to fresh processing is the safe
-        # behaviour. Log so we can alert if this happens in volume.
-        _log.warning(
-            "idempotency_cache_corrupt",
-            extra={"key_suffix": key.rsplit(":", 1)[-1]},
+
+# ===========================================================================
+# Dedup decision — SET NX in-progress lock + poll-on-held + fingerprint check
+# ===========================================================================
+
+
+async def acquire_or_check(
+    redis_key: str,
+    fingerprint: str,
+) -> IdempotencyDecision:
+    """Atomic-acquire the in-progress lock or harvest the prior result.
+
+    WHAT: attempts `SET redis_key <in-progress-payload> NX EX 86400`.
+          On acquire → returns `acquired`. On lock-held → polls the
+          key with bounded retry until the value transitions to
+          `done` (returns `replay_done` + cached payload), the
+          fingerprint mismatches (returns `fingerprint_mismatch`),
+          or the poll ceiling is hit (returns `in_flight_timeout`).
+    WHEN: called once at the top of every run_turn handler invocation
+          (after the gates fire + after the X-Idempotency-Key header
+          required check).
+    WHY:  atomic-by-design dedup against concurrent duplicates — F10
+          + Codex round-3 BLOCKER 1b. The single `SET NX` is the only
+          critical section; everything after it is observation, not
+          a second write.
+
+    Returns:
+        IdempotencyDecision — see the dataclass docstring for the four
+        possible `state` values + when `cached_response` is populated.
+    """
+    redis_client = get_redis()
+
+    in_progress_payload = json.dumps(
+        {
+            "state": _STATE_IN_PROGRESS,
+            "fingerprint": fingerprint,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+    # The critical section — atomic SET-NX. Returns True (or non-None
+    # in newer redis-py) on acquire; None / False when the key already
+    # exists. We treat any truthy result as acquired.
+    acquired = await redis_client.set(
+        redis_key,
+        in_progress_payload,
+        nx=True,
+        ex=_IDEMPOTENCY_TTL_SECONDS,
+    )
+
+    if acquired:
+        _log.info(
+            "idempotency_lock_acquired",
+            extra={"redis_key_suffix": redis_key.rsplit(":", 1)[-1]},
         )
-        return None
+        return IdempotencyDecision(state="acquired")
+
+    # Lock held by someone else — poll the key until it transitions
+    # to done (or fingerprint mismatches, or we hit the ceiling).
+    _log.info(
+        "idempotency_lock_held_polling",
+        extra={"redis_key_suffix": redis_key.rsplit(":", 1)[-1]},
+    )
+
+    for attempt_index in range(_POLL_MAX_ATTEMPTS):
+        current_value_text = await redis_client.get(redis_key)
+
+        # Lock might have expired between SET-NX and GET (very rare —
+        # 24h TTL); keep polling to give the next-write request time
+        # to land. The poll ceiling still applies.
+        if current_value_text is not None:
+            try:
+                parsed_lock_payload = json.loads(current_value_text)
+            except json.JSONDecodeError:
+                # Corrupt entry — treat as miss + log so we can alert
+                # if it happens in volume.
+                _log.warning(
+                    "idempotency_lock_corrupt",
+                    extra={"redis_key_suffix": redis_key.rsplit(":", 1)[-1]},
+                )
+                parsed_lock_payload = None
+
+            if parsed_lock_payload is not None:
+                stored_fingerprint = parsed_lock_payload.get("fingerprint")
+
+                # Fingerprint mismatch — same idempotency key reused
+                # with a different body. Reject 409 immediately; don't
+                # wait for the holder to complete (the cached payload
+                # would be the wrong reply for THIS request).
+                if stored_fingerprint != fingerprint:
+                    _log.warning(
+                        "idempotency_fingerprint_mismatch",
+                        extra={
+                            "redis_key_suffix": redis_key.rsplit(":", 1)[-1],
+                        },
+                    )
+                    return IdempotencyDecision(state="fingerprint_mismatch")
+
+                # Fingerprint matches → check state.
+                if parsed_lock_payload.get("state") == _STATE_DONE:
+                    cached_response = parsed_lock_payload.get("response")
+                    _log.info(
+                        "idempotency_replay_done",
+                        extra={
+                            "redis_key_suffix": redis_key.rsplit(":", 1)[-1],
+                        },
+                    )
+                    return IdempotencyDecision(
+                        state="replay_done",
+                        cached_response=cached_response,
+                    )
+
+                # state == "in_progress" + matching fingerprint —
+                # another request for the same body is still in
+                # flight. Sleep + retry GET.
+
+        # Sleep before next poll. Don't sleep on the LAST attempt
+        # (saves one sleep before the timeout return) — but the cost
+        # is negligible and skipping makes the loop body branchier.
+        # Per A2.1 keep the loop body simple.
+        await asyncio.sleep(_POLL_INTERVAL_SECONDS)
+
+    _log.warning(
+        "idempotency_in_flight_timeout",
+        extra={
+            "redis_key_suffix": redis_key.rsplit(":", 1)[-1],
+            "polled_attempts": _POLL_MAX_ATTEMPTS,
+        },
+    )
+    return IdempotencyDecision(state="in_flight_timeout")
 
 
-async def cache_response(key: str, response_payload: dict) -> None:
-    """Write the MessageResponse payload to Redis under `key` with 24h TTL.
+async def mark_complete(
+    redis_key: str,
+    fingerprint: str,
+    response_payload: dict,
+) -> None:
+    """Overwrite the in-progress lock with the completed response.
 
-    WHAT: SET the Redis key to `json.dumps(response_payload)` with
-          EX=86400.
-    WHEN: called from the run_turn handler AFTER a successful (200)
-          processing path, before returning.
-    WHY:  F10 verbatim — "dedupes via Redis 24hr TTL". Same payload
-          replays on every subsequent same-key call in the 24h window.
-
-    Args:
-        key: the fully-qualified Redis key (use `compute_idempotency_key`).
-        response_payload: the serialisable MessageResponse dict.
+    WHAT: SETs the key to `{state:done, fingerprint, response}` with a
+          fresh 24h TTL. Overwrites the in-progress payload the
+          acquiring caller wrote earlier.
+    WHEN: called from the run_turn handler AFTER the happy-path
+          MessageResponse build, before returning to the caller.
+    WHY:  transitions the in-progress lock to the done-state every
+          concurrent waiter will harvest via the poll loop in
+          `acquire_or_check`.
     """
-    # `default=str` handles any non-JSON-native type (Pydantic models'
-    # `.model_dump()` already returns plain dicts but a future field
-    # added without thinking might be a datetime; default=str keeps the
-    # write path resilient).
-    serialised = json.dumps(response_payload, default=str)
+    redis_client = get_redis()
 
-    # `EX=` sets TTL in seconds. `set` returns True on success — we
-    # don't need to check because Redis errors raise.
-    await get_redis().set(key, serialised, ex=_IDEMPOTENCY_TTL_SECONDS)
+    done_payload = json.dumps(
+        {
+            "state": _STATE_DONE,
+            "fingerprint": fingerprint,
+            "response": response_payload,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+
+    # No `nx=True` here — we WANT to overwrite the in-progress lock we
+    # set earlier. Fresh `ex=` so the done-state gets the full 24h
+    # window (otherwise a slow handler would leave very little TTL for
+    # the replay window).
+    await redis_client.set(
+        redis_key,
+        done_payload,
+        ex=_IDEMPOTENCY_TTL_SECONDS,
+    )
+
+    _log.info(
+        "idempotency_marked_complete",
+        extra={"redis_key_suffix": redis_key.rsplit(":", 1)[-1]},
+    )
 
 
 # ===========================================================================
 # RELATED FILES:
-#   config.py                 — `redis_url` setting
+#   config.py                 — `redis_url` + `redis_sentinel_enabled` settings
 #   main.py                   — init_redis() / close_redis() in lifespan
-#   run_turn.py               — consumer (read on entry, write on success)
-#   models/turn.py            — MessageResponse the cache stores
+#   run_turn.py               — consumer (acquire_or_check + mark_complete)
+#   models/turn.py            — `MessageResponse` the response_payload models
+#   ../../shared-config.yaml  — `redis.sentinel_master_name` + `sentinel_hosts`
+#                              (per C7); loaded at init_redis when the
+#                              sentinel-enabled flag is on
 #   ../../tests/test_run_turn.py
-#                            — two-call replay test (F10 BLOCKER 1 fix
-#                              gate from Codex PR-#96 review)
+#                            — F10 + atomic-dedup + 409 + 503 + 400 coverage
 #   ../../../yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/interface-contracts/01-internal-rpc-contracts.md
-#                            — coordinator-owned contract reaffirming
-#                              X-Idempotency-Key is REQUIRED day 1
+#                            — coordinator-owned contract at PR #98 31d1dac
+#                              spelling out C11 + atomic dedup + 400 reject
 # ===========================================================================
