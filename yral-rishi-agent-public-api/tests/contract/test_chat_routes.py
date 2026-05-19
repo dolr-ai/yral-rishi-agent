@@ -4,7 +4,7 @@
 # ⭐ START HERE: every test below asserts ONE of three properties:
 #   1. The response wraps `data` in the ApiResponse envelope (the 4-field
 #      shape {success, msg, error, data}).
-#   2. The DTO inside `data` matches the contract field-for-field.
+#   2. The response model inside `data` matches the contract field-for-field.
 #   3. The Day-2 placeholder flag-off behavior returns 503 with an
 #      envelope-shaped error body.
 #
@@ -17,10 +17,9 @@
 #
 # WHY 3 TESTS PER ENDPOINT (NOT 5)?
 # Per the agent definition's "3-5 contract-fixture tests per endpoint"
-# range. 3 covers: envelope shape, DTO field presence, flag-gate path.
-# Going to 5 here would mostly add field-type tests Pydantic already
-# enforces at parse time (redundant per A2.1 — don't test what the
-# library guarantees).
+# range. 3 covers: envelope shape, response-model field presence,
+# flag-gate path. Going to 5 here would mostly add field-type tests
+# Pydantic already enforces at parse time (redundant per A2.1).
 #
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
@@ -45,7 +44,17 @@ from starlette.websockets import WebSocketDisconnect
 
 
 def test_create_conversation_returns_envelope_shape(client):
-    """Envelope contract: 4 fields present + correct types."""
+    """Envelope contract: 4 fields present + correct types.
+
+    WHAT: POSTs a valid ai_chat create-conversation body + asserts the
+          response body has exactly the 4 envelope keys (success, msg,
+          error, data) with their contract-locked Python types.
+    WHEN: happy-path with the placeholder flag ON; the create handler
+          runs its stub body + emits a full envelope.
+    WHY:  envelope shape is load-bearing per A8 — mobile's parser
+          unwraps these 4 fields on EVERY endpoint, so any drift
+          (e.g., a typo in "succes") breaks every screen on the app.
+    """
     response = client.post(
         "/api/v1/chat/conversations",
         json={"ai_influencer_id": "test-influencer-id", "conversation_type": "ai_chat"},
@@ -62,7 +71,17 @@ def test_create_conversation_returns_envelope_shape(client):
 
 
 def test_create_conversation_data_matches_conversation_response(client):
-    """DTO contract: every ConversationResponse field present + right type."""
+    """ConversationResponse contract: every locked field present + typed.
+
+    WHAT: asserts each ConversationResponse field declared in
+          interface-contracts/00-api-contract.md is present + has the
+          right Python type. Also asserts `ai_influencer_id` echoes
+          the request body (not a hardcoded stub value).
+    WHEN: happy-path with the placeholder flag ON.
+    WHY:  guards against silent shape drift — if a future PR drops a
+          field or changes a type, mobile's per-row inbox renderer
+          would render blank cells or crash on a missing key.
+    """
     response = client.post(
         "/api/v1/chat/conversations",
         json={"ai_influencer_id": "test-influencer-id", "conversation_type": "ai_chat"},
@@ -85,11 +104,16 @@ def test_create_conversation_data_matches_conversation_response(client):
 
 
 def test_create_conversation_ai_chat_echoes_mode_and_influencer(client):
-    """ai_chat mode → response echoes conversation_type='ai_chat' + influencer.
+    """ai_chat mode → response echoes conversation_type + influencer.
 
-    Codex PR #97 BLOCKER 3: previously the stub always returned
-    "ai_chat" regardless of input; now it echoes whichever mode the
-    client requested.
+    WHAT: POSTs an ai_chat request + asserts the response echoes both
+          the mode AND the ai_influencer_id (NOT a hardcoded
+          "ai_chat" / stub-influencer-id).
+    WHEN: happy-path for the ai_chat branch of the per-mode validator
+          (placeholder flag ON).
+    WHY:  Codex PR #97 BLOCKER 3 — pre-fixup the stub always returned
+          "ai_chat" regardless of input. This test guards against the
+          regression returning by asserting echo-through.
     """
     response = client.post(
         "/api/v1/chat/conversations",
@@ -103,7 +127,15 @@ def test_create_conversation_ai_chat_echoes_mode_and_influencer(client):
 
 
 def test_create_conversation_human_chat_echoes_mode_and_participant(client):
-    """human_chat mode → response echoes conversation_type + participant_b_id."""
+    """human_chat mode → response echoes conversation_type + participant.
+
+    WHAT: POSTs a human_chat request with `participant_b_id` set +
+          asserts the response echoes the mode + participant.
+    WHEN: happy-path for the human_chat branch of the per-mode validator.
+    WHY:  E5 mandates H2H chat ships from day 1; this test proves the
+          server correctly routes the H2H mode (a real user opening
+          a thread with another real user, not an AI).
+    """
     response = client.post(
         "/api/v1/chat/conversations",
         json={"participant_b_id": "user-B", "conversation_type": "human_chat"},
@@ -116,9 +148,19 @@ def test_create_conversation_human_chat_echoes_mode_and_participant(client):
 
 
 def test_create_conversation_chat_as_human_echoes_mode_and_influencer(client):
-    """chat_as_human mode → echoes mode + ai_influencer_id (per the file
-    docstring's interpretation: chat_as_human is the AI-Influencer-
-    adopts-human-persona mode, still anchored to an AI Influencer)."""
+    """chat_as_human mode → response echoes mode + ai_influencer_id.
+
+    WHAT: POSTs a chat_as_human request + asserts the response echoes
+          mode + influencer id (per the file docstring interpretation:
+          chat_as_human is the AI-Influencer-adopts-human-persona
+          mode, still anchored to an AI Influencer).
+    WHEN: happy-path for the chat_as_human branch of the per-mode
+          validator.
+    WHY:  per B4 "Chat as Human" is exact-phrase product vocab;
+          per E5 it ships from day 1 in one schema. This test
+          ensures the third mode option doesn't silently fail to
+          route distinctly from ai_chat.
+    """
     response = client.post(
         "/api/v1/chat/conversations",
         json={"ai_influencer_id": "infl-X", "conversation_type": "chat_as_human"},
@@ -132,9 +174,15 @@ def test_create_conversation_chat_as_human_echoes_mode_and_influencer(client):
 def test_create_conversation_rejects_unknown_mode(client):
     """Unknown conversation_type → envelope-shaped 400 (BLOCKER 2 + 3).
 
-    Pre-BLOCKER-3 the field accepted any string; the Literal tightening
-    means unknown modes fail Pydantic validation → main.py's envelope
-    handler returns HTTP 400 with error="validation_failed".
+    WHAT: POSTs a conversation_type the Literal doesn't accept;
+          asserts the response is HTTP 400 with envelope
+          `error="validation_failed"`.
+    WHEN: malformed input — client sends a typo / future-not-yet-
+          locked mode.
+    WHY:  pre-BLOCKER-3 the field accepted any string so unknown modes
+          silently routed as ai_chat (the default). The Literal
+          tightening + envelope handler ensure rejection is loud +
+          parseable per the locked contract shape.
     """
     response = client.post(
         "/api/v1/chat/conversations",
@@ -146,7 +194,17 @@ def test_create_conversation_rejects_unknown_mode(client):
 
 
 def test_create_conversation_rejects_ai_chat_without_influencer(client):
-    """ai_chat WITHOUT ai_influencer_id → 400 envelope (BLOCKER 3 validator)."""
+    """ai_chat WITHOUT ai_influencer_id → 400 envelope (BLOCKER 3).
+
+    WHAT: POSTs an ai_chat body missing the required ai_influencer_id;
+          asserts envelope-shaped 400 + validation_failed.
+    WHEN: malformed input — client picks ai_chat but forgets to attach
+          the influencer (would otherwise silently misroute at the
+          orchestrator).
+    WHY:  the per-mode validator in CreateConversationRequest catches
+          this before any handler logic runs; this test guards against
+          regression of that validation.
+    """
     response = client.post(
         "/api/v1/chat/conversations",
         json={"conversation_type": "ai_chat"},
@@ -156,7 +214,15 @@ def test_create_conversation_rejects_ai_chat_without_influencer(client):
 
 
 def test_create_conversation_rejects_human_chat_without_participant(client):
-    """human_chat WITHOUT participant_b_id → 400 envelope (BLOCKER 3 validator)."""
+    """human_chat WITHOUT participant_b_id → 400 envelope (BLOCKER 3).
+
+    WHAT: POSTs a human_chat body missing the required participant_b_id;
+          asserts envelope-shaped 400.
+    WHEN: malformed input — client picks H2H but forgets to attach
+          the other user.
+    WHY:  symmetric to the ai_chat / influencer rule; the per-mode
+          validator must equally enforce the H2H requirement.
+    """
     response = client.post(
         "/api/v1/chat/conversations",
         json={"conversation_type": "human_chat"},
@@ -166,7 +232,17 @@ def test_create_conversation_rejects_human_chat_without_participant(client):
 
 
 def test_create_conversation_rejects_ai_chat_with_participant_b(client):
-    """ai_chat with BOTH participant_b_id AND ai_influencer_id → 400 envelope."""
+    """ai_chat with BOTH IDs → 400 envelope (BLOCKER 3 validator).
+
+    WHAT: POSTs an ai_chat body that ALSO sets participant_b_id
+          (illegal combo); asserts envelope-shaped 400.
+    WHEN: malformed input — client conflates ai_chat with an H2H
+          participant (would otherwise leak the participant to the
+          orchestrator + cause confused routing).
+    WHY:  the validator's "MUST be None for non-matching modes" rules
+          need to fire on every off-mode field, not just on missing
+          required ones. This test covers the over-supplied case.
+    """
     response = client.post(
         "/api/v1/chat/conversations",
         json={
@@ -180,7 +256,17 @@ def test_create_conversation_rejects_ai_chat_with_participant_b(client):
 
 
 def test_create_conversation_returns_503_when_flag_off(client_flag_off):
-    """Production-safety contract: stub responses don't leak."""
+    """Production-safety contract: stub responses don't leak.
+
+    WHAT: POSTs a valid create-conversation body with the placeholder
+          flag OFF; asserts the response is HTTP 503 with envelope
+          `error="service_unavailable"`.
+    WHEN: production-default state (flag default-False) — the
+          placeholder body must NOT be served.
+    WHY:  guards the production-safety contract that motivated the
+          flag in the first place: a half-built v2 cluster cannot
+          accidentally serve fake responses to real mobile traffic.
+    """
     response = client_flag_off.post(
         "/api/v1/chat/conversations",
         json={"ai_influencer_id": "test-influencer-id", "conversation_type": "ai_chat"},
@@ -198,7 +284,15 @@ def test_create_conversation_returns_503_when_flag_off(client_flag_off):
 
 
 def test_list_conversations_v1_returns_envelope_with_list(client):
-    """v1 inbox: envelope wraps a list[ConversationResponse]."""
+    """v1 inbox: envelope wraps a list[ConversationResponse].
+
+    WHAT: GETs the v1 inbox; asserts envelope shape + the data is a
+          non-empty list (stubs ship at least one).
+    WHEN: happy-path with placeholder flag ON.
+    WHY:  the inbox is the entry point for every chat flow; if its
+          shape drifts, the mobile inbox screen breaks before any
+          per-conversation drill-down even loads.
+    """
     response = client.get("/api/v1/chat/conversations")
     assert response.status_code == 200
     body = response.json()
@@ -208,7 +302,15 @@ def test_list_conversations_v1_returns_envelope_with_list(client):
 
 
 def test_list_conversations_v1_each_item_matches_response(client):
-    """v1 inbox: every item in the list has the ConversationResponse shape."""
+    """v1 inbox: every item in the list has the ConversationResponse shape.
+
+    WHAT: GETs the inbox + iterates the list, asserting each item
+          carries the required fields.
+    WHEN: happy-path with the flag ON.
+    WHY:  even if the LIST returns OK, mobile renders each item by
+          field; a missing field on one row = blank or crash. This
+          asserts uniformity across all returned rows.
+    """
     response = client.get("/api/v1/chat/conversations")
     for conv in response.json()["data"]:
         assert "id" in conv
@@ -219,7 +321,14 @@ def test_list_conversations_v1_each_item_matches_response(client):
 
 
 def test_list_conversations_v1_returns_503_when_flag_off(client_flag_off):
-    """v1 inbox: flag-off path returns 503 service_unavailable."""
+    """v1 inbox: flag-off path returns 503 service_unavailable.
+
+    WHAT: GETs the v1 inbox with the placeholder flag OFF; asserts
+          envelope-shaped 503.
+    WHEN: production-default state.
+    WHY:  same production-safety contract as the create endpoint —
+          inbox stubs must not leak to mobile traffic.
+    """
     response = client_flag_off.get("/api/v1/chat/conversations")
     assert response.status_code == 503
     assert response.json()["error"] == "service_unavailable"
@@ -231,7 +340,16 @@ def test_list_conversations_v1_returns_503_when_flag_off(client_flag_off):
 
 
 def test_send_message_returns_envelope_with_assistant_reply(client):
-    """Send-message: envelope success + assistant reply in data."""
+    """Send-message: envelope success + assistant reply in data.
+
+    WHAT: POSTs a chat message + asserts the response envelope has
+          `data.role="assistant"` (the stub always produces an
+          assistant-role reply).
+    WHEN: happy-path with placeholder flag ON.
+    WHY:  the chat-send is the hot path mobile hits dozens of times per
+          session; assistant-role + envelope-shape are the two
+          assertions mobile pattern-matches on for bubble rendering.
+    """
     response = client.post(
         "/api/v1/chat/conversations/conv-id-1/messages",
         json={"content": "Hello", "client_message_id": "client-msg-1"},
@@ -243,8 +361,18 @@ def test_send_message_returns_envelope_with_assistant_reply(client):
 
 
 def test_send_message_echoes_conversation_id_and_client_message_id(client):
-    """Send-message: stub echoes conversation_id + client_message_id
-    so mobile's local dedup matches the response to the outgoing request."""
+    """Send-message: stub echoes conversation_id + client_message_id.
+
+    WHAT: POSTs a message + asserts the response data includes the
+          same conversation_id (from the URL path) AND the same
+          client_message_id (from the request body).
+    WHEN: happy-path with placeholder flag ON.
+    WHY:  mobile's local dedup logic depends on the assistant reply
+          carrying the SAME client_message_id back so it can match
+          the reply to the outgoing request. The conversation_id echo
+          is needed for mobile to attach the assistant message to the
+          right thread.
+    """
     response = client.post(
         "/api/v1/chat/conversations/conv-id-XYZ/messages",
         json={"content": "test", "client_message_id": "client-msg-XYZ"},
@@ -255,7 +383,14 @@ def test_send_message_echoes_conversation_id_and_client_message_id(client):
 
 
 def test_send_message_data_matches_message_response(client):
-    """Send-message: every MessageResponse field present."""
+    """Send-message: every MessageResponse field present + typed.
+
+    WHAT: POSTs a message + asserts each MessageResponse field
+          declared in the contract is present + the right type.
+    WHEN: happy-path with placeholder flag ON.
+    WHY:  guards against silent shape drift on the message wire format
+          — mobile's chat-bubble renderer reads every field listed.
+    """
     response = client.post(
         "/api/v1/chat/conversations/conv-id-1/messages",
         json={"content": "Hello"},
@@ -271,7 +406,14 @@ def test_send_message_data_matches_message_response(client):
 
 
 def test_send_message_returns_503_when_flag_off(client_flag_off):
-    """Send-message: flag-off path returns 503."""
+    """Send-message: flag-off path returns 503.
+
+    WHAT: POSTs a message with placeholder flag OFF; asserts 503.
+    WHEN: production-default state.
+    WHY:  send-message is THE chat hot path; if the production-safety
+          gate ever silently flipped, real users would receive stub
+          assistant replies — this test guards the contract.
+    """
     response = client_flag_off.post(
         "/api/v1/chat/conversations/conv-id-1/messages",
         json={"content": "test"},
@@ -285,7 +427,13 @@ def test_send_message_returns_503_when_flag_off(client_flag_off):
 
 
 def test_list_messages_returns_envelope_with_list(client):
-    """Paginated history: envelope wraps a list[MessageResponse]."""
+    """Paginated history: envelope wraps a list[MessageResponse].
+
+    WHAT: GETs the message history + asserts envelope wraps a list.
+    WHEN: happy-path with placeholder flag ON.
+    WHY:  mobile's transcript renderer iterates this list; envelope-
+          wrap is non-negotiable per A8.
+    """
     response = client.get("/api/v1/chat/conversations/conv-id-1/messages")
     body = response.json()
     assert body["success"] is True
@@ -293,7 +441,14 @@ def test_list_messages_returns_envelope_with_list(client):
 
 
 def test_list_messages_each_item_matches_message_response(client):
-    """Paginated history: each message has the MessageResponse shape."""
+    """Paginated history: each item has the MessageResponse shape.
+
+    WHAT: GETs message history + asserts each item carries the
+          required fields.
+    WHEN: happy-path with placeholder flag ON.
+    WHY:  same uniformity argument as the conversation list test —
+          mobile renders each message by field.
+    """
     response = client.get("/api/v1/chat/conversations/conv-id-1/messages")
     for msg in response.json()["data"]:
         assert "id" in msg
@@ -303,8 +458,16 @@ def test_list_messages_each_item_matches_message_response(client):
 
 
 def test_list_messages_accepts_pagination_query_params(client):
-    """Paginated history: limit + before query params are accepted (even
-    though Day-2 ignores them — Day-4 wires them into the real query)."""
+    """Paginated history: limit + before query params accepted (200).
+
+    WHAT: GETs message history with `?limit=5&before=msg-id-1`;
+          asserts HTTP 200 (params accepted, not 4xx-rejected).
+    WHEN: happy-path with placeholder flag ON. Day-2 IGNORES the
+          values; Day-4 wires them into the real query.
+    WHY:  the route signature must accept the contract's pagination
+          params from day 1 even though the stub doesn't honor them
+          — mobile sends them on every page-up event.
+    """
     response = client.get(
         "/api/v1/chat/conversations/conv-id-1/messages?limit=5&before=msg-id-1",
     )
@@ -317,7 +480,16 @@ def test_list_messages_accepts_pagination_query_params(client):
 
 
 def test_mark_read_returns_envelope_with_empty_data(client):
-    """Mark-read: envelope success + empty {} data per the contract."""
+    """Mark-read: envelope success + empty {} data per the contract.
+
+    WHAT: POSTs a mark-read request + asserts envelope success + the
+          contract-locked empty-object data shape.
+    WHEN: happy-path with placeholder flag ON.
+    WHY:  mark-read is a fire-and-forget action; mobile reads the
+          envelope to confirm 200 + ignores the data body, but the
+          contract requires the empty-object shape so future fields
+          can be added as a strict superset.
+    """
     response = client.post(
         "/api/v1/chat/conversations/conv-id-1/read",
         json={"last_read_message_id": "msg-id-1"},
@@ -330,12 +502,17 @@ def test_mark_read_returns_envelope_with_empty_data(client):
 def test_mark_read_rejects_missing_body_field(client):
     """Mark-read: Pydantic validation now returns envelope-shaped 400.
 
-    Codex PR #97 BLOCKER 2: the locked contract requires every endpoint
-    (including validation failures) to return the ApiResponse envelope.
-    main.py's `envelope_validation_error_handler` catches the
-    RequestValidationError + emits HTTP 400 with
-    `error="validation_failed"` (NOT FastAPI's default 422 +
-    {"detail": [...]}).
+    WHAT: POSTs a mark-read body missing the required
+          `last_read_message_id`; asserts HTTP 400 with envelope
+          `error="validation_failed"` AND
+          `data.errors` containing the per-field detail.
+    WHEN: malformed input.
+    WHY:  Codex PR #97 BLOCKER 2 — the locked contract requires
+          every endpoint (incl. validation failures) to return the
+          envelope. main.py's `envelope_validation_error_handler`
+          catches RequestValidationError + emits HTTP 400 with
+          `error="validation_failed"` instead of FastAPI's default
+          422 + `{"detail": [...]}`.
     """
     response = client.post(
         "/api/v1/chat/conversations/conv-id-1/read",
@@ -352,7 +529,15 @@ def test_mark_read_rejects_missing_body_field(client):
 
 
 def test_mark_read_returns_503_when_flag_off(client_flag_off):
-    """Mark-read: flag-off path returns 503."""
+    """Mark-read: flag-off path returns 503.
+
+    WHAT: POSTs a valid mark-read body with the placeholder flag OFF;
+          asserts HTTP 503.
+    WHEN: production-default state.
+    WHY:  even no-op endpoints get the production-safety gate so the
+          server can't pretend to have marked reads when there's no
+          real persistence behind the call.
+    """
     response = client_flag_off.post(
         "/api/v1/chat/conversations/conv-id-1/read",
         json={"last_read_message_id": "msg-id-1"},
@@ -366,7 +551,14 @@ def test_mark_read_returns_503_when_flag_off(client_flag_off):
 
 
 def test_delete_conversation_returns_envelope_with_empty_data(client):
-    """Delete: envelope success + empty {} data."""
+    """Delete: envelope success + empty {} data.
+
+    WHAT: DELETEs a conversation + asserts envelope success + empty
+          data shape.
+    WHEN: happy-path with placeholder flag ON.
+    WHY:  swipe-to-delete is a user-facing inbox interaction; mobile
+          relies on success=true to remove the row from local state.
+    """
     response = client.delete("/api/v1/chat/conversations/conv-id-1")
     body = response.json()
     assert body["success"] is True
@@ -374,7 +566,14 @@ def test_delete_conversation_returns_envelope_with_empty_data(client):
 
 
 def test_delete_conversation_returns_503_when_flag_off(client_flag_off):
-    """Delete: flag-off path returns 503."""
+    """Delete: flag-off path returns 503.
+
+    WHAT: DELETEs a conversation with the placeholder flag OFF;
+          asserts 503.
+    WHEN: production-default state.
+    WHY:  same production-safety contract — server must not falsely
+          confirm a delete when no real persistence layer is wired.
+    """
     response = client_flag_off.delete("/api/v1/chat/conversations/conv-id-1")
     assert response.status_code == 503
 
@@ -385,7 +584,15 @@ def test_delete_conversation_returns_503_when_flag_off(client_flag_off):
 
 
 def test_list_conversations_v2_returns_envelope_with_list(client):
-    """v2 inbox (current mobile build): envelope wraps a list."""
+    """v2 inbox (current mobile build): envelope wraps a list.
+
+    WHAT: GETs the v2 inbox + asserts envelope wraps a list of at
+          least one item.
+    WHEN: happy-path with placeholder flag ON.
+    WHY:  v2 inbox is what the current mobile build hits; the v1
+          path stays for backward-compat but mobile prefers v2's
+          bot-aware row shape.
+    """
     response = client.get("/api/v2/chat/conversations")
     body = response.json()
     assert body["success"] is True
@@ -394,7 +601,13 @@ def test_list_conversations_v2_returns_envelope_with_list(client):
 
 
 def test_list_conversations_v2_returns_503_when_flag_off(client_flag_off):
-    """v2 inbox: flag-off path returns 503."""
+    """v2 inbox: flag-off path returns 503.
+
+    WHAT: GETs the v2 inbox with the placeholder flag OFF; asserts 503.
+    WHEN: production-default state.
+    WHY:  parity with the v1 inbox flag-off test — both must obey the
+          production-safety gate.
+    """
     response = client_flag_off.get("/api/v2/chat/conversations")
     assert response.status_code == 503
 
@@ -405,12 +618,18 @@ def test_list_conversations_v2_returns_503_when_flag_off(client_flag_off):
 
 
 def test_ws_inbox_stub_closes_with_service_unavailable(client):
-    """WS /api/v1/chat/ws/inbox/{user_id}: stub accepts, sends envelope
-    error frame, closes 1011 with reason "service_unavailable_stub_days_14_18".
+    """WS /api/v1/chat/ws/inbox/{user_id}: stub frame + 1011 close.
 
-    Codex PR #97 BLOCKER 4: locked path; previously 404'd on upgrade.
-    Now registered as a stub so mobile sees "feature not yet available"
-    instead of "routing bug."
+    WHAT: connects to the WebSocket inbox; asserts the stub sends one
+          envelope-shaped error frame (`error="service_unavailable"`)
+          then closes with WebSocket close code 1011.
+    WHEN: any connect attempt before the real inbox implementation
+          (Days 14-18 per agent definition).
+    WHY:  Codex PR #97 BLOCKER 4 — locked path; previously 404'd on
+          upgrade. Now registered as a stub so mobile sees "feature
+          not yet available" instead of "routing bug." Mobile reads
+          the close-reason + payload to surface the right user-facing
+          state.
     """
     with client.websocket_connect("/api/v1/chat/ws/inbox/test-user-id") as websocket:
         # The stub sends ONE envelope-shaped error frame...
@@ -427,9 +646,9 @@ def test_ws_inbox_stub_closes_with_service_unavailable(client):
 # RELATED FILES:
 #   conftest.py                      — provides `client` + `client_flag_off`
 #   ../../app/api/chat_routes.py     — the handlers under test
-#   ../../app/api/response_models.py            — MessageResponse + ConversationResponse shapes
+#   ../../app/api/response_models.py — MessageResponse + ConversationResponse shapes
 #   ../../app/api/envelope.py        — ApiResponse[T] shape every test asserts
 #   ../../app/api/feature_flag.py    — the dependency the flag-off tests trigger
 #   yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/interface-contracts/00-api-contract.md
-#                                    — locked endpoint paths + DTO shapes
+#                                    — locked endpoint paths + response-model shapes
 # ===========================================================================

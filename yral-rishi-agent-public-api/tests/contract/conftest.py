@@ -4,9 +4,12 @@
 # ⭐ START HERE: every test in this folder gets `client` (placeholder
 # flag ON — the default for contract tests) or `client_flag_off`
 # (placeholder flag OFF — for the 503 path) injected automatically.
-# An autouse `mock_redis_healthy` fixture mocks the BLOCKER-5 Redis
-# probe so /health/ready returns 200 in tests without needing a real
-# Redis container; specific tests override it to simulate Redis down.
+# No autouse Redis mock anymore — Codex round-3 BLOCKER 2 swapped
+# /health/ready from a real sync `redis.ping()` to a 503-fallback
+# stub, so tests no longer need to mock Redis to keep the readiness
+# probe quiet. Tests that want to exercise the future 200 path
+# monkey-patch `health_routes._check_redis_reachable` to True
+# explicitly.
 #
 # WHY TWO CLIENTS INSTEAD OF ONE FLIPPABLE FLAG?
 # Tests should be order-independent. If a test flips a global flag and
@@ -25,13 +28,18 @@
 #      use case: replace a dependency function with a test-shape function
 #      for the duration of the override block.
 #
-# WHY THE AUTOUSE mock_redis_healthy FIXTURE?
-# Codex PR #97 BLOCKER 5 wired /health/ready to actually ping Redis. If
-# tests didn't mock the ping, every test that touches /health/ready
-# would attempt a real localhost:6379 connect → 1-second timeout per
-# test → either pass-or-fail flake based on whether a dev has Redis
-# running. The autouse fixture monkey-patches the probe to always
-# succeed; the one test that needs the 503 path overrides explicitly.
+# WHY NO LONGER AN AUTOUSE REDIS MOCK?
+# Codex PR #97 round-2 BLOCKER 5 wired /health/ready to a sync
+# `redis.ping()` call + introduced an autouse mock to keep tests
+# from flaking against the dev's local Redis. Codex round-3 BLOCKER 2
+# replaced the sync ping with the F9-honest 503-fallback stub +
+# coordinator preference: ship the 503 now, wire the real async
+# Sentinel-aware check in a follow-up PR once DEP-006 (Session 1
+# Sentinel config) lands. With the stub now returning False
+# unconditionally, no Redis connection happens during tests — the
+# autouse fixture became redundant. Tests that want the future 200
+# happy-path can monkey-patch `health_routes._check_redis_reachable`
+# directly.
 #
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
@@ -42,10 +50,6 @@ import pytest
 # fastapi.testclient — wraps the FastAPI app in a synchronous test
 # client; httpx underneath, no real socket binding.
 from fastapi.testclient import TestClient
-
-# health_routes module — monkey-patched here so the autouse Redis-ping
-# mock reaches the readiness probe's actual call site.
-from app.api import health_routes
 
 # feature_flag module — the dependency `client` overrides to no-op
 # (placeholder gate becomes a pass-through so the stub body runs).
@@ -65,24 +69,6 @@ def _flag_on_noop() -> None:
           handler bodies; the 503-on-flag-off path has its own fixture.
     """
     return None
-
-
-@pytest.fixture(autouse=True)
-def mock_redis_healthy(monkeypatch):
-    """Autouse: pretend Redis is reachable for the readiness probe.
-
-    WHAT: monkey-patches health_routes._check_redis_reachable to always
-          return True. Tests that need to assert the Redis-DOWN 503 path
-          re-patch the function via their own monkeypatch.setattr call.
-    WHEN: runs before every test in this folder.
-    WHY:  Codex PR #97 BLOCKER 5 wired the readiness probe to ping
-          Redis. Without this autouse mock, every contract test that
-          touches /health/ready (and there are several) would attempt
-          a real Redis connection + flake based on the dev's local
-          environment. Forces deterministic behavior: tests own the
-          mock; if they don't override it, Redis "is" reachable.
-    """
-    monkeypatch.setattr(health_routes, "_check_redis_reachable", lambda: True)
 
 
 @pytest.fixture
@@ -131,10 +117,15 @@ def client_flag_off():
 # ===========================================================================
 # RELATED FILES:
 #   ../../app/api/feature_flag.py  — the dependency being overridden
-#   ../../app/api/health_routes.py — owns _check_redis_reachable (BLOCKER 5)
+#   ../../app/api/health_routes.py — owns the F9-honest 503-fallback
+#                                    readiness probe; tests that want the
+#                                    future 200 path monkey-patch
+#                                    `_check_redis_reachable` directly
 #   ../../app/main.py              — the FastAPI app instance under test
 #   test_chat_routes.py            — uses both `client` and `client_flag_off`
 #   test_influencer_routes.py      — same
-#   test_health_routes.py          — uses `client_flag_off` only; overrides
-#                                    the autouse mock for the Redis-down path
+#   test_health_routes.py          — uses `client_flag_off` for the 503
+#                                    path + monkey-patches the readiness
+#                                    helper to True for the future-ready
+#                                    200-path test
 # ===========================================================================

@@ -106,14 +106,16 @@ class Settings(BaseSettings):
     # is NOT yet in place AND (b) the deploy target is local/staging.
     enable_session_3_phase_1_day_2_placeholder_responses: bool = False
 
-    # -- Redis URL (Codex PR #97 BLOCKER 5 — health-ready actual dep check) -
-    # Connection URL the /health/ready probe pings to confirm the
-    # Redis layer the JWKS cache (PR #101) + idempotency cache (PR #103)
-    # depend on is actually reachable. Local dev default reaches the
-    # docker-compose-managed Redis container; production override via
-    # Swarm secret injection (REDIS_URL) points at the Redis Sentinel
-    # set per C11. Forward-ported from PR #101's setting — same name,
-    # same default — so the Day-4A rebase is a no-op on this line.
+    # -- Redis URL (forward-port from PR #101 for rebase-compat) -----------
+    # Was wired into /health/ready in round-2 BLOCKER 5; round-3
+    # BLOCKER 2 removed that wiring (sync .ping() inside async handler
+    # was blocking the event loop; coordinator preference: ship the
+    # F9-honest 503 fallback now, wire the real async-Sentinel check
+    # after DEP-006 lands). The setting STAYS here because PR #101's
+    # JWKS cache + PR #103's idempotency cache still consume it — same
+    # name, same default — so the Day-4A/4C rebase remains a no-op on
+    # this line. The real Sentinel-aware client will read the
+    # `redis_sentinel_*` fields DEP-006 brings in shared-config.yaml.
     redis_url: str = "redis://localhost:6379/0"
 
 
