@@ -2,6 +2,55 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-19 — PR #104 round-4 fixup: composer hot-path latency — parallelize L1+L2+L4 fetches via asyncio.gather
+
+### Action
+Codex's remaining real finding on PR #104 was the composer's 4 sequential database reads per chat turn. Once Day-5 real LLM enablement lands and the composer is on the chat hot path, that serialisation eats into the E1 latency budget. Per the directive: parallelize the 3 reads AFTER L3 via `asyncio.gather` while keeping the full Redis cache layer deferred to Day-5+.
+
+**21/21 tests PASSED** (the round-3 20 + 1 new round-4 parallel-fetch concurrency test) — byte-identity × 5 reps + golden-file diff still hold, proving parallel reads change WHEN not WHAT.
+
+### One blocker addressed
+
+**Codex round-4 finding — composer's hot-path latency.** Round-3 (and earlier) `compose()` issued four SEQUENTIAL `await get_current(...)` calls: L3 → L1 → L2 → L4. Round-4 fix: L3 stays first (hard dependency — L2 lookup keys on `layer_3.archetype`); after L3 returns, the remaining three reads execute as one `asyncio.gather(L1_fetch, L2_fetch, L4_fetch)`. One async wait for three reads instead of three sequential awaits — ~3× lower hot-path latency without bringing forward the Redis cache layer.
+
+Exception flow preserved: `asyncio.gather` propagates the first exception + cancels the rest; the downstream `if layer_X is None` checks still fire for each missing row + raise the same `SoulFileDataIntegrityError` as before. The byte-identity property of the composed prompt is unchanged — parallel reads change WHEN we fetch, never WHAT.
+
+### Files touched
+- `app/composer/four_layer_composer.py` — added `import asyncio`; swapped 3 sequential awaits for 1 `asyncio.gather(...)` after L3; expanded role-comment explaining the dependency chain (L3 → {L1, L2, L4}) + the E1 rationale + the exception-flow preservation argument.
+- `tests/test_composer.py` — added `test_compose_fetches_l1_l2_l4_in_parallel_after_l3` regression gate (per the directive: "asyncio task-counting … rather than timing-based — flaky"). Spy monkey-patches `four_layer_composer.get_current` (the import-shadowed local reference, NOT the repository module's; same pattern as PR #96's `mark_complete` spy). L1/L2/L4 fetches block on an `asyncio.Event`; the test asserts all three are queued + started_count==3 within a tiny grace window BEFORE releasing the event; then verifies the composer completes successfully.
+- `SESSION-4-LOG.md` (this entry).
+
+### Why
+Codex correctly flagged the serialisation as a real E1 risk. The Day-4 directive explicitly deferred Redis caching to Day-5+, but parallelizing the 3 reads after L3 is a small fix that satisfies E1 today without bringing forward the full cache layer. The byte-identity contract holds: parallel reads change WHEN, not WHAT.
+
+### Optional latency-bound test — I6 pushback, skipped
+The directive offered an OPTIONAL benchmark-style test asserting total composer latency stays under a bound (e.g. `end - start < 0.05`). Per the directive's I6 invitation: skipped. An absolute bound on a testcontainers-postgres + fakeredis stack is inherently flaky in CI (cold-start, Docker scheduling jitter, GitHub-Actions runner load all push the tail). The new concurrency test IS the deterministic regression gate — it asserts the parallel-fetch property directly without leaning on wall-clock measurement. A flaky benchmark would generate noise without catching anything the concurrency test doesn't already catch. Coordinator can override + add a benchmark later if a specific budget number lands; today this avoids the false-alarm cost.
+
+### Test evidence
+pytest inside `python:3.12-slim` with testcontainers-Postgres + fakeredis:
+- **21/21 PASSED** — the round-3 20 + 1 new round-4 parallel-fetch concurrency test.
+- Schema migrations: 1/1 — alembic round-trip clean.
+- Repository: 7/7 — partial-unique-index still rejects dual-current.
+- Composer: 9/9 (8 round-3 + 1 round-4) — byte-identity × 5 reps still holds; golden-file diff still holds; the new parallel-fetch test confirms gather behaviour.
+- HTTP routes: 4/4.
+
+### Constraints touched
+- **E1** — composer hot-path latency reduced from 4× sequential to 1 + parallel-3 (≈1× plus the longest of the three parallel reads). The "v2 ≥50% faster than chat-ai" target preserved on prefix-heavy turns.
+- **A2.1** — minimal change: ONE asyncio.gather + ONE new test. Did NOT bring forward Redis caching (per directive); didn't introduce new abstractions; didn't refactor compose()'s control flow beyond the gather swap.
+- **B7** — expanded role-comment on the gather call captures the dependency chain + E1 rationale + exception-flow preservation argument; new test carries WHAT/WHEN/WHY docstring.
+- **I6** — pushback on the optional benchmark test (skipped) + flagged in the commit message; no other pushbacks raised.
+- **J1** — composer is on the chat hot path (WARM-tier per J1); the new test is a regression gate at WARM coverage tier.
+- **Byte-identity contract** (PRE-SPAWN-CONTRACTS-FROM-COORDINATOR.md) — verified preserved via the existing 5-rep parametrize test still passing.
+
+### Notes
+- **Import-shadowing pattern (third use).** The spy monkeypatches `four_layer_composer.get_current` (the composer module's local reference) NOT `soul_file_repository.get_current`. Same pattern PR #96 used twice already (round-3 `mark_complete` + round-4 `_REAL_INIT_REDIS_FOR_TESTS`). Documented in the test docstring for future readers.
+- **Redis cache layer stays deferred to Day-5+.** Per the Day-4 directive's "Out of scope" list, full Redis caching of composed prompts is Day-5+ work. This fixup does not bring it forward.
+- **Codex truncation BLOCKER** on PR #104 is coordinator's surface (prompt-budget bump in a separate workflow change). Not addressed in this fixup.
+- **PR #96 round-4 fixup landed in parallel** — different branch, different service folder, no interference.
+- **Next:** Day 5 real LLM enablement — gated on PR #96 + #100 + #104 all merging clean.
+
+---
+
 ## 2026-05-19 — PR #104 round-3 fixup: app/api/__init__.py B7 + F11→A4 citation + db_pool residual
 
 ### Action

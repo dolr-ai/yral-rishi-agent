@@ -40,6 +40,7 @@
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
 
+import asyncio
 import hashlib
 from typing import Final
 
@@ -165,19 +166,46 @@ async def compose(
         )
 
     # -----------------------------------------------------------------------
-    # Step 2 — fetch L1 (global), L2 (by L3's archetype), L4 (by segment).
-    # Any of these missing is a data-integrity issue — the migration seeds
-    # all three. Raise the 500-shaped exception so the HTTP route emits a
-    # clear error rather than silently returning an empty prompt prefix.
+    # Step 2 — fetch L1 (global), L2 (by L3's archetype), L4 (by segment)
+    # IN PARALLEL via asyncio.gather. The previous round-3 code issued
+    # three SEQUENTIAL `await get_current(...)` calls, costing 3× the
+    # per-call round-trip; once Day-5 real LLM enablement lands and
+    # the composer is on the chat hot path, that serialisation would
+    # eat into the E1 latency budget. Codex PR-#104 round-4 review
+    # flagged the serialisation as a real E1 risk; the parallel fetch
+    # is the minimal fix that satisfies E1 without bringing forward
+    # the full Redis cache layer (which stays deferred to Day-5+ per
+    # the Day-4 directive).
+    #
+    # Hard dependency chain: L3 was fetched first (above) because the
+    # L2 lookup keys on `layer_3.archetype`. L1 + L4 have no such
+    # dependency on L3 + can race alongside L2.
+    #
+    # Exception behaviour preserved: if any of the three gather'd
+    # coroutines raises (asyncpg ConnectionError, etc.), asyncio.gather
+    # propagates the first exception and cancels the rest. The
+    # downstream `if layer_X is None` checks still fire for each
+    # missing row + raise the same SoulFileDataIntegrityError as
+    # before. The byte-identity property of the composed prompt is
+    # unchanged — parallel reads change WHEN we fetch, never WHAT.
+    #
+    # Any of these missing is a data-integrity issue — the migration
+    # seeds all three. Raise the 500-shaped exception so the HTTP
+    # route emits a clear error rather than silently returning an
+    # empty prompt prefix.
     # -----------------------------------------------------------------------
-    layer_1 = await get_current(LAYER_GLOBAL, "")
+    layer_1, layer_2, layer_4 = await asyncio.gather(
+        get_current(LAYER_GLOBAL, ""),
+        get_current(LAYER_ARCHETYPE, layer_3.archetype),
+        get_current(LAYER_PER_USER_SEGMENT, user_segment),
+    )
+
     if layer_1 is None:
         raise SoulFileDataIntegrityError(
             "Layer 1 (global) row missing. Re-run `alembic upgrade head` "
             "or restore the row manually — every composed prompt requires it."
         )
 
-    layer_2 = await get_current(LAYER_ARCHETYPE, layer_3.archetype)
     if layer_2 is None:
         raise SoulFileDataIntegrityError(
             f"Layer 2 row for archetype={layer_3.archetype!r} missing. "
@@ -186,7 +214,6 @@ async def compose(
             f"in the L2 seed, or someone retired the L2 row."
         )
 
-    layer_4 = await get_current(LAYER_PER_USER_SEGMENT, user_segment)
     if layer_4 is None:
         raise SoulFileDataIntegrityError(
             f"Layer 4 row for user_segment={user_segment!r} missing. The "
