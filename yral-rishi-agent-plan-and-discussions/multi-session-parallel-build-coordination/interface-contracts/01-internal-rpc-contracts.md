@@ -18,28 +18,46 @@ POST http://yral-rishi-agent-conversation-turn-orchestrator:8000/v1/turn
 
 Request:
 {
-  conversation_id: string,   // UUID of the conversation row; orchestrator
-                             // joins on this to find user_id +
-                             // ai_influencer_id (the latter feeds the
-                             // Soul-File lookup).
-  user_message: string       // Raw text the user typed. PII per H6 —
-                             // log only LENGTH, never the value.
+  conversation_id: string,         // UUID of the conversation row;
+                                   // orchestrator joins on this to find
+                                   // user_id + ai_influencer_id (the
+                                   // latter feeds the Soul-File lookup).
+  user_message: string,            // Raw text the user typed. PII per
+                                   // H6 — log only LENGTH, never the
+                                   // value.
+  media_urls: string[] | null,     // Attachment URLs from the user's
+                                   // message (images/audio/video). REQUIRED
+                                   // by A8 multi-modal parity; do NOT
+                                   // drop. Public-api forwards these
+                                   // inline so the orchestrator does not
+                                   // need a second DB read per turn.
+  client_message_id: string | null // Optional client-side dedup id the
+                                   // mobile app may attach to the user
+                                   // message; orchestrator echoes it
+                                   // onto persisted user-msg traces but
+                                   // assistant replies do NOT carry one.
 }
 
-Headers:
-  X-User-Id          (forwarded from public-api after JWT validation, per E6)
-  X-Idempotency-Key  (per F10 — orchestrator uses this Day-5+ for Redis
-                      dedup of duplicate LLM calls)
-  X-Request-Id       (per Langfuse correlation, D4)
+Headers (ALL three required on every call):
+  X-User-Id          Forwarded from public-api after JWT validation, per E6.
+  X-Idempotency-Key  REQUIRED from day 1, per F10 (default-on for every
+                     non-GET endpoint). Same key + same user/conversation
+                     within 24h MUST return the previously created
+                     assistant MessageResponse from Redis without a
+                     second LLM call. Implementations MUST ship the
+                     Redis-backed dedup at the same time as the route
+                     itself — F10 forbids deferring it.
+  X-Request-Id       Per Langfuse correlation, D4.
 
-Response: JSON MessageDto (byte-identical to chat-ai parity per A8 + A16)
+Response: JSON MessageResponse (byte-identical to chat-ai parity per A8 + A16)
 {
   id: string,                        // fresh UUID per assistant reply
   conversation_id: string,           // echoes the request's conversation_id
   role: "user" | "assistant",        // orchestrator always returns "assistant"
   content: string,                   // the assistant reply text
-  media_urls: string[] | null,       // attachment URLs (null today; real
-                                     // Day-5+ may include generated images)
+  media_urls: string[] | null,       // attachment URLs the assistant
+                                     // returns (null today; real Day-5+
+                                     // may include generated images)
   client_message_id: string | null,  // null on assistant replies; copied
                                      // from request on user messages
                                      // (public-api owns user-msg persist)
@@ -57,8 +75,14 @@ stays plain-JSON forever for parity stability. SSE streaming per E2
 path behind a feature flag per the Session-4 agent definition — the v1
 JSON shape above never silently mutates into a stream.
 
+Naming note (B1 + B2 + Rishi 2026-05-19): the response model is
+`MessageResponse`, NOT `MessageDto`. The "DTO" abbreviation is not on the
+B2 allowed-abbreviation list and the project's English-naming rule applies
+to Python class names, not only JSON fields. Same rule applies to every
+other response model in this doc (`InfluencerResponse`, etc.).
+
 Source of truth: `yral-rishi-agent-conversation-turn-orchestrator/app/models/turn.py`
-(`RunTurnRequest` + `MessageDto` Pydantic models) and
+(`RunTurnRequest` + `MessageResponse` Pydantic models) and
 `yral-rishi-agent-conversation-turn-orchestrator/app/run_turn.py`
 (`POST /v1/turn` handler). Update this section if those models change.
 
@@ -66,13 +90,13 @@ Source of truth: `yral-rishi-agent-conversation-turn-orchestrator/app/models/tur
 
 ```
 GET http://yral-rishi-agent-influencer-and-profile-directory:8000/influencers/{id}
-→ InfluencerDto
+→ InfluencerResponse
 
 POST .../influencers (create flow)
-→ InfluencerDto
+→ InfluencerResponse
 
 PATCH .../influencers/{id}/system-prompt
-→ InfluencerDto
+→ InfluencerResponse
 
 DELETE .../influencers/{id}
 → {}
@@ -147,7 +171,7 @@ Pre-LLM check on user message + post-LLM check on response. Per H4, must be live
 GET https://yral-billing.../google/chat-access/check
   ?user_id=<id>&bot_id=<id>
 
-→ ApiResponse<ChatAccessDataDto>
+→ ApiResponse<ChatAccessDataResponse>
 ```
 
 Cached in v2 Redis 60s per E7. Per D1 — yral-billing is external; we consume.
