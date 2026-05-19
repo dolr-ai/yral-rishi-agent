@@ -173,8 +173,8 @@ packages = ["app"]
 # `asyncio_mode = "auto"` — async fixtures and async tests run as
 # coroutines without each one being decorated by `@pytest.mark.asyncio`
 # or `@pytest_asyncio.fixture`. Required for the Day-4 testcontainers-
-# backed `db_pool` async fixture; without it pytest-asyncio strict
-# mode rejects async fixtures requested by async tests.
+# backed `database_pool` async fixture; without it pytest-asyncio
+# strict mode rejects async fixtures requested by async tests.
 #
 # `asyncio_default_fixture_loop_scope = "function"` — silences the
 # pytest-asyncio deprecation warning + matches the loop-per-test

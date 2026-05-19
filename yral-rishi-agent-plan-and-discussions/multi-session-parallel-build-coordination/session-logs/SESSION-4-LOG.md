@@ -2,6 +2,86 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-19 — PR #104 round-3 fixup: app/api/__init__.py B7 + F11→A4 citation + db_pool residual
+
+### Action
+Codex re-reviewed PR #104 after my round-1 3-blocker fixup (commit `90a2a5b`) and flagged 2 NEW code BLOCKERs plus 1 Codex-infra issue (truncation budget — coordinator's problem). Single fixup commit on `session-4/day-4-soul-file-library-postgres-schema-and-composer` addresses both code blockers. **20/20 tests still PASSED** after the fixes — pure naming + doc work, no behaviour change.
+
+**Major I6 pushback raised in this fixup** — see BLOCKER 2 below: the coordinator's directive describes F11 as "the data port constraint" but CONSTRAINTS F11 is actually **Feature flags custom Postgres-table**; **A4** is the "All data MUST port" row. Fixed the misuse + flagged the framing drift.
+
+### Codex-infra issue (out of scope, coordinator handles)
+Codex's first round-3 BLOCKER was that the diff was truncated at the prompt-budget ceiling so Codex could not audit all 37 files. Per the directive that's the coordinator's problem (bump Codex budget OR manual-audit the unread tail). Not in this fixup's scope; flagging here so future readers know why CI may show a Codex truncation BLOCKER even after this fixup lands.
+
+### Two code blockers addressed
+
+**BLOCKER 1 — `app/api/__init__.py` still at 3-line marker.** My round-1 fixup expanded 6 of the 7 Day-4 `__init__.py` files to the full B7 header shape — `app/api/__init__.py` apparently didn't actually land (either the Write didn't apply or the git-add missed it; both `git diff main..HEAD` and the live file showed the 3-line marker shape). Fixed by writing the full B7 header now (matching the round-1 precedent for the other 6 + Day-3's safety/middleware shape):
+- one-line summary
+- ⭐ START HERE block
+- WHY a separate `api` package vs one `routes.py` (3-reason justification)
+- WHAT DOES THIS FILE DO AT IMPORT (the "Nothing — Python uses the file's PRESENCE..." pattern)
+- Today's contents list
+- Day-5+ adds (forward-looking)
+- RELATED FILES footer pointing at composer + main + tests + the cross-service contract
+
+**BLOCKER 2 — F11 citation accuracy + stale `db_pool` reference (TWO sub-fixes):**
+
+*(2a) F11 → A4 sweep (I6 pushback territory).* The directive said "F11 is the 'ALL data MUST port' constraint" — but verified directly against `yral-rishi-agent-plan-and-discussions/CONSTRAINTS.md`:
+- **CONSTRAINTS F11** verbatim: *"Feature flags custom Postgres-table, ~200 LOC, polled every 30s, on/off + % rollout."* ← feature flags, NOT data port.
+- **CONSTRAINTS A4** verbatim: *"All data MUST port — AI influencers AND user chat history."* ← THIS is the data-port constraint.
+
+So Codex caught a real misuse + the coordinator's framing of how to fix it was ALSO mis-cited. My data-port references should cite **A4** (not F11, not A1). Per CLAUDE.md "Cross-check coordinator's constraint citations; catching coordinator drift mid-flight saves a redo cycle" + per I6 push-back-once-on-likely-wrong-decision.
+
+F11 → A4 replacements landed in these files (data-port context only — `shared-config.yaml` lines 168/171 cite F11 correctly for feature flags and stayed unchanged):
+- `app/migrations/versions/001_initial_schema_and_seed.py` (×2 — module docstring + inline comment)
+- `app/migrations/versions/__init__.py` (today's contents block)
+- `app/composer/four_layer_composer.py` (raised exception message text)
+- `DEEP-DIVE.md` Day-4 status section
+- `WHEN-YOU-GET-LOST.md` quick-jump entry
+- `SESSION-4-STATE.md` LAST-THING-I-DID + NEXT-3 PLANNED ACTIONS (current-state file — editable)
+- `cross-session-dependencies.md` DEP-005 (my own open kanban entry — editable by raiser; annotated the original F11 mention as the corrected mis-citation)
+
+Historical LOG entries (the Day-4 first-push entry + the round-1 fixup entry both contain F11 mentions) were NOT edited — LOG is append-only per the file's own preamble ("Never edit past entries; correct via new entries"). This new entry IS the forward correction.
+
+*(2b) Stale `db_pool` reference.* `pyproject.toml:176` had `db_pool` in a `[tool.pytest.ini_options]` comment that the round-1 perl regex missed (the perl pattern matched on `.py` / `.md` / `.yaml` extensions; `pyproject.toml` is `.toml` and was excluded). Renamed to `database_pool`. Re-ran `grep -rnE "\b(db_pool|app\.db|app/db\.py|app_db|_db\.|db_role|db_url)\b"` across the whole soul-file-library tree post-fix; zero residuals.
+
+### Files touched
+- `app/api/__init__.py` — full B7 header (matches the other 6 spawn-pkg __init__.py files Day-4 set up).
+- `app/migrations/versions/001_initial_schema_and_seed.py` — F11→A4 ×2.
+- `app/migrations/versions/__init__.py` — F11→A4 in today's-contents block.
+- `app/composer/four_layer_composer.py` — F11→A4 in exception message.
+- `DEEP-DIVE.md` — F11→A4 in Day-5+ wiring callout.
+- `WHEN-YOU-GET-LOST.md` — F11→A4 in quick-jump entry.
+- `pyproject.toml` — `db_pool` → `database_pool` in the [tool.pytest.ini_options] comment.
+- `SESSION-4-STATE.md` — F11→A4 in LAST-THING-I-DID + NEXT-3; flagged the original F11 citation as corrected.
+- `cross-session-dependencies.md` — DEP-005 entry: F11→A4 with the corrected-citation annotation.
+- `SESSION-4-LOG.md` (this entry).
+
+### Why
+Codex round-3 caught two real misses from my round-1 fixup: (a) one `__init__.py` didn't actually pick up the B7 expansion, (b) round-1 perl sweep didn't include `.toml`, leaving one `db_pool` mention behind. Plus the F11 citation drift — partly mine (cited F11 in code where A4 was the right row) and partly the coordinator's directive (the round-3 prompt described F11 as the data-port row when it's actually the feature-flags row). Both fixed in this single round.
+
+### Test evidence
+pytest inside `python:3.12-slim` with testcontainers-Postgres (TESTCONTAINERS_RYUK_DISABLED=true + --network host + Docker socket mount):
+- 20/20 PASSED (no behaviour change post-fixup; same surface as round-1, just renamed/annotated).
+- Schema migrations: 1/1 — alembic round-trip clean.
+- Repository: 7/7 — partial-unique-index still rejects dual-current.
+- Composer: 8/8 — byte-identity × 5 reps still holds.
+- HTTP routes: 4/4.
+
+### Constraints touched
+- **A4** — the actual data-port row this fixup cites everywhere instead of the previously-incorrect F11. Net new use; previously absent from this PR.
+- **F11** — REMOVED everywhere it was citing data-port; KEPT only at `shared-config.yaml:168/171` where it correctly references feature flags.
+- **B7** — `app/api/__init__.py` brought to the same standard as the other 6 Day-4 `__init__.py` files.
+- **B2** — final `db_pool` residual purged (pyproject.toml comment was the round-1 miss).
+- **I6** — TWO pushbacks raised in this fixup's LOG entry: (1) coordinator's directive mis-cited F11 as data-port; (2) my round-1 perl sweep was incomplete (missed .toml + missed one __init__.py).
+
+### Notes
+- **I6 pushback on directive framing.** The round-3 directive said "F11 is the 'ALL data MUST port' constraint". CONSTRAINTS.md disagrees — F11 is feature flags, A4 is data port. Surfacing here so the coordinator can correct future-session directives. The fix in code lands as F11→A4 regardless of the framing drift.
+- **Codex truncation is coordinator's surface, not Session 4's.** The directive explicitly excluded the truncation BLOCKER from this fixup's scope; the coordinator will bump Codex's prompt budget OR ship a manual audit. CI may still show that BLOCKER until the coordinator-side fix lands.
+- **PR #96 round-3 fixup landed in parallel** — different branch, different service folder, no interference.
+- **Next:** Day 5 real LLM enablement (per agent definition) — gated on PR #96 + PR #100 + PR #104 all merging clean. Both PR #96 and #104 now have round-3 fixups awaiting Codex re-run + Rishi YES.
+
+---
+
 ## 2026-05-19 — PR #104 fixup: db→database rename + B7 __init__ headers + A1 migration justification
 
 ### Action

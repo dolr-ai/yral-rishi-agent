@@ -14,10 +14,10 @@ Full agent definition: `.claude/agents/session-4-orchestrator.md`.
 
 ## LAST THING I DID
 
-**2026-05-18 — Day 4 Soul File Library PR opened.** First stateful v2 service for Session 4. Single `soul_file_layers` table (per A2.1 — one table for all 4 layers) + Alembic migration with seeds for L1+L2+L4 (L3 deferred to Day-4.5 data port per F11) + asyncpg-backed repository + 4-layer composer with byte-stable prefix + FastAPI `GET /composed-prompt` route + testcontainers-postgres pytest suite. **20/20 tests PASSED in 3.81s** on Python 3.12.13 inside `python:3.12-slim` with Docker-managed Postgres 17. Byte-identity contract verified across 5 reps. Alembic upgrade ↔ downgrade round-trips cleanly.
+**2026-05-18 — Day 4 Soul File Library PR opened.** First stateful v2 service for Session 4. Single `soul_file_layers` table (per A2.1 — one table for all 4 layers) + Alembic migration with seeds for L1+L2+L4 (L3 deferred to Day-4.5 data port per A4 — ALL data MUST port from chat-ai) + asyncpg-backed repository + 4-layer composer with byte-stable prefix + FastAPI `GET /composed-prompt` route + testcontainers-postgres pytest suite. **20/20 tests PASSED in 3.81s** on Python 3.12.13 inside `python:3.12-slim` with Docker-managed Postgres 17. Byte-identity contract verified across 5 reps. Alembic upgrade ↔ downgrade round-trips cleanly.
 
 Two pushbacks raised before code per I6:
-1. F2 citation drift — CONSTRAINTS F2 is the hetzner-template-freeze row, not Soul-File. PR body cites E8/F8/F11/F3/B4/A2.1/C7/D8 instead; DEP-005 raised for coordinator clarification.
+1. F2 citation drift — CONSTRAINTS F2 is the hetzner-template-freeze row, not Soul-File. PR body cites E8/F8/A4/F3/B4/A2.1/C7/D8 — note: PR body originally cited F11 here; that was wrong (F11 = feature flags); corrected in PR-#104 round-3 fixup to A4 (data port) instead; DEP-005 raised for coordinator clarification.
 2. Schema spec gap — added `archetype TEXT NULL` column to bridge L3 → L2 composer lookup; smallest delta from directive's spec.
 
 Empirical proof:
@@ -36,7 +36,7 @@ Progress: Day 1 → 100% (PR #95 merged); Day 2 → 100% (PR #96 open); Day 3 �
 
 ## NEXT 3 PLANNED ACTIONS
 
-1. Day 4.5 — F11 data port: migrate chat-ai's `ai_influencers.system_prompt` → `soul_file_layers` Layer 3 rows. Requires Rishi YES per A14 (live chat-ai read). Likely a separate small PR.
+1. Day 4.5 — A4 data port: migrate chat-ai's `ai_influencers.system_prompt` → `soul_file_layers` Layer 3 rows. Requires Rishi YES per A14 (live chat-ai read). Likely a separate small PR.
 2. Day 5 — Orchestrator wires real LLM calls (Tara → OpenRouter; default → Gemini Flash; per A10 `is_nsfw=true` → OpenRouter; per H4 crisis → Claude with Anthropic safety system). Real LLM flows THROUGH the Day-3 safety stack unchanged. Day-2 stub stays accessible in non-prod for diagnostics.
 3. Day 6 — Influencer directory (yral-rishi-agent-influencer-and-profile-directory): Postgres schema + endpoints + Redis-cached reads per E7. Different service folder; orthogonal to soul-file-library.
 

@@ -154,7 +154,7 @@ async def compose(
         raise InfluencerSoulFileMissingError(
             f"No current Layer 3 row for influencer_id={influencer_id!r}; "
             "Day-4 ships with no Layer 3 seed — populate via the Day-4.5 "
-            "data port from chat-ai (F11) before this route returns 200."
+            "data port from chat-ai (per A4 — ALL data MUST port) before this route returns 200."
         )
 
     if not layer_3.archetype:

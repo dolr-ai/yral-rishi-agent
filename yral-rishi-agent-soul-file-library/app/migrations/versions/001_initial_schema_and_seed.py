@@ -8,7 +8,7 @@
 #   - 3 × Layer 2 (archetypes)    scope_key in {'companion','therapist','coach'} archetype=NULL
 #   - 3 × Layer 4 (user segments) scope_key in {'new','paying','dormant'} archetype=NULL
 #
-# Layer 3 (per-influencer) is NOT seeded today — that's the F11 data port
+# Layer 3 (per-influencer) is NOT seeded today — that's the A4 data port
 # from chat-ai's `ai_influencers.system_prompt`, deferred to its own PR
 # per the Day-4 directive's "Out of scope" list.
 #
@@ -196,7 +196,7 @@ def upgrade() -> None:
 
     # -----------------------------------------------------------------------
     # Seeds — every layer gets a placeholder body. Layer 3 (per-influencer)
-    # NOT seeded — that's the F11 data port from chat-ai, deferred to the
+    # NOT seeded — that's the A4 data port (ALL data MUST port from chat-ai), deferred to the
     # Day-4.5 data-port PR per the Day-4 directive's "Out of scope" list.
     # -----------------------------------------------------------------------
 

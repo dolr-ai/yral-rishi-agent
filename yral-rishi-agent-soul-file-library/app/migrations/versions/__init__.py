@@ -27,7 +27,7 @@
 #   001_initial_schema_and_seed.py  — Day-4 initial schema + seeds
 #
 # Day-4.5 adds: a migration that ports chat-ai's `ai_influencers.system_prompt`
-# into Layer 3 rows (the F11 data port, deferred per the Day-4
+# into Layer 3 rows (the A4 data port — "ALL data MUST port" — deferred per the Day-4
 # directive's "Out of scope" list).
 #
 # RELATED FILES (footer at end).

@@ -83,4 +83,4 @@ If anything contradicts that sentence, the doc drifted — trust `PRE-SPAWN-CONT
 - "Why no auth?" → `SECURITY.md` (C3 overlay trust model + Day-4 carve-out)
 - "How do I add a new archetype?" → `RUNBOOK.md`
 - "What's a Layer N for?" → `GLOSSARY.md`
-- "Why isn't my influencer's Soul File showing?" → no L3 row yet — Day-4.5 data port (F11 — needs Rishi YES per A14).
+- "Why isn't my influencer's Soul File showing?" → no L3 row yet — Day-4.5 data port (A4 — "ALL data MUST port" from chat-ai; needs Rishi YES per A14).

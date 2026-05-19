@@ -35,7 +35,7 @@ Why:     The directive's "README §F2" reference suggests the intent was
          coordinator drift mid-flight saves a redo cycle."
 
 Session 4's resolution in this PR: cite **E8** (the actual Soul-File
-         row) + **F8** (8 required docs) + **F11** (data port deferred)
+         row) + **F8** (8 required docs) + **A4** (data port deferred — note: original DEP-005 text said F11; that was wrong, F11 is the feature-flags row and A4 is the actual data-port row; corrected in PR-#104 round-3 fixup)
          + **F3** (schema-per-service) instead. The Day-4 PR body
          does NOT cite F2.
 

@@ -216,4 +216,4 @@ Provider-side prompt caching (Anthropic `cache_control: ephemeral`, Gemini conte
 
 ## Status
 
-Day-4 surface live. Day-5+ wiring: Redis cache promote (composer's `cache_hit` flag flips when serving from Redis); provider `cache_control` markers wired by the orchestrator (this service stays opaque-bytes); Day-4.5 data port populates Layer 3 rows from chat-ai's `ai_influencers.system_prompt` (per F11).
+Day-4 surface live. Day-5+ wiring: Redis cache promote (composer's `cache_hit` flag flips when serving from Redis); provider `cache_control` markers wired by the orchestrator (this service stays opaque-bytes); Day-4.5 data port populates Layer 3 rows from chat-ai's `ai_influencers.system_prompt` (per A4 — "ALL data MUST port").
