@@ -1,13 +1,15 @@
 # ---------------------------------------------------------------------------
 # test_health_routes.py — contract tests for /health/{live,ready,deep}.
 #
-# ⭐ START HERE: 4 tests covering the Codex PR #97 round-3 BLOCKER 2
-# state of the readiness probe + the BLOCKER-5 deep probe:
+# ⭐ START HERE: 4 tests covering the Codex PR #97 round-4 state of
+# the readiness probe + the BLOCKER-5 deep probe:
 #   - /health/live always 200 (cheap, no deps)
-#   - /health/ready 503 envelope by default (DEP-006 not yet resolved)
-#   - /health/ready 200 with `dependencies.redis="ok"` IF the helper
-#     is monkey-patched to True (future-ready test for when the real
-#     async Sentinel-aware check lands)
+#   - /health/ready 200 with `dependencies.redis="ok"` when the
+#     real async-Sentinel-aware ping (monkey-patched here for
+#     determinism) succeeds
+#   - /health/ready 503 envelope when `redis_asyncio.Redis.from_url`
+#     returns a client whose ping() raises (simulates the
+#     single-primary fallback Redis being unreachable)
 #   - /health/deep always 503 envelope (F9-honest "not implemented yet")
 #
 # WHY THESE TESTS USE `client_flag_off`?
@@ -17,12 +19,35 @@
 # checks per I2 + auto-rollback). Using the flag-off client proves they
 # answer in the production-default state.
 #
+# WHY MONKEY-PATCH `_check_redis_reachable` FOR THE 200 PATH BUT PATCH
+# `redis_asyncio.Redis.from_url` FOR THE 503 PATH?
+# Two reasons:
+#   1. The 200-path test cares about the handler's response shape
+#      (200 dict with `dependencies.redis="ok"`); patching the helper
+#      directly is the cleanest way to exercise the response branch
+#      without booting a real Redis.
+#   2. The 503-path test should exercise the REAL code that talks to
+#      Redis (so a future regression in the timeout / error-handling
+#      logic fails the test). Patching `redis_asyncio.Redis.from_url`
+#      to return a mock whose ping() raises lets the actual
+#      `_check_redis_reachable` body run through the try/except.
+#
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
 
-# health_routes module — monkey-patched by the future-ready 200 test
-# to flip _check_redis_reachable from the BLOCKER-2 stub-False default
-# to True, exercising the eventual happy-path branch.
+# unittest.mock.AsyncMock — used to build an async-callable fake whose
+# .ping() returns True (200 path) or raises (503 path) so we can
+# control the readiness probe's behavior without real Redis.
+from unittest.mock import AsyncMock
+
+# pytest — used by the monkeypatch fixture below + would expose
+# pytest.raises if we needed it.
+import pytest  # noqa: F401 — imported for fixture discovery clarity
+
+# health_routes module — monkey-patched in the 200-path test to flip
+# `_check_redis_reachable` from "real Sentinel ping" to an async-True
+# stub so the handler returns the 200 happy-path body without booting
+# Redis.
 from app.api import health_routes
 
 
@@ -41,60 +66,81 @@ def test_health_live_returns_200_with_status_ok(client_flag_off):
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"
-    # BLOCKER 5 added the service identity so on-call can grep across
-    # replicas for "which container responded."
     assert body["service"] == "yral-rishi-agent-public-api"
 
 
-def test_health_ready_returns_503_envelope_by_default(client_flag_off):
-    """/health/ready: returns envelope-shaped 503 by default (BLOCKER 2).
+def test_health_ready_returns_200_when_redis_pingable(client_flag_off, monkeypatch):
+    """/health/ready: 200 + dependencies.redis="ok" when the ping succeeds.
 
-    WHAT: GETs /health/ready WITHOUT mocking the readiness helper;
-          asserts the envelope-shaped 503 with `error="service_unavailable"`
-          + the msg referring to DEP-006 + a `data.dependencies.redis`
-          marker of "not_yet_implemented".
-    WHEN: production-default state — the Sentinel-aware async check
-          hasn't landed yet (DEP-006 pending Session 1).
-    WHY:  Codex round-3 BLOCKER 2 + coordinator preference: ship the
-          F9-honest 503 now (clean + revertable). Better to loudly
-          block deploys than ship a misleading 200 that lets a
-          half-built v2 cluster claim healthy.
+    WHAT: monkey-patches `_check_redis_reachable` to an async stub
+          returning True; GETs /health/ready; asserts HTTP 200 +
+          raw body shape `{"status": "ok", "dependencies": {"redis": "ok"}}`.
+    WHEN: simulates the cluster steady state — Sentinel-aware client
+          successfully pings the current Redis primary.
+    WHY:  Codex PR #97 round-4 BLOCKER 2 flipped /health/ready from a
+          round-3 503-always stub to the real async-Sentinel-aware
+          check. This test exercises the happy-path handler branch
+          (the 200 envelope, the BLOCKER-3 `dependencies` key spelling)
+          without needing a real Redis container — the real Sentinel
+          path itself is exercised in the Day-5 cluster smoke test.
     """
-    response = client_flag_off.get("/health/ready")
-    assert response.status_code == 503
-    body = response.json()
-    assert body["success"] is False
-    assert body["error"] == "service_unavailable"
-    # The msg explicitly names DEP-006 so on-call knows what's pending.
-    assert "dep-006" in body["msg"].lower()
-    # The data.dependencies map is the rename target per BLOCKER 3
-    # (was `deps`). Future deps (Postgres, orchestrator) layer in here.
-    assert body["data"]["dependencies"]["redis"] == "not_yet_implemented"
+    async def fake_check() -> bool:
+        return True
 
-
-def test_health_ready_returns_200_when_check_returns_true(client_flag_off, monkeypatch):
-    """/health/ready: returns 200 with `dependencies.redis="ok"` when
-    `_check_redis_reachable` returns True (future-ready BLOCKER 2 path).
-
-    WHAT: monkey-patches health_routes._check_redis_reachable to True;
-          GETs /health/ready; asserts HTTP 200 + raw body shape with
-          `dependencies.redis="ok"`.
-    WHEN: forward-looking — exercises the branch the follow-up
-          async-Sentinel PR will fill in. Right now the helper is a
-          stub-False; this test proves the 200 path is wired correctly
-          + uses the English-spelled `dependencies` key (BLOCKER 3
-          rename from `deps`).
-    WHY:  ships the test now so the follow-up PR's only diff is
-          changing the helper from stub → real implementation; no
-          test-infrastructure change needed at that point.
-    """
-    monkeypatch.setattr(health_routes, "_check_redis_reachable", lambda: True)
+    monkeypatch.setattr(health_routes, "_check_redis_reachable", fake_check)
     response = client_flag_off.get("/health/ready")
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"
     # BLOCKER 3 rename — `dependencies`, not `deps`.
     assert body["dependencies"]["redis"] == "ok"
+
+
+def test_health_ready_returns_503_envelope_when_redis_ping_fails(
+    client_flag_off, monkeypatch,
+):
+    """/health/ready: 503 envelope when the redis ping raises.
+
+    WHAT: patches `redis_asyncio.Redis.from_url` to return a mock
+          whose `.ping()` raises ConnectionError. The fixture flag
+          stays at its default (`redis_sentinel_enabled=False`), so
+          `_check_redis_reachable` takes the single-primary fallback
+          path + invokes `from_url()` + awaits `.ping()` + catches
+          the raised error + returns False. The handler then returns
+          envelope-shaped 503.
+    WHEN: simulates the single-primary fallback Redis being down
+          (laptop dev with `redis-server` stopped, OR cluster smoke
+          before the Sentinel flag is flipped on).
+    WHY:  exercises the REAL `_check_redis_reachable` code path
+          end-to-end (not just the handler's branch on the boolean) —
+          if a future regression broke the timeout / error-handling
+          logic, this test catches it. Asserts the locked
+          `error="service_unavailable"` envelope wire shape.
+    """
+    fake_redis = AsyncMock()
+    fake_redis.ping = AsyncMock(
+        side_effect=ConnectionError("simulated redis down for test"),
+    )
+
+    # The health helper imports `redis.asyncio as redis_asyncio`;
+    # patching `Redis.from_url` on the `redis.asyncio.Redis` class
+    # reaches the call site since attribute lookup happens at call time.
+    import redis.asyncio as redis_asyncio_lib
+
+    monkeypatch.setattr(
+        redis_asyncio_lib.Redis,
+        "from_url",
+        classmethod(lambda cls, *args, **kwargs: fake_redis),
+    )
+
+    response = client_flag_off.get("/health/ready")
+    assert response.status_code == 503
+    body = response.json()
+    assert body["success"] is False
+    assert body["error"] == "service_unavailable"
+    # The data.dependencies map is the rename target per BLOCKER 3
+    # (was `deps`). Future deps (Postgres, orchestrator) layer in here.
+    assert body["data"]["dependencies"]["redis"] == "unreachable"
 
 
 def test_health_deep_returns_503_envelope_with_explanation(client_flag_off):
@@ -114,8 +160,6 @@ def test_health_deep_returns_503_envelope_with_explanation(client_flag_off):
     body = response.json()
     assert body["success"] is False
     assert body["error"] == "service_unavailable"
-    # The msg explicitly notes deep is "not yet implemented" so on-call
-    # can distinguish "real outage" from "expected stub" at a glance.
     msg_lower = body["msg"].lower()
     assert "not yet implemented" in msg_lower or "not implemented" in msg_lower
 
@@ -124,15 +168,23 @@ def test_health_deep_returns_503_envelope_with_explanation(client_flag_off):
 # RELATED FILES:
 #   conftest.py                          — provides `client_flag_off`
 #   ../../app/api/health_routes.py       — handlers under test +
-#                                          _check_redis_reachable (monkey-
-#                                          patched by the future-ready test)
+#                                          `_check_redis_reachable` (the
+#                                          200-path test monkey-patches
+#                                          this; the 503-path test patches
+#                                          `redis_asyncio.Redis.from_url`
+#                                          one level deeper to exercise
+#                                          the real helper body)
 #   yral-rishi-agent-plan-and-discussions/CONSTRAINTS.md
 #                                        — F9 (three-tier health split),
 #                                          C10 (Caddy health_uri probe),
-#                                          C11 (Redis Sentinel HA),
+#                                          C11 (Redis Sentinel HA — the
+#                                          contract the round-4 fix
+#                                          implements verbatim),
 #                                          I2 (canary deploy auto-rollback)
 #   yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/cross-session-dependencies.md
-#                                        — DEP-006 (Session 1 Sentinel
-#                                          config that unblocks the real
-#                                          async readiness check)
+#                                        — DEP-006 RESOLVED in round-4:
+#                                          Session 1's cluster bootstrap
+#                                          already declared the Sentinel
+#                                          config; round-3 raised the DEP
+#                                          on a stale read
 # ===========================================================================

@@ -106,17 +106,28 @@ class Settings(BaseSettings):
     # is NOT yet in place AND (b) the deploy target is local/staging.
     enable_session_3_phase_1_day_2_placeholder_responses: bool = False
 
-    # -- Redis URL (forward-port from PR #101 for rebase-compat) -----------
-    # Was wired into /health/ready in round-2 BLOCKER 5; round-3
-    # BLOCKER 2 removed that wiring (sync .ping() inside async handler
-    # was blocking the event loop; coordinator preference: ship the
-    # F9-honest 503 fallback now, wire the real async-Sentinel check
-    # after DEP-006 lands). The setting STAYS here because PR #101's
-    # JWKS cache + PR #103's idempotency cache still consume it — same
-    # name, same default — so the Day-4A/4C rebase remains a no-op on
-    # this line. The real Sentinel-aware client will read the
-    # `redis_sentinel_*` fields DEP-006 brings in shared-config.yaml.
+    # -- Redis URL (single-primary fallback path for /health/ready) --------
+    # Used by /health/ready's C11-Sentinel fallback path when
+    # `redis_sentinel_enabled` is False (laptop dev / docker-compose).
+    # Production sets the Sentinel flag to True + lets the Sentinel-
+    # aware client discover the current primary at connect time, so
+    # this URL is unused in cluster. PR #101's JWKS cache + PR #103's
+    # idempotency cache also consume this setting on the Day-4A/4C
+    # branches.
     redis_url: str = "redis://localhost:6379/0"
+
+    # -- C11 Sentinel feature flag (Codex PR #97 round-4 BLOCKER 2) --------
+    # Default-OFF so laptop dev + docker-compose + CI run on the
+    # single-primary `redis_url` fallback above. Production MUST flip
+    # to True via env injection (REDIS_SENTINEL_ENABLED=true) so the
+    # /health/ready probe (and any future Redis consumer in this
+    # service) discovers the current primary via Sentinel quorum +
+    # auto-reconnects on failover per C11. When the flag is OFF, the
+    # health-route helper emits a LOUD warning
+    # `c11_violation_single_primary_redis_no_sentinel` on the fallback
+    # path so the C11 gap is visible in startup logs rather than silent.
+    # Mirrors Session 4's PR #96 round-3 pattern (commit fe40fcb).
+    redis_sentinel_enabled: bool = False
 
 
 @lru_cache(maxsize=1)

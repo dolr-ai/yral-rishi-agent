@@ -3,74 +3,6 @@
 
 ## OPEN
 
-### DEP-006 — Session 1 to declare Redis Sentinel config in shared-config.yaml so public-api can wire a real async-Sentinel readiness check
-
-Raised: 2026-05-19 by Session 3
-
-What:    Session 3's PR #97 round-3 fixup landed an F9-honest 503
-         fallback for `GET /health/ready` (per Codex round-3 BLOCKER 2
-         + coordinator preference). The handler now returns envelope-
-         shaped 503 with `error="service_unavailable"` and a
-         `data.dependencies.redis = "not_yet_implemented"` marker
-         until the real async Sentinel-aware Redis readiness check
-         can be wired.
-
-         The real check needs two fields declared in
-         `shared-config.yaml` (Session 1 cluster-bootstrap scope):
-
-           redis_sentinel_service_name: <e.g. "yral-v2-redis">
-           redis_sentinel_hosts:
-             - host:port  (one per Sentinel node, typically rishi-4/5/6)
-
-         The follow-up Session 3 PR will:
-           1. Read those fields via pydantic-settings.
-           2. Build a `redis.asyncio.sentinel.Sentinel` client per F12
-              + C11 (async-native, Sentinel-aware).
-           3. Replace the stub `_check_redis_reachable()` (currently
-              returns False) with `await sentinel_client.master_for(...).ping()`
-              with a 200ms per-call timeout — health probes should
-              fail fast, not block the event loop.
-           4. Flip the readiness probe from default-503 to "200 when
-              Sentinel ping succeeds, envelope-shaped 503 when it
-              fails." The 503 path branch is already ALSO wired today,
-              just via the stub-False → False default rather than a
-              real-time ping result.
-
-         Cross-session coordination note: Session 4's PR #96 round-3
-         may also be raising essentially the same DEP — both services
-         need the same Sentinel config. Coordinator can fold them.
-
-Why:    Until DEP-006 lands:
-         - /health/ready returns 503 unconditionally → Swarm rolling-
-           update + Caddy `health_uri /health/ready` (per C10) +
-           Uptime Kuma (per D5) all see the service as down →
-           Day-5 cluster deploy will fail the I2 health gate +
-           auto-rollback.
-         - Day-4A's JWKS cache (PR #101) + Day-4C's idempotency cache
-           (PR #103) also need the Sentinel client when they promote
-           from plain-redis-URL to C11-compliant Sentinel routing.
-           Per the Day-4A I6 note: in-process / plain-URL forms work
-           today as an interim; the C11 Sentinel-aware promotion needs
-           this same DEP-006 config.
-
-Blocks:  Day-5 cluster deploy + M0 milestone evaluation for Session 3.
-         Also blocks Session 4's deploy if their orchestrator surface
-         has equivalent readiness wiring.
-
-ETA needed: Before any Session 3 (or Session 4) service is deployed
-         to the v2 cluster. Per the directive: "raise as a cross-
-         session DEP, not in this fixup."
-
-Suggested
-resolution: Session 1 PR adds the two fields to
-         `bootstrap-scripts-for-the-v2-docker-swarm-cluster/...` (or
-         wherever Session 1 sources `shared-config.yaml` values for
-         the cluster). Once they land, the follow-up Session 3 PR
-         (and Session 4 equivalent) wires the real async-Sentinel
-         check + flips the default behavior to "200 when reachable."
-
----
-
 ### DEP-005 — Session 2 needs to mirror `/health/{live,ready,deep}` in the template (per F9)
 
 Raised: 2026-05-18 by Session 3
@@ -139,6 +71,82 @@ resolution: Session 2 adds `app/health_routes.py` to the template
 ---
 
 ## RESOLVED
+
+### DEP-006 — Session 1 to declare Redis Sentinel config in shared-config.yaml so public-api can wire a real async-Sentinel readiness check
+
+Raised: 2026-05-19 by Session 3
+Resolved: 2026-05-19 by Session 3 (self-resolved on stale-read realisation; verified independently by Session 4 PR #96 round-3 + coordinator)
+Resolution: The Sentinel config was ALREADY present in `yral-rishi-agent-public-api/shared-config.yaml`'s `redis:` section all along — `sentinel_master_name: "yral-v2-redis-primary"` + the 3 `sentinel_hosts` entries on the `yral-v2-data-plane` overlay. Session 3's round-3 fixup raised the DEP based on a stale read of the file (didn't grep before raising). Session 4's parallel PR #96 round-3 discovered the config independently while wiring the orchestrator's `app/idempotency.py` Sentinel client + correctly chose to NOT raise an I6 DEP. Coordinator confirmed the config on 2026-05-19 and signalled to flip the /health/ready handler from the round-3 503-fallback stub to the real async-Sentinel-aware check in this same PR #97 branch — the round-4 fixup (commit forthcoming) ships that flip. Day-5 cluster deploy unblocked; the I2 health gate Swarm reads will pass once /health/ready returns 200 + envelope on a Sentinel-pingable Redis.
+
+What:    Session 3's PR #97 round-3 fixup landed an F9-honest 503
+         fallback for `GET /health/ready` (per Codex round-3 BLOCKER 2
+         + coordinator preference). The handler returned envelope-
+         shaped 503 with `error="service_unavailable"` and a
+         `data.dependencies.redis = "not_yet_implemented"` marker
+         until the real async Sentinel-aware Redis readiness check
+         could be wired.
+
+         The real check needs two fields in `shared-config.yaml`
+         (Session 1 cluster-bootstrap scope):
+
+           redis.sentinel_master_name: <e.g. "yral-v2-redis-primary">
+           redis.sentinel_hosts:
+             - host:port  (one per Sentinel node, typically rishi-4/5/6)
+
+         The follow-up Session 3 PR will:
+           1. Read those fields via the YAML loader.
+           2. Build a `redis.asyncio.sentinel.Sentinel` client per F12
+              + C11 (async-native, Sentinel-aware).
+           3. Replace the stub `_check_redis_reachable()` (currently
+              returns False) with `await sentinel_client.master_for(...).ping()`
+              with a 200ms per-call timeout — health probes should
+              fail fast, not block the event loop.
+           4. Flip the readiness probe from default-503 to "200 when
+              Sentinel ping succeeds, envelope-shaped 503 when it
+              fails."
+
+         Cross-session coordination note: Session 4's PR #96 round-3
+         may also be raising essentially the same DEP — both services
+         need the same Sentinel config. Coordinator can fold them.
+
+Why:    Until DEP-006 lands:
+         - /health/ready returns 503 unconditionally → Swarm rolling-
+           update + Caddy `health_uri /health/ready` (per C10) +
+           Uptime Kuma (per D5) all see the service as down →
+           Day-5 cluster deploy will fail the I2 health gate +
+           auto-rollback.
+         - Day-4A's JWKS cache (PR #101) + Day-4C's idempotency cache
+           (PR #103) also need the Sentinel client when they promote
+           from plain-redis-URL to C11-compliant Sentinel routing.
+           Per the Day-4A I6 note: in-process / plain-URL forms work
+           today as an interim; the C11 Sentinel-aware promotion needs
+           this same DEP-006 config.
+
+Blocks:  Day-5 cluster deploy + M0 milestone evaluation for Session 3.
+         Also blocks Session 4's deploy if their orchestrator surface
+         has equivalent readiness wiring.
+
+ETA needed: Before any Session 3 (or Session 4) service is deployed
+         to the v2 cluster. Per the directive: "raise as a cross-
+         session DEP, not in this fixup."
+
+Suggested
+resolution: Session 1 PR adds the two fields to
+         `bootstrap-scripts-for-the-v2-docker-swarm-cluster/...` (or
+         wherever Session 1 sources `shared-config.yaml` values for
+         the cluster). Once they land, the follow-up Session 3 PR
+         (and Session 4 equivalent) wires the real async-Sentinel
+         check + flips the default behavior to "200 when reachable."
+
+Lessons:  (1) Always grep before raising a DEP — `grep -A 30 "^redis:"
+         yral-rishi-agent-public-api/shared-config.yaml` would have
+         shown the Sentinel config in 1 second + saved a round-trip.
+         (2) Cross-check with parallel sessions wrestling the same
+         constraint before raising — Session 4 had already verified
+         the same config without raising an I6 DEP. Memory entry
+         queued to capture this for future-self.
+
+---
 
 ### DEP-003 — Session 2 needs Session 1 to confirm the three cluster overlay network names match the template's `docker-compose.swarm.yml`
 

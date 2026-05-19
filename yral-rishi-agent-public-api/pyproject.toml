@@ -125,6 +125,14 @@ dependencies = [
     # ships an allowlist-based redaction processor (in app/logging.py)
     # that drops any field key not on a known-safe list.
     "structlog==24.4.0",
+
+    # PyYAML — used by `app/api/health_routes.py` to read the `redis:`
+    # section of `shared-config.yaml` (per C7 — sentinel master name +
+    # sentinel hosts come from the single source of truth Session 1's
+    # cluster bootstrap populates). Pinned to match Session 4's
+    # orchestrator + soul-file-library so the whole v2 monorepo runs
+    # the same YAML library version.
+    "PyYAML==6.0.2",
 ]
 
 # ===========================================================================
