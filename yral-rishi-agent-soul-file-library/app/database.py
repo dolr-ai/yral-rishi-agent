@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# db.py — asyncpg connection pool wiring for the soul-file-library.
+# database.py — asyncpg connection pool wiring for the soul-file-library.
 #
 # ⭐ START HERE: this module exposes ONE async lifecycle pair —
 # `init_pool()` + `close_pool()` — and ONE accessor — `get_pool()` — for
@@ -51,7 +51,7 @@ _DEFAULT_MIN_POOL_SIZE: Final[int] = 2
 _DEFAULT_MAX_POOL_SIZE: Final[int] = 10
 
 
-_log = logging.getLogger("app.db")
+_log = logging.getLogger("app.database")
 
 
 async def init_pool() -> None:

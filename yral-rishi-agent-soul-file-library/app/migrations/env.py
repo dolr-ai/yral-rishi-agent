@@ -159,7 +159,7 @@ else:
 #   ../../alembic.ini             — points here via `script_location`
 #   versions/                     — per-revision migration files this env
 #                                    dispatches to
-#   ../db.py                      — runtime asyncpg pool (separate from
+#   ../database.py                      — runtime asyncpg pool (separate from
 #                                    Alembic's SQLAlchemy engine; the two
 #                                    talk to the same DB but via different
 #                                    drivers — asyncpg vs SQLAlchemy+asyncpg)

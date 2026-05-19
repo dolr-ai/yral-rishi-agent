@@ -83,7 +83,7 @@ async def _seed_l3_companion(pool: asyncpg.Pool) -> None:
 
 @pytest.mark.asyncio
 async def test_compose_matches_committed_golden_when_l3_seeded(
-    db_pool: asyncpg.Pool, app_pool_bound: None
+    database_pool: asyncpg.Pool, app_pool_bound: None
 ) -> None:
     """WHAT: compose(FIXTURE_INFLUENCER_ID, 'new') equals the golden file.
     WHEN: after seeding the L3 fixture row.
@@ -91,7 +91,7 @@ async def test_compose_matches_committed_golden_when_l3_seeded(
           drift in the layer order, separator, or seed-body text
           surfaces as a Codex-reviewable patch.
     """
-    await _seed_l3_companion(db_pool)
+    await _seed_l3_companion(database_pool)
 
     response = await compose(influencer_id=FIXTURE_INFLUENCER_ID, user_segment="new")
 
@@ -117,7 +117,7 @@ async def test_compose_matches_committed_golden_when_l3_seeded(
 
 @pytest.mark.asyncio
 async def test_compose_raises_when_layer_3_missing(
-    db_pool: asyncpg.Pool, app_pool_bound: None
+    database_pool: asyncpg.Pool, app_pool_bound: None
 ) -> None:
     """WHAT: missing L3 row → InfluencerSoulFileMissingError.
     WHEN: caller asks about an influencer with no Soul File row.
@@ -132,7 +132,7 @@ async def test_compose_raises_when_layer_3_missing(
 
 @pytest.mark.asyncio
 async def test_compose_raises_data_integrity_when_layer_4_missing(
-    db_pool: asyncpg.Pool, app_pool_bound: None
+    database_pool: asyncpg.Pool, app_pool_bound: None
 ) -> None:
     """WHAT: missing L4 row for a known segment → SoulFileDataIntegrityError.
     WHEN: someone retired the segment's L4 row without a replacement.
@@ -140,7 +140,7 @@ async def test_compose_raises_data_integrity_when_layer_4_missing(
           clear error (don't silently return empty)." The HTTP layer
           turns this into a 500 (our fault, not caller's).
     """
-    await _seed_l3_companion(db_pool)
+    await _seed_l3_companion(database_pool)
 
     # Retire the 'new' segment's L4 row, leaving the slot empty.
     retired = await retire_current(LAYER_PER_USER_SEGMENT, "new")
@@ -161,7 +161,7 @@ async def test_compose_raises_data_integrity_when_layer_4_missing(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("rep", range(5))
 async def test_compose_returns_byte_identical_layered_prompt_across_reps_5x(
-    db_pool: asyncpg.Pool, app_pool_bound: None, rep: int
+    database_pool: asyncpg.Pool, app_pool_bound: None, rep: int
 ) -> None:
     """WHAT: compose() called twice ~100ms apart yields BYTE-IDENTICAL output.
     WHEN: every rep (5 minimum per directive).
@@ -172,7 +172,7 @@ async def test_compose_returns_byte_identical_layered_prompt_across_reps_5x(
           catches intermittent nondeterminism (e.g. a `dict` iteration
           order leaking into the prompt) without a pytest-repeat plugin.
     """
-    await _seed_l3_companion(db_pool)
+    await _seed_l3_companion(database_pool)
 
     first = await compose(influencer_id=FIXTURE_INFLUENCER_ID, user_segment="new")
     await asyncio.sleep(0.1)
@@ -197,7 +197,7 @@ async def test_compose_returns_byte_identical_layered_prompt_across_reps_5x(
 
 # ===========================================================================
 # RELATED FILES:
-#   conftest.py                       — db_pool + app_pool_bound fixtures
+#   conftest.py                       — database_pool + app_pool_bound fixtures
 #   fixtures/composer_golden_layer_output.txt
 #                                    — committed expected output the happy
 #                                       test diffs against

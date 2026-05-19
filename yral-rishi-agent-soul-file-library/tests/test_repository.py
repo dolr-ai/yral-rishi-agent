@@ -44,7 +44,7 @@ from app.repository.soul_file_repository import (
 
 @pytest.mark.asyncio
 async def test_get_current_returns_seeded_layer_1(
-    db_pool: asyncpg.Pool, app_pool_bound: None
+    database_pool: asyncpg.Pool, app_pool_bound: None
 ) -> None:
     """WHAT: get_current(1, '') returns the seeded global row.
     WHEN: after conftest's truncate-and-reseed fixture runs.
@@ -62,7 +62,7 @@ async def test_get_current_returns_seeded_layer_1(
 
 @pytest.mark.asyncio
 async def test_get_current_returns_none_for_missing_layer_3(
-    db_pool: asyncpg.Pool, app_pool_bound: None
+    database_pool: asyncpg.Pool, app_pool_bound: None
 ) -> None:
     """WHAT: get_current(3, '<random uuid>') returns None.
     WHEN: L3 has no seeded rows on Day 4 (data port deferred).
@@ -74,7 +74,7 @@ async def test_get_current_returns_none_for_missing_layer_3(
 
 @pytest.mark.asyncio
 async def test_list_versions_returns_history_descending(
-    db_pool: asyncpg.Pool, app_pool_bound: None
+    database_pool: asyncpg.Pool, app_pool_bound: None
 ) -> None:
     """WHAT: list_versions returns rows ordered version DESC.
     WHEN: after we bump a layer multiple times.
@@ -100,7 +100,7 @@ async def test_list_versions_returns_history_descending(
 
 @pytest.mark.asyncio
 async def test_create_new_version_flips_is_current_correctly(
-    db_pool: asyncpg.Pool, app_pool_bound: None
+    database_pool: asyncpg.Pool, app_pool_bound: None
 ) -> None:
     """WHAT: after a bump, exactly one row at (layer, scope_key) is current.
     WHEN: bumping an already-seeded slot.
@@ -122,7 +122,7 @@ async def test_create_new_version_flips_is_current_correctly(
 
 @pytest.mark.asyncio
 async def test_create_new_version_initial_row_starts_at_version_1(
-    db_pool: asyncpg.Pool, app_pool_bound: None
+    database_pool: asyncpg.Pool, app_pool_bound: None
 ) -> None:
     """WHAT: the first insert into an empty slot gets version 1.
     WHEN: inserting an L3 row (no L3 seeds exist).
@@ -143,7 +143,7 @@ async def test_create_new_version_initial_row_starts_at_version_1(
 
 @pytest.mark.asyncio
 async def test_retire_current_marks_row_history(
-    db_pool: asyncpg.Pool, app_pool_bound: None
+    database_pool: asyncpg.Pool, app_pool_bound: None
 ) -> None:
     """WHAT: retire_current flips current → False without inserting a replacement.
     WHEN: operator decides to retire an archetype with no replacement.
@@ -164,7 +164,7 @@ async def test_retire_current_marks_row_history(
 
 @pytest.mark.asyncio
 async def test_partial_unique_index_blocks_concurrent_double_current(
-    db_pool: asyncpg.Pool, app_pool_bound: None
+    database_pool: asyncpg.Pool, app_pool_bound: None
 ) -> None:
     """WHAT: directly inserting a second is_current=TRUE row at the same
           (layer, scope_key) raises asyncpg.UniqueViolationError.
@@ -172,7 +172,7 @@ async def test_partial_unique_index_blocks_concurrent_double_current(
     WHY:  proves the partial unique index is the durable safety net
           even if a buggy caller skips the retire-then-insert pattern.
     """
-    async with db_pool.acquire() as conn:
+    async with database_pool.acquire() as conn:
         with pytest.raises(asyncpg.UniqueViolationError):
             await conn.execute(
                 "INSERT INTO soul_file_layers "
@@ -183,7 +183,7 @@ async def test_partial_unique_index_blocks_concurrent_double_current(
 
 # ===========================================================================
 # RELATED FILES:
-#   conftest.py                       — db_pool + app_pool_bound fixtures
+#   conftest.py                       — database_pool + app_pool_bound fixtures
 #   ../app/repository/soul_file_repository.py
 #                                    — module under test
 #   ../app/migrations/versions/001_initial_schema_and_seed.py

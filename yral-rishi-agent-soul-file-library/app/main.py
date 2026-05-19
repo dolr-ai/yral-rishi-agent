@@ -48,8 +48,8 @@ from app.request_id_middleware import RequestIdMiddleware
 
 # Day-4 asyncpg pool lifecycle. The lifespan startup hook opens the
 # pool; the shutdown hook closes it. Everything else in the app talks
-# to Postgres via `app.db.get_pool()` per F12 (asyncpg, no ORM).
-from app.db import close_pool, init_pool
+# to Postgres via `app.database.get_pool()` per F12 (asyncpg, no ORM).
+from app.database import close_pool, init_pool
 
 # Day-4 HTTP route — `GET /composed-prompt`. Mounted on the app below.
 from app.api.composed_prompt_routes import router as composed_prompt_router
@@ -82,7 +82,7 @@ async def lifespan(_app: FastAPI):
     """
     # --- startup --------------------------------------------------------
     # Open the asyncpg connection pool. The repository layer + composer
-    # call `app.db.get_pool()` to grab connections from it; init must
+    # call `app.database.get_pool()` to grab connections from it; init must
     # complete before the first request handler runs.
     await init_pool()
     yield
@@ -126,7 +126,7 @@ app.add_middleware(RequestIdMiddleware)
 #   langfuse_middleware.py       — init_langfuse() + flush_langfuse() (per D4)
 #   logging.py                   — configure_logging() called above (per H6)
 #   request_id_middleware.py     — RequestIdMiddleware mounted above
-#   db.py                        — init_pool() / close_pool() called in lifespan
+#   database.py                        — init_pool() / close_pool() called in lifespan
 #   api/composed_prompt_routes.py
 #                                — Day-4 GET /composed-prompt router mounted above
 #   composer/four_layer_composer.py

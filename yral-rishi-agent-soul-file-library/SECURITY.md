@@ -123,6 +123,14 @@ Per the Day-4 directive verbatim: "Internal-only per C3 — no auth on Day 4 (ov
 | PostgreSQL DSN leaked from a service log | secrets.yaml + .env.local pattern per D1+D8; logs NEVER include DSN | Standing template guarantee |
 | Day-4 placeholder body content reaches a real user | Obviously-stubbed bracketed text + product owns the real-content PR | Accepted Day 4 |
 
+## A1 carve-outs granted (the standing audit log)
+
+A1 (the deletion covenant — relaxed 2026-05-14) requires every deletion to either match the 7-step safety check OR carry an explicit coordinator-approved carve-out. The carve-outs granted for THIS service are listed here so a future reader can audit every authorised deletion path without grepping git history.
+
+| Date | Carve-out | Scope | Authoriser | Audit pointer |
+|---|---|---|---|---|
+| 2026-05-19 | Alembic migration `downgrade()` drops `soul_file_layers` | Reversibility of THIS migration's `upgrade()` only — table created + dropped within the same migration file. Operator action only (`alembic downgrade -1`); never automated; never on production data; CI's `test_schema_migrations.py` runs against ephemeral testcontainers-Postgres. | Rishi (Option A on the Day-4 fixup, 2026-05-19 morning). | `app/migrations/versions/001_initial_schema_and_seed.py` A1 DELETION JUSTIFICATION block; `tests/test_schema_migrations.py` A1 PROVENANCE block; PR #104 fixup commit. |
+
 ## Status
 
 Day-4 threat model current. Day-5+ tightens to: orchestrator → soul-file-library `X-Internal-Caller` validation; Prompt-Coach auth surface; content-safety service plug-in for L3 body moderation when the data port lands (Day 4.5+).

@@ -34,6 +34,30 @@
 # placeholders are recognisable in logs + traces so a future reader
 # spots "still on Day-4 stub copy".
 #
+# A1 DELETION JUSTIFICATION
+# -------------------------
+# The `downgrade()` function in this migration drops the
+# `soul_file_layers` table that the `upgrade()` function in this
+# same migration created. This is REVERSIBILITY of THIS migration,
+# NOT destruction of pre-existing production data.
+#
+# - `upgrade()` and `downgrade()` are inverse operations on the
+#   same schema artifact (this migration created the table; this
+#   migration's downgrade removes it).
+# - Running `alembic downgrade` is a manually-invoked operator
+#   action, never automated, never triggered by CI. The
+#   `test_schema_migrations.py` round-trip test runs against a
+#   fresh testcontainers-Postgres, never against a real DB with
+#   real data.
+# - Standard Alembic round-trip practice; suppressing the
+#   `drop_table` would leave the schema un-reversible + violate
+#   H11 spirit ("every migration must be reversible without manual
+#   SQL").
+# - Coordinator approval: Rishi 2026-05-19 (Option A on the broader
+#   B2 abbreviation rename + this A1 carve-out — see the PR #104
+#   fixup LOG entry for the audit trail + SECURITY.md's "A1
+#   carve-outs granted" section for the standing record).
+#
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
 

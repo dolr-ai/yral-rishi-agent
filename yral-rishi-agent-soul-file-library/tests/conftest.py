@@ -69,7 +69,7 @@ def postgres_dsn(postgres_container: PostgresContainer) -> str:
     """Build an asyncpg-compatible DSN from the testcontainer.
 
     WHAT: extracts host/port/user/password/dbname from the container
-          + reassembles as `postgresql://user:pass@host:port/db`.
+          + reassembles as `postgresql://user:pass@host:port/database`.
     WHEN: derived once from the session-scoped container.
     WHY:  testcontainers exposes `get_connection_url()` which returns a
           SQLAlchemy-shaped URL (`postgresql+psycopg2://...`); strip the
@@ -151,14 +151,14 @@ def clean_app_settings_cache() -> Iterator[None]:
 
 
 @pytest.fixture()
-async def db_pool(postgres_dsn: str) -> AsyncIterator[asyncpg.Pool]:
+async def database_pool(postgres_dsn: str) -> AsyncIterator[asyncpg.Pool]:
     """Yield an asyncpg pool pointed at the testcontainer.
 
     WHAT: creates a fresh asyncpg.Pool; truncates `soul_file_layers`
           + re-runs the seed inserts so each test starts with the
           migration's known L1/L2/L4 state; yields the pool; closes
           on test exit.
-    WHEN: per test that explicitly requests `db_pool`.
+    WHEN: per test that explicitly requests `database_pool`.
     WHY:  per-function isolation without re-running the slow migration.
           The TRUNCATE-and-reseed approach is much faster than a full
           alembic downgrade + upgrade per test.
@@ -185,7 +185,7 @@ async def _truncate_and_reseed(pool: asyncpg.Pool) -> None:
           + 3 × L4 user_segment seed rows (matching the migration's
           seed block byte-for-byte). L3 rows NOT seeded by default —
           tests that need L3 add rows explicitly.
-    WHEN: called from `db_pool` before yielding to a test.
+    WHEN: called from `database_pool` before yielding to a test.
     WHY:  fast per-test reset; avoids re-running alembic for each test.
     """
     async with pool.acquire() as conn:
@@ -247,10 +247,10 @@ async def _truncate_and_reseed(pool: asyncpg.Pool) -> None:
 
 
 @pytest.fixture()
-def app_pool_bound(db_pool: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Bind the test's asyncpg.Pool to the app's `app.db._pool` module global.
+def app_pool_bound(database_pool: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Bind the test's asyncpg.Pool to the app's `app.database._pool` module global.
 
-    WHAT: monkeypatches `app.db._pool` to the test fixture's pool so
+    WHAT: monkeypatches `app.database._pool` to the test fixture's pool so
           the composer + repository + HTTP route all see the same
           pool (instead of trying to call init_pool() which would
           open a SECOND pool).
@@ -261,12 +261,12 @@ def app_pool_bound(db_pool: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch) -> It
           a pool from the test fixture, binding directly avoids the
           duplicate connection.
     """
-    import app.db as app_db
+    import app.database as app_database
 
-    original_pool = app_db._pool
-    app_db._pool = db_pool
+    original_pool = app_database._pool
+    app_database._pool = database_pool
     yield
-    app_db._pool = original_pool
+    app_database._pool = original_pool
 
 
 @pytest.fixture()
@@ -298,10 +298,10 @@ async def client(
 # RELATED FILES:
 #   __init__.py                      — package marker
 #   test_schema_migrations.py        — alembic up/down round-trip test
-#   test_repository.py               — uses db_pool fixture
-#   test_composer.py                 — uses db_pool fixture + composer
+#   test_repository.py               — uses database_pool fixture
+#   test_composer.py                 — uses database_pool fixture + composer
 #   test_api_composed_prompt.py      — uses client fixture
-#   ../app/db.py                     — the module the app_pool_bound fixture patches
+#   ../app/database.py                     — the module the app_pool_bound fixture patches
 #   ../app/migrations/env.py         — Alembic env reading the same DSN
 #   ../alembic.ini                   — points alembic at app/migrations
 #   ../pyproject.toml                — declares testcontainers[postgres] dev dep

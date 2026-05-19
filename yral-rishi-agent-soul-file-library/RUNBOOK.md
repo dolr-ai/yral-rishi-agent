@@ -96,7 +96,7 @@ Per D2's three-layer strategy. This service stores nothing local; persistent sta
 #    or a Day-5+ admin script — Day 4 has NO HTTP write endpoint).
 python -c "
 import asyncio
-from app.db import init_pool, close_pool
+from app.database import init_pool, close_pool
 from app.repository.soul_file_repository import create_new_version, LAYER_ARCHETYPE
 
 async def main():
@@ -123,7 +123,7 @@ The partial unique index guarantees only one current row per `(layer, scope_key)
 # This both retires the bad current row + lands a new current at prior+1.
 python -c "
 import asyncio
-from app.db import init_pool, close_pool
+from app.database import init_pool, close_pool
 from app.repository.soul_file_repository import list_versions, create_new_version, LAYER_PER_INFLUENCER
 
 INFLUENCER_ID = '<the affected influencer UUID>'

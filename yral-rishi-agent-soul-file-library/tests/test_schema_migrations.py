@@ -15,6 +15,21 @@
 # downgrade round-trip succeeds." Also per CONSTRAINTS H11 spirit:
 # every migration must be reversible without manual SQL.
 #
+# A1 PROVENANCE — why this test asserts `drop_table` succeeded
+# ------------------------------------------------------------
+# The round-trip's `downgrade base` phase invokes the migration's
+# `downgrade()` function which DROPS the `soul_file_layers` table
+# the same migration's `upgrade()` had created moments earlier in
+# the testcontainers-Postgres. Per the A1 deletion justification
+# block in `001_initial_schema_and_seed.py`, this is reversibility
+# of the migration's own artifact + happens against a fresh
+# ephemeral DB — not destruction of pre-existing production data.
+# The test's `assert not await _table_exists(...)` line below is
+# the intentional verification of that reversibility, NOT an A1
+# deletion request from this test. Coordinator approval recorded
+# in the migration file's A1 justification block + SECURITY.md's
+# "A1 carve-outs granted" section.
+#
 # WHY THE LAST STEP RE-RUNS UPGRADE
 # Other tests in this session depend on the seeded state. Leaving
 # the DB in `downgrade base` state would break them. The fixture
@@ -78,7 +93,7 @@ def _run_alembic(arg: str) -> subprocess.CompletedProcess:
 
 @pytest.mark.asyncio
 async def test_alembic_upgrade_then_downgrade_round_trips_cleanly(
-    db_pool: asyncpg.Pool,
+    database_pool: asyncpg.Pool,
 ) -> None:
     """WHAT: round-trip upgrade head → downgrade base → upgrade head.
     WHEN: once per pytest session.
@@ -87,7 +102,7 @@ async def test_alembic_upgrade_then_downgrade_round_trips_cleanly(
     """
     # 1. Confirm conftest's session-scoped `upgrade head` already
     #    created the table (we're piggybacking on that work).
-    assert await _table_exists(db_pool, "soul_file_layers"), (
+    assert await _table_exists(database_pool, "soul_file_layers"), (
         "soul_file_layers should exist after conftest's upgrade head"
     )
 
@@ -101,7 +116,7 @@ async def test_alembic_upgrade_then_downgrade_round_trips_cleanly(
     # 3. Confirm the table is gone. NOTE: alembic's bookkeeping table
     #    `alembic_version` survives at empty — only `soul_file_layers`
     #    should be gone.
-    assert not await _table_exists(db_pool, "soul_file_layers"), (
+    assert not await _table_exists(database_pool, "soul_file_layers"), (
         "soul_file_layers should NOT exist after downgrade base"
     )
 
@@ -113,7 +128,7 @@ async def test_alembic_upgrade_then_downgrade_round_trips_cleanly(
         f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
 
-    assert await _table_exists(db_pool, "soul_file_layers"), (
+    assert await _table_exists(database_pool, "soul_file_layers"), (
         "soul_file_layers should exist after re-applied upgrade head"
     )
 

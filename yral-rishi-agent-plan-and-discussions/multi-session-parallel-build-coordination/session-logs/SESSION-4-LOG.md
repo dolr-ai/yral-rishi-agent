@@ -2,6 +2,70 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-19 — PR #104 fixup: db→database rename + B7 __init__ headers + A1 migration justification
+
+### Action
+Single fixup commit on `session-4/day-4-soul-file-library-postgres-schema-and-composer` addressing the three Codex BLOCKERs surfaced overnight on PR #104. Coordinator authorised all three approaches.
+
+20/20 tests still PASSED in 3.74s after the rename + B7 headers + A1 docstring addition. No code-behaviour change — pure naming + doc work.
+
+### Three blockers addressed
+**BLOCKER 1 — B2 banned `db` abbreviation.** Renamed `app/db.py` → `app/database.py` (git mv); `db_pool` fixture → `database_pool` (everywhere in conftest + tests + RELATED FILES footers + log fields). Updated every `from app.db import ...` → `from app.database import ...` import statement. Bulk perl regex rename across `.py` / `.md` / `.yaml` (BSD sed doesn't honor `\b` word boundary; switched to perl after first pass produced no diff). Verified zero residuals via `grep -rn "app\.db\b\|\bdb_pool\b\|app/db\.py" --include="*.py" --include="*.md" --include="*.yaml" .`. Also cleaned up DSN docstring examples that used `postgresql://user:pass@host:port/db` → `/database`. secrets.yaml `consumed_by` paths now reference `app/database.py`.
+
+**BLOCKER 2 — B7 headers on package-marker `__init__.py` files.** Expanded all 7 Day-4 `__init__.py` files (`app/api/`, `app/composer/`, `app/migrations/`, `app/migrations/versions/`, `app/models/`, `app/repository/`, `tests/`) from a 3-line "package marker" comment to a full B7 header following the Day-3 `app/safety/__init__.py` + `app/middleware/__init__.py` precedent. Each header now carries: one-line summary, ⭐ START HERE block, WHY-this-package-exists rationale, WHAT-DOES-THIS-FILE-DO-AT-IMPORT (consistently "Nothing — Python uses the file's PRESENCE to mark this as a package"), today's contents list, and RELATED FILES footer.
+
+Coordinator note: the template's own `app/__init__.py` has only a partial header (summary + plain-English + RELATED FILES — no ⭐ START HERE, no "what does this file do at import" block). My new `__init__.py` files now match the **Day-3** safety/middleware precedent, which is the higher bar. The template's `app/__init__.py` itself is template-scope (Session 2) and beyond this fixup's reach.
+
+**BLOCKER 3 — A1 deletion path in alembic downgrade.** Per coordinator decision (Rishi Option A 2026-05-19): KEPT `drop_table` in `downgrade()` as standard Alembic reversibility practice; added three audit-trail blocks:
+- **(a)** A1 DELETION JUSTIFICATION block in `001_initial_schema_and_seed.py` module docstring — captures the reversibility-not-destruction rationale verbatim per directive.
+- **(b)** A1 PROVENANCE block in `test_schema_migrations.py` docstring — explains the round-trip test's `assert not _table_exists(...)` is intentional reversibility verification, NOT an A1 deletion request from the test.
+- **(c)** New "A1 carve-outs granted" section in `SECURITY.md` — single-row standing audit log for this service's authorised deletion paths (date / scope / authoriser / audit pointer). First entry = the Day-4 migration downgrade carve-out.
+
+### Files touched
+- **Renamed (1):** `app/db.py` → `app/database.py` via `git mv` (history preserved).
+- **Modified (substantive content):**
+  - `app/database.py` — file header `db.py` → `database.py`; `logging.getLogger("app.db")` → `getLogger("app.database")`; everywhere it self-references.
+  - `app/main.py` — `from app.db import` → `from app.database import`; doc references in role-comments + RELATED FILES.
+  - `app/migrations/env.py` — RELATED FILES `../db.py` → `../database.py`.
+  - `app/migrations/versions/001_initial_schema_and_seed.py` — added A1 DELETION JUSTIFICATION block.
+  - `app/repository/soul_file_repository.py` — `from app.db import get_pool` → `from app.database import get_pool` + RELATED FILES.
+  - `app/config.py` — DSN example `postgresql://...:port/db` → `:port/database`.
+  - `tests/conftest.py` — `db_pool` fixture renamed → `database_pool`; `import app.db as app_db` → `import app.database as app_database`; all references; DSN example URL.
+  - `tests/test_schema_migrations.py` — added A1 PROVENANCE docstring; `db_pool` → `database_pool` param.
+  - `tests/test_repository.py` — `db_pool` → `database_pool` (8 test signatures + helper).
+  - `tests/test_composer.py` — `db_pool` → `database_pool` (4 test signatures + helper).
+  - `tests/test_api_composed_prompt.py` — `db_pool` → `database_pool` (2 test signatures + helper).
+  - `secrets.yaml` — `consumed_by: - app/db.py` → `app/database.py`.
+  - `DEEP-DIVE.md` / `WALKTHROUGH.md` / `RUNBOOK.md` / `GLOSSARY.md` / `READING-ORDER.md` — `app.db.` → `app.database.`; `app/db.py` → `app/database.py`.
+  - `SECURITY.md` — added "A1 carve-outs granted" section (1 row).
+  - 7 × `__init__.py` — full B7 headers (per the Day-3 precedent shape).
+  - `SESSION-4-LOG.md` (this entry).
+
+### Why
+Codex PR #104 review flagged 3 hard CONSTRAINTS violations (B2 `db` abbreviation, B7 minimal `__init__.py` headers, A1 deletion path in migration). Coordinator's Option-A on the B2 rename + the A1 carve-out + the standing-audit-log pattern in SECURITY.md keeps the codebase honest under the same naming-rigor decision that drove the orchestrator-side `Dto → Response` rename.
+
+### Test evidence
+pytest inside `python:3.12-slim` with testcontainers-Postgres (TESTCONTAINERS_RYUK_DISABLED=true + --network host + Docker socket mount):
+- 20/20 PASSED in 3.74s (no behaviour change post-fixup; same tests as PR #104 first push, just exercising the renamed identifiers + new docstrings).
+- Schema migrations: 1/1 PASSED (alembic upgrade → downgrade base → upgrade head round-trip; the `drop_table` in downgrade now carries its A1 justification block + the test docstring records the A1 provenance).
+- Repository: 7/7 PASSED (renamed `database_pool` fixture works; partial unique index still rejects dual-current via `asyncpg.UniqueViolationError`).
+- Composer: 8/8 PASSED (byte-identity × 5 reps still holds — rename was pure surface).
+- HTTP routes: 4/4 PASSED.
+
+### Constraints touched
+- **B2** — `db` removed everywhere it appeared as a Python identifier or filename; only remaining `db` tokens are inside string literals describing external URL schemes (DSN format docs) which are out of B2 scope per the abbreviation rule applying to OUR naming.
+- **B7** — every Day-4 `__init__.py` file now matches the Day-3 safety/middleware precedent shape (summary / ⭐ START HERE / WHY / WHAT-AT-IMPORT / today's contents / RELATED FILES footer).
+- **A1** — Standing carve-out granted by Rishi 2026-05-19 for Alembic migration `downgrade()` reversibility; recorded in 3 audit places (migration docstring + test docstring + SECURITY.md standing log).
+- **H11** — round-trip migration test (already in place) now self-documents the A1 provenance.
+
+### Notes
+- **Partial template-precedent issue.** The template's `app/__init__.py` carries only a 3-section header (summary + plain-English + RELATED FILES — no ⭐ START HERE / no WHAT-AT-IMPORT block). My new `__init__.py` files match the **higher-bar Day-3** precedent (`app/safety/__init__.py`, `app/middleware/__init__.py`) rather than the template's minimal shape. Coordinator may want to bump the template's own `__init__.py` to match — that's Session 2 territory + out of scope for this Session-4 fixup.
+- **No DEP raised today.** Both Codex catches were grounded in CONSTRAINTS rows we already follow elsewhere; no doc drift to surface.
+- **PR #96 fixup landed in parallel** — different branch, different service folder, no interference. Both fixups are coordinator-mergeable independently.
+- **Next:** Day 5 real LLM enablement (per agent definition) — gated on PR #96 + PR #100 + PR #104 all merging.
+
+---
+
 ## 2026-05-18 — Day 4, PR: Soul File Library — Postgres schema + 4-layer composer + GET /composed-prompt
 
 ### Action

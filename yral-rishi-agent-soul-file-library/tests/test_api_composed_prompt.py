@@ -56,14 +56,14 @@ async def _seed_l3_for_http_test(pool: asyncpg.Pool) -> None:
 
 @pytest.mark.asyncio
 async def test_get_composed_prompt_returns_200_with_documented_shape(
-    db_pool: asyncpg.Pool, client: httpx.AsyncClient
+    database_pool: asyncpg.Pool, client: httpx.AsyncClient
 ) -> None:
     """WHAT: GET with valid args returns 200 + 3-field response shape.
     WHEN: L3 fixture row seeded + both query params valid.
     WHY:  proves the route + composer + repo end-to-end + shape matches
           `interface-contracts/01-internal-rpc-contracts.md` verbatim.
     """
-    await _seed_l3_for_http_test(db_pool)
+    await _seed_l3_for_http_test(database_pool)
 
     response = await client.get(
         "/composed-prompt",
@@ -86,7 +86,7 @@ async def test_get_composed_prompt_returns_200_with_documented_shape(
 
 @pytest.mark.asyncio
 async def test_get_composed_prompt_returns_404_for_unknown_influencer_id(
-    db_pool: asyncpg.Pool, client: httpx.AsyncClient
+    database_pool: asyncpg.Pool, client: httpx.AsyncClient
 ) -> None:
     """WHAT: GET with influencer_id that has no L3 row → 404.
     WHEN: random UUID + valid user_segment.
@@ -144,7 +144,7 @@ async def test_get_composed_prompt_returns_422_when_required_query_param_missing
 
 # ===========================================================================
 # RELATED FILES:
-#   conftest.py                       — db_pool + client fixtures
+#   conftest.py                       — database_pool + client fixtures
 #   ../app/api/composed_prompt_routes.py
 #                                    — route module under test
 #   ../app/composer/four_layer_composer.py

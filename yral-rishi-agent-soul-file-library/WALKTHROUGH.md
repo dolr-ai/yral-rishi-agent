@@ -81,7 +81,7 @@ When Swarm rolls a deploy or scales down, the container receives SIGTERM. uvicor
 Trace of a single orchestrator → soul-file-library RPC call after the Day-4 PR lands.
 
 1. **Orchestrator sends:** `GET /composed-prompt?influencer_id=33333333-...&user_segment=new` on the Swarm overlay `yral-v2-internal` (per C3 — no auth, no public exposure).
-2. **Uvicorn ASGI hits FastAPI** → `app/main.py:lifespan` already ran `init_pool()` at process start so the asyncpg pool is ready (`app/db.py:_pool`).
+2. **Uvicorn ASGI hits FastAPI** → `app/main.py:lifespan` already ran `init_pool()` at process start so the asyncpg pool is ready (`app/database.py:_pool`).
 3. **`RequestIdMiddleware`** sets an `X-Request-Id` header on the request scope (for log correlation).
 4. **FastAPI route dispatch** → `app/api/composed_prompt_routes.py:get_composed_prompt`. Pydantic parses query params; `user_segment="not-a-segment"` would have 422'd here, never reaching the handler body.
 5. **Handler delegates:** `await compose(influencer_id, user_segment)` in `app/composer/four_layer_composer.py`.

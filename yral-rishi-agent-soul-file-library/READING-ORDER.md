@@ -62,7 +62,7 @@ After the template-inherited files above, the Day-4 PR adds the following — re
 | A4 | `app/repository/soul_file_repository.py` | 7 min | 🟥 HIGH | Read + write methods. Writes for tests + future Prompt-Coach; not wired to HTTP. |
 | A5 | `app/composer/four_layer_composer.py` | 8 min | 🟥 HIGH | The 4-layer assembly + byte-identity contract. Most important Day-4 module. |
 | A6 | `app/api/composed_prompt_routes.py` | 4 min | 🟥 HIGH | HTTP surface. Internal-only per C3; no auth on Day 4. |
-| A7 | `app/db.py` | 3 min | 🟨 MED | asyncpg pool lifecycle. Lifespan-managed in `app/main.py`. |
+| A7 | `app/database.py` | 3 min | 🟨 MED | asyncpg pool lifecycle. Lifespan-managed in `app/main.py`. |
 | A8 | `app/migrations/env.py` | 3 min | 🟨 MED | Alembic async env. Builds AsyncEngine from `POSTGRES_DSN_SOUL_FILE_LIBRARY`. |
 | A9 | `tests/conftest.py` | 5 min | 🟨 MED | testcontainers-postgres setup + per-test truncate-and-reseed pattern. |
 | A10 | `tests/test_composer.py` | 5 min | 🟥 HIGH | Byte-identity × 5 reps + golden-file diff. Catches composer drift. |

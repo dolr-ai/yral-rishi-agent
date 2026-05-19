@@ -28,7 +28,7 @@ from typing import Final
 
 import asyncpg
 
-from app.db import get_pool
+from app.database import get_pool
 from app.models.soul_file import SoulFileLayer
 
 
@@ -255,7 +255,7 @@ def _record_to_model(record: asyncpg.Record) -> SoulFileLayer:
 # ===========================================================================
 # RELATED FILES:
 #   __init__.py                     — package marker
-#   ../db.py                        — `get_pool()` accessor this module uses
+#   ../database.py                        — `get_pool()` accessor this module uses
 #   ../models/soul_file.py          — SoulFileLayer model returned here
 #   ../composer/four_layer_composer.py
 #                                  — primary consumer (4 get_current() calls
