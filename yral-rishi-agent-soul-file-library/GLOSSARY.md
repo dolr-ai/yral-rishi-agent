@@ -46,6 +46,18 @@ Terms are alphabetical. Each entry: term + 1-2 sentence definition + the relevan
 - `READING-ORDER.md` — which files use which terms
 - `yral-rishi-agent-plan-and-discussions/CONSTRAINTS.md` — the rules that reference these terms
 
+## Day-4 vocabulary
+
+- **Layer 1 / Global** — one Soul File row applied to every chat turn. Per E8. `scope_key=''` in `soul_file_layers`.
+- **Layer 2 / Archetype** — one row per archetype (companion / therapist / coach today). The composer picks the L2 row by joining on the L3 row's `archetype` column. `scope_key=<archetype-name>`.
+- **Layer 3 / Per-Influencer** — one row per AI Influencer ID. Carries influencer-specific personality body + the `archetype` field. `scope_key=<ai_influencer_id>`. NOT seeded Day 4 — populated by Day-4.5 data port from chat-ai's `ai_influencers.system_prompt`.
+- **Layer 4 / Per-User-Segment** — one row per `new` / `paying` / `dormant`. Tunes tone per user state. `scope_key=<segment-name>`.
+- **scope_key** — second half of the composite key into `soul_file_layers`. The partial unique index `(layer, scope_key) WHERE is_current=TRUE` enforces exactly one current row per slot.
+- **version_pin** — `sha256(f"{l1.version}:{l2.version}:{l3.version}:{l4.version}")[:16]` returned alongside the layered prompt. Lets a future Redis cache invalidate when any layer's version bumps without examining the prompt content.
+- **Byte-stable prefix** — the engineering contract per `PRE-SPAWN-CONTRACTS-FROM-COORDINATOR.md`. Provider-side prompt caching keys on the byte-prefix; one drifting byte = full cache miss = 3-10× TTFT regression.
+- **LAYER_SEPARATOR** — the literal `\n\n---\n\n` the composer joins layer bodies with. Locked in `shared-config.yaml` per C7.
+- **is_current / version** — simple rollback model. Repository's `create_new_version` flips the prior current to FALSE + inserts at version=prior+1 within one transaction.
+
 ## Status
 
-Scaffold. New terms get added as the template grows (database / redis client / LLM modules will add ~8 entries).
+Day-4 vocabulary current. Day-5+ adds: cache_hit, ephemeral cache breakpoint, opaque-bytes contract (mostly orchestrator-side concerns).

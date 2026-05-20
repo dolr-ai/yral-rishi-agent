@@ -68,6 +68,19 @@ By that point you'll have the mental model back.
 - `GLOSSARY.md` — when a word doesn't ring a bell
 - `CLAUDE.md` — if you're an AI agent picking up here
 
-## Status
+## Day-4 north star — the one sentence that ties it all together
 
-Scaffold. Restaurant analogy stays as the north star; specific "where to go" rows refresh as the doc set grows.
+> **This service stores Soul Files (4 layers) and assembles them into a byte-stable prompt prefix the orchestrator hands to an LLM. Layer order is part of the public contract. Byte-identity for the same (influencer, segment) is the load-bearing engineering invariant.**
+
+If anything contradicts that sentence, the doc drifted — trust `PRE-SPAWN-CONTRACTS-FROM-COORDINATOR.md` + CONSTRAINTS E8 + B4 instead.
+
+## Day-4 quick-jump (when you forget where to look)
+
+- "Where's the schema?" → `app/migrations/versions/001_initial_schema_and_seed.py` + `DEEP-DIVE.md`
+- "Where's the composer logic?" → `app/composer/four_layer_composer.py`
+- "What's the HTTP shape?" → `app/api/composed_prompt_routes.py` + `interface-contracts/01-internal-rpc-contracts.md`
+- "Why does it have to be byte-identical?" → `PRE-SPAWN-CONTRACTS-FROM-COORDINATOR.md` + `tests/test_composer.py::test_compose_returns_byte_identical_layered_prompt_across_reps_5x`
+- "Why no auth?" → `SECURITY.md` (C3 overlay trust model + Day-4 carve-out)
+- "How do I add a new archetype?" → `RUNBOOK.md`
+- "What's a Layer N for?" → `GLOSSARY.md`
+- "Why isn't my influencer's Soul File showing?" → no L3 row yet — Day-4.5 data port (A4 — "ALL data MUST port" from chat-ai; needs Rishi YES per A14).

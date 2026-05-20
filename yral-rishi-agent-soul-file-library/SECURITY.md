@@ -94,6 +94,43 @@ Per C3 + C10:
 - `docker-compose.swarm.yml` — overlays + Swarm secret mounts
 - `yral-rishi-agent-plan-and-discussions/CONSTRAINTS.md` — the threat model's underlying rules
 
+## Day-4 threat model — C3 overlay trust + no-auth-on-Day-4 carve-out
+
+### Trust boundary
+
+Per C3 the cluster runs three encrypted Swarm overlays:
+- `yral-v2-public-web` — edge Caddy ↔ public-api only
+- `yral-v2-internal` — service ↔ service RPC (where the orchestrator → soul-file-library `GET /composed-prompt` lives)
+- `yral-v2-data-plane` — every service ↔ Postgres / Redis / Langfuse
+
+The soul-file-library binds to `yral-v2-internal`. Only Swarm-attached services reach it. Public-api never talks to soul-file-library directly; the orchestrator is the gatekeeper.
+
+### Day-4: NO auth on `GET /composed-prompt`
+
+Per the Day-4 directive verbatim: "Internal-only per C3 — no auth on Day 4 (overlay yral-v2-internal protects; same trust model as orchestrator → soul-file mentioned in 01-internal-rpc-contracts.md)."
+
+**Why safe today:** the overlay is the trust boundary; orchestrator already validated the user's JWT before the internal RPC; image pulls require GHCR auth per F13.
+
+**Why we add auth Day-5+:** defence-in-depth. The overlay is a trust boundary, not a security boundary. The future Prompt-Coach service will add an auth'd write surface; at that point the read surface gets `X-Internal-Caller: orchestrator` validation as defence-in-depth.
+
+### Known Day-4 risks (accepted)
+
+| Risk | Mitigation | Status |
+|---|---|---|
+| Compromised orchestrator → exfiltrates Soul File bodies | Overlay-only + GHCR-auth image pull + future X-Internal-Caller | Accepted Day 4 |
+| Concurrent writer races overwrite history | Partial unique index + transactional retire-then-insert | Mitigation in place |
+| Forgotten retired-without-replacement slot causes composer 500s | Defensive `SoulFileDataIntegrityError` raised + clear error | Mitigation in place |
+| PostgreSQL connection string leaked from a service log | secrets.yaml + .env.local pattern per D1+D8; logs NEVER include the connection string | Standing template guarantee |
+| Day-4 placeholder body content reaches a real user | Obviously-stubbed bracketed text + product owns the real-content PR | Accepted Day 4 |
+
+## A1 carve-outs granted (the standing audit log)
+
+A1 (the deletion covenant — relaxed 2026-05-14) requires every deletion to either match the 7-step safety check OR carry an explicit coordinator-approved carve-out. The carve-outs granted for THIS service are listed here so a future reader can audit every authorised deletion path without grepping git history.
+
+| Date | Carve-out | Scope | Authoriser | Audit pointer |
+|---|---|---|---|---|
+| 2026-05-19 | Alembic migration `downgrade()` drops `soul_file_layers` | Reversibility of THIS migration's `upgrade()` only — table created + dropped within the same migration file. Operator action only (`alembic downgrade -1`); never automated; never on production data; CI's `test_schema_migrations.py` runs against ephemeral testcontainers-Postgres. | Rishi (Option A on the Day-4 fixup, 2026-05-19 morning). | `app/migrations/versions/001_initial_schema_and_seed.py` A1 DELETION JUSTIFICATION block; `tests/test_schema_migrations.py` A1 PROVENANCE block; PR #104 fixup commit. |
+
 ## Status
 
-Scaffold. Real per-threat detail (specific attack scenarios, mitigation depth, incident-response chains) fills in Days 5-6 once auth + LLM modules + content-safety service exist.
+Day-4 threat model current. Day-5+ tightens to: orchestrator → soul-file-library `X-Internal-Caller` validation; Prompt-Coach auth surface; content-safety service plug-in for L3 body moderation when the data port lands (Day 4.5+).

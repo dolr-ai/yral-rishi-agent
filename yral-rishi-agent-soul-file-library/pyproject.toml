@@ -125,6 +125,11 @@ dependencies = [
     # ships an allowlist-based redaction processor (in app/logging.py)
     # that drops any field key not on a known-safe list.
     "structlog==24.4.0",
+
+    # PyYAML — used by `app/composer/four_layer_composer.py` to load the
+    # locked LAYER_SEPARATOR from `shared-config.yaml` at module import.
+    # Pinned same as Python ecosystem default; small (zero-dep) library.
+    "PyYAML==6.0.2",
 ]
 
 # ===========================================================================
@@ -142,6 +147,12 @@ dev = [
     # pytest-asyncio — lets pytest run `async def test_*()` functions.
     # Required because every endpoint in this template is async.
     "pytest-asyncio==0.25.2",
+
+    # testcontainers[postgres] — spins up an ephemeral Postgres container
+    # per test session via Docker. Day-4 tests (`tests/conftest.py`)
+    # use this to run Alembic up + the asyncpg pool against a real
+    # Postgres without polluting the dev's local DB.
+    "testcontainers[postgres]==4.10.0",
 ]
 
 # ===========================================================================
@@ -153,6 +164,24 @@ dev = [
 # to prod).
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
+
+
+# ===========================================================================
+# [tool.pytest.ini_options] — pytest config (Day-4)
+# ===========================================================================
+#
+# `asyncio_mode = "auto"` — async fixtures and async tests run as
+# coroutines without each one being decorated by `@pytest.mark.asyncio`
+# or `@pytest_asyncio.fixture`. Required for the Day-4 testcontainers-
+# backed `database_pool` async fixture; without it pytest-asyncio
+# strict mode rejects async fixtures requested by async tests.
+#
+# `asyncio_default_fixture_loop_scope = "function"` — silences the
+# pytest-asyncio deprecation warning + matches the loop-per-test
+# isolation we already have.
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 
 
 # ===========================================================================

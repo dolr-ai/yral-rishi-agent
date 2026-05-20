@@ -46,6 +46,14 @@ from app.logging import configure_logging
 # below so it runs OUTERMOST in the request chain.
 from app.request_id_middleware import RequestIdMiddleware
 
+# Day-4 asyncpg pool lifecycle. The lifespan startup hook opens the
+# pool; the shutdown hook closes it. Everything else in the app talks
+# to Postgres via `app.database.get_pool()` per F12 (asyncpg, no ORM).
+from app.database import close_pool, init_pool
+
+# Day-4 HTTP route — `GET /composed-prompt`. Mounted on the app below.
+from app.api.composed_prompt_routes import router as composed_prompt_router
+
 
 # Run Sentry init now, at module import time. After this line, every
 # unhandled exception below is shipped to sentry.rishi.yral.com (per A7).
@@ -73,9 +81,15 @@ async def lifespan(_app: FastAPI):
           renaming anything or touching the signature.
     """
     # --- startup --------------------------------------------------------
-    # (filled in by later Day-2 PRs — database pool, redis client, etc.)
+    # Open the asyncpg connection pool. The repository layer + composer
+    # call `app.database.get_pool()` to grab connections from it; init must
+    # complete before the first request handler runs.
+    await init_pool()
     yield
     # --- shutdown -------------------------------------------------------
+    # Close the pool cleanly so Postgres backend processes terminate
+    # promptly on SIGTERM (Swarm rolling update, scale-down).
+    await close_pool()
     # Drain pending Langfuse traces so SIGTERM (Swarm rolling update,
     # scale-down) doesn't lose seconds of in-flight LLM trace data.
     # No-op when Langfuse is disabled.
@@ -86,10 +100,15 @@ async def lifespan(_app: FastAPI):
 # Title + version stay generic in the template — new-service.sh
 # overwrites them at spawn time with the service-specific values.
 app = FastAPI(
-    title="yral-rishi-agent service template",
+    title="yral-rishi-agent-soul-file-library",
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# Mount the composed-prompt router (Day 4). Adds `GET /composed-prompt`
+# to the app — the internal RPC the orchestrator calls per chat turn
+# (Day-5+) per `interface-contracts/01-internal-rpc-contracts.md`.
+app.include_router(composed_prompt_router)
 
 # Mount RequestIdMiddleware. In Starlette/FastAPI, `add_middleware`
 # is LIFO for incoming requests — the LAST added is the FIRST to
@@ -102,12 +121,20 @@ app.add_middleware(RequestIdMiddleware)
 
 # ===========================================================================
 # RELATED FILES:
-#   __init__.py              — marks app/ as a Python package
-#   sentry_middleware.py     — init_sentry() called above (per A7)
-#   langfuse_middleware.py   — init_langfuse() + flush_langfuse() (per D4)
-#   logging.py               — configure_logging() called above (per H6)
-#   request_id_middleware.py — RequestIdMiddleware mounted above
-#   pyproject.toml           — fastapi + sentry-sdk + langfuse + structlog
-#   Dockerfile               — CMD ["uvicorn", "app.main:app", ...]
-#   docker-compose.yml       — local-dev runner with --reload
+#   __init__.py                  — marks app/ as a Python package
+#   sentry_middleware.py         — init_sentry() called above (per A7)
+#   langfuse_middleware.py       — init_langfuse() + flush_langfuse() (per D4)
+#   logging.py                   — configure_logging() called above (per H6)
+#   request_id_middleware.py     — RequestIdMiddleware mounted above
+#   database.py                        — init_pool() / close_pool() called in lifespan
+#   api/composed_prompt_routes.py
+#                                — Day-4 GET /composed-prompt router mounted above
+#   composer/four_layer_composer.py
+#                                — what the route delegates to
+#   repository/soul_file_repository.py
+#                                — what the composer fetches its layers from
+#   models/soul_file.py          — Pydantic models for both
+#   pyproject.toml               — fastapi + asyncpg + alembic + sentry-sdk + ...
+#   Dockerfile                   — CMD ["uvicorn", "app.main:app", ...]
+#   docker-compose.yml           — local-dev runner with postgres + pgbouncer
 # ===========================================================================

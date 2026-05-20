@@ -205,6 +205,35 @@ latency:
   streaming_first_token_max_p95_ms: 200
 
 
+# ---------------------------------------------------------------------------
+# Soul File Library composer config (Day 4)
+# ---------------------------------------------------------------------------
+#
+# 🔒 LAYER SEPARATOR IS LOCKED. Changing this value breaks every
+# downstream cached prompt prefix in flight — every provider-side
+# cache entry (Anthropic ephemeral, Gemini context, OpenAI prompt)
+# was keyed on the byte prefix this separator helped form. A change
+# here is equivalent to a versioned schema change of the composer
+# output contract.
+#
+# The 4 layers (L1 global / L2 archetype / L3 per-influencer /
+# L4 per-user-segment) are concatenated with this exact string between
+# them. The current value `\n\n---\n\n` is a Markdown-friendly visual
+# break that renders cleanly in any debug-trace UI + is unlikely to
+# appear inside layer bodies organically.
+#
+# WHO READS THIS VALUE:
+#   - yral-rishi-agent-soul-file-library `app/composer/four_layer_composer.py`
+#     (at module-load — fails fast if missing or empty)
+#
+# CONSTRAINTS: C7 (shared values live here), E8 (Soul File 4 layers
+# locked), the service's PRE-SPAWN-CONTRACTS-FROM-COORDINATOR.md
+# (byte-stable prefix contract).
+soul_file_library:
+  # ⚠️  LOCKED — see file-block warning above.
+  layer_separator: "\n\n---\n\n"
+
+
 # ===========================================================================
 # RELATED FILES (read these next):
 #   project.config              — per-service values (PROJECT_NAME, etc.)
