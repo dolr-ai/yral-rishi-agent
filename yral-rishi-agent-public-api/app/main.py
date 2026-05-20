@@ -168,12 +168,26 @@ verify_production_sentinel_or_die()
 # Added per Codex PR #97 round-5 ITEM 3. Statuses not in this map fall
 # back to "service_unavailable" — the closest locked code for an
 # unknown server-side failure.
+#
+# NOTE on 409 Conflict (Codex PR #97 round-6 finding, 2026-05-20):
+# 409 is NOT in this map. Round-5 mistakenly added `409: "conflict"`
+# but "conflict" isn't in the locked 8-code ErrorCode list (per
+# errors.py's Literal + the contract's error-codes table). Mobile
+# clients would have received an unknown error code. The fallback
+# below (`.get(status, "service_unavailable")`) now picks up 409
+# → "service_unavailable" automatically — closest locked match per
+# the coordinator directive's fallback path.
+#
+# If a future PR concludes 409 deserves its own dedicated locked
+# code, the path is: (a) add "conflict" to errors.py's ErrorCode
+# Literal, (b) add the entry to the contract's error-codes table,
+# (c) re-add `409: "conflict"` here. Per A8 + the errors.py header,
+# locked-code additions go through the contract first.
 _STATUS_TO_LOCKED_ERROR_CODE: dict[int, str] = {
     400: "validation_failed",
     401: "unauthorized",
     403: "forbidden",
     404: "not_found",
-    409: "conflict",
     422: "validation_failed",
     503: "service_unavailable",
 }
