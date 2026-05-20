@@ -40,6 +40,11 @@ name: ci-yral-rishi-agent-public-api
 # that touch it. Path-scoping per F16 means changes to OTHER services
 # (or to plan-and-discussions) don't waste this service's CI minutes.
 on:
+  # Manual trigger — coordinator uses this to fire the workflow after an
+  # auto-merge that GITHUB_TOKEN suppresses the cascade for (per GitHub
+  # Actions' anti-infinite-loop safety; auto-merge via the workflow's
+  # GITHUB_TOKEN doesn't trigger downstream workflow runs).
+  workflow_dispatch:
   pull_request:
     paths:
       - 'yral-rishi-agent-public-api/**'
