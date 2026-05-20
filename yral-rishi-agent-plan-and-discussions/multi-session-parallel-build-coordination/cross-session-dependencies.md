@@ -3,6 +3,76 @@
 
 ## OPEN
 
+### DEP-008 — Session 1 needs to add GEMINI_API_KEY to bootstrap/secrets-manifest.yaml so Day-5 LLM enablement deploys cleanly
+
+Raised: 2026-05-20 by Session 4 (PR #109 — Day-5 real LLM enablement)
+
+What:    Codex round-2 review on PR #109 raised a D7 BLOCKER:
+         GEMINI_API_KEY is declared in
+         `yral-rishi-agent-conversation-turn-orchestrator/secrets.yaml`
+         per D8 (per-service manifest), but the cluster-level
+         declarative secret manifest at
+         `bootstrap/secrets-manifest.yaml` (D7) does not have a
+         matching entry. D7 verbatim: "Every secret every service
+         needs is declared there with metadata (description, source,
+         used-by). Bootstrap scripts validate + interactively create
+         missing secrets. CI gate refuses deploy if a required
+         secret is missing."
+
+         Session 4 cannot edit Session 1's bootstrap-scope files per
+         the I9 + agent-definition split (`bootstrap/` is Session 1's
+         folder; I9 says cross-session edits route through the
+         coordinator).
+
+Why:     Once PR #109 merges + Phase-2 cluster deploy of the
+         orchestrator lands, the deploy will fail D7's CI gate
+         ("required secret missing") because the bootstrap manifest
+         doesn't know about GEMINI_API_KEY.
+
+         The per-service manifest declares the secret + the operator
+         action ("set the env var"); the cluster manifest is what
+         tells the bootstrap scripts to provision the GitHub Secret +
+         the Swarm secret at deploy time. Both are required.
+
+Blocks:  Deploy of the orchestrator service to the cluster with
+         `enable_run_turn_real_llm=true`. Does NOT block PR #109
+         merge — the merge is staging-cluster-scope per the Option-1
+         agreement on the safety stack; full prod deploy waits for
+         coordinator-owned safety-stack restoration PR + cutover
+         covenant per A6 anyway. But before the FIRST Swarm-deploy
+         attempt of the orchestrator, this entry needs to be
+         RESOLVED.
+
+ETA needed: Before the first orchestrator Swarm-deploy attempt that
+         needs the real-LLM path active. Day 6+ at earliest; no
+         hard deadline.
+
+Suggested
+resolution: Session 1 (or coordinator on Session 1's behalf) adds
+         one entry to `bootstrap/secrets-manifest.yaml`:
+
+             - name: GEMINI_API_KEY
+               description: |
+                 Google Gemini API key used by
+                 yral-rishi-agent-conversation-turn-orchestrator
+                 (per its app/llm_client/gemini.py).
+               used_by:
+                 - yral-rishi-agent-conversation-turn-orchestrator
+               source: GitHub Secret → Swarm secret at deploy
+               rotation_policy: every 90 days
+
+         Same metadata-only shape as the existing entries in the
+         cluster manifest. Day 6+ routing-matrix work will add
+         OPENROUTER_API_KEY + ANTHROPIC_API_KEY alongside.
+
+How spotted:
+         Codex round-2 review on PR #109 (2026-05-20 10:33 UTC)
+         flagged the D7 manifest gap explicitly. Session 4 verified
+         the citation against CONSTRAINTS.md row 74 before raising
+         this DEP.
+
+---
+
 ### DEP-007 — Day-4 directive cites CONSTRAINTS F2; F2 is actually about hetzner-template-freeze, not Soul-File
 
 > **Renumbered DEP-005 → DEP-007 by coordinator (2026-05-20)** — collision with Session 3's existing DEP-005 (health endpoints in template). Tiebreak by PR-number: Session 3's PR #97 < Session 4's PR #104, so Session 3 keeps DEP-005; Session 4's entry becomes DEP-007 (next free slot since DEP-006 is also occupied).
