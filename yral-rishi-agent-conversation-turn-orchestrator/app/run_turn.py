@@ -90,7 +90,8 @@ import logging
 # Python type AND the FastAPI `Header(...)` binding without falling
 # back to default-value syntax (which Pydantic v2 deprecates for body
 # parameters and FastAPI plans to deprecate for headers).
-from typing import Annotated
+# `Final` marks the Day-5 helper's user_segment constant as immutable.
+from typing import Annotated, Final
 
 # `uuid` — module-level access to `uuid.UUID(...)` for the round-4
 # X-Idempotency-Key validation (BLOCKER 3). `uuid4` generates the
@@ -150,6 +151,29 @@ from app.idempotency import (
 # BYTE-IDENTICAL to chat-ai's MessageResponse per A8 + A16.
 from app.models.turn import MessageResponse, RunTurnRequest
 
+# Day-5 — abstract LlmClient + the typed exception shapes the handler
+# catches + maps to 502/504 envelopes. Per A10 the orchestrator only
+# depends on the interface; Day 6+ provider-routing matrix swaps the
+# concrete client without touching this file. The Gemini concrete
+# client is the only one wired today.
+from app.llm_client import (
+    GeminiClient,
+    LlmClient,
+    LlmClientTimeoutError,
+    LlmClientUpstreamError,
+    get_default_llm_client,
+)
+
+# Day-5 — Soul File RPC client + the typed exception shapes. The
+# `get_soul_file_client()` accessor returns the lifespan-managed
+# singleton; the handler catches the two exceptions + maps them to
+# 404 / 503 envelopes.
+from app.soul_file_client import (
+    SoulFileInfluencerNotFoundError,
+    SoulFileUpstreamError,
+    get_soul_file_client,
+)
+
 
 # Day-2 stub content. The literal placeholder string the agent
 # definition specifies, with the "from day-5" timing per Rishi's
@@ -205,6 +229,130 @@ def _api_response_envelope(error_code: str, message_text: str) -> dict:
 
 
 # ===========================================================================
+# Day-5 helpers — real LLM reply generator + best-effort lock release
+# ===========================================================================
+
+
+async def _generate_real_llm_reply(
+    *,
+    request: RunTurnRequest,
+    settings,
+) -> str:
+    """Run the Day-5 soul-file → LLM → reply pipeline + return the reply text.
+
+    WHAT: fetches the layered prompt from the soul-file-library, then
+          calls the default LLM client (Gemini today). Returns the
+          assistant's reply text the caller wraps in MessageResponse.
+    WHEN: called from the run_turn handler's `acquired` branch when
+          `enable_run_turn_real_llm=True`.
+    WHY:  encapsulates the Day-5 pipeline in one function so the
+          handler stays readable + the same pipeline can be reused
+          when Day 6+ adds the routing matrix. The Day-2 stub path
+          stays a one-liner in the handler.
+
+    Raises:
+      SoulFileInfluencerNotFoundError — handler maps to 404 envelope.
+      SoulFileUpstreamError           — handler maps to 503 envelope.
+      LlmClientTimeoutError           — handler maps to 504 envelope.
+      LlmClientUpstreamError          — handler maps to 502 envelope.
+      RuntimeError                    — handler maps to 500 via the
+                                        existing generic `except`.
+    """
+    # Hardcode user_segment="new" per the Day-5 directive verbatim.
+    # User-segment tracking lands in a later phase; today's chat-turn
+    # always reads the Layer-4 "new" row.
+    user_segment_for_day_5: Final = "new"
+
+    placeholder_influencer_id = settings.day_5_placeholder_ai_influencer_id
+    if not placeholder_influencer_id:
+        raise RuntimeError(
+            "enable_run_turn_real_llm=True but "
+            "day_5_placeholder_ai_influencer_id is empty. Set "
+            "DAY_5_PLACEHOLDER_AI_INFLUENCER_ID to a seeded soul-file "
+            "Layer-3 row's influencer_id (see soul-file-library's "
+            "RUNBOOK for the seeded ids)."
+        )
+
+    # Soul-file lookup. Returns ComposedPrompt with layered_prompt +
+    # version_pin + cache_hit. Errors propagate as typed exceptions
+    # the handler catches.
+    soul_file_client = get_soul_file_client()
+    composed = await soul_file_client.compose(
+        influencer_id=placeholder_influencer_id,
+        user_segment=user_segment_for_day_5,
+    )
+
+    _log.info(
+        "soul_file_compose_succeeded",
+        extra={
+            "conversation_id": request.conversation_id,
+            "influencer_id": placeholder_influencer_id,
+            "user_segment": user_segment_for_day_5,
+            "version_pin": composed.version_pin,
+            "cache_hit": composed.cache_hit,
+            "layered_prompt_length": len(composed.layered_prompt),
+        },
+    )
+
+    # LLM call. The default client is Gemini today; Day 6+ routing
+    # picks a different concrete client based on the influencer +
+    # safety stack decisions.
+    llm_client = get_default_llm_client()
+    llm_response = await llm_client.generate(
+        prompt=composed.layered_prompt,
+        user_message=request.user_message,
+        temperature=settings.llm_temperature,
+        max_tokens=settings.llm_max_tokens,
+    )
+
+    _log.info(
+        "llm_call_succeeded",
+        extra={
+            "conversation_id": request.conversation_id,
+            "provider": llm_response.provider,
+            "model": llm_response.model,
+            "prompt_tokens": llm_response.prompt_tokens,
+            "completion_tokens": llm_response.completion_tokens,
+            "latency_milliseconds": llm_response.latency_milliseconds,
+            "content_length": len(llm_response.content),
+        },
+    )
+
+    return llm_response.content
+
+
+async def _safely_release_lock(
+    *,
+    redis_key: str,
+    request: RunTurnRequest,
+) -> None:
+    """Release the in-progress idempotency lock on a typed failure path.
+
+    WHAT: wraps `release_in_progress_lock(...)` in best-effort logging
+          so a Redis-down secondary failure doesn't drown out the
+          original error.
+    WHEN: called from each of the four typed-exception branches in
+          the route handler (soul-file 404/503 + LLM 504/502) BEFORE
+          returning the envelope response.
+    WHY:  Codex round-5 BLOCKER 96-A established that a leaked
+          in-progress lock blocks legitimate retries for 24h. Same
+          rationale applies to the typed-error paths Day-5 introduces;
+          this helper centralises the best-effort cleanup so each
+          envelope-return path is one call.
+    """
+    try:
+        await release_in_progress_lock(redis_key)
+    except Exception as release_failure:
+        _log.error(
+            "idempotency_lock_release_failed_on_typed_error_path",
+            extra={
+                "conversation_id": request.conversation_id,
+                "release_failure_type": type(release_failure).__name__,
+            },
+        )
+
+
+# ===========================================================================
 # Handlers
 # ===========================================================================
 
@@ -213,7 +361,7 @@ def _api_response_envelope(error_code: str, message_text: str) -> dict:
     "/v1/turn",
     response_model=MessageResponse,
     status_code=status.HTTP_200_OK,
-    summary="Run one conversation turn (Day-2 stub, F10-dedup, C11-Redis).",
+    summary="Run one conversation turn (Day-5 real-LLM | Day-2 stub, F10-dedup, C11-Redis).",
 )
 async def run_turn(
     request: RunTurnRequest,
@@ -227,22 +375,34 @@ async def run_turn(
         str | None, Header(alias="X-Request-Id")
     ] = None,
 ):
-    """Day-2 stub for the internal run_turn RPC, behind two gates + atomic F10.
+    """Day-5 real-LLM run_turn RPC, behind two gates + atomic F10.
 
     WHAT: gates → idempotency-key header required check → atomic-acquire
           the in-progress lock → on `replay_done` return cached payload,
           on `fingerprint_mismatch` return 409 envelope, on
-          `in_flight_timeout` return 503 envelope, on `acquired` build
-          the schema-valid placeholder + mark_complete + return.
+          `in_flight_timeout` return 503 envelope, on `acquired`:
+            * if `enable_run_turn_real_llm=True` (Day-5 path) call
+              soul-file → LLM → wrap MessageResponse;
+            * else (Day-2 stub path, kept for diagnostics) use
+              the STUB_CONTENT literal;
+          mark_complete + return.
     WHEN: invoked by Session 3's public-api on every chat-message turn.
-    WHY:  unblocks Session 3's integration work + locks in atomic F10
-          dedup (Codex PR-#96 round-3 BLOCKER 1). The two gates keep
-          the stub out of production parity-test traffic; the 24h
-          Redis dedup serves a byte-identical replay for the F10
-          happy path.
+    WHY:  Day-5 milestone is "the AI actually responds". The real-LLM
+          path runs the soul-file lookup + Gemini call + wraps the
+          reply in the chat-ai-parity MessageResponse shape (per A8).
+          Day-2 stub stays accessible for non-prod diagnostics per the
+          agent definition.
+
+    Day-5 typed-failure-path envelopes (all release the in-progress
+    lock so retries can start fresh):
+      * 404 `influencer_not_found`         — soul-file 404
+      * 503 `soul_file_upstream_unavailable` — soul-file 5xx/timeout
+      * 504 `llm_upstream_timeout`         — LLM exceeded 30s budget
+      * 502 `llm_upstream_error`           — LLM API error
 
     The `request_id` header is PASSED THROUGH (read but not used in
-    the response path); Day-3+ wires it into Langfuse trace metadata.
+    the response path); Day-6+ wires it into Langfuse trace metadata
+    once the safety stack relands.
     """
     # -----------------------------------------------------------------------
     # GATES (must run BEFORE Redis touches — a production env should
@@ -250,18 +410,30 @@ async def run_turn(
     # -----------------------------------------------------------------------
     settings = get_settings()
 
-    # Gate 1: unconditional production safety net.
+    # Gate 1: unconditional production safety net. Both Day-2 stub +
+    # Day-5 real-LLM paths refuse production traffic — production
+    # cutover requires A6's typed YES, not a flag flip.
     if settings.environment == "production":
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="run_turn stub disabled — real LLM enablement is Day-5.",
+            detail="run_turn disabled in production — A6 cutover required.",
         )
 
-    # Gate 2: explicit opt-in feature flag (off by default everywhere).
-    if not settings.enable_run_turn_stub:
+    # Gate 2: at least one of (real LLM | stub) must be enabled.
+    # Day-5 introduces the real-LLM flag; the Day-2 stub flag stays
+    # accessible for diagnostics per the agent definition. Both off
+    # means the handler 503s — defence-in-depth against a half-
+    # configured non-prod environment.
+    if not (
+        settings.enable_run_turn_real_llm or settings.enable_run_turn_stub
+    ):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="run_turn stub disabled — set ENABLE_RUN_TURN_STUB=true to enable.",
+            detail=(
+                "run_turn disabled — set ENABLE_RUN_TURN_REAL_LLM=true "
+                "(Day-5 path) or ENABLE_RUN_TURN_STUB=true (Day-2 "
+                "diagnostic stub) to enable."
+            ),
         )
 
     # -----------------------------------------------------------------------
@@ -456,11 +628,41 @@ async def run_turn(
             "%Y-%m-%dT%H:%M:%SZ",
         )
 
+        # -------------------------------------------------------------------
+        # PATH SELECT — Day-5 real LLM if its flag is on; else Day-2 stub.
+        # -------------------------------------------------------------------
+        # NOTE: Safety stack (H5/H4/A10) is being re-landed in a parallel
+        # coordinator PR (replacement for auto-closed PR #100). Once that
+        # merges, a small follow-up PR wires the safety middleware in
+        # front of this LLM call. Day-5 staging-cluster scope is acceptable
+        # without safety because no production traffic reaches this code
+        # yet (rishi-4/5/6 only; production stays on chat-ai.rishi.yral.com).
+        if settings.enable_run_turn_real_llm:
+            # Day-5 real-LLM path. Reads the Day-5 placeholder
+            # ai_influencer_id from settings (Day-6+ replaces this with
+            # the conversation-row lookup per the directive); fetches
+            # the composed soul-file prompt; calls Gemini; wraps the
+            # reply in MessageResponse.
+            #
+            # The five potential failure modes here have envelope
+            # mappings inside this same try-block — see the inner
+            # `except` chain below the response build.
+            assistant_reply_content = await _generate_real_llm_reply(
+                request=request,
+                settings=settings,
+            )
+        else:
+            # Day-2 stub path — kept for diagnostics per the agent
+            # definition. The `enable_run_turn_stub=True` gate above
+            # is the only way to reach this branch when the real-LLM
+            # flag is off.
+            assistant_reply_content = STUB_CONTENT
+
         response = MessageResponse(
             id=str(uuid4()),
             conversation_id=request.conversation_id,
             role="assistant",
-            content=STUB_CONTENT,
+            content=assistant_reply_content,
             media_urls=None,
             client_message_id=None,
             created_at=current_utc_timestamp_text,
@@ -479,6 +681,70 @@ async def run_turn(
         )
 
         return response
+    except SoulFileInfluencerNotFoundError:
+        # Caller-side misconfiguration: the configured Day-5 placeholder
+        # ai_influencer_id has no L3 row in the soul-file-library. Map
+        # to 404 envelope; release the lock so a retry after the operator
+        # updates the setting starts fresh.
+        await _safely_release_lock(redis_key=redis_key, request=request)
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content=_api_response_envelope(
+                error_code="influencer_not_found",
+                message_text=(
+                    "Configured AI Influencer has no soul-file Layer-3 row "
+                    "in the soul-file-library. Operator action: update "
+                    "DAY_5_PLACEHOLDER_AI_INFLUENCER_ID to a seeded id."
+                ),
+            ),
+        )
+    except SoulFileUpstreamError:
+        # Soul-file-library is down or returning unexpected shapes.
+        # Map to 503; release lock so a retry after the upstream recovers
+        # starts fresh.
+        await _safely_release_lock(redis_key=redis_key, request=request)
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content=_api_response_envelope(
+                error_code="soul_file_upstream_unavailable",
+                message_text=(
+                    "soul-file-library is currently unavailable; retry "
+                    "after a short backoff."
+                ),
+            ),
+        )
+    except LlmClientTimeoutError:
+        # LLM provider exceeded the 30s budget. Map to 504 per the
+        # directive's "Bail with envelope-shaped 504 on timeout"
+        # contract; release the lock so a client retry can route to a
+        # different provider (Day 6+) without waiting on the dangling
+        # lock.
+        await _safely_release_lock(redis_key=redis_key, request=request)
+        return JSONResponse(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            content=_api_response_envelope(
+                error_code="llm_upstream_timeout",
+                message_text=(
+                    "LLM provider exceeded the 30s response budget; retry "
+                    "after a short backoff."
+                ),
+            ),
+        )
+    except LlmClientUpstreamError:
+        # LLM provider returned a non-success status / surfaced an API
+        # error (rate-limit, auth, quota, model unavailable). Map to
+        # 502 envelope; release lock.
+        await _safely_release_lock(redis_key=redis_key, request=request)
+        return JSONResponse(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            content=_api_response_envelope(
+                error_code="llm_upstream_error",
+                message_text=(
+                    "LLM provider returned an unexpected error; retry "
+                    "after a short backoff."
+                ),
+            ),
+        )
     except Exception:
         # Log + release the in-progress lock so a client retry with
         # the same X-Idempotency-Key gets a fresh `acquired` decision
@@ -511,11 +777,21 @@ async def run_turn(
 
 # ===========================================================================
 # RELATED FILES:
-#   main.py            — imports + mounts `router`; lifespan init/close Redis
-#   config.py          — `enable_run_turn_stub` + `environment` +
-#                        `redis_url` + `redis_sentinel_enabled` settings
+#   main.py            — imports + mounts `router`; lifespan init/close
+#                        Redis + soul-file client + default LLM client
+#   config.py          — `enable_run_turn_real_llm` (Day-5) +
+#                        `enable_run_turn_stub` (Day-2 diagnostic) +
+#                        `gemini_api_key` + `llm_temperature` +
+#                        `llm_max_tokens` + `soul_file_library_base_url` +
+#                        `day_5_placeholder_ai_influencer_id` settings
 #   idempotency.py     — F10 atomic-dedup helpers (acquire_or_check +
-#                        mark_complete + compute_request_fingerprint)
+#                        mark_complete + release_in_progress_lock +
+#                        compute_request_fingerprint)
+#   llm_client/        — A10 abstract LLM client interface + Gemini
+#                        provider + lifespan singleton accessor
+#   soul_file_client.py — httpx-based Soul File Library RPC client +
+#                        the two typed exceptions this handler maps to
+#                        404 / 503 envelopes
 #   models/turn.py     — RunTurnRequest + MessageResponse Pydantic models
 #   ../tests/test_run_turn.py
 #                      — happy + error + idempotency-replay + concurrent

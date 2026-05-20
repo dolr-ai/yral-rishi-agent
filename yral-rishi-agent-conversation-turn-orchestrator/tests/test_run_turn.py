@@ -734,7 +734,10 @@ def test_run_turn_returns_503_when_flag_unset_default(
     response = client.post("/v1/turn", json=VALID_BODY)
 
     assert response.status_code == 503, response.text
-    assert "stub disabled" in response.json()["detail"].lower()
+    # Day-5 refactor: gate now references both real-LLM + stub flags.
+    detail_text = response.json()["detail"].lower()
+    assert "run_turn disabled" in detail_text
+    assert "enable_run_turn_real_llm" in detail_text or "enable_run_turn_stub" in detail_text
 
 
 def test_run_turn_returns_503_when_environment_is_production(
@@ -753,9 +756,12 @@ def test_run_turn_returns_503_when_environment_is_production(
     response = client.post("/v1/turn", json=VALID_BODY)
 
     assert response.status_code == 503, response.text
-    # Production-specific message text so operators reading Sentry can
-    # tell which gate fired.
-    assert "real llm enablement is day-5" in response.json()["detail"].lower()
+    # Day-5 refactor: production gate now references the A6 cutover
+    # covenant (Day-2's "real LLM enablement is Day-5" framing is
+    # obsolete now that the real LLM IS Day-5 + the gate's job is
+    # purely production safety).
+    detail_text = response.json()["detail"].lower()
+    assert "a6 cutover" in detail_text or "production" in detail_text
 
 
 def test_run_turn_returns_422_when_conversation_id_missing(
@@ -966,6 +972,382 @@ def test_run_turn_releases_idempotency_lock_when_handler_raises_so_retry_starts_
         f"expected freshly-generated UUID id on the second attempt; "
         f"got {second_body['id']!r}"
     )
+
+
+# ===========================================================================
+# ⭐ DAY-5 — REAL LLM PATH (run_turn integration with mocked clients)
+# ===========================================================================
+
+
+# Test-only fakes — minimal `LlmClient` + `SoulFileClient` substitutes
+# that the Day-5 tests inject via `monkeypatch.setattr` on the
+# accessor functions in run_turn.py. Per the established import-
+# shadowing pattern (PR #96 round-3 + PR #104 round-4 + PR #96 round-5),
+# we patch the importing module's local reference.
+
+class _FakeLlmClient:
+    """Test-only stand-in for the abstract LlmClient.
+
+    WHAT: returns a fixed LlmResponse so the run_turn integration test
+          can assert the reply content reached MessageResponse.content
+          without actually calling Gemini.
+    WHEN: substituted via `monkeypatch.setattr(app.run_turn.
+          get_default_llm_client, ...)`.
+    WHY:  one test-only class beats six separate function-mocks +
+          keeps the test body focused on the integration property
+          (real LLM content reaches the wire shape).
+    """
+
+    def __init__(self, *, reply_content: str = "fake assistant reply") -> None:
+        self._reply_content = reply_content
+        # Capture every call so tests can assert on prompt + user_message.
+        self.calls: list[dict] = []
+
+    async def generate(
+        self,
+        *,
+        prompt: str,
+        user_message: str,
+        temperature: float,
+        max_tokens: int,
+    ):
+        # Import here so the test file doesn't depend on the LlmResponse
+        # symbol when the file is collected (avoids ordering issues).
+        from app.llm_client import LlmResponse
+
+        self.calls.append({
+            "prompt": prompt,
+            "user_message": user_message,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        })
+        return LlmResponse(
+            content=self._reply_content,
+            provider="gemini",
+            model="gemini-2.5-flash",
+            prompt_tokens=10,
+            completion_tokens=5,
+            latency_milliseconds=42,
+        )
+
+
+class _FakeSoulFileClient:
+    """Test-only stand-in for SoulFileClient.
+
+    WHAT: returns a fixed ComposedPrompt so the run_turn integration
+          test can assert the soul-file → LLM path runs end-to-end
+          without spinning up the real soul-file-library service.
+    WHEN: substituted via `monkeypatch.setattr(app.run_turn.
+          get_soul_file_client, ...)`.
+    WHY:  see _FakeLlmClient — one class per RPC client keeps tests
+          orthogonal.
+    """
+
+    def __init__(self, *, layered_prompt: str = "fake layered prompt") -> None:
+        self._layered_prompt = layered_prompt
+        self.calls: list[dict] = []
+
+    async def compose(self, *, influencer_id: str, user_segment: str):
+        from app.soul_file_client import ComposedPrompt
+
+        self.calls.append({
+            "influencer_id": influencer_id,
+            "user_segment": user_segment,
+        })
+        return ComposedPrompt(
+            layered_prompt=self._layered_prompt,
+            version_pin="testpinabcdef01",
+            cache_hit=False,
+        )
+
+
+_TEST_INFLUENCER_ID_FOR_DAY_5: str = "11111111-2222-3333-4444-555555555555"
+
+
+def test_run_turn_real_llm_path_returns_llm_reply_content_in_message_response(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient,
+) -> None:
+    """WHAT: when `enable_run_turn_real_llm=True`, the handler:
+          (a) fetches the layered prompt from the soul-file-library,
+          (b) passes prompt + user_message to the LLM client,
+          (c) wraps the LLM reply text in MessageResponse.content.
+          The response is NO LONGER the Day-2 STUB_CONTENT literal.
+    WHEN: every Day-5 chat turn.
+    WHY:  this IS the Day-5 milestone (the AI actually responds).
+          A regression that wired the path incorrectly would either
+          (a) return STUB_CONTENT (real-LLM flag ignored), (b) crash
+          (the handler routes to the right branch but the client is
+          mis-wired), or (c) return a payload missing the LLM-reply
+          field — all caught by this single test.
+    """
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("ENABLE_RUN_TURN_REAL_LLM", "true")
+    monkeypatch.setenv(
+        "DAY_5_PLACEHOLDER_AI_INFLUENCER_ID", _TEST_INFLUENCER_ID_FOR_DAY_5,
+    )
+
+    # Inject the fakes via the import-shadowed accessors in run_turn.
+    fake_llm = _FakeLlmClient(reply_content="hello from the real LLM path")
+    fake_soul_file = _FakeSoulFileClient(
+        layered_prompt="composed layered prompt for the test influencer",
+    )
+    monkeypatch.setattr(
+        "app.run_turn.get_default_llm_client", lambda: fake_llm,
+    )
+    monkeypatch.setattr(
+        "app.run_turn.get_soul_file_client", lambda: fake_soul_file,
+    )
+
+    response = client.post(
+        "/v1/turn",
+        json={
+            "conversation_id": "day-5-test-conversation-001",
+            "user_message": "ping the real LLM path",
+        },
+        headers=_required_headers(
+            idempotency_key="550e8400-e29b-41d4-a716-446655440050",
+        ),
+    )
+
+    # Wire shape
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["content"] == "hello from the real LLM path"
+    # Not the Day-2 literal — the regression gate for the path-select bug.
+    assert "[v2 phase-1 day-2 orchestrator stub" not in body["content"]
+    assert body["role"] == "assistant"
+
+    # Soul-file lookup ran with the configured placeholder id +
+    # hardcoded user_segment="new".
+    assert len(fake_soul_file.calls) == 1
+    assert fake_soul_file.calls[0]["influencer_id"] == _TEST_INFLUENCER_ID_FOR_DAY_5
+    assert fake_soul_file.calls[0]["user_segment"] == "new"
+
+    # LLM call received the layered_prompt as `prompt` + the request's
+    # user_message verbatim. Temperature + max_tokens come from settings
+    # defaults (0.7 + 800).
+    assert len(fake_llm.calls) == 1
+    assert fake_llm.calls[0]["prompt"] == (
+        "composed layered prompt for the test influencer"
+    )
+    assert fake_llm.calls[0]["user_message"] == "ping the real LLM path"
+    assert fake_llm.calls[0]["temperature"] == 0.7
+    assert fake_llm.calls[0]["max_tokens"] == 800
+
+
+def test_run_turn_real_llm_path_returns_504_envelope_on_llm_timeout(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient,
+) -> None:
+    """WHAT: an LlmClientTimeoutError raised by the LLM client maps
+          to HTTP 504 with the documented envelope shape.
+    WHEN: pathological upstream LLM latency.
+    WHY:  E1 + the directive's "Bail with envelope-shaped 504 on
+          timeout" contract. A regression here would either leak a
+          500 (unhandled exception path) or a 503 (wrong envelope
+          code).
+    """
+    from app.llm_client import LlmClientTimeoutError
+
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("ENABLE_RUN_TURN_REAL_LLM", "true")
+    monkeypatch.setenv(
+        "DAY_5_PLACEHOLDER_AI_INFLUENCER_ID", _TEST_INFLUENCER_ID_FOR_DAY_5,
+    )
+
+    class _TimingOutLlmClient:
+        async def generate(self, *, prompt, user_message, temperature, max_tokens):
+            raise LlmClientTimeoutError("simulated timeout")
+
+    monkeypatch.setattr(
+        "app.run_turn.get_default_llm_client", lambda: _TimingOutLlmClient(),
+    )
+    monkeypatch.setattr(
+        "app.run_turn.get_soul_file_client", lambda: _FakeSoulFileClient(),
+    )
+
+    response = client.post(
+        "/v1/turn",
+        json={"conversation_id": "504-test", "user_message": "trigger timeout"},
+        headers=_required_headers(
+            idempotency_key="550e8400-e29b-41d4-a716-446655440051",
+        ),
+    )
+
+    assert response.status_code == 504, response.text
+    body = response.json()
+    assert body["success"] is False
+    assert body["error"] == "llm_upstream_timeout"
+    assert body["data"] is None
+    assert "30s" in body["msg"]
+
+
+def test_run_turn_real_llm_path_returns_502_envelope_on_llm_upstream_error(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient,
+) -> None:
+    """WHAT: an LlmClientUpstreamError raised by the LLM client maps
+          to HTTP 502 with the documented envelope shape.
+    WHEN: LLM provider returns an API-side error (quota, auth, 5xx).
+    WHY:  same rationale as the 504 test — distinct operator-visible
+          signal for "upstream broke" vs "upstream slow".
+    """
+    from app.llm_client import LlmClientUpstreamError
+
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("ENABLE_RUN_TURN_REAL_LLM", "true")
+    monkeypatch.setenv(
+        "DAY_5_PLACEHOLDER_AI_INFLUENCER_ID", _TEST_INFLUENCER_ID_FOR_DAY_5,
+    )
+
+    class _UpstreamErroringLlmClient:
+        async def generate(self, *, prompt, user_message, temperature, max_tokens):
+            raise LlmClientUpstreamError("simulated upstream error")
+
+    monkeypatch.setattr(
+        "app.run_turn.get_default_llm_client", lambda: _UpstreamErroringLlmClient(),
+    )
+    monkeypatch.setattr(
+        "app.run_turn.get_soul_file_client", lambda: _FakeSoulFileClient(),
+    )
+
+    response = client.post(
+        "/v1/turn",
+        json={"conversation_id": "502-test", "user_message": "trigger upstream"},
+        headers=_required_headers(
+            idempotency_key="550e8400-e29b-41d4-a716-446655440052",
+        ),
+    )
+
+    assert response.status_code == 502, response.text
+    body = response.json()
+    assert body["error"] == "llm_upstream_error"
+
+
+def test_run_turn_real_llm_path_returns_404_envelope_on_unknown_influencer(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient,
+) -> None:
+    """WHAT: SoulFileInfluencerNotFoundError → 404 envelope with
+          error_code `influencer_not_found`.
+    WHEN: the operator-configured placeholder influencer_id has no
+          L3 row in the soul-file-library.
+    WHY:  caller-side mis-config surface — distinguishable from
+          "soul-file is down" (503).
+    """
+    from app.soul_file_client import SoulFileInfluencerNotFoundError
+
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("ENABLE_RUN_TURN_REAL_LLM", "true")
+    monkeypatch.setenv(
+        "DAY_5_PLACEHOLDER_AI_INFLUENCER_ID", _TEST_INFLUENCER_ID_FOR_DAY_5,
+    )
+
+    class _NotFoundSoulFileClient:
+        async def compose(self, *, influencer_id, user_segment):
+            raise SoulFileInfluencerNotFoundError("simulated not found")
+
+    monkeypatch.setattr(
+        "app.run_turn.get_default_llm_client", lambda: _FakeLlmClient(),
+    )
+    monkeypatch.setattr(
+        "app.run_turn.get_soul_file_client", lambda: _NotFoundSoulFileClient(),
+    )
+
+    response = client.post(
+        "/v1/turn",
+        json={"conversation_id": "404-test", "user_message": "trigger 404"},
+        headers=_required_headers(
+            idempotency_key="550e8400-e29b-41d4-a716-446655440053",
+        ),
+    )
+
+    assert response.status_code == 404, response.text
+    body = response.json()
+    assert body["error"] == "influencer_not_found"
+
+
+def test_run_turn_real_llm_path_returns_503_envelope_on_soul_file_upstream_error(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient,
+) -> None:
+    """WHAT: SoulFileUpstreamError → 503 envelope with error_code
+          `soul_file_upstream_unavailable`.
+    WHEN: soul-file-library is down / timing out / returning unparseable
+          bodies.
+    WHY:  ops-side signal — the orchestrator can't serve turns until
+          the upstream recovers; alerting can branch on this code.
+    """
+    from app.soul_file_client import SoulFileUpstreamError
+
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("ENABLE_RUN_TURN_REAL_LLM", "true")
+    monkeypatch.setenv(
+        "DAY_5_PLACEHOLDER_AI_INFLUENCER_ID", _TEST_INFLUENCER_ID_FOR_DAY_5,
+    )
+
+    class _UpstreamErroringSoulFileClient:
+        async def compose(self, *, influencer_id, user_segment):
+            raise SoulFileUpstreamError("simulated upstream error")
+
+    monkeypatch.setattr(
+        "app.run_turn.get_default_llm_client", lambda: _FakeLlmClient(),
+    )
+    monkeypatch.setattr(
+        "app.run_turn.get_soul_file_client", lambda: _UpstreamErroringSoulFileClient(),
+    )
+
+    response = client.post(
+        "/v1/turn",
+        json={"conversation_id": "503-test", "user_message": "trigger 503"},
+        headers=_required_headers(
+            idempotency_key="550e8400-e29b-41d4-a716-446655440054",
+        ),
+    )
+
+    assert response.status_code == 503, response.text
+    body = response.json()
+    assert body["error"] == "soul_file_upstream_unavailable"
+
+
+def test_run_turn_returns_503_when_neither_flag_is_set(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient,
+) -> None:
+    """WHAT: 503 when BOTH `enable_run_turn_real_llm=False` AND
+          `enable_run_turn_stub=False` (default everywhere).
+    WHEN: a deployed env with no path enabled.
+    WHY:  regression gate — the Day-5 gate refactor must keep the
+          unconditional-503 behaviour for half-configured envs.
+    """
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    # Both flags absent → both default False.
+
+    response = client.post(
+        "/v1/turn", json=VALID_BODY, headers=_required_headers(),
+    )
+    assert response.status_code == 503, response.text
+
+
+def test_run_turn_stub_path_still_works_when_only_stub_flag_is_set(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient,
+) -> None:
+    """WHAT: when `enable_run_turn_stub=true` AND
+          `enable_run_turn_real_llm=false`, the handler returns the
+          Day-2 STUB_CONTENT (real-LLM path NOT taken).
+    WHEN: diagnostic/dev environments that intentionally use the stub.
+    WHY:  Day-5 must preserve the Day-2 stub diagnostic path per the
+          agent definition ("Day-2 stub stays accessible in non-prod
+          for diagnostics"). A regression that always routed to the
+          real-LLM path (and crashed without the soul-file/Gemini
+          wiring) would defeat that diagnostic affordance.
+    """
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("ENABLE_RUN_TURN_STUB", "true")
+    # ENABLE_RUN_TURN_REAL_LLM stays unset → default False.
+
+    response = client.post(
+        "/v1/turn", json=VALID_BODY, headers=_required_headers(),
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert "[v2 phase-1 day-2 orchestrator stub" in body["content"]
 
 
 # ===========================================================================

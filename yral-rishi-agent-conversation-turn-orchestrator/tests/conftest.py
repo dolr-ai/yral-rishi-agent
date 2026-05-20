@@ -162,6 +162,90 @@ def fake_redis(monkeypatch: pytest.MonkeyPatch) -> Iterator[fakeredis.aioredis.F
         app_idempotency, "close_redis", empty_close_redis_for_tests
     )
 
+    # ---------------------------------------------------------------
+    # Day-5 — also stub the Soul File + LLM lifespan helpers.
+    # ---------------------------------------------------------------
+    # The Day-5 PR added `init_soul_file_client()` +
+    # `init_default_llm_client()` to the FastAPI lifespan. Both call
+    # `get_settings()` at startup, which pre-fills the lru_cache
+    # BEFORE the test body's `monkeypatch.setenv(...)` runs. Without
+    # stubbing these to no-ops, the settings cache locks in the
+    # default Settings (real-LLM=False, etc.) + every test that flips
+    # an env var via monkeypatch silently fails.
+    #
+    # Tests that need real settings still work — `clean_settings_cache`
+    # autouse clears the cache before each test body, so once the
+    # lifespan no-ops here, the test body's first `get_settings()`
+    # call (inside the route handler) reads the fresh env.
+    #
+    # The Day-5 tests separately stub the singletons via
+    # `monkeypatch.setattr("app.run_turn.get_default_llm_client", ...)`
+    # + the soul_file_client equivalent, so the lifespan-init no-ops
+    # don't matter for them either.
+    import app.soul_file_client as app_soul_file_client
+    import app.llm_client as app_llm_client
+
+    async def empty_initialize_soul_file_client_for_tests() -> None:
+        return None
+
+    async def empty_close_soul_file_client_for_tests() -> None:
+        return None
+
+    def empty_initialize_default_llm_client_for_tests() -> None:
+        return None
+
+    def empty_close_default_llm_client_for_tests() -> None:
+        return None
+
+    monkeypatch.setattr(
+        app_soul_file_client,
+        "init_soul_file_client",
+        empty_initialize_soul_file_client_for_tests,
+    )
+    monkeypatch.setattr(
+        app_soul_file_client,
+        "close_soul_file_client",
+        empty_close_soul_file_client_for_tests,
+    )
+    monkeypatch.setattr(
+        app_llm_client,
+        "init_default_llm_client",
+        empty_initialize_default_llm_client_for_tests,
+    )
+    monkeypatch.setattr(
+        app_llm_client,
+        "close_default_llm_client",
+        empty_close_default_llm_client_for_tests,
+    )
+
+    # The lifespan imports these names INTO app.main at module load
+    # time. Python import-shadowing means the patches above only
+    # affect the source modules; the main.py-side references stay
+    # the originals. Patch those too — same pattern PR #96 round-3
+    # established for `mark_complete`.
+    import app.main as app_main
+
+    monkeypatch.setattr(
+        app_main,
+        "init_soul_file_client",
+        empty_initialize_soul_file_client_for_tests,
+    )
+    monkeypatch.setattr(
+        app_main,
+        "close_soul_file_client",
+        empty_close_soul_file_client_for_tests,
+    )
+    monkeypatch.setattr(
+        app_main,
+        "init_default_llm_client",
+        empty_initialize_default_llm_client_for_tests,
+    )
+    monkeypatch.setattr(
+        app_main,
+        "close_default_llm_client",
+        empty_close_default_llm_client_for_tests,
+    )
+
     yield fake
 
     # No explicit teardown needed — `monkeypatch.setattr` auto-reverts
