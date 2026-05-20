@@ -54,9 +54,19 @@
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
 
+# `pytest` itself — provides the `MonkeyPatch` type annotation +
+# the test-runner harness every `test_*` function lives in.
 import pytest
+
+# Starlette's `TestClient` drives the FastAPI app in-process. Runs
+# the full middleware chain so the safety stack actually fires
+# against the test inputs.
 from fastapi.testclient import TestClient
 
+# `SAFETY_AUDIT_TRAIL` is the ContextVar the order-verification test
+# binds to a list before posting. Each middleware writes its
+# entry/exit markers into the list; the test then asserts the
+# documented LIFO ordering.
 from app.middleware._safety_audit import SAFETY_AUDIT_TRAIL
 
 
@@ -367,7 +377,7 @@ def test_a10_blocks_nsfw_in_handler_output(
 
     assert response.status_code == 200, response.text
     assert response.headers["X-Safety-Decision"] == "A10"
-    assert response.headers["X-Safety-Reason"] == "a10_nsfw_keyword"
+    assert response.headers["X-Safety-Reason"] == "a10_adult_content_keyword"
     body = response.json()
     # Canned NSFW reply replaces the handler's (rigged-NSFW) content.
     assert body["content"] == "I can't help with that."
@@ -422,6 +432,74 @@ def test_jailbreak_with_flag_off_still_503s_not_safety_canned(
 
     assert response.status_code == 503, response.text
     assert "X-Safety-Decision" not in response.headers
+
+
+# ===========================================================================
+# ⭐ H5 SENTRY CONTRACT — `type=prompt_injection` (Codex PR-#112 BLOCKER 2)
+# ===========================================================================
+
+
+def test_h5_block_emits_sentry_event_with_prompt_injection_type(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient
+) -> None:
+    """WHAT: when H5 short-circuits, `sentry_sdk.capture_message` is
+          called with `extras["type"] == "prompt_injection"` and
+          NO user_message content in the metadata (H6).
+    WHEN: every prompt-injection block (Codex PR-#112 BLOCKER 2).
+    WHY:  CONSTRAINTS H5 verbatim: "Prompt injection defense
+          middleware pre-orchestration. Blocks extraction attempts,
+          logs to Sentry with `type=prompt_injection`, returns safe
+          fallback." The stdlib `_log.warning` is operator-side
+          + does NOT satisfy the H5 Sentry-side contract. This test
+          asserts the SDK call with the right `type` tag is made.
+
+          PII guard: `extras` must NOT include the user_message text.
+          Asserted by enumerating expected keys + confirming
+          `user_message` is absent.
+    """
+    _open_both_gates(monkeypatch)
+
+    # Spy on `sentry_sdk.capture_message` — record every call's
+    # positional + keyword args so the assertion can inspect them.
+    captured_calls: list[dict] = []
+
+    def _spy_capture_message(*args, **kwargs):
+        captured_calls.append({"args": args, "kwargs": kwargs})
+
+    monkeypatch.setattr(
+        "app.middleware.h5_prompt_injection.sentry_sdk.capture_message",
+        _spy_capture_message,
+    )
+
+    response = client.post("/v1/turn", json=JAILBREAK_BODY)
+
+    # H5 short-circuit produced the 200 canned reply.
+    assert response.status_code == 200, response.text
+    assert response.headers["X-Safety-Decision"] == "H5"
+
+    # Exactly one Sentry event was captured.
+    assert len(captured_calls) == 1, (
+        f"expected one sentry_sdk.capture_message call from H5 block; "
+        f"got {len(captured_calls)} calls: {captured_calls!r}"
+    )
+    sentry_call = captured_calls[0]
+    # `type` extra matches the H5 contract VERBATIM.
+    extras = sentry_call["kwargs"].get("extras", {})
+    assert extras.get("type") == "prompt_injection", (
+        f"expected extras['type'] == 'prompt_injection' per H5 contract; "
+        f"got extras={extras!r}"
+    )
+    # H6 guard — user_message must NOT appear in extras.
+    assert "user_message" not in extras, (
+        f"H6 violation: Sentry extras leaked user_message content. "
+        f"extras={extras!r}"
+    )
+    # The event should still carry the operator-side metadata
+    # the stdlib log also has (safety_layer + reason +
+    # user_message_length so length-based heuristics work).
+    assert extras.get("safety_layer") == "H5"
+    assert extras.get("reason") is not None
+    assert extras.get("user_message_length", -1) >= 0
 
 
 # ===========================================================================
@@ -571,7 +649,7 @@ def test_h4_crisis_short_circuits_before_llm_client_is_invoked(
 #                                     — H5 pattern set + dispatch under test
 #   ../app/middleware/h4_crisis_detection.py
 #                                     — H4 pattern set + dispatch under test
-#   ../app/middleware/a10_nsfw_filter.py
+#   ../app/middleware/a10_adult_content_filter.py
 #                                     — A10 pattern set + dispatch under test
 #   ../app/middleware/_safety_audit.py
 #                                     — SAFETY_AUDIT_TRAIL ContextVar the

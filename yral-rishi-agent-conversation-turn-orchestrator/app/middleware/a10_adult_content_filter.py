@@ -1,13 +1,13 @@
 # ---------------------------------------------------------------------------
-# a10_nsfw_filter.py — Day-3 A10 NSFW output-side filter middleware.
+# a10_adult_content_filter.py — Day-3 A10 NSFW output-side filter middleware.
 #
-# ⭐ START HERE: this module exports `A10NsfwFilterMiddleware`, the
+# ⭐ START HERE: this module exports `A10AdultContentFilterMiddleware`, the
 # INNERMOST safety layer in the H5 → H4 → A10 → handler chain. Unlike
 # H5 + H4 (which inspect the request body BEFORE the handler runs),
 # A10 inspects the RESPONSE body AFTER the handler returns. If the
 # response's `content` field matches the NSFW rule set, A10 rewrites
 # the response with a canned safety reply (per
-# `app/safety/canned_responses.py::nsfw_blocked`) + flips
+# `app/safety/canned_responses.py::adult_content_blocked`) + flips
 # `count_toward_paywall` to False.
 #
 # WHY A10 IS OUTPUT-SIDE
@@ -51,19 +51,53 @@
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
 
+# stdlib `json` — parses the response body so the A10 keyword set
+# can scan the handler's reply text + rebuild the body when the
+# rewrite path fires.
 import json
+
+# stdlib logger — emits structured fields the H6 redactor in
+# `app/logging.py` knows about (safety_layer / reason /
+# conversation_id). NEVER the handler reply content itself.
 import logging
+
+# stdlib regex — compiled-once keyword-pattern set. Phase-1 keyword-
+# list approach; classifier swap is a later phase per the agent
+# definition.
 import re
+
+# `Final` marks the pattern set + the guarded-path constant as
+# immutable.
 from typing import Final
 
+# Starlette's `BaseHTTPMiddleware` is the request/response wrapping
+# base class we extend.
 from starlette.middleware.base import BaseHTTPMiddleware
+
+# `Request` — the typed inbound request wrapper. Used for
+# `request.url.path` (route gating). A10 doesn't read the request
+# body (it's an OUTPUT-side filter).
 from starlette.requests import Request
+
+# `JSONResponse` builds the A10 canned reply when a match fires.
+# `Response` is the typed return shape of dispatch().
 from starlette.responses import JSONResponse, Response
+
+# `ASGIApp` is the constructor parameter type. Annotation only.
 from starlette.types import ASGIApp
 
+# `get_settings()` reads the Settings singleton for the gate-respect
+# check (env + the Day-5 path flags).
 from app.config import get_settings
+
+# `record(...)` appends to the audit-trail ContextVar so the order-
+# verification test can pin chain execution.
 from app.middleware._safety_audit import record
-from app.safety.canned_responses import nsfw_blocked
+
+# `adult_content_blocked(conversation_id)` returns the canned
+# MessageResponse-shaped dict A10 rewrites the body with.
+# `count_toward_paywall=False` per E4.
+from app.safety.canned_responses import adult_content_blocked
 
 
 GUARDED_PATH: Final[str] = "/v1/turn"
@@ -83,17 +117,17 @@ GUARDED_PATH: Final[str] = "/v1/turn"
 # Note: the `nsfw test marker` entry exists so the test suite can
 # rig the handler's stub content to a flagged string without
 # requiring crude content in the test file itself.
-_NSFW_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
+_ADULT_CONTENT_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(r"\bexplicit\s+sexual\s+content\b", re.IGNORECASE),
     re.compile(r"\bgraphic\s+violence\b", re.IGNORECASE),
     re.compile(r"\bnsfw\s+test\s+marker\b", re.IGNORECASE),
 )
 
 
-_REASON_NSFW_KEYWORD: Final[str] = "a10_nsfw_keyword"
+_REASON_NSFW_KEYWORD: Final[str] = "a10_adult_content_keyword"
 
 
-_log = logging.getLogger("app.middleware.a10_nsfw_filter")
+_log = logging.getLogger("app.middleware.a10_adult_content_filter")
 
 
 def _match_nsfw(content: str) -> str | None:
@@ -105,7 +139,7 @@ def _match_nsfw(content: str) -> str | None:
           `call_next` returns.
     WHY:  isolated so unit tests can exercise the matcher directly.
     """
-    for pattern in _NSFW_PATTERNS:
+    for pattern in _ADULT_CONTENT_PATTERNS:
         if pattern.search(content):
             return _REASON_NSFW_KEYWORD
 
@@ -117,7 +151,7 @@ def _match_nsfw(content: str) -> str | None:
 # ===========================================================================
 
 
-class A10NsfwFilterMiddleware(BaseHTTPMiddleware):
+class A10AdultContentFilterMiddleware(BaseHTTPMiddleware):
     """Innermost safety layer — inspects the handler's response and
     rewrites NSFW content with a canned safety reply.
 
@@ -212,7 +246,7 @@ class A10NsfwFilterMiddleware(BaseHTTPMiddleware):
         )
 
         new_response = JSONResponse(
-            content=nsfw_blocked(conversation_id),
+            content=adult_content_blocked(conversation_id),
             status_code=200,
         )
         new_response.headers["X-Safety-Decision"] = "A10"
@@ -261,7 +295,7 @@ class A10NsfwFilterMiddleware(BaseHTTPMiddleware):
 #   h5_prompt_injection.py     — outer safety layer (request-side)
 #   h4_crisis_detection.py     — middle safety layer (request-side)
 #   ../safety/canned_responses.py
-#                              — `nsfw_blocked()` returns the canned
+#                              — `adult_content_blocked()` returns the canned
 #                                MessageResponse when A10 rewrites the response
 #   ../config.py               — `environment` + `enable_run_turn_stub`
 #                                settings the gate-respect check reads

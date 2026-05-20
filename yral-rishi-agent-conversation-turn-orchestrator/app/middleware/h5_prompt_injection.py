@@ -26,7 +26,7 @@
 # ML classifier replaces this file's `_INJECTION_PATTERNS` constant
 # without touching the dispatch logic.
 #
-# THE GATE-RESPECT PATTERN (see file header of `a10_nsfw_filter.py` for
+# THE GATE-RESPECT PATTERN (see file header of `a10_adult_content_filter.py` for
 # the same pattern in the output-side layer)
 # Per the Day-3 directive verbatim: "Flag-off behaviour unchanged:
 # env=production OR enable_run_turn_stub=false still 503s before
@@ -48,19 +48,72 @@
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
 
+# stdlib `json` — parses the request body so the H5 regex set can
+# scan the user_message text without echoing the bytes through the
+# middleware chain twice.
 import json
+
+# stdlib logger — emits structured fields the H6 PII-allowlist
+# redactor in `app/logging.py` knows about (safety_layer / reason /
+# conversation_id / user_message_length). NEVER logs the
+# user_message content itself.
 import logging
+
+# stdlib regex — compiled-once `re.Pattern` objects backing the H5
+# injection-pattern set. Pre-compilation puts the regex tree on the
+# hot path's read-side (per-request matching) instead of paying
+# compile cost every turn.
 import re
+
+# `Final` marks the regex set + the guarded-path constant as
+# immutable. A future pattern bump shows up clearly in `git blame`.
 from typing import Final
 
+# `sentry_sdk` — Codex PR-#112 BLOCKER 2 closure: H5 verbatim
+# requires every prompt-injection block to log a Sentry event
+# with `type=prompt_injection`. The stdlib logger above is
+# operator-side; this SDK call is the H5-spec'd Sentry-side event.
+import sentry_sdk
+
+# Starlette's `BaseHTTPMiddleware` is the base class for ASGI
+# middleware that wraps the request/response pair. Subclasses
+# override `dispatch()` to inspect the request + decide
+# whether to call_next(request) or short-circuit.
 from starlette.middleware.base import BaseHTTPMiddleware
+
+# `Request` is the typed wrapper Starlette hands to dispatch().
+# Used for `request.url.path` (route gating) + `await request.body()`
+# (the user message we scan).
 from starlette.requests import Request
+
+# `JSONResponse` builds the H5 canned-block reply with the right
+# Content-Type + the X-Safety-* headers. `Response` is the parent
+# type our dispatch returns from EITHER the short-circuit path
+# or the propagated `call_next` path.
 from starlette.responses import JSONResponse, Response
+
+# `ASGIApp` is the type the middleware constructor receives + hands
+# back to Starlette. Annotation only — no behaviour.
 from starlette.types import ASGIApp
 
+# `get_settings()` reads the typed Settings singleton — needed for
+# the gate-respect check (env + the two Day-5 path flags).
 from app.config import get_settings
+
+# `read_and_replay_body()` reads the request body ONCE + replays it
+# into `request._receive` so H4 + A10 + the handler can re-read.
+# Without this helper, the first `await request.body()` would drain
+# the body for everyone downstream.
 from app.middleware._body_replay import read_and_replay_body
+
+# `record(...)` appends to the `SAFETY_AUDIT_TRAIL` ContextVar so
+# the order-verification test can assert the chain executed in the
+# documented LIFO sequence. No-op in production.
 from app.middleware._safety_audit import record
+
+# `prompt_injection_blocked(conversation_id)` returns the canned
+# MessageResponse-shaped dict ("I can't help with that.") with
+# `count_toward_paywall=False` per E4. One callsite, one builder.
 from app.safety.canned_responses import prompt_injection_blocked
 
 
@@ -237,6 +290,32 @@ class H5PromptInjectionMiddleware(BaseHTTPMiddleware):
                 },
             )
 
+            # H5 Sentry contract (Codex PR-#112 BLOCKER 2) — CONSTRAINTS
+            # H5 verbatim: "Prompt injection defense middleware pre-
+            # orchestration. Blocks extraction attempts, LOGS TO SENTRY
+            # WITH `type=prompt_injection`, returns safe fallback." The
+            # stdlib `_log.warning` above is operator-side; this
+            # `sentry_sdk.capture_message` is the H5-spec'd
+            # Sentry-side event with the typed tag the constraint
+            # requires.
+            #
+            # Per H6 — `extra` carries non-PII metadata only:
+            # safety_layer + reason + conversation_id + user_message_length.
+            # NEVER the user_message text itself. Sentry's default
+            # send_default_pii is False (see `app/sentry_middleware.py`)
+            # which catches accidental PII at the SDK layer too.
+            sentry_sdk.capture_message(
+                "prompt_injection_blocked",
+                level="warning",
+                extras={
+                    "type": "prompt_injection",
+                    "safety_layer": "H5",
+                    "reason": reason,
+                    "conversation_id": conversation_id,
+                    "user_message_length": len(user_message),
+                },
+            )
+
             response = JSONResponse(
                 content=prompt_injection_blocked(conversation_id),
                 status_code=200,
@@ -263,7 +342,7 @@ class H5PromptInjectionMiddleware(BaseHTTPMiddleware):
 #   _body_replay.py            — body-read + receive-replay helper
 #   _safety_audit.py           — audit-trail ContextVar + record() helper
 #   h4_crisis_detection.py     — inner safety layer this layer passes to
-#   a10_nsfw_filter.py         — innermost safety layer (output-side filter)
+#   a10_adult_content_filter.py         — innermost safety layer (output-side filter)
 #   ../safety/canned_responses.py
 #                              — `prompt_injection_blocked()` returns the
 #                                canned MessageResponse when H5 short-circuits

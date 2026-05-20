@@ -5,7 +5,7 @@
 # ⭐ START HERE: this module exports exactly three callables —
 #   prompt_injection_blocked(conversation_id)  — for H5
 #   crisis_response(conversation_id)           — for H4
-#   nsfw_blocked(conversation_id)              — for A10
+#   adult_content_blocked(conversation_id)              — for A10
 #
 # Each returns a `MessageResponse`-shaped DICT (NOT the Pydantic model) so a
 # `JSONResponse(content=...)` call in middleware can emit it directly
@@ -40,7 +40,14 @@
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
 
+# stdlib `datetime` + `timezone` — ISO8601 UTC timestamps stamped on
+# every canned reply's `created_at` field, matching chat-ai's
+# MessageResponse wire shape per A8.
 from datetime import datetime, timezone
+
+# stdlib `uuid4` — fresh UUID per canned reply's `id` field. Same
+# generation pattern the run_turn handler uses for its happy-path
+# MessageResponse, so log + trace correlation works uniformly.
 from uuid import uuid4
 
 
@@ -67,7 +74,7 @@ CRISIS_PLACEHOLDER_CONTENT: str = (
 # ===========================================================================
 
 
-def _canned_dto(conversation_id: str, content: str) -> dict:
+def _canned_message_response_dict(conversation_id: str, content: str) -> dict:
     """Return a MessageResponse-shaped dict for a safety-blocked reply.
 
     WHAT: assembles the 8 required MessageResponse fields with the safety
@@ -115,7 +122,7 @@ def prompt_injection_blocked(conversation_id: str) -> dict:
           (NOT in middleware) — the detector + the response are
           separate concerns per the file-header "split rationale".
     """
-    return _canned_dto(conversation_id, GENERIC_BLOCKED_CONTENT)
+    return _canned_message_response_dict(conversation_id, GENERIC_BLOCKED_CONTENT)
 
 
 def crisis_response(conversation_id: str) -> dict:
@@ -130,15 +137,15 @@ def crisis_response(conversation_id: str) -> dict:
           harmful than a placeholder. Product (Day-3.5) replaces this
           with the real copy + locale-aware helpline routing.
     """
-    return _canned_dto(conversation_id, CRISIS_PLACEHOLDER_CONTENT)
+    return _canned_message_response_dict(conversation_id, CRISIS_PLACEHOLDER_CONTENT)
 
 
-def nsfw_blocked(conversation_id: str) -> dict:
+def adult_content_blocked(conversation_id: str) -> dict:
     """Canned reply for A10 (NSFW output-filter).
 
     WHAT: the MessageResponse a user sees when the handler's RESPONSE
           content (not the user's input) matches the NSFW rule set.
-    WHEN: called by `app/middleware/a10_nsfw_filter.py` after the
+    WHEN: called by `app/middleware/a10_adult_content_filter.py` after the
           handler returns, when the response payload contains
           flagged content.
     WHY:  output-side filtering catches cases where the upstream LLM
@@ -146,7 +153,7 @@ def nsfw_blocked(conversation_id: str) -> dict:
           input was clean. Today the rule set is a tiny keyword list;
           Day-5+ swaps it for the real moderation service classifier.
     """
-    return _canned_dto(conversation_id, GENERIC_BLOCKED_CONTENT)
+    return _canned_message_response_dict(conversation_id, GENERIC_BLOCKED_CONTENT)
 
 
 # ===========================================================================
@@ -157,8 +164,8 @@ def nsfw_blocked(conversation_id: str) -> dict:
 #                              — consumes prompt_injection_blocked()
 #   ../middleware/h4_crisis_detection.py
 #                              — consumes crisis_response()
-#   ../middleware/a10_nsfw_filter.py
-#                              — consumes nsfw_blocked()
+#   ../middleware/a10_adult_content_filter.py
+#                              — consumes adult_content_blocked()
 #   ../run_turn.py             — the handler the safety stack short-circuits
 #   ../../tests/test_safety_stack.py
 #                              — schema-shape + content assertions land here

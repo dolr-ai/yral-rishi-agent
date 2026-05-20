@@ -6,7 +6,7 @@
 #
 #   h5_prompt_injection.py  — rule-based jailbreak / role-override / base64 detection
 #   h4_crisis_detection.py  — keyword-based self-harm / crisis-language detection
-#   a10_nsfw_filter.py      — output-side NSFW filter on the handler's response
+#   a10_adult_content_filter.py      — output-side NSFW filter on the handler's response
 #
 # Plus two PRIVATE helpers (leading underscore so they don't accidentally
 # get imported by other services):
@@ -30,7 +30,7 @@
 # WHY THREE FILES INSTEAD OF ONE `safety_middleware.py`?
 # Per the Day-3 directive verbatim: "Each middleware is its own file
 # under app/middleware/{h5_prompt_injection,h4_crisis_detection,
-# a10_nsfw_filter}.py." Splitting also means a future PR that
+# a10_adult_content_filter}.py." Splitting also means a future PR that
 # replaces (say) H5's rule-based detector with an ML classifier
 # touches ONE file, not a 3-class kitchen-sink module.
 #
@@ -42,7 +42,7 @@
 #                   │  │   (outermost safety layer)    ││
 #                   │  │  ┌── H4CrisisDetectionMiddleware ─┐
 #                   │  │  │   (crisis-routing)        ││ │
-#                   │  │  │  ┌── A10NsfwFilterMiddleware ─┐
+#                   │  │  │  ┌── A10AdultContentFilterMiddleware ─┐
 #                   │  │  │  │   (output-side filter) ││ │ │
 #                   │  │  │  │  ┌── run_turn handler ─┐│ │ │
 #                   │  │  │  │  │   (innermost)      │││ │ │
@@ -62,7 +62,7 @@
 #   _body_replay.py         — shared body-read + receive-replay helper
 #   h5_prompt_injection.py  — H5 layer
 #   h4_crisis_detection.py  — H4 layer
-#   a10_nsfw_filter.py      — A10 layer
+#   a10_adult_content_filter.py      — A10 layer
 #   ../main.py              — mounts all three (LIFO add order documented there)
 #   ../safety/canned_responses.py
 #                          — what each layer returns when it short-circuits

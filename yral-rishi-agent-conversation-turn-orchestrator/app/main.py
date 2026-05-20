@@ -79,7 +79,7 @@ from app.llm_client import close_default_llm_client, init_default_llm_client
 # above the calls for the LIFO mapping).
 from app.middleware.h5_prompt_injection import H5PromptInjectionMiddleware
 from app.middleware.h4_crisis_detection import H4CrisisDetectionMiddleware
-from app.middleware.a10_nsfw_filter import A10NsfwFilterMiddleware
+from app.middleware.a10_adult_content_filter import A10AdultContentFilterMiddleware
 
 
 # Run Sentry init now, at module import time. After this line, every
@@ -164,7 +164,7 @@ app.include_router(run_turn_router)
 # incoming request. To produce the directive's REQUEST flow
 # `H5 → H4 → A10 → handler`, add_middleware order is the REVERSE:
 #
-#   add_middleware(A10NsfwFilterMiddleware)        # 1st added → innermost
+#   add_middleware(A10AdultContentFilterMiddleware)        # 1st added → innermost
 #   add_middleware(H4CrisisDetectionMiddleware)    # 2nd added → middle
 #   add_middleware(H5PromptInjectionMiddleware)    # 3rd added → outermost safety
 #   add_middleware(RequestIdMiddleware)            # 4th added → outermost overall
@@ -177,7 +177,7 @@ app.include_router(run_turn_router)
 # The order-verification test in `tests/test_safety_stack.py` pins
 # this contract so a future accidental reordering surfaces as a
 # loud failure rather than a silent safety-bypass regression.
-app.add_middleware(A10NsfwFilterMiddleware)
+app.add_middleware(A10AdultContentFilterMiddleware)
 app.add_middleware(H4CrisisDetectionMiddleware)
 app.add_middleware(H5PromptInjectionMiddleware)
 

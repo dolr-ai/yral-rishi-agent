@@ -32,7 +32,7 @@
 #                              — consumer (calls prompt_injection_blocked)
 #   ../middleware/h4_crisis_detection.py
 #                              — consumer (calls crisis_response)
-#   ../middleware/a10_nsfw_filter.py
-#                              — consumer (calls nsfw_blocked)
+#   ../middleware/a10_adult_content_filter.py
+#                              — consumer (calls adult_content_blocked)
 #   ../models/turn.py          — MessageResponse shape these responses must match
 # ===========================================================================

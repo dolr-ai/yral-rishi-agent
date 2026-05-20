@@ -45,6 +45,10 @@
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
 
+# `Request` — Starlette's typed request wrapper. We monkey-patch its
+# private `_receive` callable to replay the cached body bytes to
+# downstream middlewares + the handler, so the second `await
+# request.body()` call doesn't drain an already-consumed stream.
 from starlette.requests import Request
 
 
@@ -97,7 +101,7 @@ async def read_and_replay_body(request: Request) -> bytes:
 #   __init__.py             — package marker + ASCII chain diagram
 #   h5_prompt_injection.py  — outermost-safety consumer (calls this helper)
 #   h4_crisis_detection.py  — relies on the cached `_body` (no replay call)
-#   a10_nsfw_filter.py      — inspects RESPONSE, not request; doesn't use this
+#   a10_adult_content_filter.py      — inspects RESPONSE, not request; doesn't use this
 #   ../../tests/test_safety_stack.py
 #                          — happy-path test proves the handler still sees
 #                            the body after the middleware chain runs

@@ -47,18 +47,54 @@
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
 
+# stdlib `json` — parses the request body so the H4 crisis-pattern
+# set can scan the user_message text.
 import json
+
+# stdlib logger — emits structured fields the H6 redactor in
+# `app/logging.py` knows about (safety_layer / reason /
+# conversation_id / user_message_length). NEVER the user_message
+# text itself.
 import logging
+
+# stdlib regex — compiled-once `re.Pattern` objects backing the H4
+# crisis-language pattern set. Pre-compiled so per-request matching
+# is hot-path cheap.
 import re
+
+# `Final` marks the crisis-pattern set + the guarded-path constant
+# as immutable. A future pattern tuning bump shows up clearly in
+# `git blame`.
 from typing import Final
 
+# Starlette's `BaseHTTPMiddleware` is the base class for the
+# request/response wrapping middleware shape we use.
 from starlette.middleware.base import BaseHTTPMiddleware
+
+# `Request` is the typed wrapper Starlette hands to dispatch().
+# Used for `request.url.path` (route gating) + `await request.body()`
+# (the user message we scan; H5 already read+replayed it upstream).
 from starlette.requests import Request
+
+# `JSONResponse` builds the H4 canned-crisis-response reply.
+# `Response` is the typed return shape of dispatch() either way.
 from starlette.responses import JSONResponse, Response
+
+# `ASGIApp` is the type the constructor receives. Annotation only.
 from starlette.types import ASGIApp
 
+# `get_settings()` reads the typed Settings singleton — needed for
+# the gate-respect check.
 from app.config import get_settings
+
+# `record(...)` appends to the `SAFETY_AUDIT_TRAIL` ContextVar so
+# the order-verification test can assert chain execution.
 from app.middleware._safety_audit import record
+
+# `crisis_response(conversation_id)` returns the canned helpline
+# response dict; obviously-stub placeholder per the directive
+# ("better than a wrong helpline number"). `count_toward_paywall=
+# False` per E4.
 from app.safety.canned_responses import crisis_response
 
 
@@ -214,7 +250,7 @@ class H4CrisisDetectionMiddleware(BaseHTTPMiddleware):
 #   _body_replay.py            — used by H5 (outer); H4 reads cached _body
 #   _safety_audit.py           — audit-trail ContextVar + record() helper
 #   h5_prompt_injection.py     — outer safety layer this layer sits inside
-#   a10_nsfw_filter.py         — inner safety layer this layer passes to
+#   a10_adult_content_filter.py         — inner safety layer this layer passes to
 #   ../safety/canned_responses.py
 #                              — `crisis_response()` returns the canned
 #                                MessageResponse when H4 short-circuits

@@ -38,7 +38,14 @@
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
 
+# stdlib `ContextVar` — per-request async-safe context storage. We
+# use it so test bodies can opt-in to the audit-trail recording for
+# the order-verification test WITHOUT changing the production code
+# path (default `None` → middleware writes never happen in prod).
 from contextvars import ContextVar
+
+# `Final` marks the ContextVar handle as immutable. The list it
+# holds is mutable; the handle itself is not.
 from typing import Final
 
 
@@ -58,7 +65,7 @@ def record(marker: str) -> None:
     WHAT: appends `marker` to the ContextVar-held list, or no-ops when
           the ContextVar is at its `None` default.
     WHEN: called by safety middlewares at entry (before `call_next`)
-          and exit (after `call_next`), and by `a10_nsfw_filter.py`
+          and exit (after `call_next`), and by `a10_adult_content_filter.py`
           to record the synthetic "handler" marker between its entry
           and exit (since the handler itself is out-of-scope for
           modification per the Day-3 directive).
@@ -77,7 +84,7 @@ def record(marker: str) -> None:
 #                             the safety chain
 #   h5_prompt_injection.py  — calls record("H5_entry") + record("H5_exit")
 #   h4_crisis_detection.py  — calls record("H4_entry") + record("H4_exit")
-#   a10_nsfw_filter.py      — calls record("A10_entry"), record("handler"),
+#   a10_adult_content_filter.py      — calls record("A10_entry"), record("handler"),
 #                             record("A10_exit") — A10 owns the synthetic
 #                             "handler" marker because the handler itself
 #                             is out-of-scope per the Day-3 directive
