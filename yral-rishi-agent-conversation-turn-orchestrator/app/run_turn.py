@@ -6,7 +6,7 @@
 # defines one route, `POST /v1/turn`, which TODAY (Day 2) returns a
 # schema-valid stub `MessageResponse` with a placeholder body. Day 5
 # swaps the stub for the real LLM call; Day 3 adds the safety stack
-# (H5 prompt-injection → H4 crisis → A10 NSFW) IN FRONT of this handler
+# (H5 prompt-injection → H4 crisis → adult_content_output_filter) IN FRONT of this handler
 # without touching the route signature.
 #
 # WHAT IS THIS ENDPOINT FOR?
@@ -181,7 +181,8 @@ from app.soul_file_client import (
 # know exactly which PR shipped it — searchable by the bracketed
 # prefix.
 STUB_CONTENT: str = (
-    "[v2 phase-1 day-2 orchestrator stub — real LLM response from day-5]"
+    "[v2 phase-1 orchestrator stub — diagnostic-only path; "
+    "real reply via ENABLE_RUN_TURN_REAL_LLM=true]"
 )
 
 
@@ -631,12 +632,13 @@ async def run_turn(
         # -------------------------------------------------------------------
         # PATH SELECT — Day-5 real LLM if its flag is on; else Day-2 stub.
         # -------------------------------------------------------------------
-        # NOTE: Safety stack (H5/H4/A10) is being re-landed in a parallel
-        # coordinator PR (replacement for auto-closed PR #100). Once that
-        # merges, a small follow-up PR wires the safety middleware in
-        # front of this LLM call. Day-5 staging-cluster scope is acceptable
-        # without safety because no production traffic reaches this code
-        # yet (rishi-4/5/6 only; production stays on chat-ai.rishi.yral.com).
+        # Day-6: the H5 → H4 → adult_content safety stack now wraps this route
+        # as middleware (see `app/main.py`'s LIFO add_middleware block).
+        # H5 catches prompt-injection attempts BEFORE we reach this
+        # branch; H4 catches crisis-language input; adult_content inspects the
+        # LLM's response on the way back out. By the time control
+        # reaches the path-select below, the input was already cleared
+        # by H5 + H4 — so the real LLM call is safe to make.
         if settings.enable_run_turn_real_llm:
             # Day-5 real-LLM path. Reads the Day-5 placeholder
             # ai_influencer_id from settings (Day-6+ replaces this with
@@ -787,8 +789,10 @@ async def run_turn(
 #   idempotency.py     — F10 atomic-dedup helpers (acquire_or_check +
 #                        mark_complete + release_in_progress_lock +
 #                        compute_request_fingerprint)
-#   llm_client/        — A10 abstract LLM client interface + Gemini
-#                        provider + lifespan singleton accessor
+#   llm_client/        — CONSTRAINTS-A10 LLM-agnostic abstraction (the
+#                        Tara/OpenRouter + Gemini routing rule lives at
+#                        this layer per A10 row 28) + Gemini provider
+#                        implementation + lifespan singleton accessor
 #   soul_file_client.py — httpx-based Soul File Library RPC client +
 #                        the two typed exceptions this handler maps to
 #                        404 / 503 envelopes

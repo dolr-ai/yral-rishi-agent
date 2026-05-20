@@ -2,6 +2,241 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-20 — Day-6 framing correction #3 (supersedes #2): full A10 rename DONE in round-7, NOT deferred; PR title also rewritten
+
+Codex PR-#112 round-7 escalated the A10-misnaming BLOCKER and
+wouldn't accept the "wire-identifier rename deferred to follow-up
+PR" framing the earlier correction #2 entry (below) committed to.
+Codex's point: keeping `X-Safety-Decision: A10` + the file/class
+name implying A10 compliance is itself the BLOCKER, not just a
+stylistic concern that could be split off.
+
+**Round-7 (commit `76adbce`) did the full rename instead:**
+- File:  `app/middleware/a10_adult_content_filter.py` →
+         `app/middleware/adult_content_output_filter.py`
+- Class: `A10AdultContentFilterMiddleware` →
+         `AdultContentOutputFilterMiddleware`
+- Logger: `app.middleware.a10_adult_content_filter` →
+          `app.middleware.adult_content_output_filter`
+- Wire headers:
+    - `X-Safety-Decision: A10` →
+      `X-Safety-Decision: adult_content`
+    - `X-Safety-Reason: a10_adult_content_keyword` →
+      `X-Safety-Reason: adult_content_keyword`
+- Audit-trail markers: `A10_entry` / `A10_exit` →
+                       `adult_content_entry` / `adult_content_exit`
+- Test names (3) renamed; comments/prose updated.
+- `_REASON_ADULT_CONTENT_KEYWORD` identifier was already correct;
+  only its VALUE moved from `a10_adult_content_keyword` to
+  `adult_content_keyword`.
+
+`A10` is now reserved EXCLUSIVELY for the CONSTRAINTS-A10
+LLM-routing rule (Tara/OpenRouter + Gemini + `influencer.is_nsfw=
+TRUE` routing). The legitimate A10 references in `app/llm_client/`,
+`app/config.py`, `app/langfuse_middleware.py`, `app/run_turn.py`
+LLM-import block ARE the actual A10 constraint (LLM-agnostic
+abstraction).
+
+**Round-8 follow-up (commit `441b6ac`):**
+- Restored an over-renamed A10 reference in `run_turn.py:787`'s
+  LLM-client RELATED FILES footer (round-7's perl sweep had
+  incorrectly renamed it to "adult_content abstract LLM client
+  interface" — the LLM client IS the A10 abstraction).
+- Synced file-header gate-respect docstring drift in H5/H4/
+  adult_content to match the round-6 code (no env=production
+  passthrough).
+
+**Round-9 (this entry):**
+- PR title rewritten via `gh pr edit` from
+  "Day 6 — restore H5/H4/A10 safety stack" to
+  "Day 6 — orchestrator-side prompt-injection + crisis +
+   adult-content output filter (defense-in-depth; full H5 needs
+   Session 3 DEP-009)"
+  so the title itself stops implying full H5/A10 compliance.
+
+The old correction-#2 entry below (the "rename deferred" framing)
+is preserved unedited per the LOG's append-only policy; this
+entry supersedes it.
+
+## I6 pushback (round-9 CONCERN — streaming benchmark)
+
+Codex round-9 re-raised the A10 streaming-buffer concern at
+CONCERN level (was BLOCKER in round-3). The content-type guard
+(round-3 commit, see earlier LOG entry) already short-circuits
+non-JSON responses. Codex now wants a "latency/regression test or
+benchmark for the clean hot path." A2.1 + the Day-5 directive's
+"Real-LLM latency benchmark + E1 budget assertion … no numerical
+bound until cluster" framing apply equally here: a benchmark
+asserting "<X ms" on a localhost-fakeredis-mock-LLM test stack is
+inherently flaky + not predictive of cluster-side latency. Same
+I6 pushback as the round-3 take. Coordinator route if E1 wants a
+real latency gate; today's wire-level guard + the existing 30s
+LLM timeout (E1 backstop) are the active protection.
+
+---
+
+## 2026-05-20 — Day-6 framing correction #2: "A10 adult-content filter" misnames CONSTRAINTS A10 (Tara routing rule); rename deferred to follow-up PR
+
+Codex PR-#112 round-6 BLOCKER flagged that calling the adult-content
+output-filter middleware "A10" misnames the constraint:
+
+  CONSTRAINTS A10 verbatim row 28: "Tara stays on OpenRouter via
+  DUAL routing system. llm-client resolves provider in priority
+  order: (1) per-influencer-id rule (Tara's row in
+  `llm_routing_rule` table) → OpenRouter with her current model;
+  (2) `influencer.is_nsfw=TRUE` → OpenRouter (preserves existing
+  NSFW routing from yral-chat-ai); (3) archetype/turn-type
+  defaults → Gemini Flash + Claude for crisis."
+
+A10 is the **provider routing rule** — NOT an output-side content
+filter. The misnaming originated in PR #100's agent-definition
+framing ("A10 NSFW filter (output-side)") + propagated through the
+codebase via filename + class name + comments.
+
+**Wire-level identifiers KEPT (Session 3 + Sentry depend on them):**
+- `X-Safety-Decision: A10` header value.
+- `X-Safety-Reason: a10_adult_content_keyword`.
+
+**Code-side rename deferred to a follow-up PR** to keep this PR's
+diff bounded (Codex's truncation BLOCKER fires on large diffs +
+the rename touches ~10 sites: file rename + class rename + import
+sites in main.py + tests + comment sweeps). The follow-up renames:
+- `app/middleware/a10_adult_content_filter.py` →
+  `app/middleware/adult_content_output_filter.py`
+- `A10AdultContentFilterMiddleware` → `AdultContentOutputFilterMiddleware`
+- Test names `test_a10_*` → `test_adult_content_*`
+
+The follow-up does NOT touch the wire-level header values (Session
+3 + observability tooling already branch on them).
+
+For PR #112 the orchestrator-side adult-content output filter IS in
+place + tested; the naming-implies-A10-compliance concern is
+acknowledged via this LOG entry. Future readers scanning the
+codebase will see this entry's framing before assuming A10 routing
+is implemented.
+
+---
+
+## 2026-05-20 — Day-6 wording correction: H5 is PARTIALLY satisfied (orchestrator-side defence-in-depth); full H5 compliance needs DEP-009 (Session 3 public-api ingress)
+
+Earlier Day-6 entry phrased the safety-stack restoration as "Closes Codex PR-#109 BLOCKER 2" — that's true for the orchestrator-side LLM-call guard but is NOT full H5 satisfaction. CONSTRAINTS H5 row 129 verbatim places the middleware in **public-api** (Mitigation column: "Middleware in public-api; tests include known injection payloads"). Session 4 owns the orchestrator; Session 3 owns public-api.
+
+**Corrected framing:**
+- **Orchestrator-side H5 (PR #112)** — defence-in-depth + closes Codex PR-#109 BLOCKER 2 ("LLM call must be protected"). Active now; guards every chat turn that reaches the orchestrator.
+- **Public-api-side H5 (DEP-009, Session 3)** — the H5-spec'd placement. NOT yet implemented. Required before canary user traffic + before H5 can be marked fully satisfied at sign-off.
+
+Both layers active = the H5 constraint is fully satisfied at both placements. Until then, the orchestrator-side coverage is necessary but not sufficient. PR #112 LOG entry below should be read with this framing.
+
+---
+
+## 2026-05-20 — Day 6: restore H5/H4/A10 safety stack in front of the LLM call
+
+### Action
+PR #109 (Day-5 real LLM enablement) merged to main at 10:46 UTC. Day-6 milestone: re-land the H5 → H4 → A10 safety stack that PR #100 had built but auto-closed when PR #96's base branch was cascade-deleted, and wire it in front of the LLM call so a jailbreak / crisis input is short-circuited BEFORE Gemini ever sees it. This closes Codex PR-#109 BLOCKER 2 ("safety stack must be active before real-LLM path") — the regression gate is a new pair of tests asserting the LLM client is NEVER invoked when H5 / H4 fire.
+
+The original PR #100 code is still on the `session-4/day-3-safety-stack-middleware` branch at commit `dbd40c0` (not deleted per the directive's note). Day-6 cherry-picks the 9 safety files from that commit + drift-fixes them against Day-4 + Day-5 main + adds the 2 new LLM-not-invoked regression-gate tests.
+
+### Three pieces
+
+**1. Restored 9 files from `dbd40c0` via `git checkout dbd40c0 -- ...`**
+- `app/middleware/__init__.py` — package marker + LIFO ordering ASCII diagram.
+- `app/middleware/_body_replay.py` — `read_and_replay_body()` helper that lets H5 / H4 read the request body without consuming it for downstream layers.
+- `app/middleware/_safety_audit.py` — `SAFETY_AUDIT_TRAIL` ContextVar + `record()` helper used by the order-verification test (production no-op when the ContextVar is at its `None` default).
+- `app/middleware/h5_prompt_injection.py` — 7 regex patterns + base64-blob threshold (>200 chars) for prompt-injection detection. Reason codes `h5_regex_match` / `h5_base64_blob`. H5 includes a `soul file` reveal-probe pattern alongside system-prompt patterns (B4 defence against attackers learning DOLR vocab from public commits — coordinator carve-out from PR #100 stays).
+- `app/middleware/h4_crisis_detection.py` — 8 crisis-language regex patterns. Reason code `h4_crisis_language`. False-positive bias per agent definition.
+- `app/middleware/a10_nsfw_filter.py` — output-side filter. Drains response body, parses content, rewrites with canned reply on NSFW keyword match. Reason code `a10_nsfw_keyword`. A10 records the synthetic `handler` audit marker between its own entry + exit (coordinator carve-out from PR #100 stays — handler is out-of-scope to modify so A10's wrapping is the right marker location).
+- `app/safety/__init__.py` — package marker.
+- `app/safety/canned_responses.py` — 3 callables returning `MessageResponse`-shaped dicts (post-PR-#96-round-3 rename from `MessageDto`). H5 + A10 share `"I can't help with that."`; H4 returns the obviously-stub `[v2 phase-1 day-3 crisis response — real helpline copy from product on day-3.5]` per the directive's "must be obviously a stub, not a wrong helpline number" guidance. All three flip `count_toward_paywall=False` per E4.
+- `tests/test_safety_stack.py` — the 10 tests that were in PR #100 (clean pass-through, order verification, 5 short-circuit paths, A10 output rewrite, 2 gate-respect paths).
+
+**2. Wired middleware into the request path (`app/main.py`)**
+- Imports `H5PromptInjectionMiddleware` + `H4CrisisDetectionMiddleware` + `A10NsfwFilterMiddleware`.
+- LIFO `add_middleware` block produces request flow `H5 → H4 → A10 → handler`:
+  ```python
+  app.add_middleware(A10NsfwFilterMiddleware)        # 1st added → innermost
+  app.add_middleware(H4CrisisDetectionMiddleware)    # 2nd added → middle
+  app.add_middleware(H5PromptInjectionMiddleware)    # 3rd added → outermost safety
+  app.add_middleware(RequestIdMiddleware)            # 4th added → outermost overall
+  ```
+- Verbose role-comment block above the calls documents the LIFO mapping per B7 + the order-verification test's contract.
+- The Day-5 lifespan init/close pairs (Redis + soul-file + LLM clients) stay unchanged — middleware sits OUTSIDE the route handler + doesn't need lifespan wiring.
+
+**3. Drift-fix + 2 new tests**
+
+Drift caught + fixed (the 9 cherry-picked files were Day-3-era; main is Day-4 + Day-5):
+- `MessageDto` → `MessageResponse` everywhere (PR #96 round-3 rename). Bulk perl sweep across 4 middleware + 2 safety files + the test file. Final grep -c MessageDto → 0.
+- Gate-check in all 3 middlewares: was `or not settings.enable_run_turn_stub`; Day-5 added the parallel `enable_run_turn_real_llm` flag (both flags allow the handler to run; only ALL-off triggers gate-close). All 3 middlewares now read:
+  ```python
+  gate_closed = (
+      settings.environment == "production"
+      or not (
+          settings.enable_run_turn_real_llm
+          or settings.enable_run_turn_stub
+      )
+  )
+  ```
+  Documented in each middleware's gate-respect comment block.
+- `STUB_CONTENT` literal in `app/run_turn.py` had "real LLM response from day-5" framing that's now obsolete (Day-5 landed). Updated to `"[v2 phase-1 orchestrator stub — diagnostic-only path; real reply via ENABLE_RUN_TURN_REAL_LLM=true]"`. The test_safety_stack + test_run_turn assertions on the literal moved with it.
+- Removed the "NOTE: Safety stack (H5/H4/A10) is being re-landed in a parallel coordinator PR..." block from `app/run_turn.py`'s path-select branch + replaced with a B7-shaped comment naming the actual safety stack now in place.
+
+Existing 10 tests in `test_safety_stack.py` updated for:
+- PR #96 round-4 X-User-Id + X-Idempotency-Key REQUIRED headers (added `_required_headers()` helper + the existing `_open_both_gates()` helper docstring updated to mention the Day-5 `enable_run_turn_real_llm` flag alongside the stub flag).
+- The new STUB_CONTENT literal text.
+
+Two NEW tests for Codex PR-#109 BLOCKER 2 regression gate:
+- `test_h5_jailbreak_short_circuits_before_llm_client_is_invoked`
+- `test_h4_crisis_short_circuits_before_llm_client_is_invoked`
+
+Both:
+1. Enable the real-LLM flag + placeholder ai_influencer_id.
+2. Patch `app.run_turn.get_default_llm_client` + `get_soul_file_client` to spies whose methods raise AssertionError with a descriptive message ("LLM client was invoked despite H5 jailbreak input — the safety stack failed to short-circuit. This is the Codex PR-#109 BLOCKER 2 regression.").
+3. POST a jailbreak / crisis body.
+4. Assert 200 + X-Safety-Decision header + canned reply + `count_toward_paywall=False`.
+
+If safety ever stops short-circuiting (mis-ordered middleware, dropped pattern, regression in `dispatch()`), the spy's AssertionError fires + the test fails LOUDLY. Same import-shadowing pattern PR #96 round-3 established for `mark_complete` + PR #104 round-4 used for `get_current`.
+
+### Test evidence
+**52 passed, 1 skipped in 0.19s** inside `python:3.12-slim` with `fakeredis` + `httpx`:
+- Day-5 base: 40 tests (the env-gated Gemini integration test is the 1 skip).
+- Day-6 add: 12 tests (10 restored from PR #100 + 2 new BLOCKER-2 closure tests).
+
+Order-verification test (`test_clean_message_executes_middlewares_in_documented_order`) asserts the audit trail `["H5_entry", "H4_entry", "A10_entry", "handler", "A10_exit", "H4_exit", "H5_exit"]` matches the documented contract.
+
+### Files touched
+- `app/middleware/{__init__,_body_replay,_safety_audit,h5_prompt_injection,h4_crisis_detection,a10_nsfw_filter}.py` — added.
+- `app/safety/{__init__,canned_responses}.py` — added.
+- `app/main.py` — middleware imports + LIFO `add_middleware` block + comment.
+- `app/run_turn.py` — removed Day-5 NOTE comment + updated STUB_CONTENT literal.
+- `tests/test_safety_stack.py` — added.
+- `tests/test_run_turn.py` — STUB_CONTENT literal assertion updates (3 spots).
+- `SESSION-4-LOG.md` + `SESSION-4-STATE.md` — this entry + state update (I11).
+
+### Design carve-outs from PR #100 preserved (coordinator-approved in original review)
+- **A10 holds the synthetic `handler` audit marker** between its own entry + exit. Handler is out-of-scope to modify so A10's wrapping is the right marker location.
+- **Gate-respect lives inside each safety middleware** (not a separate 4th gate-middleware). A2.1 — avoids duplicating the handler's gate logic in a fourth middleware.
+- **H5 includes `soul file` reveal-probe regex** alongside `system prompt` patterns. B4 + public-commits defence.
+
+### Constraints honoured / touched
+- **A2.1** — minimal change to the cherry-picked files (drift-fixes only); no broader refactor. The 2 new tests use the same import-shadowing pattern PR #96 + PR #104 established.
+- **A10** — abstract LLM client unchanged; safety stack wraps the route at the middleware layer, NOT the LLM client layer. Day 6+ routing matrix can swap providers without re-wiring safety.
+- **B2** — drift sweep confirmed no `noop` / `dto` / `dsn` / `db` style abbreviations re-entered via the cherry-pick. `MessageDto` was the only banned-abbreviation residual + got renamed.
+- **B4** — H5 catches both `system prompt` AND `soul file` reveal-probes; product vocab respected (no "bot" / "system prompt" in middleware comments).
+- **B7** — every restored file's doc tier preserved from PR #100; gate-check comment blocks expanded in-place to document the Day-5 flag.
+- **E4** — every safety-canned reply flips `count_toward_paywall=False`. Asserted in all 5 short-circuit / output-rewrite tests.
+- **F11** — gate-respect uses the existing feature flags (no new flags added).
+- **H4 + H5 + A10** — the three layers are now in place per agent-definition Day-3 + closure of Codex PR-#109 BLOCKER 2.
+- **H6** — middleware logs NEVER carry user-message content. Logged fields: safety_layer / reason / conversation_id / user_message_length. Length isn't PII; content is.
+- **I11** — LOG + STATE updated same-commit.
+- **J1** — orchestrator is HOT-tier. 12 tests (10 + 2 new) for the safety surface.
+
+### Notes
+- **Codex PR-#109 BLOCKER 2 closed**: the 2 new tests assert the load-bearing safety property directly. If a future regression mis-orders the middleware, drops a pattern, or breaks `dispatch()`, the spy's AssertionError fires loudly.
+- **A10 NSFW classifier**: keyword-list approach stays for Day-6 (per directive's "real A10 ML-based NSFW classifier — Day-3's keyword-list approach stays; classifier swap is a later phase").
+- **content-safety-and-moderation RPC**: H4/H5 stay self-contained for Day-6 (per directive's "real content-safety-and-moderation RPC integration — H4/H5 stay self-contained for now; later phase swaps for the moderation service RPC").
+- **Day 7+**: per agent definition — Influencer Directory service (different folder, orthogonal to orchestrator+soul-file).
+
+---
+
 ## 2026-05-20 — Day 5: real LLM enablement (the AI actually responds)
 
 ### Action

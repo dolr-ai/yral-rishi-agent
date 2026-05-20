@@ -70,6 +70,17 @@ from app.soul_file_client import close_soul_file_client, init_soul_file_client
 # hot path doesn't pay that side-effect cost.
 from app.llm_client import close_default_llm_client, init_default_llm_client
 
+# Day-6 — H5 / H4 / adult_content safety stack middleware. Restored from
+# PR #100 (auto-closed when PR #96's base branch was cascade-deleted).
+# Per the agent definition's Day-3 + Day-6 plan: ALL request bodies
+# flow through prompt-injection → crisis-detection → adult_content-output-filter
+# BEFORE reaching the run_turn handler. LIFO `add_middleware` ordering
+# below produces request flow H5 → H4 → adult_content → handler (see comment
+# above the calls for the LIFO mapping).
+from app.middleware.h5_prompt_injection import H5PromptInjectionMiddleware
+from app.middleware.h4_crisis_detection import H4CrisisDetectionMiddleware
+from app.middleware.adult_content_output_filter import AdultContentOutputFilterMiddleware
+
 
 # Run Sentry init now, at module import time. After this line, every
 # unhandled exception below is shipped to sentry.rishi.yral.com (per A7).
@@ -140,10 +151,35 @@ app = FastAPI(
 
 # Mount the run_turn router (Day 2). Adds `POST /v1/turn` to the app.
 # Routes always mount BEFORE middleware so the request flows through
-# the middleware chain into a known handler. Day 3 adds the safety
-# stack (H5/H4/A10) as middleware that wraps this route without
-# touching the route signature.
+# the middleware chain into a known handler. The Day-6 safety stack
+# (H5/H4/adult_content) wraps this route as middleware without touching the
+# route signature.
 app.include_router(run_turn_router)
+
+# -------------------------------------------------------------------
+# Day-6 safety stack — H5 → H4 → adult_content → handler (REQUEST flow).
+# -------------------------------------------------------------------
+# Starlette/FastAPI's `add_middleware` is LIFO for the REQUEST
+# direction: the LAST middleware added is the FIRST to see an
+# incoming request. To produce the directive's REQUEST flow
+# `H5 → H4 → adult_content → handler`, add_middleware order is the REVERSE:
+#
+#   add_middleware(AdultContentOutputFilterMiddleware)        # 1st added → innermost
+#   add_middleware(H4CrisisDetectionMiddleware)    # 2nd added → middle
+#   add_middleware(H5PromptInjectionMiddleware)    # 3rd added → outermost safety
+#   add_middleware(RequestIdMiddleware)            # 4th added → outermost overall
+#
+# Net wire-level REQUEST flow:
+#   RequestId → H5 → H4 → adult_content → run_turn handler
+# Net wire-level RESPONSE flow (LIFO unwinds):
+#   handler → adult_content → H4 → H5 → RequestId
+#
+# The order-verification test in `tests/test_safety_stack.py` pins
+# this contract so a future accidental reordering surfaces as a
+# loud failure rather than a silent safety-bypass regression.
+app.add_middleware(AdultContentOutputFilterMiddleware)
+app.add_middleware(H4CrisisDetectionMiddleware)
+app.add_middleware(H5PromptInjectionMiddleware)
 
 # Mount RequestIdMiddleware. In Starlette/FastAPI, `add_middleware`
 # is LIFO for incoming requests — the LAST added is the FIRST to

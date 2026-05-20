@@ -269,7 +269,8 @@ def test_run_turn_stub_content_matches_documented_placeholder(
 
     assert response.status_code == 200, response.text
     assert response.json()["content"] == (
-        "[v2 phase-1 day-2 orchestrator stub — real LLM response from day-5]"
+        "[v2 phase-1 orchestrator stub — diagnostic-only path; "
+        "real reply via ENABLE_RUN_TURN_REAL_LLM=true]"
     )
 
 
@@ -753,7 +754,20 @@ def test_run_turn_returns_503_when_environment_is_production(
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("ENABLE_RUN_TURN_STUB", "true")
 
-    response = client.post("/v1/turn", json=VALID_BODY)
+    # PR-#112 Day-6 round-6: the safety middleware no longer
+    # passes through on env=production alone (that round-3-era
+    # behaviour would have silently bypassed safety once real-LLM
+    # ships in production). With the round-6 gate-respect tightened
+    # to "not (real_llm or stub)", middleware now inspects in
+    # production-with-stub-on. To reach the handler's
+    # `environment == "production"` gate the request must carry
+    # valid headers (else middleware 400s on the header gate). The
+    # body is `VALID_BODY` (a clean message) so neither H5 nor H4
+    # short-circuits; control flows through to the handler whose
+    # production gate emits the 503 this test asserts.
+    response = client.post(
+        "/v1/turn", json=VALID_BODY, headers=_required_headers(),
+    )
 
     assert response.status_code == 503, response.text
     # Day-5 refactor: production gate now references the A6 cutover
@@ -1114,7 +1128,7 @@ def test_run_turn_real_llm_path_returns_llm_reply_content_in_message_response(
     body = response.json()
     assert body["content"] == "hello from the real LLM path"
     # Not the Day-2 literal — the regression gate for the path-select bug.
-    assert "[v2 phase-1 day-2 orchestrator stub" not in body["content"]
+    assert "[v2 phase-1 orchestrator stub" not in body["content"]
     assert body["role"] == "assistant"
 
     # Soul-file lookup ran with the configured placeholder id +
@@ -1347,7 +1361,7 @@ def test_run_turn_stub_path_still_works_when_only_stub_flag_is_set(
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert "[v2 phase-1 day-2 orchestrator stub" in body["content"]
+    assert "[v2 phase-1 orchestrator stub" in body["content"]
 
 
 # ===========================================================================
