@@ -2,6 +2,114 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-20 — Day 6: restore H5/H4/A10 safety stack in front of the LLM call
+
+### Action
+PR #109 (Day-5 real LLM enablement) merged to main at 10:46 UTC. Day-6 milestone: re-land the H5 → H4 → A10 safety stack that PR #100 had built but auto-closed when PR #96's base branch was cascade-deleted, and wire it in front of the LLM call so a jailbreak / crisis input is short-circuited BEFORE Gemini ever sees it. This closes Codex PR-#109 BLOCKER 2 ("safety stack must be active before real-LLM path") — the regression gate is a new pair of tests asserting the LLM client is NEVER invoked when H5 / H4 fire.
+
+The original PR #100 code is still on the `session-4/day-3-safety-stack-middleware` branch at commit `dbd40c0` (not deleted per the directive's note). Day-6 cherry-picks the 9 safety files from that commit + drift-fixes them against Day-4 + Day-5 main + adds the 2 new LLM-not-invoked regression-gate tests.
+
+### Three pieces
+
+**1. Restored 9 files from `dbd40c0` via `git checkout dbd40c0 -- ...`**
+- `app/middleware/__init__.py` — package marker + LIFO ordering ASCII diagram.
+- `app/middleware/_body_replay.py` — `read_and_replay_body()` helper that lets H5 / H4 read the request body without consuming it for downstream layers.
+- `app/middleware/_safety_audit.py` — `SAFETY_AUDIT_TRAIL` ContextVar + `record()` helper used by the order-verification test (production no-op when the ContextVar is at its `None` default).
+- `app/middleware/h5_prompt_injection.py` — 7 regex patterns + base64-blob threshold (>200 chars) for prompt-injection detection. Reason codes `h5_regex_match` / `h5_base64_blob`. H5 includes a `soul file` reveal-probe pattern alongside system-prompt patterns (B4 defence against attackers learning DOLR vocab from public commits — coordinator carve-out from PR #100 stays).
+- `app/middleware/h4_crisis_detection.py` — 8 crisis-language regex patterns. Reason code `h4_crisis_language`. False-positive bias per agent definition.
+- `app/middleware/a10_nsfw_filter.py` — output-side filter. Drains response body, parses content, rewrites with canned reply on NSFW keyword match. Reason code `a10_nsfw_keyword`. A10 records the synthetic `handler` audit marker between its own entry + exit (coordinator carve-out from PR #100 stays — handler is out-of-scope to modify so A10's wrapping is the right marker location).
+- `app/safety/__init__.py` — package marker.
+- `app/safety/canned_responses.py` — 3 callables returning `MessageResponse`-shaped dicts (post-PR-#96-round-3 rename from `MessageDto`). H5 + A10 share `"I can't help with that."`; H4 returns the obviously-stub `[v2 phase-1 day-3 crisis response — real helpline copy from product on day-3.5]` per the directive's "must be obviously a stub, not a wrong helpline number" guidance. All three flip `count_toward_paywall=False` per E4.
+- `tests/test_safety_stack.py` — the 10 tests that were in PR #100 (clean pass-through, order verification, 5 short-circuit paths, A10 output rewrite, 2 gate-respect paths).
+
+**2. Wired middleware into the request path (`app/main.py`)**
+- Imports `H5PromptInjectionMiddleware` + `H4CrisisDetectionMiddleware` + `A10NsfwFilterMiddleware`.
+- LIFO `add_middleware` block produces request flow `H5 → H4 → A10 → handler`:
+  ```python
+  app.add_middleware(A10NsfwFilterMiddleware)        # 1st added → innermost
+  app.add_middleware(H4CrisisDetectionMiddleware)    # 2nd added → middle
+  app.add_middleware(H5PromptInjectionMiddleware)    # 3rd added → outermost safety
+  app.add_middleware(RequestIdMiddleware)            # 4th added → outermost overall
+  ```
+- Verbose role-comment block above the calls documents the LIFO mapping per B7 + the order-verification test's contract.
+- The Day-5 lifespan init/close pairs (Redis + soul-file + LLM clients) stay unchanged — middleware sits OUTSIDE the route handler + doesn't need lifespan wiring.
+
+**3. Drift-fix + 2 new tests**
+
+Drift caught + fixed (the 9 cherry-picked files were Day-3-era; main is Day-4 + Day-5):
+- `MessageDto` → `MessageResponse` everywhere (PR #96 round-3 rename). Bulk perl sweep across 4 middleware + 2 safety files + the test file. Final grep -c MessageDto → 0.
+- Gate-check in all 3 middlewares: was `or not settings.enable_run_turn_stub`; Day-5 added the parallel `enable_run_turn_real_llm` flag (both flags allow the handler to run; only ALL-off triggers gate-close). All 3 middlewares now read:
+  ```python
+  gate_closed = (
+      settings.environment == "production"
+      or not (
+          settings.enable_run_turn_real_llm
+          or settings.enable_run_turn_stub
+      )
+  )
+  ```
+  Documented in each middleware's gate-respect comment block.
+- `STUB_CONTENT` literal in `app/run_turn.py` had "real LLM response from day-5" framing that's now obsolete (Day-5 landed). Updated to `"[v2 phase-1 orchestrator stub — diagnostic-only path; real reply via ENABLE_RUN_TURN_REAL_LLM=true]"`. The test_safety_stack + test_run_turn assertions on the literal moved with it.
+- Removed the "NOTE: Safety stack (H5/H4/A10) is being re-landed in a parallel coordinator PR..." block from `app/run_turn.py`'s path-select branch + replaced with a B7-shaped comment naming the actual safety stack now in place.
+
+Existing 10 tests in `test_safety_stack.py` updated for:
+- PR #96 round-4 X-User-Id + X-Idempotency-Key REQUIRED headers (added `_required_headers()` helper + the existing `_open_both_gates()` helper docstring updated to mention the Day-5 `enable_run_turn_real_llm` flag alongside the stub flag).
+- The new STUB_CONTENT literal text.
+
+Two NEW tests for Codex PR-#109 BLOCKER 2 regression gate:
+- `test_h5_jailbreak_short_circuits_before_llm_client_is_invoked`
+- `test_h4_crisis_short_circuits_before_llm_client_is_invoked`
+
+Both:
+1. Enable the real-LLM flag + placeholder ai_influencer_id.
+2. Patch `app.run_turn.get_default_llm_client` + `get_soul_file_client` to spies whose methods raise AssertionError with a descriptive message ("LLM client was invoked despite H5 jailbreak input — the safety stack failed to short-circuit. This is the Codex PR-#109 BLOCKER 2 regression.").
+3. POST a jailbreak / crisis body.
+4. Assert 200 + X-Safety-Decision header + canned reply + `count_toward_paywall=False`.
+
+If safety ever stops short-circuiting (mis-ordered middleware, dropped pattern, regression in `dispatch()`), the spy's AssertionError fires + the test fails LOUDLY. Same import-shadowing pattern PR #96 round-3 established for `mark_complete` + PR #104 round-4 used for `get_current`.
+
+### Test evidence
+**52 passed, 1 skipped in 0.19s** inside `python:3.12-slim` with `fakeredis` + `httpx`:
+- Day-5 base: 40 tests (the env-gated Gemini integration test is the 1 skip).
+- Day-6 add: 12 tests (10 restored from PR #100 + 2 new BLOCKER-2 closure tests).
+
+Order-verification test (`test_clean_message_executes_middlewares_in_documented_order`) asserts the audit trail `["H5_entry", "H4_entry", "A10_entry", "handler", "A10_exit", "H4_exit", "H5_exit"]` matches the documented contract.
+
+### Files touched
+- `app/middleware/{__init__,_body_replay,_safety_audit,h5_prompt_injection,h4_crisis_detection,a10_nsfw_filter}.py` — added.
+- `app/safety/{__init__,canned_responses}.py` — added.
+- `app/main.py` — middleware imports + LIFO `add_middleware` block + comment.
+- `app/run_turn.py` — removed Day-5 NOTE comment + updated STUB_CONTENT literal.
+- `tests/test_safety_stack.py` — added.
+- `tests/test_run_turn.py` — STUB_CONTENT literal assertion updates (3 spots).
+- `SESSION-4-LOG.md` + `SESSION-4-STATE.md` — this entry + state update (I11).
+
+### Design carve-outs from PR #100 preserved (coordinator-approved in original review)
+- **A10 holds the synthetic `handler` audit marker** between its own entry + exit. Handler is out-of-scope to modify so A10's wrapping is the right marker location.
+- **Gate-respect lives inside each safety middleware** (not a separate 4th gate-middleware). A2.1 — avoids duplicating the handler's gate logic in a fourth middleware.
+- **H5 includes `soul file` reveal-probe regex** alongside `system prompt` patterns. B4 + public-commits defence.
+
+### Constraints honoured / touched
+- **A2.1** — minimal change to the cherry-picked files (drift-fixes only); no broader refactor. The 2 new tests use the same import-shadowing pattern PR #96 + PR #104 established.
+- **A10** — abstract LLM client unchanged; safety stack wraps the route at the middleware layer, NOT the LLM client layer. Day 6+ routing matrix can swap providers without re-wiring safety.
+- **B2** — drift sweep confirmed no `noop` / `dto` / `dsn` / `db` style abbreviations re-entered via the cherry-pick. `MessageDto` was the only banned-abbreviation residual + got renamed.
+- **B4** — H5 catches both `system prompt` AND `soul file` reveal-probes; product vocab respected (no "bot" / "system prompt" in middleware comments).
+- **B7** — every restored file's doc tier preserved from PR #100; gate-check comment blocks expanded in-place to document the Day-5 flag.
+- **E4** — every safety-canned reply flips `count_toward_paywall=False`. Asserted in all 5 short-circuit / output-rewrite tests.
+- **F11** — gate-respect uses the existing feature flags (no new flags added).
+- **H4 + H5 + A10** — the three layers are now in place per agent-definition Day-3 + closure of Codex PR-#109 BLOCKER 2.
+- **H6** — middleware logs NEVER carry user-message content. Logged fields: safety_layer / reason / conversation_id / user_message_length. Length isn't PII; content is.
+- **I11** — LOG + STATE updated same-commit.
+- **J1** — orchestrator is HOT-tier. 12 tests (10 + 2 new) for the safety surface.
+
+### Notes
+- **Codex PR-#109 BLOCKER 2 closed**: the 2 new tests assert the load-bearing safety property directly. If a future regression mis-orders the middleware, drops a pattern, or breaks `dispatch()`, the spy's AssertionError fires loudly.
+- **A10 NSFW classifier**: keyword-list approach stays for Day-6 (per directive's "real A10 ML-based NSFW classifier — Day-3's keyword-list approach stays; classifier swap is a later phase").
+- **content-safety-and-moderation RPC**: H4/H5 stay self-contained for Day-6 (per directive's "real content-safety-and-moderation RPC integration — H4/H5 stay self-contained for now; later phase swaps for the moderation service RPC").
+- **Day 7+**: per agent definition — Influencer Directory service (different folder, orthogonal to orchestrator+soul-file).
+
+---
+
 ## 2026-05-20 — Day 5: real LLM enablement (the AI actually responds)
 
 ### Action

@@ -269,7 +269,8 @@ def test_run_turn_stub_content_matches_documented_placeholder(
 
     assert response.status_code == 200, response.text
     assert response.json()["content"] == (
-        "[v2 phase-1 day-2 orchestrator stub — real LLM response from day-5]"
+        "[v2 phase-1 orchestrator stub — diagnostic-only path; "
+        "real reply via ENABLE_RUN_TURN_REAL_LLM=true]"
     )
 
 
@@ -1114,7 +1115,7 @@ def test_run_turn_real_llm_path_returns_llm_reply_content_in_message_response(
     body = response.json()
     assert body["content"] == "hello from the real LLM path"
     # Not the Day-2 literal — the regression gate for the path-select bug.
-    assert "[v2 phase-1 day-2 orchestrator stub" not in body["content"]
+    assert "[v2 phase-1 orchestrator stub" not in body["content"]
     assert body["role"] == "assistant"
 
     # Soul-file lookup ran with the configured placeholder id +
@@ -1347,7 +1348,7 @@ def test_run_turn_stub_path_still_works_when_only_stub_flag_is_set(
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert "[v2 phase-1 day-2 orchestrator stub" in body["content"]
+    assert "[v2 phase-1 orchestrator stub" in body["content"]
 
 
 # ===========================================================================

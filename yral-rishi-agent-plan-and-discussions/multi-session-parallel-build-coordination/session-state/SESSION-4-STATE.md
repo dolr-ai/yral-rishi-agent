@@ -1,5 +1,6 @@
 # Session 4 STATE — Orchestrator + Soul File + Influencer Directory
 
+> Updated: 2026-05-20 (Day-6 H5/H4/A10 safety stack restored + wired in front of LLM — Codex PR-#109 BLOCKER 2 closed; 52/52 tests green + 1 skipped).
 > Updated: 2026-05-20 (Day-5 real LLM enablement PR opened — "the AI actually responds" milestone; 39/39 tests green + 1 env-gated integration skipped).
 > Updated: 2026-05-18 (Day-4 Soul File Library PR opened — first stateful v2 service for Session 4; 20/20 tests green incl. byte-identity × 5 reps).
 > Updated: 2026-05-18 (Day-2 `POST /v1/turn` RPC handler PR opened; Day-1 PR #95 merged earlier same day).
@@ -15,6 +16,12 @@ I am Session 4. I own **three services** that together implement the conversatio
 Full agent definition: `.claude/agents/session-4-orchestrator.md`.
 
 ## LAST THING I DID
+
+**2026-05-20 — Day 6 H5/H4/A10 safety stack restored PR opened.** PR #109 (Day-5 real LLM) merged to main at 10:46 UTC. Day-6 milestone: re-land the safety stack PR #100 had built but auto-closed when PR #96's base branch was cascade-deleted, and wire it in front of the LLM call so a jailbreak / crisis input is short-circuited BEFORE Gemini ever sees it. This closes Codex PR-#109 BLOCKER 2 ("safety stack must be active before real-LLM path"); regression gate is a new pair of tests asserting `app.run_turn.get_default_llm_client` is NEVER invoked when H5 / H4 fire — the spy's `generate(...)` raises AssertionError with a loud message if reached, so a regression that mis-orders middleware or drops a pattern fails the test immediately.
+
+Three pieces shipped: (1) cherry-picked 9 files from `dbd40c0` via `git checkout dbd40c0 -- ...` (8 source + 1 test); (2) wired `H5PromptInjectionMiddleware` → `H4CrisisDetectionMiddleware` → `A10NsfwFilterMiddleware` into `app/main.py`'s LIFO `add_middleware` block, with verbose role-comment documenting the LIFO mapping; (3) drift-fixed Day-3→Day-4+5 references (`MessageDto`→`MessageResponse` bulk rename, gate-check updated to accept either Day-5 flag, STUB_CONTENT literal de-`day-5`-framed) + restored 10 PR-#100 tests with the new required headers + STUB_CONTENT literal + added 2 new BLOCKER-2 closure tests.
+
+Three coordinator-approved carve-outs from PR #100 preserved: A10 holds synthetic `handler` audit marker between its entry+exit (handler out-of-scope to modify); gate-respect lives inside each middleware (no separate gate-middleware — A2.1); H5 includes `soul file` reveal-probe pattern alongside `system prompt` patterns (B4 + public-commits defence).
 
 **2026-05-20 — Day 5 real LLM enablement PR opened.** The "AI actually responds" milestone. Five pieces shipped in one PR per the coordinator directive: (1) abstract `LlmClient` interface + `LlmResponse` dataclass + two typed exceptions, (2) `GeminiClient` concrete provider using `google-generativeai==0.8.3` against `gemini-2.5-flash` with 30s timeout + Langfuse `llm.gemini.generate` span per D4, (3) `SoulFileClient` HTTP-RPC client to soul-file-library with lifespan-managed httpx.AsyncClient + typed 404/503 exception shapes, (4) `run_turn.py` wiring — new `enable_run_turn_real_llm` flag + path-select branch + `_generate_real_llm_reply` helper + four new envelope-shaped error paths (404 influencer / 503 soul-file / 504 LLM-timeout / 502 LLM-upstream) each releasing the in-progress lock via `_safely_release_lock` per F10, (5) 17 new tests across `test_llm_client_gemini.py` + `test_soul_file_client.py` + `test_run_turn.py` Day-5 extension.
 
@@ -38,23 +45,23 @@ Empirical proof:
 
 ## CURRENT TASK
 
-Day-5 PR open + awaiting CI + Codex + Rishi-YES. NOT auto-merge eligible under I14 (adds Python code files + new runtime dep `google-generativeai` + 17 new tests; fails the ".md / test / lint / comment-only" gate). Base = `main` (PR #96 + PR #104 merged 2026-05-20).
+Day-6 PR open + awaiting CI + Codex + Rishi-YES. NOT auto-merge eligible under I14 (adds Python middleware files + safety package + extends 2 existing test files; fails the ".md / test / lint / comment-only" gate). Base = `main` (PR #109 merged 2026-05-20 10:46 UTC).
 
-Progress: Day 1 → 100% (PR #95 merged); Day 2 → 100% (PR #96 merged 2026-05-20); Day 3 → 0% (PR #100 closed not merged — safety-stack restoration handled by coordinator parallel PR per Option 1); Day 4 → 100% (PR #104 merged 2026-05-20); Day 5 → 100% (PR opened this turn).
+Progress: Day 1 → 100% (PR #95); Day 2 → 100% (PR #96 merged 2026-05-20); Day 3 → 100% (Day-6 restored — PR opened this turn from `dbd40c0`); Day 4 → 100% (PR #104 merged 2026-05-20); Day 5 → 100% (PR #109 merged 2026-05-20); Day 6 → 100% (PR opened this turn — closes Codex PR-#109 BLOCKER 2).
 
 ## NEXT 3 PLANNED ACTIONS
 
-1. **Day 5 follow-up** — once coordinator's safety-stack restoration PR merges, ship a small PR wiring H5/H4/A10 middleware in front of `/v1/turn`. No code change to `run_turn.py` expected — middleware sits OUTSIDE the route handler.
-2. **Day 6** — either (a) **provider routing matrix** (Tara → OpenRouter; crisis → Claude; default → Gemini; NSFW → OpenRouter) per agent-def + memory `reference_yral_chat_v2_llm_routing_tara`, or (b) **coordinator-direction** depending on what Session 3 needs from orchestrator endpoints by then.
-3. **Day 7+** — Influencer Directory service (yral-rishi-agent-influencer-and-profile-directory): Postgres schema + endpoints + Redis-cached reads per E7. Different service folder; orthogonal to orchestrator + soul-file-library.
+1. **Day 7** — either (a) **provider routing matrix** (Tara → OpenRouter; crisis → Claude; default → Gemini; NSFW → OpenRouter) per agent-def + memory `reference_yral_chat_v2_llm_routing_tara`, or (b) **coordinator-direction** depending on what Session 3 needs from orchestrator endpoints by then.
+2. **Day 8+** — Influencer Directory service (yral-rishi-agent-influencer-and-profile-directory): Postgres schema + endpoints + Redis-cached reads per E7. Different service folder; orthogonal to orchestrator + soul-file-library.
+3. **Phase-2 hardening** — H5 ML-classifier upgrade; A10 NSFW ML-classifier upgrade; H4 threshold tuning via Langfuse traces. Per agent-def Day-8-14 plan; deferred until live traces exist.
 
 ## BLOCKERS
 
-None hard. Day-3 safety stack restoration is being handled by coordinator parallel PR per the Option-1 call; Day-5 ships without it on the staging-cluster scope. DEP-004 (interface-contracts SSE→JSON) + DEP-005 (F2 citation drift) both resolved upstream.
+None hard. **DEP-008** (Session 1 to add `GEMINI_API_KEY` to `bootstrap/secrets-manifest.yaml`) still open from Day-5; does NOT block Day-6 merge, but needed BEFORE first orchestrator Swarm-deploy with the real-LLM path active.
 
 ## PENDING PRs (mine)
 
-- `session-4/day-5-real-llm-enablement` — opens this turn (Day-5 real LLM enablement). Base=`main`. **39/39 tests passed** + 1 env-gated Gemini integration test skipped (runs only with `INTEGRATION_TEST_GEMINI=true`). Not auto-merge eligible (Python code + new runtime dep).
+- `session-4/day-6-restore-safety-stack` — opens this turn (Day-6 H5/H4/A10 safety stack restoration + wiring). Base=`main`. **52/52 tests passed** + 1 env-gated Gemini integration test skipped (runs only with `INTEGRATION_TEST_GEMINI=true`). Not auto-merge eligible.
 - `session-4/day-3-safety-stack-middleware` — PR #100 (Day-3 safety stack). Base=PR #96 branch. 19/19 tests green.
 - `session-4/orchestrator-run-turn-rpc-handler` — PR #96 (Day-2 run_turn skeleton). Base=`main`. 9/9 tests green.
 - `session-4/spawn-three-services-from-template` — **MERGED 2026-05-18** as PR #95 (Day-1 spawn bundle).
