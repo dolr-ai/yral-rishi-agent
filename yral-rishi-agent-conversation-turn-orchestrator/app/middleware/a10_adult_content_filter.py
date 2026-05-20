@@ -160,8 +160,15 @@ def _match_adult_content(content: str) -> str | None:
           `call_next` returns.
     WHY:  isolated so unit tests can exercise the matcher directly.
     """
+    # Walk every compiled adult-content pattern; first-hit short-
+    # circuit (cheap micro-opt + Day-5+ real LLM output paths benefit
+    # from any saved regex scans on the hot path).
     for pattern in _ADULT_CONTENT_PATTERNS:
+        # `re.search` is truthy on match, None on no-match. We don't
+        # capture groups — just need the boolean.
         if pattern.search(content):
+            # Single shared reason code; matches the X-Safety-Reason
+            # header value the response carries.
             return _REASON_ADULT_CONTENT_KEYWORD
 
     return None
@@ -195,16 +202,12 @@ class A10AdultContentFilterMiddleware(BaseHTTPMiddleware):
         if request.url.path != GUARDED_PATH:
             return await call_next(request)
 
-        # Gate-respect — see h5_prompt_injection.py file header for
-        # the full rationale. Day-6 also reads the Day-5
-        # `enable_run_turn_real_llm` flag.
+        # Gate-respect — see h5_prompt_injection.py for the full
+        # rationale + the round-6 production-bypass fix.
         settings = get_settings()
-        gate_closed = (
-            settings.environment == "production"
-            or not (
-                settings.enable_run_turn_real_llm
-                or settings.enable_run_turn_stub
-            )
+        gate_closed = not (
+            settings.enable_run_turn_real_llm
+            or settings.enable_run_turn_stub
         )
         if gate_closed:
             return await call_next(request)

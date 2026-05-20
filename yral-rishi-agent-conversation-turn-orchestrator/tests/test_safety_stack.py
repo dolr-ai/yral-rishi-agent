@@ -395,28 +395,71 @@ def test_a10_blocks_adult_content_in_handler_output(
 # ===========================================================================
 
 
-def test_jailbreak_in_production_still_503s_not_safety_canned(
+def test_jailbreak_in_production_with_real_llm_on_is_still_inspected_by_safety(
     monkeypatch: pytest.MonkeyPatch, client: TestClient
 ) -> None:
-    """WHAT: env=production + jailbreak input → 503 (handler gate), NOT
-          a 200 safety-canned reply.
-    WHEN: ENVIRONMENT=production + ENABLE_RUN_TURN_STUB=true +
-          jailbreak body.
-    WHY:  per the Day-3 directive verbatim: "Flag-off behaviour
-          unchanged: env=production OR enable_run_turn_stub=false
-          still 503s before middleware fires (no leak via safety
-          bypass)." A jailbreaker MUST NOT learn whether their input
-          triggers safety — they get the same 503 a clean message
-          would see.
+    """WHAT: env=production + real-LLM enabled + jailbreak input →
+          H5 fires + returns 200 canned BEFORE the LLM is called.
+    WHEN: production rollout (post-A6 cutover) — the unconditional
+          production 503 gate in run_turn.py is removed + the real
+          LLM serves traffic.
+    WHY:  Codex PR-#112 round-6 BLOCKER — round-3's gate-respect
+          `env == "production"` passthrough would silently bypass
+          the safety stack once the cluster serves real LLM in
+          production. Round-6 dropped that check; safety inspects
+          whenever at least one path flag is enabled, regardless of
+          environment. This test pins that property.
+
+    Implementation note: we use ENABLE_RUN_TURN_REAL_LLM=true to
+    trigger the path the round-6 fix is about, but stub the
+    LLM/soul-file clients with spies that raise on invocation —
+    proving H5 short-circuits BEFORE the LLM ever runs (same shape
+    as the existing BLOCKER-2 closure test, but for production
+    environment specifically).
     """
     monkeypatch.setenv("ENVIRONMENT", "production")
-    monkeypatch.setenv("ENABLE_RUN_TURN_STUB", "true")
+    monkeypatch.setenv("ENABLE_RUN_TURN_REAL_LLM", "true")
+    monkeypatch.setenv(
+        "DAY_5_PLACEHOLDER_AI_INFLUENCER_ID",
+        "11111111-2222-3333-4444-555555555555",
+    )
 
-    response = client.post("/v1/turn", json=JAILBREAK_BODY, headers=_required_headers())
+    # Spies that loudly fail if the LLM or soul-file is reached.
+    class _LlmClientThatMustNotBeCalled:
+        async def generate(self, **kwargs):
+            raise AssertionError(
+                "LLM client was invoked in production despite H5 jailbreak "
+                "input — safety stack regression. Round-6 fix must keep "
+                "safety active in production."
+            )
 
-    assert response.status_code == 503, response.text
-    # No safety header — middleware passed through without engaging.
-    assert "X-Safety-Decision" not in response.headers
+    class _SoulFileClientThatMustNotBeCalled:
+        async def compose(self, **kwargs):
+            raise AssertionError(
+                "Soul-file client was invoked in production despite H5 "
+                "jailbreak input — safety regression."
+            )
+
+    monkeypatch.setattr(
+        "app.run_turn.get_default_llm_client",
+        lambda: _LlmClientThatMustNotBeCalled(),
+    )
+    monkeypatch.setattr(
+        "app.run_turn.get_soul_file_client",
+        lambda: _SoulFileClientThatMustNotBeCalled(),
+    )
+
+    response = client.post(
+        "/v1/turn", json=JAILBREAK_BODY, headers=_required_headers(),
+    )
+
+    # H5 short-circuit fired BEFORE the LLM call. (Without the
+    # round-6 fix, the env=production branch in middleware's gate-
+    # respect would have passed through → handler would have
+    # 503-ed on its own production gate → spy never raises but
+    # the safety property silently broke.)
+    assert response.status_code == 200, response.text
+    assert response.headers["X-Safety-Decision"] == "H5"
 
 
 def test_jailbreak_with_flag_off_still_503s_not_safety_canned(

@@ -258,18 +258,23 @@ class H5PromptInjectionMiddleware(BaseHTTPMiddleware):
         # passthrough without inspecting the body so the handler's
         # 503 propagates back unchanged. See file-header rationale.
         #
-        # Day-6: Day-5 added the `enable_run_turn_real_llm` flag
-        # alongside the original `enable_run_turn_stub`. The handler
-        # now 503s when BOTH are off (any path enabled = handler runs).
-        # Middleware mirrors that: pass through only when neither
-        # path is enabled (matching the handler's exact gate shape).
+        # Codex PR-#112 round-6 BLOCKER fix — gate-respect must NOT
+        # include `environment == "production"` standalone. Round-3
+        # had `env=production OR not (real_llm or stub)`, which means
+        # once the cluster cutover allows real-LLM in production, the
+        # safety stack would still pass through (the handler would
+        # serve a real LLM call, but H5/H4/A10 wouldn't fire). That
+        # bakes in a future production safety bypass.
+        #
+        # Correct gate: only pass through when NO orchestration path
+        # is enabled — production-with-real-LLM gets full safety
+        # inspection. The Day-5 production-gate is still in
+        # run_turn.py (it 503s today), but THIS middleware's
+        # passthrough only kicks in when there's nothing to protect.
         settings = get_settings()
-        gate_closed = (
-            settings.environment == "production"
-            or not (
-                settings.enable_run_turn_real_llm
-                or settings.enable_run_turn_stub
-            )
+        gate_closed = not (
+            settings.enable_run_turn_real_llm
+            or settings.enable_run_turn_stub
         )
         if gate_closed:
             return await call_next(request)

@@ -73,8 +73,15 @@ def record(marker: str) -> None:
           pattern in one tiny helper so each middleware's call site is
           ONE line and the no-op path is obvious to readers.
     """
+    # Look up the per-request audit list (None in production where
+    # the ContextVar's default value isn't overridden).
     trail = SAFETY_AUDIT_TRAIL.get()
+    # No-op branch: production code path. List-of-markers absent →
+    # no append, no overhead. Tests opt-in by .set()-ing a list at
+    # the top of the test body and resetting on teardown.
     if trail is not None:
+        # Test path: append the entry/exit marker so the order-
+        # verification test can later assert the documented chain.
         trail.append(marker)
 
 

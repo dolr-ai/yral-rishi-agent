@@ -2,6 +2,48 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-20 — Day-6 framing correction #2: "A10 adult-content filter" misnames CONSTRAINTS A10 (Tara routing rule); rename deferred to follow-up PR
+
+Codex PR-#112 round-6 BLOCKER flagged that calling the adult-content
+output-filter middleware "A10" misnames the constraint:
+
+  CONSTRAINTS A10 verbatim row 28: "Tara stays on OpenRouter via
+  DUAL routing system. llm-client resolves provider in priority
+  order: (1) per-influencer-id rule (Tara's row in
+  `llm_routing_rule` table) → OpenRouter with her current model;
+  (2) `influencer.is_nsfw=TRUE` → OpenRouter (preserves existing
+  NSFW routing from yral-chat-ai); (3) archetype/turn-type
+  defaults → Gemini Flash + Claude for crisis."
+
+A10 is the **provider routing rule** — NOT an output-side content
+filter. The misnaming originated in PR #100's agent-definition
+framing ("A10 NSFW filter (output-side)") + propagated through the
+codebase via filename + class name + comments.
+
+**Wire-level identifiers KEPT (Session 3 + Sentry depend on them):**
+- `X-Safety-Decision: A10` header value.
+- `X-Safety-Reason: a10_adult_content_keyword`.
+
+**Code-side rename deferred to a follow-up PR** to keep this PR's
+diff bounded (Codex's truncation BLOCKER fires on large diffs +
+the rename touches ~10 sites: file rename + class rename + import
+sites in main.py + tests + comment sweeps). The follow-up renames:
+- `app/middleware/a10_adult_content_filter.py` →
+  `app/middleware/adult_content_output_filter.py`
+- `A10AdultContentFilterMiddleware` → `AdultContentOutputFilterMiddleware`
+- Test names `test_a10_*` → `test_adult_content_*`
+
+The follow-up does NOT touch the wire-level header values (Session
+3 + observability tooling already branch on them).
+
+For PR #112 the orchestrator-side adult-content output filter IS in
+place + tested; the naming-implies-A10-compliance concern is
+acknowledged via this LOG entry. Future readers scanning the
+codebase will see this entry's framing before assuming A10 routing
+is implemented.
+
+---
+
 ## 2026-05-20 — Day-6 wording correction: H5 is PARTIALLY satisfied (orchestrator-side defence-in-depth); full H5 compliance needs DEP-009 (Session 3 public-api ingress)
 
 Earlier Day-6 entry phrased the safety-stack restoration as "Closes Codex PR-#109 BLOCKER 2" — that's true for the orchestrator-side LLM-call guard but is NOT full H5 satisfaction. CONSTRAINTS H5 row 129 verbatim places the middleware in **public-api** (Mitigation column: "Middleware in public-api; tests include known injection payloads"). Session 4 owns the orchestrator; Session 3 owns public-api.

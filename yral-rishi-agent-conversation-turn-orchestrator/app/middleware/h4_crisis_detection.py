@@ -163,8 +163,15 @@ def _match_crisis(user_message: str) -> str | None:
     WHY:  isolated so unit tests can exercise the matcher without
           spinning up the full middleware chain.
     """
+    # Walk every compiled crisis pattern; return on FIRST hit so we
+    # short-circuit further pattern scans (cheap but adds up on
+    # high-throughput turns).
     for pattern in _CRISIS_PATTERNS:
+        # `re.search` returns a Match object on hit (truthy) or None
+        # (falsy). We don't need the match groups — just the boolean.
         if pattern.search(user_message):
+            # Single shared reason code today; Day-5+ may expand to
+            # per-pattern codes if Langfuse triage needs finer split.
             return _REASON_CRISIS_LANGUAGE
 
     return None
@@ -198,17 +205,14 @@ class H4CrisisDetectionMiddleware(BaseHTTPMiddleware):
         if request.url.path != GUARDED_PATH:
             return await call_next(request)
 
-        # Gate-respect — see h5_prompt_injection.py file header for
-        # the full rationale. Day-6 also reads the Day-5
-        # `enable_run_turn_real_llm` flag (both flags allow the
-        # handler to run; only ALL-off triggers the gate close).
+        # Gate-respect — see h5_prompt_injection.py for the full
+        # rationale + the round-6 production-bypass fix. Same logic:
+        # pass through only when NO orchestration path is enabled;
+        # production-with-real-LLM gets safety inspection.
         settings = get_settings()
-        gate_closed = (
-            settings.environment == "production"
-            or not (
-                settings.enable_run_turn_real_llm
-                or settings.enable_run_turn_stub
-            )
+        gate_closed = not (
+            settings.enable_run_turn_real_llm
+            or settings.enable_run_turn_stub
         )
         if gate_closed:
             return await call_next(request)

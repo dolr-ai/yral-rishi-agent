@@ -77,6 +77,13 @@ def _api_response_envelope(error_code: str, message_text: str) -> dict:
           so middleware + handler emit identical error shapes. Centralised
           to one helper here so a future schema bump edits one location.
     """
+    # `success=False` marks the envelope as the error variant;
+    # mobile clients branch on this flag before inspecting `data`.
+    # `msg` carries human-readable diagnostic for log capture.
+    # `error` is the machine-readable code mobile clients dispatch
+    # on (per the API contract). `data=None` keeps the shape
+    # identical to the success envelope so JSON parsers don't
+    # need conditional logic.
     return {
         "success": False,
         "msg": message_text,
