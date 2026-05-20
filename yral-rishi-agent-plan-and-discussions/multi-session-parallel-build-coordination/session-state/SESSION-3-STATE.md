@@ -1,6 +1,6 @@
 # Session 3 STATE — Public-API
 
-> Updated: 2026-05-20 (Rebase cascade COMPLETE — PRs #99 + #101 + #102 + #103 all rebased onto post-#97 main; 77/77 contract tests green on rebased PR #103 tip; merge cascade pending coordinator routing + Codex re-review on each).
+> Updated: 2026-05-20 (Day 5 Piece A — secrets.yaml ↔ docker-compose.swarm.yml aligned per D8 + trimmed per A2.1 to the 4-secret Phase-1 set; 77/77 contract tests green; pushed for CI + Codex + merge; cluster deploy retry awaits coordinator ping post-merge.)
 
 ## ⭐ START-OF-SESSION SUMMARY (read first when resuming)
 
@@ -14,14 +14,14 @@ Full agent definition: `.claude/agents/session-3-public-api.md`.
 
 ## LAST THING I DID
 
-**2026-05-20 — Day-4 stack rebase cascade COMPLETE.** All 4 Day-4 stack PRs rebased onto post-PR-#97-squash-merge main. PR #99 + PR #101 rebased cleanly. PRs #102 + #103 required manual-re-apply because their original commits were written against PR #97 BEFORE its R1 Dto→Response rename + R3/R5 health changes + R5 placeholder-auth (so `from app.api.dtos import ConversationDto, MessageDto` was dead post-rebase + Day-4B's auth wiring needed to supersede R5's placeholder + Day-4C's `send_message` rewrite needed adapting from `MessageDto` → `MessageResponse`). Strategy for both: aborted auto-rebase, reset branch to rebased-prior-PR tip, re-applied INTENT manually as fresh commit. Day-4B: per-handler `Depends(require_authenticated_user)` on all 17 chat + influencer + admin handlers; deleted `auth_placeholder.py` + its tests; loosened the F9 health auth-exempt test to `status_code != 401`. Day-4C: rewrote `send_message` to call `orchestrator_client.run_turn(...)` + F10 Redis dedup; added 3 clean files (orchestrator_client.py, idempotency.py, test_orchestrator_proxy.py); added 5 config settings + shared-config.yaml `services.orchestrator` section + main.py lifespan init/close; deleted 4 deprecated Day-2 send_message tests. 73/73 tests green on PR #102, 77/77 green on PR #103. Both force-pushed via `git push --force-with-lease`.
+**2026-05-20 — Day 5 Piece A: secrets manifest aligned + trimmed.** Coordinator merged PR #107 installing per-service CI workflows at repo root (closes BLOCKER 1 of yesterday's Day-5 pushback). With CI unblocked, Session 3 took the Piece A directive: runtime-import-audited `app/` (zero asyncpg/psycopg/alembic imports — public-api has NO direct DB consumer; redis_client uses `from_url(redis_url)` not a separate password). Trimmed `secrets.yaml` from the template's 5-secret inheritance to the actual Phase-1 4-secret set: dropped `DATABASE_URL` (no consumer); renamed `REDIS_SENTINEL_PASSWORD` → `REDIS_URL`; kept `SENTRY_DSN` + `LANGFUSE_PUBLIC_KEY` + `LANGFUSE_SECRET_KEY`. Aligned `docker-compose.swarm.yml` `secrets:` block (both service + root) to the manifest names verbatim — UPPER_SNAKE_CASE per D8. Updated `.env.example`, `SECURITY.md` (3 sections + START HERE items #2 + #4), `RUNBOOK.md` (crash-loop troubleshooting list). 77/77 contract tests green. Pushed for CI re-fire + Codex re-review on this branch + Rishi YES.
 
 ## CURRENT TASK
 
-Idle. Day-4 stack PRs (#99 + #101 + #102 + #103) all rebased + force-pushed + green. Awaiting Codex re-review on each (Codex re-runs on each force-push) + coordinator's merge-cascade decision.
+Idle pending CI run on the new per-service workflow + Codex review on the resulting PR + Rishi YES to merge. Once merged, the `docker-push-to-ghcr` job auto-fires on push-to-main + the image lands at `ghcr.io/dolr-ai/yral-rishi-agent-public-api:<sha>`. Coordinator will then ping to resume the cluster-deploy retry from Day-5 Step 3 (deploy on rishi-4/5/6) onward.
 
-Progress: Day-4 stack rebase cascade 100% complete. Phase 1 ~36% (5 of ~14 working days; rebase cascade itself was ~half a day's work).
-ETA to merge: dependent on Codex turnaround + coordinator routing + Rishi YES on the merge cascade order (4A → 4B → 4C, naturally enforced by the stack).
+Progress: Day-4 stack 100% merged; Day 5 ~30% (deploy artifacts verified + manifest aligned + 77/77 green; cluster steps still pending image landing + coordinator ping).
+ETA: dependent on CI turnaround + Codex turnaround + Rishi YES on the merge.
 
 ## NEXT 3 PLANNED ACTIONS
 

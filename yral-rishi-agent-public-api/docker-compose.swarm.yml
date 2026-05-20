@@ -145,15 +145,21 @@ services:
     # `docker secret create <name> <file>` (or via Session 1's
     # cluster-bootstrap automation). The app reads them as files from
     # /run/secrets/<name>.
+    #
+    # Names UPPER_SNAKE_CASE matching `secrets.yaml` verbatim per D8
+    # (manifest is source of truth; 2026-05-20 Day-5 alignment).
     secrets:
-      - source: database_password
-        target: database_password
+      - source: REDIS_URL
+        target: REDIS_URL
         mode: 0400
-      - source: redis_password
-        target: redis_password
+      - source: SENTRY_DSN
+        target: SENTRY_DSN
         mode: 0400
-      - source: sentry_dsn
-        target: sentry_dsn
+      - source: LANGFUSE_PUBLIC_KEY
+        target: LANGFUSE_PUBLIC_KEY
+        mode: 0400
+      - source: LANGFUSE_SECRET_KEY
+        target: LANGFUSE_SECRET_KEY
         mode: 0400
 
 
@@ -188,11 +194,13 @@ networks:
 # `secrets.yaml` (per CONSTRAINTS D8, added in PR 3). new-service.sh
 # generates the `secrets:` block above from secrets.yaml automatically.
 secrets:
-  database_password:
+  REDIS_URL:
     external: true
-  redis_password:
+  SENTRY_DSN:
     external: true
-  sentry_dsn:
+  LANGFUSE_PUBLIC_KEY:
+    external: true
+  LANGFUSE_SECRET_KEY:
     external: true
 
 
