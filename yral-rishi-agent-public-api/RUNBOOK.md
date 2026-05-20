@@ -53,8 +53,8 @@ Never `docker stack rm` to "fix" a deploy — that takes the service fully offli
 1. Check the most recent deploy — if within last 10 min, automatic rollback per I2 should already be in motion.
 2. If not in a deploy window: check Sentry for the actual stack trace (filter by `service=<this-service>`).
 3. Common causes:
-   - Missing Swarm secret (DATABASE_URL, REDIS_SENTINEL_PASSWORD, SENTRY_DSN) → check `docker secret ls` on a manager.
-   - Postgres connection limit hit → check `POSTGRES_CONNECTION_LIMIT` in project.config vs cluster-wide budget.
+   - Missing Swarm secret (`REDIS_URL`, `SENTRY_DSN`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`) → check `docker secret ls` on a manager.
+   - Redis Sentinel quorum unreachable → check Session 1's stateful-core stack on rishi-4/5/6.
    - Bad image tag pushed → manually roll back to the previous git SHA per "Rollback" above.
 
 ## Slow requests

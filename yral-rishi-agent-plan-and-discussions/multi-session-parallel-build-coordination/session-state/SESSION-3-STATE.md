@@ -1,6 +1,6 @@
 # Session 3 STATE — Public-API
 
-> Updated: 2026-05-20 (Day 4 stack MERGED — PRs #101 + #102 + #103 + #106 all on main. Day 5 STARTED + I6-pushback-blocked on missing CI/GHCR/deploy pipeline (coordinator-owned per I9). See latest LOG entry for 3-blocker memo.)
+> Updated: 2026-05-20 (Day 5 Piece A — secrets.yaml ↔ docker-compose.swarm.yml aligned per D8 + trimmed per A2.1 to the 4-secret Phase-1 set; 77/77 contract tests green; pushed for CI + Codex + merge; cluster deploy retry awaits coordinator ping post-merge.)
 
 ## ⭐ START-OF-SESSION SUMMARY (read first when resuming)
 
@@ -14,14 +14,14 @@ Full agent definition: `.claude/agents/session-3-public-api.md`.
 
 ## LAST THING I DID
 
-**2026-05-20 — Day 5 STARTED + BLOCKED (I6 pushback to coordinator).** Branched `session-3/day-5-cluster-deploy-and-smoke` from current `main` (Day-4 stack now merged: PRs #101 + #102 + #103 + #106). Verified locally that the Dockerfile builds cleanly + docker-compose.swarm.yml declares all 3 yral-v2-* overlays. Then I6-pushed back per the directive's explicit pushback policy ("if image push failing, STOP") because the CI/GHCR pipeline isn't just failing, it doesn't exist: per-service-ci.yml lives only as a TEMPLATE inside each service folder (`yral-rishi-agent-public-api/.github/workflows/`) and was never installed at repo root — a known gap flagged across SESSION-2-STATE.md (line 38), SESSION-3-LOG.md (line 353), and SESSION-4-LOG.md (line 796). `gh run list --branch main` confirms no per-service CI has ever run; `gh api .../packages/container/yral-rishi-agent-public-api/versions` returns 404 (no image at ghcr.io). Plus 2 secondary blockers: secrets.yaml ↔ docker-compose.swarm.yml naming + count mismatch (manifest has 5 secrets w/ uppercase names; compose has 3 with lowercase names); and the manifest's `consumed_by` annotations point at files that don't exist in this service yet (`app/database.py`, `alembic/env.py`). Full memo in the 2026-05-20 Day-5 LOG entry. Branch pushed for visibility; Session 3 idle until coordinator resolves the 3 blockers.
+**2026-05-20 — Day 5 Piece A: secrets manifest aligned + trimmed.** Coordinator merged PR #107 installing per-service CI workflows at repo root (closes BLOCKER 1 of yesterday's Day-5 pushback). With CI unblocked, Session 3 took the Piece A directive: runtime-import-audited `app/` (zero asyncpg/psycopg/alembic imports — public-api has NO direct DB consumer; redis_client uses `from_url(redis_url)` not a separate password). Trimmed `secrets.yaml` from the template's 5-secret inheritance to the actual Phase-1 4-secret set: dropped `DATABASE_URL` (no consumer); renamed `REDIS_SENTINEL_PASSWORD` → `REDIS_URL`; kept `SENTRY_DSN` + `LANGFUSE_PUBLIC_KEY` + `LANGFUSE_SECRET_KEY`. Aligned `docker-compose.swarm.yml` `secrets:` block (both service + root) to the manifest names verbatim — UPPER_SNAKE_CASE per D8. Updated `.env.example`, `SECURITY.md` (3 sections + START HERE items #2 + #4), `RUNBOOK.md` (crash-loop troubleshooting list). 77/77 contract tests green. Pushed for CI re-fire + Codex re-review on this branch + Rishi YES.
 
 ## CURRENT TASK
 
-Idle pending coordinator decision on the Day 5 I6 pushback. Day-4 stack PRs (#101, #102, #103, #106) all merged. Day 5 cluster deploy depends on coordinator landing the CI/GHCR/deploy workflow at repo root + resolving the secrets-manifest naming alignment.
+Idle pending CI run on the new per-service workflow + Codex review on the resulting PR + Rishi YES to merge. Once merged, the `docker-push-to-ghcr` job auto-fires on push-to-main + the image lands at `ghcr.io/dolr-ai/yral-rishi-agent-public-api:<sha>`. Coordinator will then ping to resume the cluster-deploy retry from Day-5 Step 3 (deploy on rishi-4/5/6) onward.
 
-Progress: Day-4 stack 100% merged; Day 5 ~10% (deploy artifacts verified locally, but cluster steps blocked).
-ETA to resume: dependent on coordinator's resolution of CI/GHCR pipeline + secrets-alignment. When resumed, Session 3 picks up Day 5 from Step 2 (CI pipeline check) onward.
+Progress: Day-4 stack 100% merged; Day 5 ~30% (deploy artifacts verified + manifest aligned + 77/77 green; cluster steps still pending image landing + coordinator ping).
+ETA: dependent on CI turnaround + Codex turnaround + Rishi YES on the merge.
 
 ## NEXT 3 PLANNED ACTIONS
 
