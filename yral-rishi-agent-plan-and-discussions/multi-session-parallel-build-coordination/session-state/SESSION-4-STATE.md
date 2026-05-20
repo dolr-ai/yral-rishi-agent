@@ -1,6 +1,6 @@
 # Session 4 STATE — Orchestrator + Soul File + Influencer Directory
 
-> Updated: 2026-05-18 (Day-1 spawn PR opened — Session 4 now in active build).
+> Updated: 2026-05-18 (Day-2 `POST /v1/turn` RPC handler PR opened; Day-1 PR #95 merged earlier same day).
 
 ## ⭐ START-OF-SESSION SUMMARY (read first when resuming)
 
@@ -14,37 +14,34 @@ Full agent definition: `.claude/agents/session-4-orchestrator.md`.
 
 ## LAST THING I DID
 
-**2026-05-18 — Day 1 spawn PR opened.** Spawned all three Session-4 services from `yral-rishi-agent-new-service-template/` via `new-service.sh` × 3 (full prefixed names — agent-def's bare-suffix examples don't match the script's regex; coordinator follow-up flagged). Bundled into ONE PR per A2.1 + Rishi's explicit `continue`-with-bundle directive. Substantive Soul-File engineering contracts from the pre-existing coordinator placeholders preserved as `PRE-SPAWN-CONTRACTS-FROM-COORDINATOR.md` inside each spawned folder (A1 7-step report in same-commit LOG entry).
+**2026-05-18 — Day 2 `POST /v1/turn` PR opened.** Implemented the orchestrator's `run_turn` skeleton on `session-4/orchestrator-run-turn-rpc-handler`. Schema-valid `MessageDto` stub (NOT SSE — per A16 parity + agent def + Rishi green-light), behind two safety gates (`environment != production` AND `enable_run_turn_stub=true`). 9 tests cover 5 happy + 4 error paths; all green on Python 3.12.13 inside `python:3.12-slim`. DEP-004 raised to coordinator to update `interface-contracts/01-internal-rpc-contracts.md`'s stale SSE description.
 
 Empirical proof:
-- Spawn output: 3 × "Spawned ... at ..." with exit 0
-- Python syntax (py_compile on app/main.py): 3/3 OK
-- Bash syntax (bash -n on scripts/*.sh): 9/9 OK
-- YAML parse (secrets / docker-compose / docker-compose.swarm / shared-config): 12/12 OK
-- Docker build (orchestrator, as rep — all 3 spawns share the template's Dockerfile bytes): exit 0, image `yral-rishi-agent-conversation-turn-orchestrator-service:latest` built
-- FastAPI app-import inside built image: exit 0, default routes `['/openapi.json', '/docs', '/docs/oauth2-redirect', '/redoc']` registered
-
-Worktree-per-session collision: Session 3 (parallel agent) checked out its own branch in the main repo checkout mid-task, briefly switching my working tree under me. Reverted the misplaced staged deletions without disturbing Session 3's work; created `/Users/rishichadha/Claude Projects/yral-rishi-agent-worktrees/session-4/` and continued there.
+- pytest: 9/9 PASSED in 0.04s (rootdir=/work, pytest-8.3.4, asyncio mode strict)
+- FastAPI app-import: `/v1/turn POST` registered alongside the default OpenAPI routes
+- Python syntax: all 4 new + 2 modified Python files compile
+- Net new strict-code: ~80 lines across `run_turn.py` + `models/turn.py` + 1-field config addition (well under A2.1's 100-line check-in threshold)
 
 ## CURRENT TASK
 
-PR open + awaiting CI + Codex + Rishi-YES (or auto-merge under I14 if eligible — likely NOT auto-merge eligible since this PR adds ~60 new code files which is well over the 200-line cap + the "test/lint/doc-only" auto-merge criteria).
+PR open + awaiting CI + Codex + Rishi-YES. NOT auto-merge eligible under I14 (code files added: run_turn.py + models/turn.py + tests/* + config.py modification — fails the ".md / test / lint / comment-only" gate even if under 200 strict-code lines).
 
-Progress: Day 1 → 100% done; Day 2 → 0%.
+Progress: Day 1 → 100% done (PR #95 merged); Day 2 → 100% done (PR opened); Day 3 → 0%.
 
 ## NEXT 3 PLANNED ACTIONS
 
-1. Day 2 — Orchestrator `run_turn(...)` RPC handler skeleton on a new branch `session-4/orchestrator-run-turn-rpc-handler`. **Return shape: plain JSON MessageDto matching chat-ai parity contract — NOT SSE on the v1 path.** Stub returns SCHEMA-VALID MessageDto behind a feature flag (off in production). Pydantic-typed request/response models per the internal-RPC contract. 3-5 happy-path tests + 2-3 error-path per J1.
-2. Day 3 — Safety stack BEFORE any real LLM call: H5 prompt-injection defense classifier → H4 crisis-detection routing (Claude with Anthropic safety system) → A10 NSFW routing (`is_nsfw=true` → OpenRouter). All three wired in middleware order before Day-5's real LLM enablement.
-3. Day 4 — Soul-File library: Postgres schema (`soul_file` table) + Alembic migration + CRUD endpoints (`GET` + `PATCH /soul-files/{influencer_id}`). Tests: insert+read fixture roundtrip; PATCH rejects non-creator; version bumps correctly.
+1. Day 3 — Safety stack BEFORE any real LLM call. ORDER per agent def: H5 prompt-injection defense classifier (rule-based for Phase 1; ML for Phase 2) → H4 crisis-detection routing (to Claude w/ Anthropic safety system) → A10 NSFW routing (`is_nsfw=true` → OpenRouter). Each wired as middleware in front of `POST /v1/turn`; each writes its decision to Langfuse trace metadata; default-deny posture.
+2. Day 4 — Soul-File library: Postgres schema (`soul_file` table) + Alembic migration + CRUD endpoints (`GET` + `PATCH /soul-files/{influencer_id}`). Tests: insert+read fixture roundtrip; PATCH rejects non-creator; version bumps correctly.
+3. Day 5 — Orchestrator wires real LLM calls (Tara + Gemini paths, behind the Day-3 safety stack). Day-2 stub disappears behind the feature flag (flag stays off in production forever; the stub remains accessible in non-prod for diagnostics).
 
 ## BLOCKERS
 
-None hard. Session 3 launching in parallel; my run_turn skeleton (Day 2) does not block Session 3 — Session 3's Day-2 work is its own template-spawn + auth middleware, not yet RPC-consuming.
+None hard. DEP-004 raised to coordinator (interface-contracts/01-internal-rpc-contracts.md SSE→JSON update) is non-blocking — Session 3 can read `app/run_turn.py` + `app/models/turn.py` directly to see the real shape.
 
 ## PENDING PRs (mine)
 
-- `session-4/spawn-three-services-from-template` — opens this turn (Day-1 spawn PR, bundled). Cannot self-auto-merge under I14 (~60 new code files, well over 200-line cap + not in the .md/test/lint/comment-only category). Coordinator review expected.
+- `session-4/orchestrator-run-turn-rpc-handler` — opens this turn (Day-2 `POST /v1/turn` skeleton). Includes 9 tests, all green locally. Not auto-merge eligible (adds code; fails I14 doc/test/lint-only gate). Coordinator review expected.
+- `session-4/spawn-three-services-from-template` — **MERGED 2026-05-18** as PR #95 (Day-1 spawn bundle). Codex flagged 2 BLOCKER/CONCERN, coordinator confirmed both are template-inherited (not Session 4's introductions); coordinator queuing as DEPs against Session 2.
 
 ## CROSS-SESSION DEPS (mine)
 

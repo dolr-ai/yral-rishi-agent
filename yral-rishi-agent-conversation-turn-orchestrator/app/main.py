@@ -46,6 +46,18 @@ from app.logging import configure_logging
 # below so it runs OUTERMOST in the request chain.
 from app.request_id_middleware import RequestIdMiddleware
 
+# Day-2 run_turn RPC handler. The router defines `POST /v1/turn`; we
+# mount it on the FastAPI app below. See `run_turn.py` for the two-
+# gate refusal logic that keeps the stub out of production traffic.
+from app.run_turn import router as run_turn_router
+
+# Day-2 fixup (Codex PR-#96 BLOCKER 1) — F10 default-on idempotency.
+# Lifespan opens the async Redis client at startup + closes it on
+# SIGTERM. Every POST /v1/turn does a Redis dedup lookup before any
+# work; same X-Idempotency-Key + X-User-Id within 24h replays the
+# previously cached MessageResponse byte-for-byte.
+from app.idempotency import close_redis, init_redis
+
 
 # Run Sentry init now, at module import time. After this line, every
 # unhandled exception below is shipped to sentry.rishi.yral.com (per A7).
@@ -73,9 +85,17 @@ async def lifespan(_app: FastAPI):
           renaming anything or touching the signature.
     """
     # --- startup --------------------------------------------------------
-    # (filled in by later Day-2 PRs — database pool, redis client, etc.)
+    # Open the async Redis client — the F10 idempotency layer (Codex
+    # PR-#96 BLOCKER 1 fix) needs it ready before any request handler
+    # runs. The connection is pooled internally by redis-py; one
+    # client serves every concurrent request.
+    await init_redis()
     yield
     # --- shutdown -------------------------------------------------------
+    # Close Redis cleanly so connections don't linger on the server
+    # side past their idle timeout. Cleaner shutdown == faster Swarm
+    # rolling updates.
+    await close_redis()
     # Drain pending Langfuse traces so SIGTERM (Swarm rolling update,
     # scale-down) doesn't lose seconds of in-flight LLM trace data.
     # No-op when Langfuse is disabled.
@@ -90,6 +110,13 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# Mount the run_turn router (Day 2). Adds `POST /v1/turn` to the app.
+# Routes always mount BEFORE middleware so the request flows through
+# the middleware chain into a known handler. Day 3 adds the safety
+# stack (H5/H4/A10) as middleware that wraps this route without
+# touching the route signature.
+app.include_router(run_turn_router)
 
 # Mount RequestIdMiddleware. In Starlette/FastAPI, `add_middleware`
 # is LIFO for incoming requests — the LAST added is the FIRST to
@@ -107,7 +134,11 @@ app.add_middleware(RequestIdMiddleware)
 #   langfuse_middleware.py   — init_langfuse() + flush_langfuse() (per D4)
 #   logging.py               — configure_logging() called above (per H6)
 #   request_id_middleware.py — RequestIdMiddleware mounted above
-#   pyproject.toml           — fastapi + sentry-sdk + langfuse + structlog
+#   run_turn.py              — Day-2 POST /v1/turn router mounted above
+#   models/turn.py           — Pydantic models the run_turn router consumes
+#   idempotency.py           — F10 Redis dedup; init_redis/close_redis above
+#   config.py                — redis_url + enable_run_turn_stub settings
+#   pyproject.toml           — fastapi + sentry-sdk + langfuse + structlog + redis
 #   Dockerfile               — CMD ["uvicorn", "app.main:app", ...]
-#   docker-compose.yml       — local-dev runner with --reload
+#   docker-compose.yml       — local-dev runner with --reload (includes redis)
 # ===========================================================================
