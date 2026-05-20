@@ -77,10 +77,40 @@ async def read_and_replay_body(request: Request) -> bytes:
     # request._body. After this line, request.body() is idempotent.
     body = await request.body()
 
-    # Build a fresh receive closure that replays the cached bytes as a
-    # single complete `http.request` ASGI message. `more_body=False`
-    # signals to consumers that the stream is fully delivered.
+    # Build an ASGI-compliant ONE-SHOT receive closure.
+    #
+    # Codex PR-#112 round-11 BLOCKER: the previous implementation
+    # returned the same body on EVERY call to `receive()`. That
+    # violates ASGI receive-stream semantics — the protocol guarantees
+    # the body is delivered ONCE, then the consumer transitions to
+    # waiting for `http.disconnect`. A consumer that calls receive
+    # twice (e.g. Starlette's stream-iteration loop checking for end-
+    # of-body) would see a duplicate body on the second call instead
+    # of the expected `more_body=False`-then-`http.disconnect`
+    # sequence.
+    #
+    # The closure below uses a `_body_delivered` flag captured in the
+    # closure scope:
+    #   first call  → returns `http.request` with the cached body +
+    #                 `more_body=False` (the standard end-of-body
+    #                 signal in ASGI).
+    #   subsequent calls → returns `http.disconnect` (the protocol's
+    #                      indicator that the client has gone away;
+    #                      consumers should stop reading + finalise
+    #                      their response).
+    #
+    # `more_body=False` on the first call is the load-bearing signal
+    # downstream consumers use to know the stream is done. The
+    # `http.disconnect` follow-up is the protocol's "no more events"
+    # state — without it, a poorly-behaved consumer could loop
+    # forever on receive().
+    _body_delivered = False
+
     async def replay_receive() -> dict:
+        nonlocal _body_delivered
+        if _body_delivered:
+            return {"type": "http.disconnect"}
+        _body_delivered = True
         return {
             "type": "http.request",
             "body": body,
