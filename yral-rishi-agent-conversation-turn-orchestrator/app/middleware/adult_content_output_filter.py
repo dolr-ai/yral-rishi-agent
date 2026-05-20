@@ -43,10 +43,14 @@
 # which the agent def explicitly defers to /v2 path).
 #
 # THE GATE-RESPECT PATTERN
-# Same as H5 + H4 — when EITHER `environment == "production"` or
-# `enable_run_turn_stub` is false, adult_content passes through without
-# inspecting the response so the handler's 503-emission fires
-# unchanged. Avoids "leak via safety bypass".
+# Same as H5 + H4. Round-6+ logic:
+#   gate_closed = not (enable_run_turn_real_llm OR enable_run_turn_stub)
+# Environment is NOT in the check — middleware INSPECTS whenever any
+# path is enabled, regardless of environment. Rationale lives in
+# `h5_prompt_injection.py`'s file header (the round-6 fix replaced
+# the original Day-3 "env=production passes through" pattern to
+# close a future bypass risk once Day-5's real-LLM flag becomes
+# operator-flippable in production).
 #
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------

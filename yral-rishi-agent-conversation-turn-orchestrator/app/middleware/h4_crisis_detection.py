@@ -31,10 +31,12 @@
 # owns the real copy + locale-aware helpline routing.
 #
 # THE GATE-RESPECT PATTERN
-# Same as H5 (see `h5_prompt_injection.py` file header) — when EITHER
-# `environment == "production"` or `enable_run_turn_stub` is false,
-# this middleware passes through so the handler's 503-emission fires
-# unchanged. Avoids the "leak via safety bypass" attack vector.
+# Same as H5 + adult_content_output_filter (see those file headers
+# for the round-6 rationale). Current logic:
+#   gate_closed = not (enable_run_turn_real_llm OR enable_run_turn_stub)
+# Environment is NOT in the check — that round-3-era coupling was a
+# future bypass risk once Day-5 added the real-LLM flag. Middleware
+# INSPECTS whenever any path is enabled, regardless of environment.
 #
 # WHY H4 SITS INSIDE H5
 # Order matters: H5 handles ADVERSARIAL input (deliberate jailbreaks).

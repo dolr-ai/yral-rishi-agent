@@ -26,18 +26,33 @@
 # ML classifier replaces this file's `_INJECTION_PATTERNS` constant
 # without touching the dispatch logic.
 #
-# THE GATE-RESPECT PATTERN (see file header of `adult_content_output_filter.py` for
-# the same pattern in the output-side layer)
-# Per the Day-3 directive verbatim: "Flag-off behaviour unchanged:
-# env=production OR enable_run_turn_stub=false still 503s before
-# middleware fires (no leak via safety bypass)." We respect the same
-# two-gate logic the handler uses (env != production AND
-# enable_run_turn_stub=true). When EITHER gate is closed, this
-# middleware passes through without inspecting the body so the
-# handler's own 503-emission fires. A jailbreaker sending bad input to
-# a production environment sees the same 503 a clean message would
-# see — no information leakage about which inputs trigger the safety
-# stack.
+# THE GATE-RESPECT PATTERN (see file header of `adult_content_output_filter.py`
+# + `h4_crisis_detection.py` for the same pattern in the other layers)
+#
+# Codex PR-#112 round-6 BLOCKER fix: gate-respect mirrors EXACTLY the
+# handler's "both paths off" condition + nothing else. The Day-3
+# directive's original "env=production OR stub=false → passthrough"
+# logic was correct in Day-3 (the handler unconditionally 503-ed in
+# production then) but became a future-bypass risk once Day-5 added
+# `enable_run_turn_real_llm`: an attacker who learned to flip that
+# flag in production would also disable safety inspection if the
+# middleware still passed through on `env=production`.
+#
+# Current logic (round-6+):
+#   gate_closed = not (enable_run_turn_real_llm OR enable_run_turn_stub)
+#
+# Net behaviour:
+#   * Both flags off → middleware passes through; handler 503s on
+#     its own "both flags off" gate. No information leakage.
+#   * Either flag on → middleware INSPECTS, regardless of
+#     environment. Production-with-real-LLM-enabled gets safety.
+#
+# WHY NOT JUST READ THE HANDLER's MIRROR DIRECTLY?
+# The handler also has an unconditional `environment == "production"
+# → 503` gate today (kept for safety until A6 cutover). Mirroring
+# that here would re-create the bypass-on-cutover risk. The simpler
+# rule "inspect whenever any path is enabled" is what survives the
+# eventual removal of the handler's production-503.
 #
 # WHY THE PATH FILTER
 # The handler at `POST /v1/turn` is the only route the safety stack

@@ -6,7 +6,7 @@
 # defines one route, `POST /v1/turn`, which TODAY (Day 2) returns a
 # schema-valid stub `MessageResponse` with a placeholder body. Day 5
 # swaps the stub for the real LLM call; Day 3 adds the safety stack
-# (H5 prompt-injection → H4 crisis → adult_content adult_content) IN FRONT of this handler
+# (H5 prompt-injection → H4 crisis → adult_content_output_filter) IN FRONT of this handler
 # without touching the route signature.
 #
 # WHAT IS THIS ENDPOINT FOR?
@@ -789,8 +789,10 @@ async def run_turn(
 #   idempotency.py     — F10 atomic-dedup helpers (acquire_or_check +
 #                        mark_complete + release_in_progress_lock +
 #                        compute_request_fingerprint)
-#   llm_client/        — adult_content abstract LLM client interface + Gemini
-#                        provider + lifespan singleton accessor
+#   llm_client/        — CONSTRAINTS-A10 LLM-agnostic abstraction (the
+#                        Tara/OpenRouter + Gemini routing rule lives at
+#                        this layer per A10 row 28) + Gemini provider
+#                        implementation + lifespan singleton accessor
 #   soul_file_client.py — httpx-based Soul File Library RPC client +
 #                        the two typed exceptions this handler maps to
 #                        404 / 503 envelopes
