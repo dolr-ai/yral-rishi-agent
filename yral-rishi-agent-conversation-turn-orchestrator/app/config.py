@@ -152,7 +152,7 @@ class Settings(BaseSettings):
     # actually responds"; the stub is the fallback diagnostic).
     enable_run_turn_real_llm: bool = False
 
-    # -- Day-5 LLM provider config (per A10 + D8) -------------------------
+    # -- Day-5 LLM provider config (per A10 + C7 + D8) --------------------
     # GEMINI_API_KEY declared in secrets.yaml per D8; empty default so a
     # half-configured environment runs (just without real LLM — the
     # provider refuses to init on empty key per its constructor guard).
@@ -165,12 +165,29 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.7
     llm_max_tokens: int = 800
 
+    # Per C7 ("model names, timeouts, thresholds, all configurable"):
+    # the Gemini model id + provider-side timeout are env-configurable.
+    # PR #109 round-2 (Codex C7 BLOCKER): these were hardcoded constants
+    # in `app/llm_client/gemini.py` round-1; moved here so Day 6+ tuning
+    # (model bump, latency tightening) flips an env var instead of
+    # editing source.
+    gemini_model_id: str = "gemini-2.5-flash"
+    gemini_call_timeout_seconds: float = 30.0
+
     # -- Day-5 Soul File Library RPC (per C7 + the locked contract) -----
     # Default points at the Docker DNS name for the sibling service. In
     # the cluster the Caddy service-mesh resolves the same name. C7
     # invites moving to shared-config.yaml when nested config arrives;
     # today the single scalar fits in env.
     soul_file_library_base_url: str = "http://yral-rishi-agent-soul-file-library:8000"
+
+    # Per C7 — soul-file RPC timeout. 5s gives the soul-file-library's
+    # 4-sequential-DB-reads breathing room (Day-4 build) without blowing
+    # E1's latency budget at the orchestrator boundary. Day-5+ Redis
+    # caching on the soul-file side will pull this down further.
+    # PR #109 round-2 (Codex C7 BLOCKER): was hardcoded constant in
+    # `app/soul_file_client.py` round-1.
+    soul_file_call_timeout_seconds: float = 5.0
 
     # -- Day-5 placeholder AI Influencer id ----------------------------
     # Day 5 hardcodes a single influencer_id via this setting because

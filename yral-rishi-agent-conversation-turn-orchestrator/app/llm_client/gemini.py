@@ -86,20 +86,18 @@ from app.llm_client.base import (
 from app.langfuse_middleware import get_langfuse
 
 
-# Default model id. Locked literal so a tuning bump shows up in `git
-# blame` clearly. The directive picks `gemini-2.5-flash` (fast tier);
-# Day 6+ routing matrix may also call `gemini-2.5-pro` for higher-
-# quality paths.
-_DEFAULT_GEMINI_MODEL_ID: Final[str] = "gemini-2.5-flash"
-
-# Timeout budget per the Day-5 directive. 30s wall-clock; client-side
-# `asyncio.wait_for` enforces it regardless of what the SDK thinks.
-_GEMINI_CALL_TIMEOUT_SECONDS: Final[float] = 30.0
-
 # Provider tag stamped on the LlmResponse + Langfuse trace attribute.
 # `gemini` (lowercase, no underscores) matches the agent-definition
-# vocabulary + the routing-matrix memo.
+# vocabulary + the routing-matrix memo. Stays a constant because it's
+# the wire identifier of THIS provider; a different provider's file
+# has its own _PROVIDER_TAG (e.g. `openrouter` in Day 6+'s file).
 _PROVIDER_TAG: Final[str] = "gemini"
+
+# Model id + timeout-seconds are NOT constants anymore — per C7 ("model
+# names, timeouts, thresholds, all configurable"). Settings carries
+# the env-overridable defaults; constructor below accepts them as
+# explicit kwargs so tests + Day 6+ routing matrix can vary them per
+# instance without touching this module.
 
 
 _log = logging.getLogger("app.llm_client.gemini")
@@ -132,19 +130,31 @@ class GeminiClient(LlmClient):
         self,
         *,
         api_key: str,
-        model_id: str = _DEFAULT_GEMINI_MODEL_ID,
+        model_id: str,
+        call_timeout_seconds: float,
     ) -> None:
         """Wire the SDK with the API key + build the model wrapper.
 
         WHAT: calls `gemini_sdk.configure(api_key=...)` (process-wide
               auth registration) + builds a `GenerativeModel(model_id)`
               instance the `.generate(...)` method dispatches against.
+              Stashes the per-call timeout for `.generate(...)` to read.
         WHEN: called once at lifespan startup OR first-use lazy init
               by run_turn.py.
         WHY:  process-wide configure is the SDK's documented init
-              pattern. A new model id (Day 6+ pro-tier) would build a
-              second GeminiClient instance with the different id;
-              they share the same auth registration.
+              pattern. Per C7 ("model names, timeouts, thresholds, all
+              configurable") the model id + timeout are explicit
+              constructor args; Settings is the lifespan-init source
+              + tests can pass distinct values per instance.
+
+        Args:
+          api_key              — Gemini API key (per D8, secrets.yaml).
+          model_id             — provider model id (e.g.
+                                 `gemini-2.5-flash`). Settings.gemini_model_id
+                                 is the lifespan source.
+          call_timeout_seconds — provider-side per-call timeout.
+                                 Settings.gemini_call_timeout_seconds
+                                 is the lifespan source.
         """
         if not api_key:
             raise ValueError(
@@ -161,10 +171,15 @@ class GeminiClient(LlmClient):
         # can serve different soul-file prompts across turns + users.
         self._model = gemini_sdk.GenerativeModel(model_name=model_id)
         self._model_id: Final[str] = model_id
+        self._call_timeout_seconds: Final[float] = call_timeout_seconds
 
         _log.info(
             "gemini_client_initialised",
-            extra={"model": model_id, "provider": _PROVIDER_TAG},
+            extra={
+                "model": model_id,
+                "provider": _PROVIDER_TAG,
+                "call_timeout_seconds": call_timeout_seconds,
+            },
         )
 
     async def generate(
@@ -225,7 +240,7 @@ class GeminiClient(LlmClient):
         try:
             sdk_response = await asyncio.wait_for(
                 per_call_model.generate_content_async(**call_arguments),
-                timeout=_GEMINI_CALL_TIMEOUT_SECONDS,
+                timeout=self._call_timeout_seconds,
             )
         except asyncio.TimeoutError as timeout_error:
             # Client-side timeout exceeded. Map to the typed exception
@@ -238,7 +253,7 @@ class GeminiClient(LlmClient):
                 extra={
                     "provider": _PROVIDER_TAG,
                     "model": self._model_id,
-                    "timeout_seconds": _GEMINI_CALL_TIMEOUT_SECONDS,
+                    "timeout_seconds": self._call_timeout_seconds,
                     "latency_milliseconds": latency_milliseconds,
                 },
             )
@@ -249,7 +264,7 @@ class GeminiClient(LlmClient):
                 failure_kind="timeout",
             )
             raise LlmClientTimeoutError(
-                f"Gemini call exceeded {_GEMINI_CALL_TIMEOUT_SECONDS:.0f}s budget"
+                f"Gemini call exceeded {self._call_timeout_seconds:.0f}s budget"
             ) from timeout_error
         except Exception as upstream_error:
             # Any other SDK / API failure becomes LlmClientUpstreamError.
@@ -287,14 +302,43 @@ class GeminiClient(LlmClient):
         # Parse the SDK response. `.text` is the assistant reply;
         # `.usage_metadata` carries the token counts when the provider
         # populates them (Gemini does; older models or streaming-only
-        # paths may not). Defensive defaults so we always return a
-        # complete LlmResponse.
-        content = sdk_response.text or ""
-        usage = getattr(sdk_response, "usage_metadata", None)
-        prompt_tokens = int(getattr(usage, "prompt_token_count", 0) or 0)
-        completion_tokens = int(
-            getattr(usage, "candidates_token_count", 0) or 0
-        )
+        # paths may not).
+        #
+        # Codex PR-#109 round-2 CONCERN — wrap parsing in its own
+        # try/except → LlmClientUpstreamError. Gemini can raise on
+        # `.text` access for blocked or empty candidate responses
+        # (safety-filter blocks, quota-cap'd no-output, etc.). Without
+        # this guard those land as a generic 500 in the orchestrator
+        # response path; with it, run_turn.py maps them to a 502
+        # `llm_upstream_error` envelope (same shape as quota / auth /
+        # 5xx failures upstream).
+        try:
+            content = sdk_response.text or ""
+            usage = getattr(sdk_response, "usage_metadata", None)
+            prompt_tokens = int(getattr(usage, "prompt_token_count", 0) or 0)
+            completion_tokens = int(
+                getattr(usage, "candidates_token_count", 0) or 0
+            )
+        except Exception as parse_error:
+            _log.error(
+                "gemini_response_parse_failed",
+                extra={
+                    "provider": _PROVIDER_TAG,
+                    "model": self._model_id,
+                    "latency_milliseconds": latency_milliseconds,
+                    "error_type": type(parse_error).__name__,
+                },
+            )
+            self._record_failure_span(
+                temperature=temperature,
+                max_tokens=max_tokens,
+                latency_milliseconds=latency_milliseconds,
+                failure_kind="response_parse_error",
+            )
+            raise LlmClientUpstreamError(
+                f"Gemini response parse failed: {type(parse_error).__name__} "
+                "(common cause: safety-blocked candidate response)"
+            ) from parse_error
 
         # Emit the Langfuse generation span per D4 + the directive's
         # piece-2 attribute list. No-ops when langfuse_client is None

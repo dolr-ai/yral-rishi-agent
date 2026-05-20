@@ -64,7 +64,7 @@ def _build_client_with_mocked_http(*, mocked_http: MagicMock) -> SoulFileClient:
           SoulFileClient; substituting the httpx attribute is the
           smallest possible test seam.
     """
-    client = SoulFileClient(base_url=_TEST_BASE_URL)
+    client = SoulFileClient(base_url=_TEST_BASE_URL, call_timeout_seconds=5.0)
     client._http = mocked_http  # noqa: SLF001
     return client
 
@@ -264,7 +264,7 @@ def test_soul_file_client_constructor_rejects_empty_base_url() -> None:
     WHY:  fail-fast on init rather than crash on first call.
     """
     with pytest.raises(ValueError) as excinfo:
-        SoulFileClient(base_url="")
+        SoulFileClient(base_url="", call_timeout_seconds=5.0)
 
     assert "non-empty base_url" in str(excinfo.value)
 

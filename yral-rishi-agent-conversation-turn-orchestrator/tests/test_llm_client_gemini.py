@@ -107,7 +107,7 @@ async def test_gemini_client_generate_passes_prompt_and_user_message_to_sdk(
     )
 
     # Act — build client + call generate.
-    client = GeminiClient(api_key="fake-key-for-unit-test")
+    client = GeminiClient(api_key="fake-key-for-unit-test", model_id="gemini-2.5-flash", call_timeout_seconds=30.0)
     response = await client.generate(
         prompt="soul-file layered prompt under test",
         user_message="hello from the unit test",
@@ -180,7 +180,7 @@ async def test_gemini_client_generate_returns_zero_token_counts_when_sdk_omits_t
         "app.llm_client.gemini.get_langfuse", lambda: None,
     )
 
-    client = GeminiClient(api_key="fake-key-for-unit-test")
+    client = GeminiClient(api_key="fake-key-for-unit-test", model_id="gemini-2.5-flash", call_timeout_seconds=30.0)
     response = await client.generate(
         prompt="prompt",
         user_message="message",
@@ -225,7 +225,7 @@ async def test_gemini_client_generate_raises_timeout_error_on_asyncio_timeout(
         "app.llm_client.gemini.get_langfuse", lambda: None,
     )
 
-    client = GeminiClient(api_key="fake-key-for-unit-test")
+    client = GeminiClient(api_key="fake-key-for-unit-test", model_id="gemini-2.5-flash", call_timeout_seconds=30.0)
     with pytest.raises(LlmClientTimeoutError) as excinfo:
         await client.generate(
             prompt="prompt",
@@ -266,7 +266,7 @@ async def test_gemini_client_generate_raises_upstream_error_on_sdk_exception(
         "app.llm_client.gemini.get_langfuse", lambda: None,
     )
 
-    client = GeminiClient(api_key="fake-key-for-unit-test")
+    client = GeminiClient(api_key="fake-key-for-unit-test", model_id="gemini-2.5-flash", call_timeout_seconds=30.0)
     with pytest.raises(LlmClientUpstreamError) as excinfo:
         await client.generate(
             prompt="prompt",
@@ -276,6 +276,77 @@ async def test_gemini_client_generate_raises_upstream_error_on_sdk_exception(
         )
 
     assert isinstance(excinfo.value.__cause__, RuntimeError)
+
+
+@pytest.mark.asyncio
+async def test_gemini_client_generate_raises_upstream_error_on_blocked_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WHAT: when accessing `sdk_response.text` raises (Gemini's
+          safety-filter blocks the candidate response, or the
+          candidate is empty / quota-cap'd), the provider maps to
+          LlmClientUpstreamError instead of letting the raise escape
+          as a generic 500.
+    WHEN: a Gemini safety-block / empty-candidate response.
+    WHY:  Codex PR-#109 round-2 CONCERN. The Gemini SDK's
+          `response.text` property raises ValueError on blocked
+          candidates; without the parse-stage try/except in
+          `gemini.py`, this lands as the orchestrator's 500 generic-
+          exception path. Round-2 fix added the parse-stage try
+          mapping to LlmClientUpstreamError so run_turn.py's existing
+          502 envelope branch handles it — same operator-side signal
+          as quota / auth / 5xx upstream failures.
+    """
+    # Build an SDK response object whose `.text` property raises
+    # ValueError on access — mirrors the real Gemini SDK behaviour
+    # for safety-blocked candidates.
+    fake_response_object = MagicMock()
+    type(fake_response_object).text = property(
+        lambda _self: (_ for _ in ()).throw(
+            ValueError(
+                "Invalid operation: The `response.text` quick accessor "
+                "requires the response to contain a valid `Part`, but "
+                "none were returned. The candidate's finish_reason is 2."
+            )
+        )
+    )
+
+    fake_model_instance = MagicMock()
+    fake_model_instance.generate_content_async = AsyncMock(
+        return_value=fake_response_object,
+    )
+
+    fake_sdk_module = MagicMock()
+    fake_sdk_module.configure = MagicMock()
+    fake_sdk_module.GenerativeModel = MagicMock(return_value=fake_model_instance)
+    fake_sdk_module.types.GenerationConfig = MagicMock()
+
+    monkeypatch.setattr(_GEMINI_SDK_MODULE, fake_sdk_module)
+    monkeypatch.setattr(
+        "app.llm_client.gemini.get_langfuse", lambda: None,
+    )
+
+    client = GeminiClient(
+        api_key="fake-key-for-unit-test",
+        model_id="gemini-2.5-flash",
+        call_timeout_seconds=30.0,
+    )
+    with pytest.raises(LlmClientUpstreamError) as excinfo:
+        await client.generate(
+            prompt="prompt",
+            user_message="trigger safety block",
+            temperature=0.7,
+            max_tokens=200,
+        )
+
+    # The cause chain preserves the original ValueError so operators
+    # debugging via Sentry can see exactly what the SDK raised.
+    assert isinstance(excinfo.value.__cause__, ValueError)
+    # The error message mentions "parse failed" so dashboard filters
+    # can distinguish this failure mode from quota / auth / 5xx
+    # (which all go through the upstream-error branch but say
+    # "Gemini call failed:").
+    assert "parse" in str(excinfo.value).lower()
 
 
 # ===========================================================================
@@ -302,7 +373,11 @@ def test_gemini_client_constructor_rejects_empty_api_key(
     monkeypatch.setattr(_GEMINI_SDK_MODULE, fake_sdk_module)
 
     with pytest.raises(ValueError) as excinfo:
-        GeminiClient(api_key="")
+        GeminiClient(
+            api_key="",
+            model_id="gemini-2.5-flash",
+            call_timeout_seconds=30.0,
+        )
 
     assert "non-empty api_key" in str(excinfo.value)
 
@@ -330,7 +405,7 @@ async def test_gemini_client_real_api_round_trip_when_env_flag_set() -> None:
     if not api_key:
         pytest.skip("GEMINI_API_KEY not set; cannot run live integration test")
 
-    client = GeminiClient(api_key=api_key)
+    client = GeminiClient(api_key=api_key, model_id="gemini-2.5-flash", call_timeout_seconds=30.0)
     response = await client.generate(
         prompt=(
             "You are a unit-test helper. Reply with exactly one word: 'pong'. "

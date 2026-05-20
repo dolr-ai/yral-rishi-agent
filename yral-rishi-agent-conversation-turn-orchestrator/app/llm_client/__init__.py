@@ -92,7 +92,11 @@ def init_default_llm_client() -> None:
             "or flip enable_run_turn_real_llm=False to use the stub path."
         )
 
-    _default_client = GeminiClient(api_key=settings.gemini_api_key)
+    _default_client = GeminiClient(
+        api_key=settings.gemini_api_key,
+        model_id=settings.gemini_model_id,
+        call_timeout_seconds=settings.gemini_call_timeout_seconds,
+    )
 
 
 def close_default_llm_client() -> None:

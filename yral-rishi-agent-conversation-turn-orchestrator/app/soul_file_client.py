@@ -73,16 +73,17 @@ _client: "SoulFileClient | None" = None
 
 # RPC path. Locked in `interface-contracts/01-internal-rpc-contracts.md`;
 # a contract change requires a coordinator-owned PR there + this
-# constant to move together.
+# constant to move together. STAYS a constant because it's a contract
+# identifier (not a tunable) — per C7 the rule is "no hardcoded
+# values"; a wire-protocol path is closer to a wire-format identifier
+# than a tunable knob.
 _COMPOSED_PROMPT_PATH: Final[str] = "/composed-prompt"
 
-# HTTP timeout for the RPC call. The contract says "<5ms warm cache
-# hit" but cold-cache / cache-miss can be slower. 5 seconds is
-# generous (gives the soul-file-library time to do the 4 sequential
-# DB reads its Day-4 implementation does) without blowing E1's
-# latency budget at the orchestrator level — Day-5+ Redis caching on
-# the soul-file-library side will pull this down to single-digit ms.
-_SOUL_FILE_CALL_TIMEOUT_SECONDS: Final[float] = 5.0
+# Note: the RPC call timeout used to be a hardcoded `_SOUL_FILE_CALL_
+# TIMEOUT_SECONDS = 5.0` here. Per C7 (Codex PR-#109 round-2 BLOCKER 2)
+# it now lives on Settings as `soul_file_call_timeout_seconds` and
+# flows through the `SoulFileClient(..., call_timeout_seconds=...)`
+# constructor + the lifespan init below.
 
 
 _log = logging.getLogger("app.soul_file_client")
@@ -162,7 +163,7 @@ class SoulFileClient:
           cost on every turn.
     """
 
-    def __init__(self, *, base_url: str) -> None:
+    def __init__(self, *, base_url: str, call_timeout_seconds: float) -> None:
         """Build the underlying httpx.AsyncClient with sane defaults.
 
         WHAT: constructs the AsyncClient with the base URL + a
@@ -170,7 +171,17 @@ class SoulFileClient:
               latency budget.
         WHEN: called from `init_soul_file_client()`.
         WHY:  one place to centralise the client config; callers
-              only see `.compose(...)`.
+              only see `.compose(...)`. Per C7 (Codex PR-#109 round-2
+              BLOCKER 2) timeout is an explicit constructor kwarg
+              sourced from Settings rather than a hardcoded constant.
+
+        Args:
+          base_url             — soul-file-library base URL.
+                                 settings.soul_file_library_base_url is
+                                 the lifespan source.
+          call_timeout_seconds — per-call HTTP timeout.
+                                 settings.soul_file_call_timeout_seconds
+                                 is the lifespan source.
         """
         if not base_url:
             raise ValueError(
@@ -180,11 +191,15 @@ class SoulFileClient:
             )
         self._http = httpx.AsyncClient(
             base_url=base_url,
-            timeout=_SOUL_FILE_CALL_TIMEOUT_SECONDS,
+            timeout=call_timeout_seconds,
         )
+        self._call_timeout_seconds: Final[float] = call_timeout_seconds
         _log.info(
             "soul_file_client_initialised",
-            extra={"base_url": base_url},
+            extra={
+                "base_url": base_url,
+                "call_timeout_seconds": call_timeout_seconds,
+            },
         )
 
     async def aclose(self) -> None:
@@ -327,7 +342,10 @@ async def init_soul_file_client() -> None:
         return
 
     settings = get_settings()
-    _client = SoulFileClient(base_url=settings.soul_file_library_base_url)
+    _client = SoulFileClient(
+        base_url=settings.soul_file_library_base_url,
+        call_timeout_seconds=settings.soul_file_call_timeout_seconds,
+    )
 
 
 async def close_soul_file_client() -> None:
