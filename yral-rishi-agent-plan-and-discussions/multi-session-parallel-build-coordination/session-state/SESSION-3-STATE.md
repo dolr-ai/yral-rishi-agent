@@ -1,6 +1,6 @@
 # Session 3 STATE — Public-API
 
-> Updated: 2026-05-20 (PR #97 merged into main; PRs #99 + #101 + #102 rebased onto post-#97 main; Day-4B PR #102 re-applied manually because of non-trivial conflicts vs PR #97 R1+R3+R5 work; 73/73 contract tests green; PR #103 rebase queued next).
+> Updated: 2026-05-20 (Rebase cascade COMPLETE — PRs #99 + #101 + #102 + #103 all rebased onto post-#97 main; 77/77 contract tests green on rebased PR #103 tip; merge cascade pending coordinator routing + Codex re-review on each).
 
 ## ⭐ START-OF-SESSION SUMMARY (read first when resuming)
 
@@ -14,14 +14,14 @@ Full agent definition: `.claude/agents/session-3-public-api.md`.
 
 ## LAST THING I DID
 
-**2026-05-20 — Rebase cascade after PR #97 squash-merged into main.** PRs #99 (Day-3 JWT shadow), #101 (Day-4A E9 reconciliation), #102 (Day-4B real-auth on handlers) all needed to rebase onto the new `origin/main` tip (which now includes PR #97's R1 rename + R3 health stub + R5 placeholder auth + R6 tweaks). PR #99 + PR #101 rebased cleanly with 2-3 union-merge conflicts each (pyproject.toml + config.py — both took new content from both sides). PR #102 had 3 file-level conflicts whose resolution was non-trivial: Day-4B was written against PR #97 BEFORE the R1 rename, R5 placeholder, and R3 health changes landed, so its `from app.api.dtos import ConversationDto, MessageDto` imports + zero-overlap with the R5 `auth_placeholder.py` were dead. Strategy: aborted the auto-rebase, reset `session-3/day-4b-auth-as-real-dependency` to the rebased PR #101 tip (`6828db8`), then re-applied Day-4B's INTENT manually as a fresh commit — per-handler `Depends(require_authenticated_user)` on all 17 chat + influencer + admin handlers (replacing PR #97 R5's router-level placeholder); deleted `auth_placeholder.py` + `test_handler_auth_placeholder.py`; loosened `test_health_endpoints_answer_without_auth` to `status_code != 401` (absorbs the new 503-on-Redis-unreachable for `/health/ready` + F9-honest 503 for `/health/deep`); cleaned dead code in `app/api/auth/dependency.py`. WS stub keeps inline Bearer-present check (FastAPI Request-typed Depends doesn't apply to WS). 73 contract tests pass (vs 43 pre-rebase — picked up the BLOCKER 4 stubs' tests + Day-4B's auth-edge tests). Day-4C rebase queued next.
+**2026-05-20 — Day-4 stack rebase cascade COMPLETE.** All 4 Day-4 stack PRs rebased onto post-PR-#97-squash-merge main. PR #99 + PR #101 rebased cleanly. PRs #102 + #103 required manual-re-apply because their original commits were written against PR #97 BEFORE its R1 Dto→Response rename + R3/R5 health changes + R5 placeholder-auth (so `from app.api.dtos import ConversationDto, MessageDto` was dead post-rebase + Day-4B's auth wiring needed to supersede R5's placeholder + Day-4C's `send_message` rewrite needed adapting from `MessageDto` → `MessageResponse`). Strategy for both: aborted auto-rebase, reset branch to rebased-prior-PR tip, re-applied INTENT manually as fresh commit. Day-4B: per-handler `Depends(require_authenticated_user)` on all 17 chat + influencer + admin handlers; deleted `auth_placeholder.py` + its tests; loosened the F9 health auth-exempt test to `status_code != 401`. Day-4C: rewrote `send_message` to call `orchestrator_client.run_turn(...)` + F10 Redis dedup; added 3 clean files (orchestrator_client.py, idempotency.py, test_orchestrator_proxy.py); added 5 config settings + shared-config.yaml `services.orchestrator` section + main.py lifespan init/close; deleted 4 deprecated Day-2 send_message tests. 73/73 tests green on PR #102, 77/77 green on PR #103. Both force-pushed via `git push --force-with-lease`.
 
 ## CURRENT TASK
 
-Push the rebased PR #102 with `--force-with-lease`; then queue PR #103 (Day-4C) rebase onto the new PR #102 tip.
+Idle. Day-4 stack PRs (#99 + #101 + #102 + #103) all rebased + force-pushed + green. Awaiting Codex re-review on each (Codex re-runs on each force-push) + coordinator's merge-cascade decision.
 
-Progress: PRs #99 + #101 + #102 rebased + locally green; PR #103 rebase pending. Phase 1 ~36% (5 of ~14 working days; rebase cascade itself was a half-day's work).
-ETA to merge: dependent on Codex re-review (Codex re-runs on each force-push) + coordinator routing + Rishi YES on the merge order.
+Progress: Day-4 stack rebase cascade 100% complete. Phase 1 ~36% (5 of ~14 working days; rebase cascade itself was ~half a day's work).
+ETA to merge: dependent on Codex turnaround + coordinator routing + Rishi YES on the merge cascade order (4A → 4B → 4C, naturally enforced by the stack).
 
 ## NEXT 3 PLANNED ACTIONS
 

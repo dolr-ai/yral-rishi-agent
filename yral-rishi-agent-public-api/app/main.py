@@ -82,6 +82,11 @@ from app.api.influencer_routes import admin_influencer_router, influencer_router
 # BLOCKER 2 + the locked error-codes table.
 from app.api.errors import HTTP_STATUS_FOR_ERROR_CODE, error_response
 
+# Day-4C orchestrator client — lifespan-managed singleton httpx.AsyncClient.
+# init / close run from the FastAPI lifespan below so the pool is
+# allocated once per worker + drained gracefully on SIGTERM.
+from app.orchestrator_client import close_orchestrator_client, init_orchestrator_client
+
 
 # Run Sentry init now, at module import time. After this line, every
 # unhandled exception below is shipped to sentry.rishi.yral.com (per A7).
@@ -102,16 +107,22 @@ async def lifespan(_app: FastAPI):
     """Startup + shutdown hooks for the FastAPI app.
 
     WHAT: code before `yield` runs at startup; code after runs on
-          SIGTERM. Today both halves are empty placeholders.
+          SIGTERM. Day-4C added orchestrator-client allocation
+          + teardown.
     WHEN: invoked exactly once per process lifetime by FastAPI itself.
-    WHY:  reserve the structure now so subsequent Day-2 PRs (database
-          pool, redis client, langfuse worker) can plug in without
-          renaming anything or touching the signature.
+    WHY:  reserve the structure for subsequent PRs (database pool,
+          Redis client wrapper, langfuse worker) so they plug in
+          without renaming anything.
     """
     # --- startup --------------------------------------------------------
-    # (filled in by later Day-2 PRs — database pool, redis client, etc.)
+    # Day-4C: allocate the orchestrator httpx.AsyncClient singleton.
+    # One pool per worker, reused across requests, drained on shutdown.
+    init_orchestrator_client()
     yield
     # --- shutdown -------------------------------------------------------
+    # Day-4C: drain pending orchestrator-bound connections gracefully
+    # before SIGTERM ends the process.
+    await close_orchestrator_client()
     # Drain pending Langfuse traces so SIGTERM (Swarm rolling update,
     # scale-down) doesn't lose seconds of in-flight LLM trace data.
     # No-op when Langfuse is disabled.

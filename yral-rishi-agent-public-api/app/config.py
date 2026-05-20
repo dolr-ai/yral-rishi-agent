@@ -178,6 +178,37 @@ class Settings(BaseSettings):
     # Day-4A's original duplicate declaration removed during rebase
     # to keep one source of truth).
 
+    # -- Day-4C orchestrator RPC + idempotency (per
+    # interface-contracts/01-internal-rpc-contracts.md + F10) -------------
+    # The Session-4 orchestrator base URL public-api forwards every chat
+    # turn to. Local dev default routes to the same compose host; in the
+    # cluster the Swarm DNS name resolves on the yral-v2-internal overlay.
+    # Default matches shared-config.yaml's `services.orchestrator.base_url`.
+    orchestrator_base_url: str = (
+        "http://yral-rishi-agent-conversation-turn-orchestrator:8000"
+    )
+
+    # The path under orchestrator_base_url that handles a single chat
+    # turn. Per PR #96 (Session 4 orchestrator handler) + PR #98
+    # (coordinator alignment) the canonical path is /v1/turn (NOT /turn
+    # as the original contract.md on main showed; PR #98 updates it).
+    orchestrator_run_turn_path: str = "/v1/turn"
+
+    # End-to-end timeout for one orchestrator call. 30 s per Day-4C
+    # directive — accommodates LLM-bound traffic in Day-5+.
+    orchestrator_request_timeout_seconds: float = 30.0
+
+    # Connect-only timeout. 5 s per directive — fails fast on
+    # "orchestrator container missing" so the public-api 504 error path
+    # differentiates "compute hung" from "service gone."
+    orchestrator_connect_timeout_seconds: float = 5.0
+
+    # How long an idempotency-dedup cache entry lives in Redis. 24 hours
+    # per F10. Long enough that mobile retries (network drop, app
+    # restart, OS push-back-to-foreground) hit the cache; short enough
+    # that bounded storage holds across normal traffic patterns.
+    idempotency_dedup_ttl_seconds: int = 86400
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
