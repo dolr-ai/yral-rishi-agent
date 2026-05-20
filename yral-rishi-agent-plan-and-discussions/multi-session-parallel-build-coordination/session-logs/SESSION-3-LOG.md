@@ -2,6 +2,72 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-20 — Day 5 cluster deploy on rishi-4/5/6 + M0 partial — first v2 service in the wild
+
+### Action
+Coordinator-confirmed REDIS_URL composer (Option 1, single-primary `from_url` form) + 3 empty placeholder secrets (SENTRY_DSN, LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY) created on rishi-4. Compose file SCPd up. `docker stack deploy --with-registry-auth --compose-file /tmp/yral-rishi-agent-public-api.docker-compose.swarm.yml yral-rishi-agent-public-api`. Hit two first-deploy bugs along the way (both fixed in-this-commit `docker-compose.swarm.yml`):
+
+**Bug 1: secret-file permission denied at runtime.** Swarm-mounted secret files defaulted to `root:root` ownership with `mode: 0400` → the entrypoint wrapper's `cat /run/secrets/<name>` ran as appuser (uid 1001) and failed silently → all 4 env vars exported empty → REDIS_URL fell back to the `redis://localhost:6379/0` config default → /health/ready couldn't reach Redis. Fixed by adding `uid: "1001"` + `gid: "1001"` to each secret in the service block; verified post-fix that `/run/secrets/REDIS_URL` is `appuser:appuser`.
+
+**Bug 2: healthcheck used `wget` which isn't in the runtime image.** The `python:3.12-slim` base image ships with `python` but NOT `curl` or `wget`. Healthcheck `["CMD", "wget", "--quiet", "--tries=1", "--spider", ...]` exited 127 every time → Swarm marked the replica unhealthy after 3 retries → restart loop, masking whatever the actual /health/ready outcome was. Fixed by switching to `python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready', timeout=3).read()"` — Python is guaranteed present (it IS the app) and `urllib.request` raises on non-2xx so the exit code semantics match wget's intent. Bumped `start_period` 20s → 30s (account for the JWKS cache + Sentinel client init at startup).
+
+Both bugs needed a full stack rm + redeploy (Swarm update-in-place silently skips secret-mount uid/gid changes). After the redeploy: **3/3 replicas Running on rishi-4 + rishi-5 + rishi-6** within ~15 s.
+
+Verified the wrapper actually exports correctly: `tr "\\0" "\\n" < /proc/1/environ` inside a live container shows `REDIS_URL=redis://:[redacted]@yral-v2-redis_redis-primary:6379/0` + empty `SENTRY_DSN` / `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` (as expected for the empty-placeholder secrets). Password redacted in output via sed before printing.
+
+### Smoke evidence (intra-cluster, via `python:3.12-slim` debug container on `yral-v2-internal` overlay)
+
+```
+200 /health/live                                            body={"status":"ok","service":"yral-rishi-agent-public-api"}
+200 /health/ready                                           body={"status":"ok","dependencies":{"redis":"ok"}}
+401 /api/v1/influencers                                     body={"success":false,"msg":"Authentication failed: missing or malformed Authorization header","error":"unauthorized","data":null}
+401 /api/v1/chat/conversations  (no Authorization)          body={"success":false,"msg":"Authentication failed: missing or malformed Authorization header","error":"unauthorized","data":null}
+401 /api/v1/chat/conversations  (Authorization: Bearer not.a.real.jwt)  body={"success":false,"msg":"Authentication failed: malformed","error":"unauthorized","data":null}
+401 /api/v1/chat/conversations/conv-id-1/messages  (Authorization: Bearer not.a.real.jwt)  body={"success":false,"msg":"Authentication failed: malformed","error":"unauthorized","data":null}
+```
+
+What this proves:
+- **Service deployed + healthy** (3/3 replicas, /health/live + /health/ready both 200 with correct shapes per F9).
+- **Redis reachable** (`{"redis":"ok"}` in /health/ready dependencies block — Sentinel-aware ping succeeds against the data-plane overlay's `yral-v2-redis_redis-primary:6379` with the auth-embedded REDIS_URL).
+- **Day-4B real-auth dep wired correctly** — missing header → 401 with the locked `unauthorized` envelope; bogus Bearer → 401 with `Authentication failed: malformed` from the LEGACY validator (authoritative per E9 default-OFF flag).
+- **ApiResponse envelope shape matches the contract verbatim** — `{success, msg, error, data}` 4-key dict on every path, error code drawn from the 8-string locked Literal.
+
+### M0 evaluation
+
+| Metric | Result | Notes |
+|---|---|---|
+| Deployed to rishi-4/5/6 | **YES** | 3/3 replicas Running |
+| `agent.rishi.yral.com` reachable externally | **NO** | Cloudflare returns 525 (origin SSL handshake failed). This is the pre-existing SESSION-1-LOG line 546 issue: cluster Caddy IS deployed (`yral-v2-edge-caddy_caddy-edge-ingress` 2/2 Running) but external TLS handshake from Cloudflare to cluster Caddy on rishi-4/5 :443 still fails. Coordinator / Session 1 territory per the directive's pushback policy. I6-flagging without trying to fix. |
+| Chat round-trip end-to-end | **PARTIAL** | Intra-cluster smoke: auth-gate validates correctly (401 on no token + on bogus JWT, with the right envelope). Full round-trip (POST messages → orchestrator) NOT smoke-able for 2 reasons: (a) external Caddy blocked, (b) Session 4 services (orchestrator, soul-file-library, influencer-and-profile-directory) not deployed on cluster yet — Swarm DNS `nslookup yral-rishi-agent-conversation-turn-orchestrator` returns SERVFAIL. With a real JWT signed by auth.yral.com, the send_message handler would receive 200 from the auth dep + then hit `orchestrator_client.run_turn()` which would fail at the httpx connect step → public-api maps to 504 + Sentry tag `orchestrator.call.failed=timeout` per Day-4C. |
+
+### Files touched (this commit)
+- `yral-rishi-agent-public-api/docker-compose.swarm.yml`:
+  - Added `command: [sh, -c, ...]` entrypoint wrapper that does `for s in /run/secrets/*; do export $(basename $s)=$(cat $s); done; exec uvicorn ...` (file → env-var bridge per D8).
+  - Added per-secret `uid: "1001"` + `gid: "1001"` on all 4 secret mounts so `appuser` can `cat` them.
+  - Switched healthcheck `test:` from `wget` to `python -c "import urllib.request; ..."` because wget isn't in `python:3.12-slim`. Bumped start_period 20s → 30s.
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-3-LOG.md` — this entry.
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-state/SESSION-3-STATE.md` — Day-5 LAST THING I DID + CURRENT TASK updated.
+
+### Cluster-state mutations applied (rishi-4 only, per pre-auth)
+- Pulled `ghcr.io/dolr-ai/yral-rishi-agent-public-api:latest` (verified pullable from cluster).
+- Created Swarm secret `REDIS_URL` via one-shot Swarm-service composer (mounted existing `yral_v2_redis_primary_password_4e2b8cf4` + docker.sock, ran `echo "redis://:$(cat /run/secrets/pw)@yral-v2-redis_redis-primary:6379/0" | docker secret create REDIS_URL -`). Composer service `tmp-redis-url-creator` pruned post-completion per coordinator privilege-escalation note. Password value never appeared in shell history, logs, or chat output.
+- Created 3 empty-payload secrets (`SENTRY_DSN`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`) via `printf "\n" | docker secret create <name> -` (newline payload; command-substitution strips it on read → env var ends up empty; SDKs no-op on empty per code review).
+- Deployed stack `yral-rishi-agent-public-api` with env: `IMAGE_REPO=ghcr.io/dolr-ai/yral-rishi-agent-public-api`, `IMAGE_TAG=latest`, `PROJECT_DOMAIN=agent.rishi.yral.com`, `ENVIRONMENT=staging`, `LOG_LEVEL=INFO`. 3 replicas via Swarm Spread placement (one per node, default).
+
+### Out-of-scope I6 flags raised to coordinator
+- **Cloudflare → cluster Caddy TLS 525**: external `https://agent.rishi.yral.com/health/live` returns CF 525 on every path. Cluster Caddy is running (2/2) but its origin cert isn't accepted by Cloudflare's origin-pull TLS. Pre-existing per SESSION-1-LOG line 546 ("external TLS handshakes to :443 STILL fail with `internal_error` (SSL alert 80)"). NOT a Session-3 deliverable; the Day-5 deploy itself succeeded on every metric we own.
+- **Session 4 services not deployed**: orchestrator + soul-file-library + influencer-and-profile-directory aren't on the cluster. Blocks the full chat round-trip M0 metric. Coordinator's call on whether Session 4's Day-5 deploy gets scheduled before re-attempting the M0 chat-send smoke.
+- **shell-tests failed on the CI workflow_dispatch run** (per coordinator heads-up). Not investigated this turn (Day-5 deploy was the priority); separate small fix to surface later.
+
+### Why
+First v2 service on the cluster end-to-end. Validates the deploy pipeline (GHCR pull → Swarm secret mount + uid bridge → entrypoint wrapper → uvicorn → health probe → 3 replicas converged). The two bugs surfaced are exactly the kind of "first deploy on real infra" findings that templates need to absorb: both fixes go in the canonical compose so every spawned service inherits them. The 401-envelope smoke is the strongest available end-to-end proof of correctness given external Caddy + orchestrator gaps.
+
+### Notes
+- Branch `session-3/day-5-cluster-deploy-and-smoke` carries the 3 commits (secrets alignment + 2 compose deploy-bug fixes). PR #108 is the umbrella; pushing this commit will trigger re-CI + Codex re-review on the same PR.
+- M0 milestone for Phase 1 (first Motorola debug APK hit through agent.rishi.yral.com to real cluster) is unblocked on the public-api side once SESSION-1 fixes the Caddy/CF 525 + SESSION-4 deploys orchestrator. Public-api is ready to receive traffic immediately when those land.
+
+---
+
 ## 2026-05-20 — Day 5 Piece A — secrets.yaml ↔ docker-compose.swarm.yml alignment (post coordinator unblock)
 
 ### Action

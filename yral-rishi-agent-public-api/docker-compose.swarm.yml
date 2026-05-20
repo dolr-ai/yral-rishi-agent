@@ -60,13 +60,43 @@ services:
     # Swarm secrets (see `secrets:` below), NOT from this list. Values
     # here are non-sensitive: feature flags, environment name, log level.
     #
-    # The actual secret values are mounted as files at /run/secrets/ and
-    # the app reads them at startup via infra.get_secret() helper (added
-    # Day 2). This keeps secrets out of `docker inspect` output and out
-    # of process env vars (which can leak via /proc/<pid>/environ).
+    # The actual secret values are mounted as files at /run/secrets/<name>
+    # and the entrypoint wrapper below exports them as env vars so the
+    # app's `os.environ.get(...)` / pydantic-settings reads see them.
     environment:
       ENVIRONMENT: ${ENVIRONMENT:-production}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+    # Entrypoint wrapper — Day-5 secret-file → env-var bridge per D8.
+    #
+    # Per D1+D8 production secrets flow: GitHub Secret → Swarm secret at
+    # deploy → env var at container start. Swarm mounts each `secrets:`
+    # entry as a file at /run/secrets/<name>; this one-line shell wrapper
+    # reads every file in that directory + `export`s its content as an
+    # env var of the same name, then `exec`s uvicorn so the FastAPI
+    # process inherits them via os.environ.
+    #
+    # Empty files (e.g. SENTRY_DSN with no value yet) export an empty
+    # string — the app handles empty values the same way as
+    # missing-env-var (Sentry SDK no-ops; Langfuse SDK no-ops behind
+    # LANGFUSE_TRACING_ENABLED=false).
+    #
+    # Why a compose-level wrapper instead of a Dockerfile ENTRYPOINT?
+    # Keeps the image identical across services (the new-service.sh
+    # spawner doesn't have to template the Dockerfile per service);
+    # the wrapper is a deploy-time concern that lives in compose where
+    # all the other Swarm-specific config (secrets: block, deploy:
+    # block) already lives.
+    command:
+      - sh
+      - -c
+      - |
+        for s in /run/secrets/*; do
+          if [ -f "$$s" ]; then
+            export "$$(basename "$$s")=$$(cat "$$s")"
+          fi
+        done
+        exec uvicorn app.main:app --host 0.0.0.0 --port 8000
 
     # Per-replica resource caps. The defaults below are conservative
     # starting points; tune per service after the first week of prod
@@ -124,12 +154,23 @@ services:
     # If 3 in a row fail, Swarm marks the replica unhealthy and the
     # rolling-update logic kicks in. We hit /health/ready (per F9), which
     # returns 503 when any downstream dep is unreachable.
+    #
+    # Uses Python (always present in the runtime image — it IS the app)
+    # instead of curl/wget (NOT in the python:3.12-slim base; Day-5 first
+    # deploy hit a restart loop because the wget probe always exited
+    # 127 → Swarm marked unhealthy → restart, regardless of actual
+    # /health/ready status). One-line urllib.request usage; raises on
+    # non-2xx so non-zero exit triggers Swarm's unhealthy state correctly.
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8000/health/ready"]
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready', timeout=3).read()"
       interval: 10s
-      timeout: 3s
+      timeout: 5s
       retries: 3
-      start_period: 20s
+      start_period: 30s
 
     # Three Swarm overlay networks (per CONSTRAINTS C3):
     #   - yral-v2-public-web   front-facing traffic from edge Caddy
@@ -148,18 +189,33 @@ services:
     #
     # Names UPPER_SNAKE_CASE matching `secrets.yaml` verbatim per D8
     # (manifest is source of truth; 2026-05-20 Day-5 alignment).
+    #
+    # uid/gid 1001 matches the appuser the Dockerfile creates + runs
+    # uvicorn as. Without explicit uid/gid the secret files default
+    # to root:root + mode 0400 → unreadable by appuser → the
+    # entrypoint wrapper's `cat /run/secrets/<name>` fails silently +
+    # the app starts with empty env vars (Day-5 first-deploy bug;
+    # caught + fixed here on the 2026-05-20 deploy retry).
     secrets:
       - source: REDIS_URL
         target: REDIS_URL
+        uid: "1001"
+        gid: "1001"
         mode: 0400
       - source: SENTRY_DSN
         target: SENTRY_DSN
+        uid: "1001"
+        gid: "1001"
         mode: 0400
       - source: LANGFUSE_PUBLIC_KEY
         target: LANGFUSE_PUBLIC_KEY
+        uid: "1001"
+        gid: "1001"
         mode: 0400
       - source: LANGFUSE_SECRET_KEY
         target: LANGFUSE_SECRET_KEY
+        uid: "1001"
+        gid: "1001"
         mode: 0400
 
 
