@@ -135,12 +135,16 @@ def _canned_message_response_dict(
         uuid5(NAMESPACE_OID, f"{safety_layer}:{idempotency_key}")
     )
 
-    # Deterministic timestamp marker. Chat-ai parity preserves the
-    # ISO8601 `Z` wire shape (per A8) but the VALUE is constant so
-    # retries are byte-identical. Operators correlate safety-blocked
-    # turns via Sentry+Langfuse traces (real wall-clock there), not
-    # via this field.
-    SAFETY_CANNED_TIMESTAMP_MARKER = "1970-01-01T00:00:00Z"
+    # Real ISO8601 UTC `Z` timestamp — chat-ai parity per A8 + A16
+    # (the mobile UI displays this as the message-sent time; a
+    # placeholder like 1970-01-01 would be a parity break per
+    # Codex PR-#112 round-5 BLOCKER 3). Byte-identical-on-retry is
+    # NOT delivered by determinism here — it's delivered by the F10
+    # cache REPLAY: the safety middleware now wires acquire_or_check
+    # + mark_complete, so retries get the cached FIRST-call
+    # timestamp via Redis replay, not via the builder regenerating
+    # the same value.
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     return {
         "id": deterministic_id,
@@ -149,7 +153,7 @@ def _canned_message_response_dict(
         "content": content,
         "media_urls": None,
         "client_message_id": None,
-        "created_at": SAFETY_CANNED_TIMESTAMP_MARKER,
+        "created_at": now_iso,
         # Safety-blocked turns don't count toward the paywall — see
         # the file-header rationale on E7.
         "count_toward_paywall": False,

@@ -99,11 +99,21 @@ from app.middleware._safety_audit import record
 # silently regress the gate.
 from app.middleware._header_validation import validate_required_headers
 
-# `crisis_response(conversation_id)` returns the canned helpline
-# response dict; obviously-stub placeholder per the directive
-# ("better than a wrong helpline number"). `count_toward_paywall=
-# False` per E4.
+# `crisis_response(conversation_id, idempotency_key)` returns the
+# canned helpline response dict; obviously-stub placeholder per
+# the directive. `count_toward_paywall=False` per E4. idempotency_key
+# threaded for UUID5-deterministic `id` per key+layer.
 from app.safety.canned_responses import crisis_response
+
+# F10 idempotency helpers — Codex PR-#112 round-5 BLOCKER 2 closure
+# (same shape as the H5 wiring). H4 short-circuits MUST honour F10's
+# fingerprint-mismatch + byte-identical-replay contracts.
+from app.idempotency import (
+    acquire_or_check,
+    compute_idempotency_key,
+    compute_request_fingerprint,
+    mark_complete,
+)
 
 
 GUARDED_PATH: Final[str] = "/v1/turn"
@@ -250,14 +260,83 @@ class H4CrisisDetectionMiddleware(BaseHTTPMiddleware):
                 },
             )
 
-            # Same deterministic-canned pattern as H5 — UUID5 derived
-            # from the idempotency_key + the safety_layer marker.
+            # Codex PR-#112 round-5 BLOCKER 2 — full F10 on the safety
+            # short-circuit path. Same shape as H5's wiring above.
+            user_id = request.headers["x-user-id"]
             idempotency_key = request.headers["x-idempotency-key"]
 
+            redis_key = compute_idempotency_key(
+                user_id=user_id, idempotency_key=idempotency_key,
+            )
+            fingerprint = compute_request_fingerprint(payload or {})
+
+            decision = await acquire_or_check(
+                redis_key=redis_key, fingerprint=fingerprint,
+            )
+
+            if decision.state == "replay_done":
+                return JSONResponse(
+                    content=decision.cached_response,
+                    status_code=200,
+                    headers={
+                        "X-Safety-Decision": "H4",
+                        "X-Safety-Reason": reason,
+                    },
+                )
+
+            if decision.state == "fingerprint_mismatch":
+                return JSONResponse(
+                    status_code=409,
+                    content={
+                        "success": False,
+                        "msg": (
+                            "X-Idempotency-Key was reused with a different "
+                            "request body; mobile clients must generate a "
+                            "fresh key per distinct request payload."
+                        ),
+                        "error": "idempotency_key_reused_with_different_body",
+                        "data": None,
+                    },
+                )
+
+            if decision.state == "in_flight_timeout":
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "success": False,
+                        "msg": (
+                            "Another request with this X-Idempotency-Key "
+                            "is still in flight; retry after a short backoff."
+                        ),
+                        "error": "idempotency_in_flight",
+                        "data": None,
+                    },
+                )
+
+            # decision.state == "acquired" — build canned + cache.
+            canned_payload = crisis_response(
+                conversation_id, idempotency_key=idempotency_key,
+            )
+            try:
+                await mark_complete(
+                    redis_key=redis_key,
+                    fingerprint=fingerprint,
+                    response_payload=canned_payload,
+                )
+            except Exception as cache_write_failure:
+                _log.error(
+                    "h4_mark_complete_failed: %s",
+                    cache_write_failure,
+                    extra={
+                        "conversation_id": conversation_id,
+                        "reason": reason,
+                        "failure_type": type(cache_write_failure).__name__,
+                    },
+                    exc_info=True,
+                )
+
             response = JSONResponse(
-                content=crisis_response(
-                    conversation_id, idempotency_key=idempotency_key,
-                ),
+                content=canned_payload,
                 status_code=200,
             )
             response.headers["X-Safety-Decision"] = "H4"

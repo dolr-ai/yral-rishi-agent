@@ -120,10 +120,27 @@ from app.middleware._header_validation import validate_required_headers
 # documented LIFO sequence. No-op in production.
 from app.middleware._safety_audit import record
 
-# `prompt_injection_blocked(conversation_id)` returns the canned
-# MessageResponse-shaped dict ("I can't help with that.") with
-# `count_toward_paywall=False` per E4. One callsite, one builder.
+# `prompt_injection_blocked(conversation_id, idempotency_key)` returns
+# the canned MessageResponse-shaped dict ("I can't help with that.")
+# with `count_toward_paywall=False` per E4. Threaded with the
+# idempotency_key so the response `id` is UUID5-deterministic per
+# key+layer.
 from app.safety.canned_responses import prompt_injection_blocked
+
+# F10 idempotency helpers — Codex PR-#112 round-5 BLOCKER 2 closure:
+# safety short-circuits MUST honour F10's fingerprint-mismatch +
+# byte-identical-replay contracts. Per the row's "Per-endpoint
+# opt-out for truly stateless" affordance: safety-blocked replies
+# don't run an LLM call (stateless), but they DO write to Redis
+# via mark_complete so retries replay from cache + same-key-
+# different-body returns 409 (catches client bugs the handler
+# would otherwise catch).
+from app.idempotency import (
+    acquire_or_check,
+    compute_idempotency_key,
+    compute_request_fingerprint,
+    mark_complete,
+)
 
 
 # Path this middleware guards. Anything else passes through.
@@ -347,20 +364,92 @@ class H5PromptInjectionMiddleware(BaseHTTPMiddleware):
                 },
             )
 
-            # Read the validated X-Idempotency-Key (validate_required_headers
-            # already ran, so the header is present + UUID-shape valid).
-            # Threaded into the canned builder so the response `id` is
-            # deterministic from the key — Codex PR-#112 round-4 BLOCKER
-            # 2 closure: same key + same blocked input → byte-identical
-            # canned body on retry (F10 idempotent-replay contract via
-            # the row's "Per-endpoint opt-out for truly stateless"
-            # affordance).
+            # Read validated headers — validate_required_headers ran
+            # above so both X-User-Id + X-Idempotency-Key are present
+            # + UUID-format-valid.
+            user_id = request.headers["x-user-id"]
             idempotency_key = request.headers["x-idempotency-key"]
 
+            # Codex PR-#112 round-5 BLOCKER 2 — full F10 on the
+            # safety short-circuit path. acquire_or_check covers:
+            #   * replay_done → return cached canned (first-call
+            #     timestamp preserved; A8/A16 parity preserved).
+            #   * fingerprint_mismatch → 409 envelope (same key +
+            #     different body bug detection that handler does).
+            #   * in_flight_timeout → 503 envelope.
+            #   * acquired → build canned + mark_complete cache write.
+            redis_key = compute_idempotency_key(
+                user_id=user_id, idempotency_key=idempotency_key,
+            )
+            fingerprint = compute_request_fingerprint(payload or {})
+
+            decision = await acquire_or_check(
+                redis_key=redis_key, fingerprint=fingerprint,
+            )
+
+            if decision.state == "replay_done":
+                return JSONResponse(
+                    content=decision.cached_response,
+                    status_code=200,
+                    headers={
+                        "X-Safety-Decision": "H5",
+                        "X-Safety-Reason": reason,
+                    },
+                )
+
+            if decision.state == "fingerprint_mismatch":
+                return JSONResponse(
+                    status_code=409,
+                    content={
+                        "success": False,
+                        "msg": (
+                            "X-Idempotency-Key was reused with a different "
+                            "request body; mobile clients must generate a "
+                            "fresh key per distinct request payload."
+                        ),
+                        "error": "idempotency_key_reused_with_different_body",
+                        "data": None,
+                    },
+                )
+
+            if decision.state == "in_flight_timeout":
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "success": False,
+                        "msg": (
+                            "Another request with this X-Idempotency-Key "
+                            "is still in flight; retry after a short backoff."
+                        ),
+                        "error": "idempotency_in_flight",
+                        "data": None,
+                    },
+                )
+
+            # decision.state == "acquired" — build canned + cache.
+            canned_payload = prompt_injection_blocked(
+                conversation_id, idempotency_key=idempotency_key,
+            )
+            try:
+                await mark_complete(
+                    redis_key=redis_key,
+                    fingerprint=fingerprint,
+                    response_payload=canned_payload,
+                )
+            except Exception as cache_write_failure:
+                _log.error(
+                    "h5_mark_complete_failed: %s",
+                    cache_write_failure,
+                    extra={
+                        "conversation_id": conversation_id,
+                        "reason": reason,
+                        "failure_type": type(cache_write_failure).__name__,
+                    },
+                    exc_info=True,
+                )
+
             response = JSONResponse(
-                content=prompt_injection_blocked(
-                    conversation_id, idempotency_key=idempotency_key,
-                ),
+                content=canned_payload,
                 status_code=200,
             )
             # Header is informational — Session 3 + Sentry can branch
