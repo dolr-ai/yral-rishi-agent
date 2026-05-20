@@ -2,6 +2,79 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-20 — Day-6 framing correction #3 (supersedes #2): full A10 rename DONE in round-7, NOT deferred; PR title also rewritten
+
+Codex PR-#112 round-7 escalated the A10-misnaming BLOCKER and
+wouldn't accept the "wire-identifier rename deferred to follow-up
+PR" framing the earlier correction #2 entry (below) committed to.
+Codex's point: keeping `X-Safety-Decision: A10` + the file/class
+name implying A10 compliance is itself the BLOCKER, not just a
+stylistic concern that could be split off.
+
+**Round-7 (commit `76adbce`) did the full rename instead:**
+- File:  `app/middleware/a10_adult_content_filter.py` →
+         `app/middleware/adult_content_output_filter.py`
+- Class: `A10AdultContentFilterMiddleware` →
+         `AdultContentOutputFilterMiddleware`
+- Logger: `app.middleware.a10_adult_content_filter` →
+          `app.middleware.adult_content_output_filter`
+- Wire headers:
+    - `X-Safety-Decision: A10` →
+      `X-Safety-Decision: adult_content`
+    - `X-Safety-Reason: a10_adult_content_keyword` →
+      `X-Safety-Reason: adult_content_keyword`
+- Audit-trail markers: `A10_entry` / `A10_exit` →
+                       `adult_content_entry` / `adult_content_exit`
+- Test names (3) renamed; comments/prose updated.
+- `_REASON_ADULT_CONTENT_KEYWORD` identifier was already correct;
+  only its VALUE moved from `a10_adult_content_keyword` to
+  `adult_content_keyword`.
+
+`A10` is now reserved EXCLUSIVELY for the CONSTRAINTS-A10
+LLM-routing rule (Tara/OpenRouter + Gemini + `influencer.is_nsfw=
+TRUE` routing). The legitimate A10 references in `app/llm_client/`,
+`app/config.py`, `app/langfuse_middleware.py`, `app/run_turn.py`
+LLM-import block ARE the actual A10 constraint (LLM-agnostic
+abstraction).
+
+**Round-8 follow-up (commit `441b6ac`):**
+- Restored an over-renamed A10 reference in `run_turn.py:787`'s
+  LLM-client RELATED FILES footer (round-7's perl sweep had
+  incorrectly renamed it to "adult_content abstract LLM client
+  interface" — the LLM client IS the A10 abstraction).
+- Synced file-header gate-respect docstring drift in H5/H4/
+  adult_content to match the round-6 code (no env=production
+  passthrough).
+
+**Round-9 (this entry):**
+- PR title rewritten via `gh pr edit` from
+  "Day 6 — restore H5/H4/A10 safety stack" to
+  "Day 6 — orchestrator-side prompt-injection + crisis +
+   adult-content output filter (defense-in-depth; full H5 needs
+   Session 3 DEP-009)"
+  so the title itself stops implying full H5/A10 compliance.
+
+The old correction-#2 entry below (the "rename deferred" framing)
+is preserved unedited per the LOG's append-only policy; this
+entry supersedes it.
+
+## I6 pushback (round-9 CONCERN — streaming benchmark)
+
+Codex round-9 re-raised the A10 streaming-buffer concern at
+CONCERN level (was BLOCKER in round-3). The content-type guard
+(round-3 commit, see earlier LOG entry) already short-circuits
+non-JSON responses. Codex now wants a "latency/regression test or
+benchmark for the clean hot path." A2.1 + the Day-5 directive's
+"Real-LLM latency benchmark + E1 budget assertion … no numerical
+bound until cluster" framing apply equally here: a benchmark
+asserting "<X ms" on a localhost-fakeredis-mock-LLM test stack is
+inherently flaky + not predictive of cluster-side latency. Same
+I6 pushback as the round-3 take. Coordinator route if E1 wants a
+real latency gate; today's wire-level guard + the existing 30s
+LLM timeout (E1 backstop) are the active protection.
+
+---
+
 ## 2026-05-20 — Day-6 framing correction #2: "A10 adult-content filter" misnames CONSTRAINTS A10 (Tara routing rule); rename deferred to follow-up PR
 
 Codex PR-#112 round-6 BLOCKER flagged that calling the adult-content
