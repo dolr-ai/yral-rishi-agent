@@ -25,27 +25,32 @@
 #   2. The pyjwt[crypto] dep already pulls in `cryptography`, so the
 #      keygen call is free of additional deps.
 #
-# WHY MONKEY-PATCH _fetch_jwks INSTEAD OF SERVING A REAL JWKS HTTP
-# ENDPOINT?
-# Avoids the test needing to bind a port + spin a real HTTP server. The
-# JWKS client's only side effect is the HTTP fetch; everything else is
-# pure-Python parsing + caching. Patching the fetch is a one-line
-# substitution.
+# WHY MONKEY-PATCH _fetch_jwks_from_upstream INSTEAD OF SERVING A
+# REAL JWKS HTTP ENDPOINT?
+# Avoids the test needing to bind a port + spin a real HTTP server.
+# The JWKS client's only network side effect is the HTTPS fetch;
+# everything else is pure-Python parsing + Redis caching. Patching the
+# fetch (and replacing get_redis with a fake) gives full control over
+# both layers without external dependencies.
 #
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
 
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from unittest.mock import MagicMock
 
 import jwt
 import pytest
+import redis as redis_lib
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 from jwt.algorithms import RSAAlgorithm
 
+from app import redis_client
 from app.api.auth import jwks_client
 from app.api.auth.dependency import authenticate_user_dual_validate
 from app.config import get_settings
@@ -71,7 +76,8 @@ def rsa_keypair():
 
     WHAT: returns (private_key_pem_bytes, public_key_obj) tuple. Private
           PEM is used to sign tokens; public key obj goes into the JWKS
-          dict the monkey-patched _fetch_jwks returns.
+          JSON document the monkey-patched _fetch_jwks_from_upstream
+          returns.
     WHEN: module-scoped — keygen is ~50ms, so per-test would slow the
           module noticeably without value.
     WHY:  real crypto path through PyJWT validates the actual RSA verify
@@ -87,45 +93,118 @@ def rsa_keypair():
     return private_pem, public_key
 
 
-@pytest.fixture
-def patched_jwks(monkeypatch, rsa_keypair):
-    """Patch the JWKS client to return our test keypair's public key.
+class _FakeRedis:
+    """Minimal dict-backed stand-in for redis.Redis used by tests.
 
-    WHAT: monkey-patches app.api.auth.jwks_client._fetch_jwks to return
-          {TEST_KID: <test_public_key>}. Also resets the per-module
-          cache so the next get_signing_keys() call hits the patched
-          fetch.
-    WHEN: used by every test that needs the strict path to succeed
-          (i.e., every test EXCEPT the JWKS-unreachable scenario).
-    WHY:  isolates tests from network — no real HTTP fetch to
-          auth.yral.com.
+    WHAT: implements `get`, `set`, `delete` matching redis-py's
+          interface enough for the JWKS cache helpers in
+          jwks_client.py to use it transparently.
+    WHEN: instantiated by the `fake_redis_client` fixture + by
+          fixtures that need an "ok" Redis behind the JWKS cache.
+    WHY:  avoids spinning up a real Redis (or `fakeredis` dep) for
+          the contract tests; we only exercise 3 redis-py methods.
+    """
+
+    def __init__(self) -> None:
+        # Backing store keyed by str (cache key) → bytes (cached value).
+        self._data: dict[str, bytes] = {}
+
+    def get(self, key: str):  # noqa: ANN201 — signature mirrors redis-py
+        return self._data.get(key)
+
+    def set(self, key: str, value: bytes, ex: Optional[int] = None) -> bool:  # noqa: ARG002 — TTL ignored in tests
+        # TTL semantics aren't relevant for in-memory contract tests;
+        # the cache-hit test asserts call count, not TTL expiry.
+        self._data[key] = value
+        return True
+
+    def delete(self, key: str) -> int:
+        return 1 if self._data.pop(key, None) is not None else 0
+
+
+@pytest.fixture
+def fake_redis_client(monkeypatch):
+    """Replace get_redis() with a dict-backed fake.
+
+    WHAT: monkey-patches app.redis_client.get_redis to return a fresh
+          _FakeRedis instance. Returns the fake so tests can inspect
+          its state (`fake._data`) directly.
+    WHEN: dependency of patched_jwks; used wherever a working Redis is
+          needed (most tests).
+    WHY:  isolates the JWKS cache from a real Redis dependency in CI.
+    """
+    fake = _FakeRedis()
+    monkeypatch.setattr(redis_client, "get_redis", lambda: fake)
+    redis_client.reset_for_testing()
+    yield fake
+    redis_client.reset_for_testing()
+
+
+@pytest.fixture
+def patched_jwks(monkeypatch, rsa_keypair, fake_redis_client):
+    """Patch the upstream JWKS fetch to return our test keypair's JWKS.
+
+    WHAT: monkey-patches _fetch_jwks_from_upstream to return a JSON
+          JWKS document (the bytes form) containing one key built from
+          the test keypair's public key. Resets the Redis cache before
+          + after each test so cache state doesn't leak.
+    WHEN: used by every test that needs the strict path to succeed.
+    WHY:  isolates tests from auth.yral.com — no real HTTP fetch. The
+          Redis cache layer (fake_redis_client) still participates so
+          the cache-hit test can assert call counts.
     """
     _, public_key = rsa_keypair
-    fake_jwks = {TEST_KID: public_key}
 
-    monkeypatch.setattr(jwks_client, "_fetch_jwks", lambda: fake_jwks)
+    # Build a JWKS-document-shaped dict (the same shape auth.yral.com
+    # would return) so the parse layer (json.loads + RSAAlgorithm.from_jwk)
+    # exercises the real code path. RSAAlgorithm.to_jwk emits a JSON
+    # string for one key; we wrap into the standard {"keys": [...]} form
+    # + serialize.
+    jwk_str = RSAAlgorithm.to_jwk(public_key)
+    jwk_dict = json.loads(jwk_str)
+    jwk_dict["kid"] = TEST_KID
+    jwks_document = {"keys": [jwk_dict]}
+    jwks_bytes = json.dumps(jwks_document).encode("utf-8")
+
+    # `fetch_call_count` is exposed so the cache-hit test can assert
+    # the upstream was hit exactly once across two requests.
+    state = {"fetch_call_count": 0}
+
+    def _fake_fetch() -> bytes:
+        state["fetch_call_count"] += 1
+        return jwks_bytes
+
+    monkeypatch.setattr(jwks_client, "_fetch_jwks_from_upstream", _fake_fetch)
     jwks_client.reset_cache_for_testing()
-    yield
+    yield state
     jwks_client.reset_cache_for_testing()
 
 
 @pytest.fixture
-def unreachable_jwks(monkeypatch):
-    """Patch the JWKS client to raise JwksFetchError on every fetch.
+def redis_down_jwks(monkeypatch):
+    """Replace get_redis() with a mock that raises on every operation.
 
-    WHAT: monkey-patches _fetch_jwks to always raise JwksFetchError,
-          simulating an outage at auth.yral.com.
-    WHEN: used by the JWKS-unreachable scenario.
-    WHY:  proves strict returns jwks_fetch_error (and the request does
-          NOT crash) when the JWKS endpoint is down.
+    WHAT: monkey-patches get_redis() to return a MagicMock whose
+          `.get()` and `.set()` and `.delete()` raise redis_lib.ConnectionError.
+          The JWKS client catches these + raises JwksFetchError; the
+          strict validator catches that + returns
+          ValidationResult(ok=False, reason="jwks_fetch_error").
+    WHEN: used by the Redis-down scenario tests (per Day-4A's
+          repurposed "JWKS unreachable" semantics + the new
+          divergence-logged test).
+    WHY:  proves strict fails closed (does NOT silently succeed via
+          live-fetch bypass) AND that legacy still answers so the
+          request handler doesn't crash.
     """
-    def _raise(*_args, **_kwargs):
-        raise jwks_client.JwksFetchError("simulated outage")
+    mock = MagicMock()
+    mock.get.side_effect = redis_lib.ConnectionError("simulated redis down")
+    mock.set.side_effect = redis_lib.ConnectionError("simulated redis down")
+    mock.delete.side_effect = redis_lib.ConnectionError("simulated redis down")
 
-    monkeypatch.setattr(jwks_client, "_fetch_jwks", _raise)
-    jwks_client.reset_cache_for_testing()
-    yield
-    jwks_client.reset_cache_for_testing()
+    monkeypatch.setattr(redis_client, "get_redis", lambda: mock)
+    redis_client.reset_for_testing()
+    yield mock
+    redis_client.reset_for_testing()
 
 
 @pytest.fixture
@@ -165,7 +244,7 @@ def auth_test_client():
 
 @pytest.fixture
 def strict_flag_on(monkeypatch):
-    """Flip jwt_strict_validation_enabled to True for the duration of a test.
+    """Flip enable_strict_jwt_signature_validation to True for the duration of a test.
 
     WHAT: sets the env var + clears the get_settings() lru_cache so the
           next call re-reads the env. Restores on teardown.
@@ -173,7 +252,7 @@ def strict_flag_on(monkeypatch):
     WHY:  proves the authoritative-answer flip works end-to-end without
           deploying a new config.
     """
-    monkeypatch.setenv("JWT_STRICT_VALIDATION_ENABLED", "true")
+    monkeypatch.setenv("ENABLE_STRICT_JWT_SIGNATURE_VALIDATION", "true")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
@@ -307,11 +386,15 @@ def test_wrong_issuer_legacy_ok_strict_fail_bad_iss(auth_test_client, patched_jw
 # ===========================================================================
 
 
-def test_jwks_unreachable_strict_fail_no_crash(auth_test_client, unreachable_jwks, rsa_keypair):
-    """When the JWKS endpoint is unreachable, the request MUST NOT
+def test_jwks_unreachable_strict_fail_no_crash(auth_test_client, redis_down_jwks, rsa_keypair):
+    """When the Redis JWKS cache is unavailable, the request MUST NOT
     crash; legacy still answers + strict's jwks_fetch_error is shadow-
-    logged. This is the most important resilience test in the suite —
-    a real auth.yral.com outage cannot take down v2 public-api."""
+    logged. Day-4A repurposed this fixture from httpx-down to Redis-
+    down per E9's "JWKS in Redis 1hr TTL" contract — if the cache
+    layer is broken, strict can't trust its job + fails closed; legacy
+    is unaffected since it doesn't consult JWKS at all. This is the
+    most important resilience test in the suite — a Redis outage MUST
+    NOT take down v2 public-api."""
     private_pem, _ = rsa_keypair
     token = _make_token(private_pem)
     response = auth_test_client.get(
@@ -331,7 +414,7 @@ def test_jwks_unreachable_strict_fail_no_crash(auth_test_client, unreachable_jwk
 def test_flag_on_strict_authoritative_expired_token_401(
     auth_test_client, patched_jwks, rsa_keypair, strict_flag_on,
 ):
-    """When jwt_strict_validation_enabled=True, strict is authoritative.
+    """When enable_strict_jwt_signature_validation=True, strict is authoritative.
     An expired token (which legacy would accept) now produces 401."""
     private_pem, _ = rsa_keypair
     token = _make_token(private_pem, expires_in_seconds=-3600)
@@ -382,12 +465,113 @@ def test_empty_bearer_token_returns_401(auth_test_client, patched_jwks):
 
 
 # ===========================================================================
+# Day 4A — new tests for Redis-backed cache layer per E9 reconciliation
+# ===========================================================================
+
+
+def test_redis_cache_hit_second_call_no_refetch(auth_test_client, patched_jwks, rsa_keypair):
+    """Two strict-path requests in a row → upstream JWKS fetched ONCE.
+
+    WHAT: makes two `/test/whoami` calls with valid tokens. After the
+          first, the JWKS document lives in the (fake) Redis cache;
+          the second call's StrictJwtValidator.get_signing_keys()
+          must hit the cache + skip _fetch_jwks_from_upstream.
+    WHEN: Day-4A directive item: "cache hit on second call within TTL
+          = 1 JWKS fetch over 2 calls."
+    WHY:  proves the Redis cache layer actually CACHES (not just
+          passes through). Without this, every request would hammer
+          auth.yral.com which would breach E9's "1hr TTL" contract.
+    """
+    private_pem, _ = rsa_keypair
+    token = _make_token(private_pem)
+
+    response_1 = auth_test_client.get(
+        "/test/whoami",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    response_2 = auth_test_client.get(
+        "/test/whoami",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    # Both requests succeed via the strict path.
+    assert response_1.status_code == 200
+    assert response_2.status_code == 200
+
+    # The critical assertion: upstream fetch happened exactly ONCE
+    # across two requests. (The patched_jwks fixture's `state` dict
+    # exposes the call counter.)
+    assert patched_jwks["fetch_call_count"] == 1, (
+        f"Expected 1 upstream fetch across 2 requests, got "
+        f"{patched_jwks['fetch_call_count']} — cache layer not working"
+    )
+
+
+def test_redis_down_strict_fails_legacy_unaffected_divergence_logged(
+    auth_test_client, redis_down_jwks, rsa_keypair, monkeypatch,
+):
+    """Redis-down with a valid token → strict=fail(jwks_fetch_error) +
+    legacy=ok + divergence emission fires + request returns 200.
+
+    WHAT: replaces emit_dual_validate_result with a spy that records
+          every call. Sends a valid token with Redis down. Asserts:
+            - The spy was called once.
+            - legacy.ok == True (legacy doesn't consult JWKS).
+            - strict.ok == False AND strict.reason == "jwks_fetch_error".
+            - The request returned 200 (legacy authoritative + ok).
+    WHEN: Day-4A directive item (b): "Redis-down → strict=fail
+          (jwks_fetch_error), legacy still answers, divergence logged."
+    WHY:  resilience contract — Redis outage MUST NOT crash auth +
+          MUST surface the divergence so on-call sees the failure.
+    """
+    # Patch the emission helper with a spy so we can assert what was
+    # logged. Need to patch the symbol at its IMPORT site inside the
+    # dependency module (not at its definition site) — Python resolves
+    # `emit_dual_validate_result` against the dependency module's
+    # namespace at call time.
+    from app.api.auth import dependency
+
+    emission_calls = []
+
+    def _spy(legacy, strict, request_path):
+        emission_calls.append({"legacy": legacy, "strict": strict, "path": request_path})
+        return legacy.ok != strict.ok
+
+    monkeypatch.setattr(dependency, "emit_dual_validate_result", _spy)
+
+    private_pem, _ = rsa_keypair
+    token = _make_token(private_pem)
+    response = auth_test_client.get(
+        "/test/whoami",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    # Request succeeds despite Redis being down — legacy is authoritative.
+    assert response.status_code == 200
+    assert response.json() == {"user_id": "test-user-id"}
+
+    # Emission helper fired exactly once + with the expected payload.
+    assert len(emission_calls) == 1
+    call = emission_calls[0]
+    assert call["legacy"].ok is True
+    assert call["legacy"].reason == "ok"
+    assert call["strict"].ok is False
+    assert call["strict"].reason == "jwks_fetch_error"
+    assert call["path"] == "/test/whoami"
+
+
+# ===========================================================================
 # RELATED FILES:
 #   ../../app/api/auth/dependency.py    — authenticate_user_dual_validate
 #   ../../app/api/auth/validators.py    — LegacyJwtValidator + StrictJwtValidator
-#   ../../app/api/auth/jwks_client.py   — _fetch_jwks (monkey-patched here)
+#   ../../app/api/auth/jwks_client.py   — _fetch_jwks_from_upstream + Redis cache
+#                                         (monkey-patched here via patched_jwks /
+#                                         redis_down_jwks fixtures)
 #   ../../app/api/auth/observability.py — emit_dual_validate_result
-#   ../../app/config.py                 — jwt_strict_validation_enabled etc.
+#                                         (spied in divergence-logged test)
+#   ../../app/redis_client.py           — get_redis() (monkey-patched to FakeRedis)
+#   ../../app/config.py                 — enable_strict_jwt_signature_validation etc.
 #   yral-rishi-agent-plan-and-discussions/CONSTRAINTS.md
-#                                       — E6 (auth), E9 (shadow rollout), J1 (HOT-tier coverage)
+#                                       — E6 (auth), E9 (JWKS Redis 1hr TTL),
+#                                         J1 (HOT-tier coverage)
 # ===========================================================================

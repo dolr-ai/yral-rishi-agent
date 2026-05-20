@@ -250,7 +250,7 @@ class StrictJwtValidator:
 #   dependency.py            — runs both validators + compares their results
 #   observability.py         — emits the divergence metric to Sentry + Langfuse
 #   ../../config.py          — jwt_expected_issuer + jwt_expected_audience +
-#                              jwt_strict_validation_enabled
+#                              enable_strict_jwt_signature_validation
 #   ../../../tests/contract/test_jwt_shadow.py
 #                            — happy / expired / tampered / wrong-iss /
 #                              JWKS-unreachable / flag-on smoke tests
