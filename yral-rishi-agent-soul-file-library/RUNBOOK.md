@@ -155,11 +155,11 @@ NOT `retire_current` — that leaves the slot empty + composer 500s. Always repl
 
 ```bash
 # Local dev (against docker-compose Postgres):
-export POSTGRES_DSN_SOUL_FILE_LIBRARY="postgresql://service:service-local-password@localhost:6432/service_local_database"
+export POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY="postgresql://service:service-local-password@localhost:6432/service_local_database"
 alembic upgrade head
 
 # Production (against the Patroni cluster — operator action):
-# 1. Source the DSN per D8.
+# 1. Source the connection string per D8.
 # 2. alembic upgrade head from the service folder root.
 # 3. Verify with `alembic current` — should match `head`.
 # 4. If anything goes wrong: `alembic downgrade -1`.

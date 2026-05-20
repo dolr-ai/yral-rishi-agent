@@ -57,9 +57,9 @@ _log = logging.getLogger("app.database")
 async def init_pool() -> None:
     """Open the asyncpg connection pool. Idempotent — safe to call once.
 
-    WHAT: builds an `asyncpg.Pool` using the DSN from settings + the
-          connection-count bounds defined above; stores it in the
-          module-level `_pool` variable.
+    WHAT: builds an `asyncpg.Pool` using the connection string from
+          settings + the connection-count bounds defined above; stores
+          it in the module-level `_pool` variable.
     WHEN: called from the FastAPI lifespan startup hook in `app/main.py`
           BEFORE any request handler runs.
     WHY:  centralised init means every callsite sees the same pool +
@@ -67,7 +67,7 @@ async def init_pool() -> None:
           the lifespan shutdown hook).
 
     Raises:
-        RuntimeError when `POSTGRES_DSN_SOUL_FILE_LIBRARY` is missing —
+        RuntimeError when `POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY` is missing —
         Pydantic-settings parsing already enforces this at config-load,
         so a missing value usually surfaces before this function runs.
     """
@@ -80,17 +80,21 @@ async def init_pool() -> None:
         return
 
     settings = get_settings()
-    dsn = settings.postgres_dsn
+    connection_string = settings.postgres_connection_string
 
-    if not dsn:
+    if not connection_string:
         raise RuntimeError(
-            "POSTGRES_DSN_SOUL_FILE_LIBRARY is empty — set it in "
+            "POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY is empty — set it in "
             "`.env.local` (sourced from your Keychain or local copy of "
             "secrets) before starting the soul-file-library service."
         )
 
+    # `dsn=` is asyncpg's kwarg name (external API contract — kept
+    # verbatim per B2's external-name carve-out); the IDENTIFIER we
+    # pass is `connection_string` per the Codex PR-#104 round-4
+    # B2 rename.
     _pool = await asyncpg.create_pool(
-        dsn=dsn,
+        dsn=connection_string,
         min_size=_DEFAULT_MIN_POOL_SIZE,
         max_size=_DEFAULT_MAX_POOL_SIZE,
         # `statement_cache_size=0` is the safe default behind pgBouncer
@@ -149,7 +153,7 @@ def get_pool() -> asyncpg.Pool:
 
 # ===========================================================================
 # RELATED FILES:
-#   config.py                        — declares `postgres_dsn` setting
+#   config.py                        — declares `postgres_connection_string` setting
 #   main.py                          — calls init_pool() / close_pool() in
 #                                       the FastAPI lifespan
 #   repository/soul_file_repository.py

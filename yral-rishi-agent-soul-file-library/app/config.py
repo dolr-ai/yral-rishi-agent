@@ -96,17 +96,18 @@ class Settings(BaseSettings):
     langfuse_host: str = "https://langfuse.rishi.yral.com"
 
     # -- Postgres (Day-4 — per D8) ----------------------------------------
-    # Per-service DSN read by both the asyncpg runtime pool (`app/database.py`)
-    # and the Alembic migration env (`app/migrations/env.py`). The env-var
-    # name matches the secret declaration in `secrets.yaml` per D8.
-    # asyncpg-compatible URL — `postgresql://user:pass@host:port/database`.
+    # Per-service connection string read by both the asyncpg runtime
+    # pool (`app/database.py`) and the Alembic migration env
+    # (`app/migrations/env.py`). The env-var name matches the secret
+    # declaration in `secrets.yaml` per D8. asyncpg-compatible URL —
+    # `postgresql://user:pass@host:port/database`.
     # `pydantic-settings` will read the env var with the same name as
     # this field (case-insensitive); we use the `alias=` form so the
-    # field is `postgres_dsn` in Python while the env var stays the
-    # D8-declared `POSTGRES_DSN_SOUL_FILE_LIBRARY`.
-    postgres_dsn: str = Field(
+    # field is `postgres_connection_string` in Python while the env var stays the
+    # D8-declared `POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY`.
+    postgres_connection_string: str = Field(
         default="",
-        validation_alias="POSTGRES_DSN_SOUL_FILE_LIBRARY",
+        validation_alias="POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY",
     )
 
 

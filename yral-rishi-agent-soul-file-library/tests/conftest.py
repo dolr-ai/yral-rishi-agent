@@ -3,8 +3,8 @@
 #
 # ⭐ START HERE: this file boots ONE ephemeral Postgres container per
 # pytest session via `testcontainers-postgres`, runs Alembic
-# `upgrade head` against it, exports the DSN as
-# `POSTGRES_DSN_SOUL_FILE_LIBRARY` so the app's pool + Alembic see it,
+# `upgrade head` against it, exports the connection string as
+# `POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY` so the app's pool + Alembic see it,
 # yields the connection details, then tears the container down on
 # session end. Per-function fixtures give each test a clean slate by
 # clearing the asyncpg pool's `lru_cache` + truncating the
@@ -65,8 +65,8 @@ def postgres_container() -> Iterator[PostgresContainer]:
 
 
 @pytest.fixture(scope="session")
-def postgres_dsn(postgres_container: PostgresContainer) -> str:
-    """Build an asyncpg-compatible DSN from the testcontainer.
+def postgres_connection_string(postgres_container: PostgresContainer) -> str:
+    """Build an asyncpg-compatible connection string from the testcontainer.
 
     WHAT: extracts host/port/user/password/dbname from the container
           + reassembles as `postgresql://user:pass@host:port/database`.
@@ -92,19 +92,21 @@ def postgres_dsn(postgres_container: PostgresContainer) -> str:
 
 
 @pytest.fixture(scope="session", autouse=True)
-def run_alembic_upgrade(postgres_dsn: str) -> Iterator[None]:
+def run_alembic_upgrade(postgres_connection_string: str) -> Iterator[None]:
     """Run `alembic upgrade head` against the testcontainer Postgres.
 
-    WHAT: sets POSTGRES_DSN_SOUL_FILE_LIBRARY in the environment +
-          shells out to `alembic upgrade head` from the service root.
+    WHAT: sets POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY in the
+          environment + shells out to `alembic upgrade head` from the
+          service root.
     WHEN: once per pytest session, before any test runs.
     WHY:  bootstraps the schema + seeds the L1/L2/L4 rows every
           composer test relies on. Shelling out (instead of importing
           alembic-internal helpers) matches the prod-deploy code path —
           we're testing the SAME `alembic upgrade head` operator runs.
     """
-    # Export the DSN so Alembic's env.py + the app's pool both see it.
-    os.environ["POSTGRES_DSN_SOUL_FILE_LIBRARY"] = postgres_dsn
+    # Export the connection string so Alembic's env.py + the app's pool
+    # both see it.
+    os.environ["POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY"] = postgres_connection_string
 
     # `alembic upgrade head` from the service root. capture_output=True
     # so failures dump alembic stdout/stderr into pytest's report.
@@ -151,7 +153,7 @@ def clean_app_settings_cache() -> Iterator[None]:
 
 
 @pytest.fixture()
-async def database_pool(postgres_dsn: str) -> AsyncIterator[asyncpg.Pool]:
+async def database_pool(postgres_connection_string: str) -> AsyncIterator[asyncpg.Pool]:
     """Yield an asyncpg pool pointed at the testcontainer.
 
     WHAT: creates a fresh asyncpg.Pool; truncates `soul_file_layers`
@@ -164,7 +166,7 @@ async def database_pool(postgres_dsn: str) -> AsyncIterator[asyncpg.Pool]:
           alembic downgrade + upgrade per test.
     """
     pool = await asyncpg.create_pool(
-        dsn=postgres_dsn,
+        dsn=postgres_connection_string,
         min_size=1,
         max_size=4,
         statement_cache_size=0,
@@ -257,7 +259,7 @@ def app_pool_bound(database_pool: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch)
     WHEN: tests that exercise the HTTP route or the composer's full
           path need both the pool AND the app to share state.
     WHY:  the FastAPI TestClient's lifespan would otherwise call
-          init_pool() against the test DSN, but since we already have
+          init_pool() against the test connection string, but since we already have
           a pool from the test fixture, binding directly avoids the
           duplicate connection.
     """
@@ -302,7 +304,7 @@ async def client(
 #   test_composer.py                 — uses database_pool fixture + composer
 #   test_api_composed_prompt.py      — uses client fixture
 #   ../app/database.py                     — the module the app_pool_bound fixture patches
-#   ../app/migrations/env.py         — Alembic env reading the same DSN
+#   ../app/migrations/env.py         — Alembic env reading the same connection string
 #   ../alembic.ini                   — points alembic at app/migrations
 #   ../pyproject.toml                — declares testcontainers[postgres] dev dep
 # ===========================================================================

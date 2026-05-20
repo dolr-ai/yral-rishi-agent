@@ -75,7 +75,7 @@ def _run_alembic(arg: str) -> subprocess.CompletedProcess:
     """Run `alembic <arg>` from the service root with current env.
 
     WHAT: shells out to the alembic CLI with the env carrying the
-          POSTGRES_DSN_SOUL_FILE_LIBRARY conftest exported.
+          POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY conftest exported.
     WHEN: called from the round-trip test for `downgrade base` /
           `upgrade head`.
     WHY:  matches the deploy-time + operator-runbook command path.

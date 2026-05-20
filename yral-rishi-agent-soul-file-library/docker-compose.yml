@@ -88,11 +88,12 @@ services:
     #
     # LANGFUSE_TRACING_ENABLED=false — see file header rationale.
     environment:
-      # Per D8 the per-service DSN env var name matches the
-      # secrets.yaml declaration `POSTGRES_DSN_SOUL_FILE_LIBRARY`.
+      # Per D8 the per-service connection-string env var name matches
+      # the secrets.yaml declaration
+      # `POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY`.
       # Port 6432 = pgBouncer (not raw Postgres at 5432) so local dev
       # exercises the same connection-pooling path prod uses.
-      POSTGRES_DSN_SOUL_FILE_LIBRARY: postgresql://service:service-local-password@pgbouncer:6432/service_local_database
+      POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY: postgresql://service:service-local-password@pgbouncer:6432/service_local_database
       REDIS_URL: redis://redis:6379/0
       SENTRY_DSN: ""
       LANGFUSE_TRACING_ENABLED: "false"

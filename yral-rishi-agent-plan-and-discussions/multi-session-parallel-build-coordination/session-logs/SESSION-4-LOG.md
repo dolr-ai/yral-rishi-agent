@@ -2,6 +2,86 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-20 — PR #104 round-5 fixup: DSN B2 abbreviation rename (Codex 104-A); 104-B + 104-C false-positive I6 pushbacks
+
+### Action
+Coordinator routed Codex round-5 findings on PR #104. Three items:
+1. **104-A** — Codex flagged `DSN` as a B2 banned abbreviation. Real fix needed: round-1's perl sweep handled `db`→`database` but missed `DSN` (different abbreviation, different contexts).
+2. **104-B** — Codex flagged B7 import-comment gaps on new Python files. **Verification: false-positive.** Every PR #104 new .py file has the full B7 file-header block + role comments above each import (or import block). I6 pushback below.
+3. **104-C** — Codex re-flagged "A1 approval/reporting needed for migration downgrade table-drop". **Verification: false-positive** (third time Codex has flagged this; almost certainly truncation). The A1 DELETION JUSTIFICATION block + SECURITY.md A1 carve-outs section are both present + load-bearing. I6 pushback below.
+
+### 104-A — DSN rename (executed)
+Codex correctly identified `DSN` as the next B2-banned abbreviation in our naming surface. The round-1 db→database perl sweep didn't reach it because `DSN` appears in different identifier contexts: env-var names (`POSTGRES_DSN_SOUL_FILE_LIBRARY`), Python identifiers (`postgres_dsn` Settings field + `dsn` local var), pytest fixture names (`postgres_dsn`), and free-standing "DSN" in docstrings + RUNBOOK + SECURITY + alembic.ini + docker-compose.
+
+**Renamed (OUR identifiers):**
+- `POSTGRES_DSN_SOUL_FILE_LIBRARY` → `POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY` everywhere (env var declarations, references, secrets.yaml entry, docker-compose env block, alembic.ini comments, RUNBOOK export example, READING-ORDER table row, app/migrations/env.py reads + error messages, app/database.py error message).
+- `Settings.postgres_dsn` → `Settings.postgres_connection_string` (+ `validation_alias=POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY`).
+- `dsn = settings.postgres_dsn` local in `init_pool()` → `connection_string = settings.postgres_connection_string`.
+- pytest fixture `postgres_dsn` → `postgres_connection_string` (consumed by `run_alembic_upgrade` + `database_pool`).
+- Free-standing "DSN" in OUR Postgres-context docstrings + comments → "connection string": app/database.py docstring; app/migrations/env.py docstrings + driver-suffix comment; app/config.py Postgres comment block; secrets.yaml notes; alembic.ini START HERE + footer; docker-compose env-block comment; RUNBOOK production-deploy comment; SECURITY threat-table row; tests/conftest.py file-header + fixture docstring + comment + RELATED FILES footer.
+
+**KEPT verbatim (B2 external-name carve-out):**
+- `SENTRY_DSN` env var (matches Sentry SDK env var name verbatim — renaming breaks the SDK).
+- `Settings.sentry_dsn` field (matches the same Sentry SDK env var).
+- `sentry_sdk.init(dsn=...)` kwarg + all Sentry-context "DSN" docstring text.
+- `asyncpg.create_pool(dsn=...)` kwarg — asyncpg's API contract; only the IDENTIFIER we pass it is renamed. Added a one-line B2-carve-out comment at each callsite (app/database.py:92 + tests/conftest.py — kept inline).
+- docker-compose.swarm.yml `sentry_dsn` Docker Swarm secret name (Sentry context).
+- project.config "The DSN itself is a secret" comment — sits inside the SENTRY section header (Sentry context).
+- app/sentry_middleware.py + app/request_id_middleware.py — pre-existing template files using "DSN" in Sentry context only; outside PR #104's surface.
+
+**Aggressive grep convergence:** post-sweep `grep -rni dsn yral-rishi-agent-soul-file-library/` returns only the Sentry-SDK + asyncpg-kwarg carve-out lines listed above; no OUR-identifier DSN occurrences remain.
+
+### 104-B — B7 import-comment gaps (I6 pushback — false-positive)
+
+**Verification.** Spot-checked every .py file added by PR #104 — every one has the full B7 file-header block (file-name + ⭐ START HERE + WHY/WHAT + RELATED FILES footer) + one-line role comments above imports:
+- `app/database.py` (lines 1-31 file-header, lines 33-38 imports with role comments).
+- `app/models/soul_file.py` (lines 1-24 file-header, lines 26-29 imports with role comments).
+- `app/repository/soul_file_repository.py` (lines 1-25 file-header, lines 27-32 imports with role comments).
+- `app/api/composed_prompt_routes.py` (lines 1-32 file-header, lines 34-44 imports with role comments).
+- `app/api/__init__.py` (round-3 fixup added the file-header explicitly).
+- `app/composer/__init__.py` + `app/composer/four_layer_composer.py` (round-1 fixup added file-headers).
+- `app/migrations/env.py` (lines 1-24 file-header, lines 26-32 imports with role comments).
+- `app/migrations/versions/001_initial_schema_and_seed.py` (lines 1-62 file-header including A1 DELETION JUSTIFICATION block).
+- `app/migrations/versions/__init__.py` + `app/migrations/__init__.py` + `app/models/__init__.py` + `app/repository/__init__.py` + `tests/__init__.py` (round-1 fixup added file-headers per Codex round-1 BLOCKER 2).
+
+**Conclusion.** No gaps to fix. The flag is consistent with the round-3+ pattern of Codex reading a truncated diff and re-raising round-1's already-closed B7 finding. I6 pushback: no code change.
+
+### 104-C — A1 approval/reporting block (I6 pushback — false-positive)
+
+**Verification.**
+- `app/migrations/versions/001_initial_schema_and_seed.py` — A1 DELETION JUSTIFICATION block at lines 37-62 (38 lines of justification + coordinator approval cite + RELATED FILES). Covers: (a) reversibility-of-this-migration framing; (b) operator-action-only invocation; (c) explicit "never automated"; (d) "never on production data"; (e) coordinator approval citation (Rishi 2026-05-19 Option A) with audit pointers to SECURITY.md + the LOG entry.
+- `SECURITY.md` — `## A1 carve-outs granted (the standing audit log)` section starts at line 126 with the formal table at lines 130-132. The table row for the Day-4 fixup explicitly enumerates: date (2026-05-19), carve-out, scope, authoriser, and audit pointers (migration file's A1 block + tests/test_schema_migrations.py A1 PROVENANCE block + PR #104 fixup commit). Schema is the same one the coordinator's relaxed-A1 spec lays out.
+- `cross-session-deps.md` was not changed in PR #104 (A1 is per-service, recorded in the service's own SECURITY.md per coordinator guidance — cross-session-deps tracks inter-service contract dependencies, not A1 approvals).
+
+**Conclusion.** All three artifacts the directive asked to verify are in place + load-bearing. Third occurrence of Codex re-raising this already-closed finding; matches the round-3+ truncation-false-positive pattern. I6 pushback: no code change.
+
+### Files touched
+- `app/config.py` — `postgres_dsn` field → `postgres_connection_string` + `validation_alias` + Postgres comment block.
+- `app/database.py` — variable + error message + B2-carve-out comment for asyncpg's `dsn=` kwarg + RELATED FILES footer.
+- `app/migrations/env.py` — env var name + 2 docstrings + driver-suffix comment + RELATED FILES footer.
+- `tests/conftest.py` — fixture name + 4 docstrings/comments + RELATED FILES footer.
+- `tests/test_schema_migrations.py`, `tests/test_composer.py`, `tests/test_repository.py`, `tests/test_api_composed_prompt.py` — fixture parameter renames (perl sweep, no docstring changes).
+- `secrets.yaml` — entry name + 2 description comments + notes.
+- `alembic.ini` — 3 docstring/comment lines.
+- `docker-compose.yml` — env var name + 1 comment.
+- `RUNBOOK.md` — export example + production-deploy comment.
+- `READING-ORDER.md` — table row referring to the env var name.
+- `SECURITY.md` — threat-table row.
+- `SESSION-4-LOG.md` (this entry).
+
+### Constraints touched
+- **B2** — `DSN` is no longer an OUR identifier anywhere in PR #104. Sentry SDK + asyncpg API references kept as external-name carve-outs (B2's stated exception for third-party API contract names).
+- **A2.1** — minimal-scope rename; no behaviour change, no refactor, no new abstractions. Wire format (Postgres connection string content) is byte-identical; only the identifier referring to it changed.
+- **D8** — secret name convention preserved: per-service suffix `_SOUL_FILE_LIBRARY` carried through the rename so a leaked secret stays unambiguous about blast radius.
+- **I6** — pushback raised on 104-B + 104-C (both false-positives); code change limited to 104-A.
+
+### Notes
+- **Codex truncation surface.** 104-B and 104-C are the third round in which Codex has re-raised already-closed PR #104 findings while reading what its own review noted was a truncated diff (PR #105 budget bump was the coordinator's attempt to fix this). Coordinator confirmed PR #105 closed + the truncation BLOCKER will be handled by manual audit, so this fixup does not attempt to widen the diff or restate the round-1 fixes again.
+- **Wire format unchanged.** The Postgres connection string value is byte-identical (`postgresql://user:pass@host:port/database`). Only the IDENTIFIER referring to it (env var name, Python field, fixture name, docstring text) changed. No deploy-coordination needed beyond updating Swarm secret name in the secrets store.
+- **Coordinator follow-up.** Once Swarm secret store picks up the new env var name, the operator-side update is a one-line `docker secret create POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY ...` + redeploy. Documented in secrets.yaml so the standard rotation playbook covers it.
+
+---
+
 ## 2026-05-19 — PR #104 round-4 fixup: composer hot-path latency — parallelize L1+L2+L4 fetches via asyncio.gather
 
 ### Action

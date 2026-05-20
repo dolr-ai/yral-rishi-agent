@@ -120,7 +120,7 @@ Per the Day-4 directive verbatim: "Internal-only per C3 — no auth on Day 4 (ov
 | Compromised orchestrator → exfiltrates Soul File bodies | Overlay-only + GHCR-auth image pull + future X-Internal-Caller | Accepted Day 4 |
 | Concurrent writer races overwrite history | Partial unique index + transactional retire-then-insert | Mitigation in place |
 | Forgotten retired-without-replacement slot causes composer 500s | Defensive `SoulFileDataIntegrityError` raised + clear error | Mitigation in place |
-| PostgreSQL DSN leaked from a service log | secrets.yaml + .env.local pattern per D1+D8; logs NEVER include DSN | Standing template guarantee |
+| PostgreSQL connection string leaked from a service log | secrets.yaml + .env.local pattern per D1+D8; logs NEVER include the connection string | Standing template guarantee |
 | Day-4 placeholder body content reaches a real user | Obviously-stubbed bracketed text + product owns the real-content PR | Accepted Day 4 |
 
 ## A1 carve-outs granted (the standing audit log)

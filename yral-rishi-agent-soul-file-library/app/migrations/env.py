@@ -3,7 +3,7 @@
 # `alembic downgrade` before any migration runs.
 #
 # ⭐ START HERE: this file builds the SQLAlchemy engine from the
-# POSTGRES_DSN_SOUL_FILE_LIBRARY env var (the per-service secret per D8)
+# POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY env var (the per-service secret per D8)
 # and dispatches to either offline-mode (emits SQL to stdout — useful
 # for review) or online-mode (executes migrations against the live DB).
 #
@@ -37,27 +37,28 @@ config = context.config
 
 
 def _resolve_database_url() -> str:
-    """Read POSTGRES_DSN_SOUL_FILE_LIBRARY from env + adapt to async driver.
+    """Read POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY from env + adapt to async driver.
 
     WHAT: returns the SQLAlchemy URL string the AsyncEngine connects with.
     WHEN: called once at env.py module-load.
     WHY:  secrets never live in alembic.ini per D1+D8; reading at runtime
           fails fast if the var is missing rather than silently using a
-          default localhost DSN.
+          default localhost connection string.
     """
-    raw = os.environ.get("POSTGRES_DSN_SOUL_FILE_LIBRARY")
+    raw = os.environ.get("POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY")
     if not raw:
         raise RuntimeError(
-            "POSTGRES_DSN_SOUL_FILE_LIBRARY env var is required to run "
+            "POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY env var is required to run "
             "Alembic migrations. Source it from secrets.yaml or set it "
             "in your shell before running `alembic upgrade head`."
         )
 
-    # The DSN as committed in `.env.example` uses the `postgresql://`
-    # scheme so it works with both psycopg2 (sync) and asyncpg (async)
-    # consumers without modification. Alembic's AsyncEngine needs the
-    # explicit driver suffix `postgresql+asyncpg://` — we rewrite at
-    # this boundary so the rest of the codebase keeps the simpler form.
+    # The connection string as committed in `.env.example` uses the
+    # `postgresql://` scheme so it works with both psycopg2 (sync) and
+    # asyncpg (async) consumers without modification. Alembic's
+    # AsyncEngine needs the explicit driver suffix
+    # `postgresql+asyncpg://` — we rewrite at this boundary so the
+    # rest of the codebase keeps the simpler form.
     if raw.startswith("postgresql://"):
         return raw.replace("postgresql://", "postgresql+asyncpg://", 1)
     return raw
@@ -73,8 +74,9 @@ target_metadata = None
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode — emit SQL to stdout, never execute.
 
-    WHAT: configures Alembic with the DSN but no live connection;
-          migrations get rendered to SQL strings instead of running.
+    WHAT: configures Alembic with the connection string but no live
+          connection; migrations get rendered to SQL strings instead
+          of running.
     WHEN: invoked by `alembic upgrade head --sql` for review-before-deploy.
     WHY:  lets reviewers (Rishi, Codex) see exactly what SQL hits the
           DB before the migration actually runs in CI.
@@ -163,6 +165,6 @@ else:
 #                                    Alembic's SQLAlchemy engine; the two
 #                                    talk to the same DB but via different
 #                                    drivers — asyncpg vs SQLAlchemy+asyncpg)
-#   ../config.py                  — declares the postgres_dsn setting
-#                                    POSTGRES_DSN_SOUL_FILE_LIBRARY binds to
+#   ../config.py                  — declares the postgres_connection_string setting
+#                                    POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY binds to
 # ===========================================================================
