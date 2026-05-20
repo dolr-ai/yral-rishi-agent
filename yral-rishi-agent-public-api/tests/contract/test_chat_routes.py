@@ -336,89 +336,25 @@ def test_list_conversations_v1_returns_503_when_flag_off(client_flag_off):
 
 # ===========================================================================
 # POST /api/v1/chat/conversations/{id}/messages
+#
+# NOTE: the 4 Day-2 stub-behavior tests that used to live here
+# (test_send_message_returns_envelope_with_assistant_reply,
+# test_send_message_echoes_conversation_id_and_client_message_id,
+# test_send_message_data_matches_message_response,
+# test_send_message_returns_503_when_flag_off) were DELETED in Day-4C
+# under the A1 relaxed 7-step. They asserted the Day-2 stub's behavior
+# (assistant-role echo, client_message_id echo, MessageResponse shape
+# from a hardcoded factory, 503 on flag-off). Day-4C rewrote
+# send_message to call the orchestrator's /v1/turn RPC + the
+# placeholder-flag dependency is no longer applied to this handler,
+# so the assertions no longer hold. The 7 new tests in
+# test_orchestrator_proxy.py cover the new contract end-to-end
+# (happy turn forwarding, idempotency hit/miss, error mapping for
+# 503/422/timeout, per-user-id cache scope) — strictly stronger than
+# the deleted Day-2 stub tests. The OTHER chat-handler tests in this
+# file (create_conversation, list_v1/v2, mark_read, delete, list_messages)
+# still apply because those handlers still return Day-2 stubs.
 # ===========================================================================
-
-
-def test_send_message_returns_envelope_with_assistant_reply(client):
-    """Send-message: envelope success + assistant reply in data.
-
-    WHAT: POSTs a chat message + asserts the response envelope has
-          `data.role="assistant"` (the stub always produces an
-          assistant-role reply).
-    WHEN: happy-path with placeholder flag ON.
-    WHY:  the chat-send is the hot path mobile hits dozens of times per
-          session; assistant-role + envelope-shape are the two
-          assertions mobile pattern-matches on for bubble rendering.
-    """
-    response = client.post(
-        "/api/v1/chat/conversations/conv-id-1/messages",
-        json={"content": "Hello", "client_message_id": "client-msg-1"},
-    )
-    assert response.status_code == 200
-    body = response.json()
-    assert body["success"] is True
-    assert body["data"]["role"] == "assistant"
-
-
-def test_send_message_echoes_conversation_id_and_client_message_id(client):
-    """Send-message: stub echoes conversation_id + client_message_id.
-
-    WHAT: POSTs a message + asserts the response data includes the
-          same conversation_id (from the URL path) AND the same
-          client_message_id (from the request body).
-    WHEN: happy-path with placeholder flag ON.
-    WHY:  mobile's local dedup logic depends on the assistant reply
-          carrying the SAME client_message_id back so it can match
-          the reply to the outgoing request. The conversation_id echo
-          is needed for mobile to attach the assistant message to the
-          right thread.
-    """
-    response = client.post(
-        "/api/v1/chat/conversations/conv-id-XYZ/messages",
-        json={"content": "test", "client_message_id": "client-msg-XYZ"},
-    )
-    data = response.json()["data"]
-    assert data["conversation_id"] == "conv-id-XYZ"
-    assert data["client_message_id"] == "client-msg-XYZ"
-
-
-def test_send_message_data_matches_message_response(client):
-    """Send-message: every MessageResponse field present + typed.
-
-    WHAT: POSTs a message + asserts each MessageResponse field
-          declared in the contract is present + the right type.
-    WHEN: happy-path with placeholder flag ON.
-    WHY:  guards against silent shape drift on the message wire format
-          — mobile's chat-bubble renderer reads every field listed.
-    """
-    response = client.post(
-        "/api/v1/chat/conversations/conv-id-1/messages",
-        json={"content": "Hello"},
-    )
-    data = response.json()["data"]
-    # Required fields per interface-contracts/00-api-contract.md MessageResponse.
-    assert isinstance(data["id"], str)
-    assert isinstance(data["conversation_id"], str)
-    assert data["role"] in ("user", "assistant")
-    assert isinstance(data["content"], str)
-    assert isinstance(data["created_at"], str)
-    assert isinstance(data["count_toward_paywall"], bool)
-
-
-def test_send_message_returns_503_when_flag_off(client_flag_off):
-    """Send-message: flag-off path returns 503.
-
-    WHAT: POSTs a message with placeholder flag OFF; asserts 503.
-    WHEN: production-default state.
-    WHY:  send-message is THE chat hot path; if the production-safety
-          gate ever silently flipped, real users would receive stub
-          assistant replies — this test guards the contract.
-    """
-    response = client_flag_off.post(
-        "/api/v1/chat/conversations/conv-id-1/messages",
-        json={"content": "test"},
-    )
-    assert response.status_code == 503
 
 
 # ===========================================================================

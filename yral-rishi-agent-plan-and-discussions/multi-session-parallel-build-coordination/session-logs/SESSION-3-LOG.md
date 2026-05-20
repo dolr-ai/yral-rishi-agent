@@ -2,6 +2,33 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-20 — Day 4C rebase, PR #103 onto rebased PR #102
+
+### Action
+Continued the rebase cascade after PR #102 (Day-4B) force-pushed in the entry below. Same pattern as PR #102: reset `session-3/day-4c-orchestrator-rpc-and-idempotency` to the rebased PR #102 tip (`a8dfdd2`) + re-applied Day-4C's intent manually, because the original Day-4C commit (`e60e65a`) was written against PR #97 BEFORE the R1 Dto→Response rename + the BLOCKER 4 stubs + the WS stub + the model_validator on CreateConversationRequest. Day-4C's `chat_routes.py` rewrote `send_message` to call `orchestrator_client.run_turn(...)` + wrap in `ApiResponse[MessageDto]` — adapting to the post-rename world means `MessageDto` → `MessageResponse` everywhere in the rewritten handler (constructor, type hint, generic param, error message, comment). Day-4C's `app/api/idempotency.py`, `app/orchestrator_client.py`, and `tests/contract/test_orchestrator_proxy.py` were clean adds with no Dto coupling (the orchestrator returns a JSON dict; the public-api handler wraps it as MessageResponse). 4 deprecated Day-2 `test_send_message_*` tests in `test_chat_routes.py` deleted under A1 relaxed 7-step (superseded by the 7 new orchestrator-proxy tests). main.py lifespan: `init_orchestrator_client()` on startup, `await close_orchestrator_client()` on shutdown (before `flush_langfuse()`). config.py: 5 new settings (orchestrator_base_url, orchestrator_run_turn_path, orchestrator_request_timeout_seconds, orchestrator_connect_timeout_seconds, idempotency_dedup_ttl_seconds). shared-config.yaml: `services.orchestrator` section appended at end. chat_routes.py: removed the F10 deferral comment block + reworded the router-doc comment to reflect Day-4C's wiring of F10 on send_message specifically. Did NOT take Day-4C's stale `ChatAccessDataDto` reference on shared-config.yaml line 101 (rebased base correctly has `ChatAccessDataResponse` post-PR-#97 R1).
+
+### Files touched (effective end-state vs `origin/main`)
+- **ADDED** `yral-rishi-agent-public-api/app/orchestrator_client.py` — lifespan-managed `httpx.AsyncClient` singleton; `init_orchestrator_client`/`close_orchestrator_client`/`run_turn` API
+- **ADDED** `yral-rishi-agent-public-api/app/api/idempotency.py` — `resolve_idempotency_key(header) -> (key, source)` + `cache_lookup(user_id, key) -> CachedResponse | None` + `cache_store(user_id, key, status, bytes)` with Redis TTL 86400s + key scoping by user_id
+- **ADDED** `yral-rishi-agent-public-api/tests/contract/test_orchestrator_proxy.py` — 7 J1-HOT tests (happy turn forwarding, idempotency hit/miss, error mapping for 503/422/timeout, per-user cache scope)
+- **MODIFIED** `yral-rishi-agent-public-api/app/api/chat_routes.py` — added Day-4C imports (httpx, sentry_sdk, logging, Request, Header, JSONResponse, Response, get_request_id, orchestrator_client, idempotency helpers); rewrote `send_message` (Day-2 stub → orchestrator RPC + F10 dedup); updated router-doc comment for F10 status
+- **MODIFIED** `yral-rishi-agent-public-api/app/config.py` — added 5 orchestrator + idempotency settings after the JWT block
+- **MODIFIED** `yral-rishi-agent-public-api/app/main.py` — imported `init_orchestrator_client`/`close_orchestrator_client`; wired them into the FastAPI lifespan (startup before `yield`, shutdown after, before langfuse flush)
+- **MODIFIED** `yral-rishi-agent-public-api/shared-config.yaml` — appended `services.orchestrator` section (base_url, run_turn_path, request_timeout_seconds, connect_timeout_seconds)
+- **MODIFIED** `yral-rishi-agent-public-api/tests/contract/test_chat_routes.py` — deleted 4 deprecated Day-2 send_message tests; replaced with a one-paragraph header note pointing to test_orchestrator_proxy.py
+
+### Why
+Rebase-cascade closure — PR #97 squash-merged into main triggered the cascade; #99 + #101 + #102 rebased over previous turns; this turn closes the loop on the Day-4 stack (#99 → #101 → #102 → #103). Strategy mirrors PR #102's manual-re-apply pattern because Day-4C's commit was written against pre-PR-#97-fixup main + had the same Dto-name + missing-stub problems #102's commit had.
+
+### Test evidence
+`docker run --rm python:3.12-slim` → `pip install . .[dev] pyjwt[crypto] PyYAML cryptography` → `pytest tests/contract/ -q` → **77 passed in 1.79s** (73 from rebased Day-4B + 7 new orchestrator-proxy tests + 1 happy-path idempotency-key resolve test; -4 deleted Day-2 send_message tests = net 77). Zero warnings other than the pre-existing pytest-asyncio deprecation notice.
+
+### Notes
+- All 4 Day-4 stack PRs (#99 + #101 + #102 + #103) now sit on top of post-PR-#97 main with their respective tests green. The merge order is naturally enforced by the stack — coordinator decides when to start the cascade.
+- The I6 push-back on `orchestrator_unavailable` + `orchestrator_timeout` (which Day-4C directive specified but the locked error-codes table forbids — Day-4C used `service_unavailable` instead + Sentry tag for backend signal) is preserved in this commit's PR body without change. Coordinator already had this in flight from the original PR #103.
+
+---
+
 ## 2026-05-20 — Day 4B rebase, PR #102 onto rebased PR #101 (post-PR-#97 squash-merge)
 
 ### Action

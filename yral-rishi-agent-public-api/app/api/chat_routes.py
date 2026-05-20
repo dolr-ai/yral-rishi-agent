@@ -44,6 +44,11 @@
 # onto the placeholder response bodies.
 from datetime import datetime, timezone
 
+# logging — Day-4C send_message logs idempotency adoption source +
+# cache hit/miss via the structured logger (logs.py wiring carries
+# request_id).
+import logging
+
 # typing.Literal — used for the conversation_type field per Codex
 # PR #97 BLOCKER 3 (E5 mandates the 3 locked modes; previously str
 # accepted any value). typing.Optional — nullable request fields.
@@ -54,10 +59,26 @@ from typing import Literal, Optional
 # valid ID mobile can store.
 from uuid import uuid4
 
-# fastapi — APIRouter groups endpoints; Depends wires the per-handler
-# feature-flag gate; Path / Query map URL components to parameters;
-# WebSocket signals the inbox stub added in BLOCKER 4.
-from fastapi import APIRouter, Depends, Path, Query, WebSocket
+# httpx — Day-4C catches httpx.TimeoutException + httpx.ConnectError
+# on the orchestrator call to map them to the public-api 504 envelope.
+import httpx
+
+# sentry_sdk — Day-4C tags every orchestrator failure path with
+# `orchestrator.call.failed=<timeout|503|status|bad_response_shape>`
+# so the Sentry dashboard can pivot on the upstream failure mode.
+import sentry_sdk
+
+# fastapi — APIRouter groups endpoints; Depends wires per-handler
+# dependencies (real auth + flag gate); Header maps the
+# X-Idempotency-Key header to a handler parameter (Day-4C); Path /
+# Query map URL components to parameters; Request is needed by
+# Day-4C send_message for the per-request httpx context; WebSocket
+# signals the inbox stub added in BLOCKER 4.
+from fastapi import APIRouter, Depends, Header, Path, Query, Request, WebSocket
+
+# fastapi.responses — Day-4C send_message returns Response (for cache
+# replay byte-for-byte) + JSONResponse (for error-mapping paths).
+from fastapi.responses import JSONResponse, Response
 
 # pydantic — BaseModel for request bodies; model_validator enforces
 # the per-mode participant-id rule added in Codex PR #97 BLOCKER 3.
@@ -77,7 +98,8 @@ from app.api.feature_flag import require_day_2_placeholder_flag_enabled
 
 # Error helper + status map — used by the influencer-write stubs added
 # in BLOCKER 4 that return `service_unavailable` envelopes instead of
-# letting the locked paths 404.
+# letting the locked paths 404. Also used by Day-4C's send_message
+# error-mapping paths (timeout / 503 / 422 / 5xx).
 from app.api.errors import HTTP_STATUS_FOR_ERROR_CODE, error_response
 
 # Real auth dependency (Day 4B) — replaces the PR #97 round-5 placeholder
@@ -85,6 +107,22 @@ from app.api.errors import HTTP_STATUS_FOR_ERROR_CODE, error_response
 # endpoint receives an `AuthenticatedUser` argument with the validated
 # user_id + raw token (the latter Day-4C forwards to the orchestrator).
 from app.api.dependencies import AuthenticatedUser, require_authenticated_user
+
+# Day-4C orchestrator RPC client + F10 idempotency dedup. send_message
+# is the first handler in v2 public-api to actually call the
+# orchestrator; the rest stay on Day-2 stubs until later sprints.
+from app import orchestrator_client
+from app.api.idempotency import (
+    cache_lookup,
+    cache_store,
+    resolve_idempotency_key,
+)
+from app.request_id_middleware import get_request_id
+
+# Structured logger for Day-4C send_message diagnostics. Module-level so
+# every log line carries the structured-logging request_id (per the
+# logging.py / request_id_middleware.py wiring).
+_logger = logging.getLogger(__name__)
 
 # Router for the v1 surface every existing mobile build talks to. The
 # prefix means handlers below declare paths relative to `/api/v1/chat/`.
@@ -98,15 +136,14 @@ from app.api.dependencies import AuthenticatedUser, require_authenticated_user
 # auth inline inside the handler body since FastAPI's Request-typed
 # Depends doesn't apply to WebSocket routes.
 #
-# F10 DEFERRAL — Codex PR #97 round-5 ITEM 5:
-# Per F10 idempotency is default-on for all non-GET endpoints. The 4
-# non-GET chat handlers below (POST conversations, POST messages,
-# POST read, DELETE conv) do NOT yet enforce X-Idempotency-Key
-# because the Day-2 stub responses don't mutate persistent state
-# (no DB, no Redis writes). When PR #103 (Day 4C) lands the
-# orchestrator RPC + the F10 Redis-backed dedup cache, those
-# handlers grow real state-mutation paths AND the idempotency
-# dependency at the same time. Tracked in PR #103 commit body.
+# F10 IDEMPOTENCY STATUS — Day 4C:
+# `send_message` (POST /conversations/{id}/messages) now enforces F10
+# Redis-backed dedup (24h TTL, scoped by user_id) — it's the first
+# state-mutating handler in v2 public-api (Day-4C wires the orchestrator
+# RPC + Redis cache here). The other 3 non-GET handlers (POST
+# conversations, POST read, DELETE conv) still return Day-2 stubs
+# without state mutation; they pick up F10 + the real orchestrator
+# call in Day 5+ when their bodies stop being stubs.
 chat_v1_router = APIRouter(prefix="/api/v1/chat", tags=["chat-v1"])
 
 # Router for the v2 surface mobile uses for the bot-aware inbox.
@@ -374,31 +411,208 @@ async def list_conversations_v1(
 )
 async def send_message(
     body: SendMessageRequest,
+    request: Request,
     conversation_id: str = Path(..., description="Conversation UUID"),
+    x_idempotency_key: Optional[str] = Header(
+        default=None,
+        alias="X-Idempotency-Key",
+        description="F10 idempotency key (mobile-generated UUID; empty → server mints one)",
+    ),
     user: AuthenticatedUser = Depends(require_authenticated_user),
-    _: None = Depends(require_day_2_placeholder_flag_enabled),
-) -> ApiResponse[MessageResponse]:
-    """Send a user message + return the assistant's reply (Day-2 stub).
+) -> Response:
+    """Send a user message + return the assistant's reply (Day-4C orchestrator wire).
 
-    WHAT: produces a stub assistant MessageResponse echoing the conversation_id
-          mobile gave us. Day-4 RPC integration calls
-          orchestrator.run_turn(...) instead and streams back the real
-          assistant content.
-    WHEN: every chat send.
-    WHY:  the hot path mobile hits dozens of times per session.
+    WHAT: forwards the turn to Session-4's orchestrator at /v1/turn,
+          wraps the JSON MessageResponse-shaped body in the ApiResponse
+          envelope, dedupes via F10 idempotency (Redis 24h cache scoped
+          by user_id). Day-4C replaces the Day-2 stub body — the
+          placeholder feature-flag gate is no longer applied to THIS
+          handler.
+    WHEN: every chat send. Hot path.
+    WHY:  first real-data handler in v2 public-api; the rest of the
+          chat / influencer surface still returns Day-2 stubs until
+          Day 5+ wires the orchestrator + influencer-directory RPCs.
+
+    Error mapping (per Day-4C directive; ERROR-CODE I6 push-back in PR
+    body — directive specified `orchestrator_unavailable` +
+    `orchestrator_timeout` but the contract's locked error-codes
+    table forbids new codes; using `service_unavailable` here +
+    distinguishing via msg field + Sentry tag for backend signal):
+      - orchestrator 503 → public-api 503, error="service_unavailable",
+        Sentry tag orchestrator.call.failed=503
+      - orchestrator 422 → public-api 422, error="validation_failed"
+      - orchestrator timeout / connect error → public-api 504, error=
+        "service_unavailable", Sentry tag orchestrator.call.failed=timeout
+      - orchestrator 5xx other → public-api 503, error="service_unavailable",
+        Sentry tag orchestrator.call.failed=<status>
     """
-    # The stub's `client_message_id` echoes the body's so mobile's local
-    # dedup logic works against the returned assistant message the same
-    # way it will against the Day-4 real response.
-    reply = _stub_message(
-        conversation_id=conversation_id,
-        client_message_id=body.client_message_id,
+    # ---- 1. Resolve idempotency key + log adoption source -----------
+    idempotency_key, key_source = resolve_idempotency_key(x_idempotency_key)
+    _logger.info(
+        "send_message idempotency.key resolved",
+        extra={
+            "user_id": user.user_id,
+            "conversation_id": conversation_id,
+            "idempotency.key_source": key_source,
+        },
     )
-    return ApiResponse[MessageResponse](
+
+    # ---- 2. Cache lookup — replay if hit ---------------------------
+    cached = cache_lookup(user.user_id, idempotency_key)
+    if cached is not None:
+        _logger.info(
+            "send_message idempotency.hit",
+            extra={
+                "user_id": user.user_id,
+                "conversation_id": conversation_id,
+                "idempotency.hit": True,
+            },
+        )
+        return Response(
+            content=cached.body_bytes,
+            status_code=cached.status,
+            media_type="application/json",
+        )
+
+    # ---- 3. Forward to orchestrator ---------------------------------
+    request_id = get_request_id()
+    try:
+        orchestrator_response = await orchestrator_client.run_turn(
+            user_id=user.user_id,
+            conversation_id=conversation_id,
+            message_content=body.content,
+            client_message_id=body.client_message_id,
+            media_urls=body.media_urls,
+            request_id=request_id,
+            idempotency_key=idempotency_key,
+        )
+    except (httpx.TimeoutException, httpx.ConnectError) as exc:
+        # Network / timeout failure → 504. Sentry-tagged per Day-4C
+        # directive ("orchestrator.call.failed") so the dashboard can
+        # pivot on the failure mode.
+        with sentry_sdk.new_scope() as scope:
+            scope.set_tag("orchestrator.call.failed", "timeout")
+            scope.set_context(
+                "orchestrator_call",
+                {
+                    "user_id": user.user_id,
+                    "conversation_id": conversation_id,
+                    "idempotency_key": idempotency_key,
+                    "exc_type": type(exc).__name__,
+                },
+            )
+            sentry_sdk.capture_message(
+                f"orchestrator call timeout / connect error: {exc}",
+                level="error",
+            )
+        body_dict = error_response(
+            "service_unavailable",
+            "Orchestrator unreachable (timeout / connect error)",
+        ).model_dump()
+        return JSONResponse(status_code=504, content=body_dict)
+
+    # ---- 4. Map orchestrator HTTP status to public-api response -----
+    if orchestrator_response.status_code == 422:
+        # Bad request shape — mirror the validation failure to the
+        # caller so mobile can surface it.
+        body_dict = error_response(
+            "validation_failed",
+            "Orchestrator rejected the request as malformed",
+        ).model_dump()
+        return JSONResponse(status_code=422, content=body_dict)
+
+    if orchestrator_response.status_code == 503:
+        with sentry_sdk.new_scope() as scope:
+            scope.set_tag("orchestrator.call.failed", "503")
+            scope.set_context(
+                "orchestrator_call",
+                {"user_id": user.user_id, "idempotency_key": idempotency_key},
+            )
+            sentry_sdk.capture_message(
+                "orchestrator returned 503",
+                level="warning",
+            )
+        body_dict = error_response(
+            "service_unavailable",
+            "Orchestrator is currently unavailable",
+        ).model_dump()
+        return JSONResponse(status_code=503, content=body_dict)
+
+    if not 200 <= orchestrator_response.status_code < 300:
+        # Other 4xx / 5xx — map to public 503 with Sentry tag carrying
+        # the actual upstream status so on-call can debug.
+        with sentry_sdk.new_scope() as scope:
+            scope.set_tag(
+                "orchestrator.call.failed",
+                str(orchestrator_response.status_code),
+            )
+            scope.set_context(
+                "orchestrator_call",
+                {"user_id": user.user_id, "idempotency_key": idempotency_key},
+            )
+            sentry_sdk.capture_message(
+                f"orchestrator returned unexpected status {orchestrator_response.status_code}",
+                level="error",
+            )
+        body_dict = error_response(
+            "service_unavailable",
+            "Orchestrator returned an unexpected error",
+        ).model_dump()
+        return JSONResponse(status_code=503, content=body_dict)
+
+    # ---- 5. Happy path: parse + wrap in ApiResponse envelope -------
+    # Orchestrator returns JSON MessageResponse-shaped per the PR #96 +
+    # PR #98 contract update (NOT SSE — the SSE shape in the on-main
+    # contract was stale before PR #98). Wrap in ApiResponse[MessageResponse]
+    # for the caller.
+    try:
+        message_json = orchestrator_response.json()
+        message_response = MessageResponse(**message_json)
+    except (ValueError, TypeError) as exc:
+        # Orchestrator returned 2xx but body doesn't match MessageResponse.
+        # Treat as a service-layer error — 503 + Sentry tag for follow-up.
+        with sentry_sdk.new_scope() as scope:
+            scope.set_tag("orchestrator.call.failed", "bad_response_shape")
+            scope.set_context(
+                "orchestrator_call",
+                {
+                    "user_id": user.user_id,
+                    "idempotency_key": idempotency_key,
+                    "exc": str(exc),
+                },
+            )
+            sentry_sdk.capture_message(
+                f"orchestrator 2xx body did not parse as MessageResponse: {exc}",
+                level="error",
+            )
+        body_dict = error_response(
+            "service_unavailable",
+            "Orchestrator returned malformed response",
+        ).model_dump()
+        return JSONResponse(status_code=503, content=body_dict)
+
+    envelope = ApiResponse[MessageResponse](
         success=True,
         msg="OK",
         error=None,
-        data=reply,
+        data=message_response,
+    )
+
+    # ---- 6. Cache the successful response for F10 dedup ------------
+    # JSON-serialize via the model_dump_json (the wire-canonical form)
+    # so a cache replay returns byte-for-byte equivalent content.
+    envelope_bytes = envelope.model_dump_json().encode("utf-8")
+    cache_store(
+        user.user_id,
+        idempotency_key,
+        status=200,
+        body_bytes=envelope_bytes,
+    )
+
+    return Response(
+        content=envelope_bytes,
+        status_code=200,
+        media_type="application/json",
     )
 
 

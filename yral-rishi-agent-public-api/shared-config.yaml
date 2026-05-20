@@ -205,6 +205,35 @@ latency:
   streaming_first_token_max_p95_ms: 200
 
 
+# ---------------------------------------------------------------------------
+# Internal service endpoints (Day 4C — public-api → orchestrator)
+# ---------------------------------------------------------------------------
+services:
+  # The Session-4 orchestrator service that public-api forwards every
+  # chat turn to (per interface-contracts/01-internal-rpc-contracts.md).
+  # In the v2 Swarm cluster, services resolve each other by stack name
+  # on the `yral-v2-internal` overlay (per C3); this URL uses that DNS
+  # name + the conventional service port 8000 (per F12 + Day-1 template).
+  orchestrator:
+    base_url: "http://yral-rishi-agent-conversation-turn-orchestrator:8000"
+
+    # The path public-api POSTs to per PR #96 (Session 4 orchestrator
+    # Day-2 RPC handler skeleton) + PR #98 (coordinator contract
+    # alignment to JSON, not SSE). When the contract evolves, change
+    # this here + every service picks it up at next deploy.
+    run_turn_path: "/v1/turn"
+
+    # End-to-end timeout for one orchestrator call. 30s accommodates
+    # LLM-bound traffic (Day-5+ once real models land); Day-4C's stub
+    # responses are <100ms but the budget needs to fit production.
+    request_timeout_seconds: 30
+
+    # Connect-only timeout. 5s catches "orchestrator container missing"
+    # vs "orchestrator is processing" quickly so the public-api error
+    # path differentiates network from compute.
+    connect_timeout_seconds: 5
+
+
 # ===========================================================================
 # RELATED FILES (read these next):
 #   project.config              — per-service values (PROJECT_NAME, etc.)
