@@ -47,6 +47,8 @@ Empirical proof:
 
 Day-6 PR open + awaiting CI + Codex + Rishi-YES. NOT auto-merge eligible under I14 (adds Python middleware files + safety package + extends 2 existing test files; fails the ".md / test / lint / comment-only" gate). Base = `main` (PR #109 merged 2026-05-20 10:46 UTC).
 
+**H5 status note (post-Codex round-3 correction)**: PR #112 lands orchestrator-side H5 only — defence-in-depth + closes Codex PR-#109 BLOCKER 2. Full H5 compliance (per the row's "Middleware in public-api" Mitigation) waits on Session 3 implementing the public-api ingress per DEP-009. The orchestrator-side layer is necessary but not sufficient for the H5 sign-off.
+
 Progress: Day 1 → 100% (PR #95); Day 2 → 100% (PR #96 merged 2026-05-20); Day 3 → 100% (Day-6 restored — PR opened this turn from `dbd40c0`); Day 4 → 100% (PR #104 merged 2026-05-20); Day 5 → 100% (PR #109 merged 2026-05-20); Day 6 → 100% (PR opened this turn — closes Codex PR-#109 BLOCKER 2).
 
 ## NEXT 3 PLANNED ACTIONS

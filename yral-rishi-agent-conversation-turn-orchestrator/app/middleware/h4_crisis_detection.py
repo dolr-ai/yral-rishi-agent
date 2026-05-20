@@ -91,6 +91,14 @@ from app.config import get_settings
 # the order-verification test can assert chain execution.
 from app.middleware._safety_audit import record
 
+# `validate_required_headers(request)` enforces the round-4 X-User-Id
+# + X-Idempotency-Key + UUID-format gate (Codex PR-#112 round-3
+# BLOCKER 1 closure). H5 (outer) already runs this gate; H4 runs it
+# again for defence-in-depth — same check, same envelope shape, so
+# a future reorder of `add_middleware` calls in main.py can't
+# silently regress the gate.
+from app.middleware._header_validation import validate_required_headers
+
 # `crisis_response(conversation_id)` returns the canned helpline
 # response dict; obviously-stub placeholder per the directive
 # ("better than a wrong helpline number"). `count_toward_paywall=
@@ -194,6 +202,13 @@ class H4CrisisDetectionMiddleware(BaseHTTPMiddleware):
         )
         if gate_closed:
             return await call_next(request)
+
+        # Codex PR-#112 round-3 BLOCKER 1 — same header-gate as H5
+        # (defence-in-depth; H5 should already have validated, but
+        # symmetric check survives any future middleware reorder).
+        header_error_response = validate_required_headers(request)
+        if header_error_response is not None:
+            return header_error_response
 
         record("H4_entry")
 

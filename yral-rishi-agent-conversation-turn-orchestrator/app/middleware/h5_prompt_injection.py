@@ -106,6 +106,15 @@ from app.config import get_settings
 # the body for everyone downstream.
 from app.middleware._body_replay import read_and_replay_body
 
+# `validate_required_headers(request)` enforces the round-4 X-User-Id
+# + X-Idempotency-Key + UUID-format gate (Codex PR-#112 round-3
+# BLOCKER 1 closure). Returns the 400 envelope JSONResponse if any
+# header is missing/malformed; None on success. We run this BEFORE
+# the body-replay + pattern-match so a header-malformed jailbreak
+# gets the documented 400 — not the 200 canned reply that would
+# leak the safety stack's existence to a header-omitting attacker.
+from app.middleware._header_validation import validate_required_headers
+
 # `record(...)` appends to the `SAFETY_AUDIT_TRAIL` ContextVar so
 # the order-verification test can assert the chain executed in the
 # documented LIFO sequence. No-op in production.
@@ -247,6 +256,17 @@ class H5PromptInjectionMiddleware(BaseHTTPMiddleware):
         )
         if gate_closed:
             return await call_next(request)
+
+        # Codex PR-#112 round-3 BLOCKER 1 — enforce the round-4
+        # X-User-Id + X-Idempotency-Key + UUID-format gate BEFORE any
+        # safety canned-response can emit. Without this gate, a
+        # header-omitting attacker would see a clean message return
+        # 400 (handler gate) while a jailbreak returns 200 canned
+        # (safety bypass) — fingerprinting the safety stack's
+        # existence. Now both paths produce the same 400 envelope.
+        header_error_response = validate_required_headers(request)
+        if header_error_response is not None:
+            return header_error_response
 
         # Audit-trail entry marker — used by the order-verification
         # test in `tests/test_safety_stack.py`. No-op in production

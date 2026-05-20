@@ -204,6 +204,23 @@ class A10AdultContentFilterMiddleware(BaseHTTPMiddleware):
             record("A10_exit")
             return response
 
+        # Codex PR-#112 round-3 CONCERN — content-type guard. A10's
+        # drain-and-rebuild approach assumes the response is a small
+        # non-streaming JSON body (the contract on the v1 path per
+        # the agent definition's "JSON, NOT SSE" rule). If a future
+        # route reuses this middleware against a StreamingResponse /
+        # SSE path / non-JSON body, the buffering would either break
+        # streaming semantics or fail-open silently. Explicit guard:
+        # only inspect bodies whose Content-Type starts with
+        # `application/json`; anything else passes through unmodified
+        # so SSE / file-stream / etc. paths are NOT silently
+        # buffered + rebuilt. The streaming-safe moderation design
+        # for `/v2/turn-stream` (when it lands) is a separate piece.
+        content_type = response.headers.get("content-type", "")
+        if not content_type.lower().startswith("application/json"):
+            record("A10_exit")
+            return response
+
         # Drain the response body iterator. BaseHTTPMiddleware wraps
         # the inner response in a streaming iterator, so we collect
         # all chunks here before parsing. For Day-2 stub + Day-3

@@ -2,6 +2,18 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-20 — Day-6 wording correction: H5 is PARTIALLY satisfied (orchestrator-side defence-in-depth); full H5 compliance needs DEP-009 (Session 3 public-api ingress)
+
+Earlier Day-6 entry phrased the safety-stack restoration as "Closes Codex PR-#109 BLOCKER 2" — that's true for the orchestrator-side LLM-call guard but is NOT full H5 satisfaction. CONSTRAINTS H5 row 129 verbatim places the middleware in **public-api** (Mitigation column: "Middleware in public-api; tests include known injection payloads"). Session 4 owns the orchestrator; Session 3 owns public-api.
+
+**Corrected framing:**
+- **Orchestrator-side H5 (PR #112)** — defence-in-depth + closes Codex PR-#109 BLOCKER 2 ("LLM call must be protected"). Active now; guards every chat turn that reaches the orchestrator.
+- **Public-api-side H5 (DEP-009, Session 3)** — the H5-spec'd placement. NOT yet implemented. Required before canary user traffic + before H5 can be marked fully satisfied at sign-off.
+
+Both layers active = the H5 constraint is fully satisfied at both placements. Until then, the orchestrator-side coverage is necessary but not sufficient. PR #112 LOG entry below should be read with this framing.
+
+---
+
 ## 2026-05-20 — Day 6: restore H5/H4/A10 safety stack in front of the LLM call
 
 ### Action

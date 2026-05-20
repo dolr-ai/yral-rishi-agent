@@ -238,7 +238,12 @@ def test_h5_blocks_jailbreak_phrase(
     """
     _open_both_gates(monkeypatch)
 
-    response = client.post("/v1/turn", json=JAILBREAK_BODY)
+    # Codex PR-#112 round-3: even safety-blocked requests must carry
+    # the round-4 X-User-Id + X-Idempotency-Key headers; the missing-
+    # header path is tested separately further down.
+    response = client.post(
+        "/v1/turn", json=JAILBREAK_BODY, headers=_required_headers(),
+    )
 
     assert response.status_code == 200, response.text
     assert response.headers["X-Safety-Decision"] == "H5"
@@ -261,7 +266,7 @@ def test_h5_blocks_base64_blob_over_threshold(
     """
     _open_both_gates(monkeypatch)
 
-    response = client.post("/v1/turn", json=BASE64_BLOB_BODY)
+    response = client.post("/v1/turn", json=BASE64_BLOB_BODY, headers=_required_headers())
 
     assert response.status_code == 200, response.text
     assert response.headers["X-Safety-Decision"] == "H5"
@@ -283,7 +288,7 @@ def test_h5_blocked_request_stops_chain_before_h4(
     audit_trail: list[str] = []
     token = SAFETY_AUDIT_TRAIL.set(audit_trail)
     try:
-        client.post("/v1/turn", json=JAILBREAK_BODY)
+        client.post("/v1/turn", json=JAILBREAK_BODY, headers=_required_headers())
     finally:
         SAFETY_AUDIT_TRAIL.reset(token)
 
@@ -309,7 +314,7 @@ def test_h4_blocks_crisis_language(
     """
     _open_both_gates(monkeypatch)
 
-    response = client.post("/v1/turn", json=CRISIS_BODY)
+    response = client.post("/v1/turn", json=CRISIS_BODY, headers=_required_headers())
 
     assert response.status_code == 200, response.text
     assert response.headers["X-Safety-Decision"] == "H4"
@@ -336,7 +341,7 @@ def test_h4_blocked_request_stops_chain_before_a10(
     audit_trail: list[str] = []
     token = SAFETY_AUDIT_TRAIL.set(audit_trail)
     try:
-        client.post("/v1/turn", json=CRISIS_BODY)
+        client.post("/v1/turn", json=CRISIS_BODY, headers=_required_headers())
     finally:
         SAFETY_AUDIT_TRAIL.reset(token)
 
@@ -407,7 +412,7 @@ def test_jailbreak_in_production_still_503s_not_safety_canned(
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("ENABLE_RUN_TURN_STUB", "true")
 
-    response = client.post("/v1/turn", json=JAILBREAK_BODY)
+    response = client.post("/v1/turn", json=JAILBREAK_BODY, headers=_required_headers())
 
     assert response.status_code == 503, response.text
     # No safety header — middleware passed through without engaging.
@@ -428,7 +433,7 @@ def test_jailbreak_with_flag_off_still_503s_not_safety_canned(
     monkeypatch.setenv("ENVIRONMENT", "local")
     # Intentionally NOT setting ENABLE_RUN_TURN_STUB — default is False.
 
-    response = client.post("/v1/turn", json=JAILBREAK_BODY)
+    response = client.post("/v1/turn", json=JAILBREAK_BODY, headers=_required_headers())
 
     assert response.status_code == 503, response.text
     assert "X-Safety-Decision" not in response.headers
@@ -459,6 +464,7 @@ def test_h5_does_not_500_when_user_message_is_non_string(
     response = client.post(
         "/v1/turn",
         json={"conversation_id": "non-string-test", "user_message": 123},
+        headers=_required_headers(),
     )
 
     # 422 is the expected outcome from Pydantic's int→str validation.
@@ -489,6 +495,7 @@ def test_h4_does_not_500_when_user_message_is_non_string(
     response = client.post(
         "/v1/turn",
         json={"conversation_id": "non-string-test", "user_message": 456},
+        headers=_required_headers(),
     )
 
     assert response.status_code != 500
@@ -532,7 +539,7 @@ def test_h5_block_emits_sentry_event_with_prompt_injection_type(
         _spy_capture_message,
     )
 
-    response = client.post("/v1/turn", json=JAILBREAK_BODY)
+    response = client.post("/v1/turn", json=JAILBREAK_BODY, headers=_required_headers())
 
     # H5 short-circuit produced the 200 canned reply.
     assert response.status_code == 200, response.text
@@ -561,6 +568,200 @@ def test_h5_block_emits_sentry_event_with_prompt_injection_type(
     assert extras.get("safety_layer") == "H5"
     assert extras.get("reason") is not None
     assert extras.get("user_message_length", -1) >= 0
+
+
+# ===========================================================================
+# ⭐ A10 CONTENT-TYPE GUARD (Codex PR-#112 round-3 CONCERN closure)
+# ===========================================================================
+
+
+def test_a10_passes_through_non_json_responses_without_buffering() -> None:
+    """WHAT: A10 only inspects responses with Content-Type starting
+          `application/json`. A non-JSON response (e.g. a streaming
+          `text/event-stream`, a `text/plain` health probe, or a
+          `text/html` debug page) MUST pass through unmodified —
+          A10 does NOT drain+rebuild the body in that case.
+    WHEN: A future route reuses A10 (or this middleware fires against
+          a streaming response). Today's `/v1/turn` always returns
+          JSON, so this regression gate unit-tests A10's dispatch
+          directly with a non-JSON mock response.
+    WHY:  Codex PR-#112 round-3 CONCERN — A10's drain-and-rebuild
+          assumes a small JSON body. Without the content-type guard
+          a future SSE / streaming path would silently lose
+          streaming semantics or fail-open. The guard makes the
+          assumption explicit + tested. Streaming-safe moderation
+          design for /v2/turn-stream is a separate piece per the
+          A16 / agent-def divide.
+
+    Regression-gate shape:
+      - Direct unit test of `A10AdultContentFilterMiddleware.dispatch`
+        with a stubbed `call_next` that returns a PlainTextResponse.
+      - Avoid the full FastAPI routing stack so the test is
+        decoupled from any future change in how the run_turn route
+        compiles.
+      - Assert: returned response is the SAME PlainTextResponse
+        object (passthrough); no X-Safety-Decision header gets
+        attached.
+    """
+    # Import here so the test body owns the local references + the
+    # rest of the module's imports stay minimal.
+    import asyncio
+    from fastapi.responses import PlainTextResponse
+    from starlette.requests import Request
+    from app.middleware.a10_adult_content_filter import (
+        A10AdultContentFilterMiddleware,
+    )
+
+    # Build a minimal request object scoped to /v1/turn (so the
+    # path-gate check in dispatch passes).
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/v1/turn",
+        "headers": [
+            (b"x-user-id", b"safety-test-user"),
+            (b"x-idempotency-key", _SAFETY_TEST_IDEMPOTENCY_KEY.encode()),
+        ],
+        "query_string": b"",
+    }
+    request = Request(scope=scope, receive=lambda: None)
+
+    # Mock the downstream response with Content-Type: text/plain.
+    plain_response = PlainTextResponse(
+        content="this is plain text not json content",
+        status_code=200,
+    )
+
+    async def _stub_call_next(_request):
+        return plain_response
+
+    # A10 needs `enable_run_turn_stub` on so the gate-respect passes.
+    # We set the env vars + clear the settings cache so the dispatch
+    # reads the test-scoped config. clean_settings_cache fixture is
+    # autouse — clears before + after the test.
+    import os
+    os.environ["ENVIRONMENT"] = "local"
+    os.environ["ENABLE_RUN_TURN_STUB"] = "true"
+    from app.config import get_settings
+    get_settings.cache_clear()
+
+    middleware = A10AdultContentFilterMiddleware(app=lambda *_: None)
+
+    try:
+        result = asyncio.run(middleware.dispatch(request, _stub_call_next))
+    finally:
+        # Restore env so subsequent tests don't see the leaked vars
+        # (clean_settings_cache only clears the lru_cache, not the env).
+        os.environ.pop("ENVIRONMENT", None)
+        os.environ.pop("ENABLE_RUN_TURN_STUB", None)
+        get_settings.cache_clear()
+
+    # The CORE assertion: A10 passed through. The returned response
+    # is the same PlainTextResponse object the stub call_next
+    # produced; A10 did NOT drain + rebuild + attach an A10 header.
+    assert result is plain_response, (
+        f"A10 should have passed through the non-JSON response "
+        f"unchanged. Got a different response object: {result!r}"
+    )
+    assert "X-Safety-Decision" not in result.headers
+
+
+# ===========================================================================
+# ⭐ HEADER GATE — H5 + H4 ENFORCE X-USER-ID + X-IDEMPOTENCY-KEY
+# ===========================================================================
+#
+# Codex PR-#112 round-3 BLOCKER 1 closure: the safety middlewares must
+# honour the same round-4 X-User-Id REQUIRED + X-Idempotency-Key
+# REQUIRED + UUID-format gate the handler enforces. Without these tests
+# a regression could leak the safety stack's existence (clean input
+# without headers → 400; jailbreak input without headers → 200 canned).
+# All three tests post a jailbreak body (which WOULD normally trigger
+# H5 if headers were valid) without one of the required headers, and
+# assert the 400 envelope returned by the middleware-side validator
+# (NOT the canned safety reply).
+
+
+def test_h5_blocks_without_x_user_id_returns_400_envelope_via_middleware(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient
+) -> None:
+    """WHAT: jailbreak body + missing X-User-Id → 400 envelope from
+          the safety middleware's header gate (not the safety canned).
+    WHEN: a request omits X-User-Id, regardless of the body content.
+    WHY:  PR-#96 round-4 BLOCKER 2 made X-User-Id REQUIRED for every
+          POST /v1/turn. Codex PR-#112 round-3 BLOCKER 1 — safety
+          short-circuit must honour the same gate; otherwise an
+          attacker without headers gets a 200 canned reply (vs the
+          400 a clean input would get) + can fingerprint the safety
+          stack.
+    """
+    _open_both_gates(monkeypatch)
+
+    response = client.post(
+        "/v1/turn",
+        json=JAILBREAK_BODY,
+        headers={"X-Idempotency-Key": _SAFETY_TEST_IDEMPOTENCY_KEY},
+        # X-User-Id intentionally omitted.
+    )
+
+    assert response.status_code == 400, response.text
+    body = response.json()
+    assert body["error"] == "user_id_header_required"
+    assert body["success"] is False
+    # NO X-Safety-Decision header — middleware exited at the header
+    # gate, never reached the pattern-match stage.
+    assert "X-Safety-Decision" not in response.headers
+
+
+def test_h5_blocks_without_x_idempotency_key_returns_400_envelope_via_middleware(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient
+) -> None:
+    """WHAT: jailbreak body + missing X-Idempotency-Key → 400 envelope.
+    WHEN: a request omits X-Idempotency-Key.
+    WHY:  PR-#96 round-3 BLOCKER 1a made X-Idempotency-Key REQUIRED;
+          Codex PR-#112 round-3 BLOCKER 1 — safety must honour it.
+    """
+    _open_both_gates(monkeypatch)
+
+    response = client.post(
+        "/v1/turn",
+        json=JAILBREAK_BODY,
+        headers={"X-User-Id": "safety-test-user"},
+        # X-Idempotency-Key intentionally omitted.
+    )
+
+    assert response.status_code == 400, response.text
+    body = response.json()
+    assert body["error"] == "idempotency_key_required"
+    assert "X-Safety-Decision" not in response.headers
+
+
+def test_h5_blocks_with_non_uuid_idempotency_key_returns_400_envelope_via_middleware(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient
+) -> None:
+    """WHAT: jailbreak body + non-UUID X-Idempotency-Key → 400 envelope.
+    WHEN: an attacker passes arbitrary text in X-Idempotency-Key.
+    WHY:  PR-#96 round-4 BLOCKER 3 — UUID-format gate. Without it,
+          the attacker could stuff PII into the header + watch where
+          it lands (Redis keys, structured logs). Codex PR-#112
+          round-3 BLOCKER 1 — same gate must fire on the safety
+          path so the PII surface stays closed even for safety-
+          blocked requests.
+    """
+    _open_both_gates(monkeypatch)
+
+    response = client.post(
+        "/v1/turn",
+        json=JAILBREAK_BODY,
+        headers={
+            "X-User-Id": "safety-test-user",
+            "X-Idempotency-Key": "this-is-not-a-uuid-it-is-attacker-input",
+        },
+    )
+
+    assert response.status_code == 400, response.text
+    body = response.json()
+    assert body["error"] == "idempotency_key_invalid_format"
+    assert "X-Safety-Decision" not in response.headers
 
 
 # ===========================================================================
@@ -637,7 +838,7 @@ def test_h5_jailbreak_short_circuits_before_llm_client_is_invoked(
         lambda: _SoulFileClientThatMustNotBeCalled(),
     )
 
-    response = client.post("/v1/turn", json=JAILBREAK_BODY)
+    response = client.post("/v1/turn", json=JAILBREAK_BODY, headers=_required_headers())
 
     # H5 short-circuit produces a 200 canned reply with the H5 header.
     assert response.status_code == 200, response.text
@@ -691,7 +892,7 @@ def test_h4_crisis_short_circuits_before_llm_client_is_invoked(
         lambda: _SoulFileClientThatMustNotBeCalled(),
     )
 
-    response = client.post("/v1/turn", json=CRISIS_BODY)
+    response = client.post("/v1/turn", json=CRISIS_BODY, headers=_required_headers())
 
     assert response.status_code == 200, response.text
     assert response.headers["X-Safety-Decision"] == "H4"
