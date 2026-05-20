@@ -94,6 +94,46 @@ class Settings(BaseSettings):
     # so a forgotten override still routes correctly per D4.
     langfuse_host: str = "https://langfuse.rishi.yral.com"
 
+    # -- Day-2 run_turn stub gate ------------------------------------------
+    # When True, the orchestrator's `POST /v1/turn` endpoint returns the
+    # Day-2 placeholder MessageDto. False everywhere by default — non-prod
+    # environments opt in explicitly via env var
+    # `ENABLE_RUN_TURN_STUB=true`, and `app/run_turn.py` ADDITIONALLY
+    # refuses to serve the stub when `environment == "production"`
+    # regardless of this flag (defence-in-depth so a mis-set env var in
+    # prod can never leak a stub reply to mobile parity-test traffic).
+    #
+    # Why two gates instead of one? Per the Session-4 agent definition's
+    # Day-2 plan: "must be schema-valid, must be feature-flagged to
+    # non-production, must not leak to mobile parity-test traffic." The
+    # environment gate is the unconditional safety net; the flag is the
+    # explicit opt-in for the non-prod environments that actually want
+    # the stub.
+    enable_run_turn_stub: bool = False
+
+    # -- Redis (F10 idempotency + C11 Sentinel discovery) ----------------
+    # Two settings cover the two backend modes. The Sentinel path is the
+    # C11-compliant production shape; the single-primary URL is the
+    # laptop-dev / docker-compose fallback.
+    #
+    # `redis_sentinel_enabled`: when True, `app/idempotency.py::init_redis`
+    # builds a Sentinel-aware client using `redis.asyncio.sentinel.
+    # Sentinel(...)` and reads the master name + sentinel host:port pairs
+    # from `shared-config.yaml`'s `redis:` section (C7 — single source of
+    # truth). When False, the fallback single-primary client is built
+    # from `redis_url` AND a startup WARNING is logged so the C11 gap
+    # stays loud, not silent. The flag defaults FALSE so laptop dev
+    # against the docker-compose Redis keeps working; production
+    # MUST flip this to True via env injection.
+    redis_sentinel_enabled: bool = False
+
+    # `redis://` URL — used ONLY when `redis_sentinel_enabled=False`.
+    # Local default points at the docker-compose sibling container;
+    # production wouldn't normally read this (Sentinel path is on).
+    # The 24h F10 idempotency TTL is hardcoded in `app/idempotency.py`
+    # — no need to expose it as a setting.
+    redis_url: str = "redis://localhost:6379/0"
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
