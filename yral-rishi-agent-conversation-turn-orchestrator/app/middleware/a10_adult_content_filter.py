@@ -94,10 +94,31 @@ from app.config import get_settings
 # verification test can pin chain execution.
 from app.middleware._safety_audit import record
 
-# `adult_content_blocked(conversation_id)` returns the canned
-# MessageResponse-shaped dict A10 rewrites the body with.
-# `count_toward_paywall=False` per E4.
+# `adult_content_blocked(conversation_id, idempotency_key)` returns
+# the canned MessageResponse-shaped dict A10 rewrites the body with.
+# `count_toward_paywall=False` per E4. The idempotency_key arg makes
+# the canned `id` deterministic across retries (Codex PR-#112
+# round-4 BLOCKER 2).
 from app.safety.canned_responses import adult_content_blocked
+
+# F10 idempotency helpers — Codex PR-#112 round-4 BLOCKER 1 closure:
+# A10 calls `mark_complete` AFTER rewriting the response body so the
+# cached payload in Redis matches the client-visible canned reply.
+# Without this, the handler's earlier `mark_complete` left the
+# unfiltered LLM output in the F10 cache; a retry's `replay_done`
+# would return the unfiltered version (A10 would rewrite again on
+# the way out, but other readers of the cache — log dumps, future
+# audit features — would see the unfiltered cached payload).
+from app.idempotency import (
+    compute_idempotency_key,
+    compute_request_fingerprint,
+    mark_complete,
+)
+
+# stdlib JSON — needed to parse the request body for fingerprint
+# recomputation. H5 already read+replayed the body, so this is a
+# cached read (no new I/O).
+import json as _json_for_fingerprint
 
 
 GUARDED_PATH: Final[str] = "/v1/turn"
@@ -262,8 +283,70 @@ class A10AdultContentFilterMiddleware(BaseHTTPMiddleware):
             },
         )
 
+        # Read the validated X-User-Id + X-Idempotency-Key from the
+        # request. The handler already validated these (A10's call_next
+        # only returned 200 if the handler accepted the request); the
+        # KeyError-on-missing pattern would only fire on a future
+        # regression where A10 sees a 200 from a handler that
+        # bypassed the gate. Defensive `.get(..., "")` would mask
+        # such a regression — better to surface as a 500.
+        user_id = request.headers["x-user-id"]
+        idempotency_key = request.headers["x-idempotency-key"]
+
+        # Build the canned reply with the idempotency_key threaded
+        # through so `id` is deterministic on retry.
+        canned_payload = adult_content_blocked(
+            conversation_id, idempotency_key=idempotency_key,
+        )
+
+        # Codex PR-#112 round-4 BLOCKER 1 — overwrite the F10 cache
+        # with the canned reply so the stored payload matches the
+        # client-visible body. Without this, the handler's earlier
+        # `mark_complete` cached the unfiltered LLM output; A10 would
+        # rewrite on every retry (correct user-visible behaviour) but
+        # the cached payload would remain unfiltered (operator-side
+        # leak surface via direct Redis reads / log dumps).
+        #
+        # Read body bytes from `request.state.cached_request_body_bytes`
+        # — Starlette's BaseHTTPMiddleware builds a NEW Request
+        # instance per layer (each with its own `_body` cache); after
+        # the handler consumed the body via its Pydantic parse,
+        # `await request.body()` on A10's Request raises
+        # "Stream consumed". H5's `read_and_replay_body` helper stashes
+        # the bytes on `request.state` (scope-shared) precisely so
+        # this post-call_next read works.
+        try:
+            request_body_bytes = request.state.cached_request_body_bytes
+            request_payload = _json_for_fingerprint.loads(request_body_bytes)
+            redis_key = compute_idempotency_key(
+                user_id=user_id, idempotency_key=idempotency_key,
+            )
+            fingerprint = compute_request_fingerprint(request_payload)
+            await mark_complete(
+                redis_key=redis_key,
+                fingerprint=fingerprint,
+                response_payload=canned_payload,
+            )
+        except Exception as cache_overwrite_failure:
+            # Best-effort — if the cache overwrite fails, the client
+            # still sees the canned reply (A10's primary job). The
+            # operator-side concern (cached unfiltered payload) is
+            # logged so a Sentry alert can spot the gap.
+            # `exc_info=True` surfaces the traceback into the log
+            # record so triage doesn't need a code-side reproduce.
+            _log.error(
+                "a10_cache_overwrite_failed: %s",
+                cache_overwrite_failure,
+                extra={
+                    "conversation_id": conversation_id,
+                    "reason": reason,
+                    "failure_type": type(cache_overwrite_failure).__name__,
+                },
+                exc_info=True,
+            )
+
         new_response = JSONResponse(
-            content=adult_content_blocked(conversation_id),
+            content=canned_payload,
             status_code=200,
         )
         new_response.headers["X-Safety-Decision"] = "A10"

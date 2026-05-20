@@ -93,6 +93,18 @@ async def read_and_replay_body(request: Request) -> bytes:
     # this patch propagates downstream.
     request._receive = replay_receive
 
+    # Stash the body bytes on request.state (scope-shared) so middleware
+    # layers AFTER `call_next` returns can still read them. The
+    # per-layer Request instances Starlette's BaseHTTPMiddleware builds
+    # do NOT share `_body` (each instance caches independently); but
+    # `state` lives on `scope["state"]` so all layers see the same
+    # value. Codex PR-#112 round-4 BLOCKER 1 closure: A10 (post-handler)
+    # needs the bytes to compute the F10 fingerprint for the
+    # mark_complete cache overwrite, and `await request.body()` at
+    # that point raises "Stream consumed" — the patched _receive was
+    # drained by the handler's own body-parse step in between.
+    request.state.cached_request_body_bytes = body
+
     return body
 
 

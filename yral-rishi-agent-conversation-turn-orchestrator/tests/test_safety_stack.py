@@ -571,6 +571,210 @@ def test_h5_block_emits_sentry_event_with_prompt_injection_type(
 
 
 # ===========================================================================
+# ⭐ DETERMINISM + F10 CACHE COHERENCE (Codex PR-#112 round-4)
+# ===========================================================================
+#
+# BLOCKER 2 closure — safety-canned replies MUST be byte-identical on
+# retry with the same X-Idempotency-Key. F10 row 104 verbatim allows
+# "Per-endpoint opt-out for truly stateless" — we opt out of Redis
+# dedup writes on the safety paths AND make the canned response
+# deterministic on the key (UUID5 + fixed timestamp marker). Result:
+# F10's idempotent-replay contract holds without the write.
+#
+# BLOCKER 1 closure — A10 calls mark_complete after rewriting so the
+# cached F10 payload matches the client-visible body. Without this,
+# the handler's earlier mark_complete (with unfiltered LLM output)
+# left a stale unfiltered payload in cache; a retry's replay_done
+# would deliver the unfiltered payload to A10 again, which would
+# rewrite a second time — correct on the surface but the cached
+# payload diverged from client-visible reality (operator-side leak
+# surface).
+
+
+def test_h5_block_is_deterministic_byte_identical_on_retry(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient
+) -> None:
+    """WHAT: two H5-blocking POSTs with the SAME X-Idempotency-Key +
+          SAME jailbreak body return byte-identical bodies (id +
+          created_at + content + all other fields).
+    WHEN: a client retries a safety-blocked request — happens routinely
+          on network glitches between mobile + public-api.
+    WHY:  Codex PR-#112 round-4 BLOCKER 2 closure. Without
+          determinism the mobile UI would render TWO distinct
+          "I can't help with that." assistant turns (different ids +
+          timestamps), violating F10's idempotent-replay contract.
+    """
+    _open_both_gates(monkeypatch)
+
+    headers = _required_headers()
+
+    first_response = client.post(
+        "/v1/turn", json=JAILBREAK_BODY, headers=headers,
+    )
+    second_response = client.post(
+        "/v1/turn", json=JAILBREAK_BODY, headers=headers,
+    )
+
+    assert first_response.status_code == 200, first_response.text
+    assert second_response.status_code == 200, second_response.text
+
+    # Byte-identical bodies — the core determinism property.
+    assert first_response.json() == second_response.json(), (
+        f"H5 canned replies diverged on retry — BLOCKER 2 regression. "
+        f"first={first_response.json()!r}, "
+        f"second={second_response.json()!r}"
+    )
+
+    # Specifically pin the deterministic fields the fix touches.
+    first_body = first_response.json()
+    assert first_body["id"] == second_response.json()["id"]
+    assert first_body["created_at"] == second_response.json()["created_at"]
+    # Sanity — the deterministic timestamp marker is the fixed
+    # placeholder, NOT a real datetime.now() value.
+    assert first_body["created_at"] == "1970-01-01T00:00:00Z"
+
+
+def test_h4_block_is_deterministic_byte_identical_on_retry(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient
+) -> None:
+    """WHAT: symmetric to the H5 test — H4 canned replies are also
+          deterministic on retry.
+    WHEN: a client retries a crisis-language-flagged request.
+    WHY:  same BLOCKER 2 closure as H5.
+    """
+    _open_both_gates(monkeypatch)
+
+    headers = _required_headers()
+
+    first_response = client.post(
+        "/v1/turn", json=CRISIS_BODY, headers=headers,
+    )
+    second_response = client.post(
+        "/v1/turn", json=CRISIS_BODY, headers=headers,
+    )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert first_response.json() == second_response.json()
+
+
+def test_h5_and_h4_with_same_idempotency_key_produce_different_ids(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient
+) -> None:
+    """WHAT: when the SAME idempotency_key is blocked by a different
+          safety layer (H5 vs H4) on different bodies, the deterministic
+          ids are DISTINCT.
+    WHEN: a defence-in-depth check — the safety_layer is mixed into
+          the UUID5 seed precisely so the same key blocked by
+          different layers produces distinct ids (helps log
+          correlation + flags divergence in audit).
+    WHY:  proves the layer-mixing strategy works. Without it, an
+          attacker reusing a key across body variations could see
+          identical ids despite different block reasons.
+    """
+    _open_both_gates(monkeypatch)
+
+    # Use a separate fixed key for this test (different from
+    # `_SAFETY_TEST_IDEMPOTENCY_KEY` which the deterministic tests
+    # above use — fingerprint mismatch would otherwise interfere on
+    # the second request).
+    shared_key = "550e8400-e29b-41d4-a716-446655440099"
+    headers = {
+        "X-Idempotency-Key": shared_key,
+        "X-User-Id": "safety-test-user",
+    }
+
+    h5_response = client.post(
+        "/v1/turn", json=JAILBREAK_BODY, headers=headers,
+    )
+    h4_response = client.post(
+        "/v1/turn", json=CRISIS_BODY, headers=headers,
+    )
+
+    # Both 200 canned but distinct safety layers fired.
+    assert h5_response.status_code == 200
+    assert h4_response.status_code == 200
+    assert h5_response.headers["X-Safety-Decision"] == "H5"
+    assert h4_response.headers["X-Safety-Decision"] == "H4"
+
+    # Ids should differ — layer-mixed UUID5 seed.
+    assert h5_response.json()["id"] != h4_response.json()["id"], (
+        "expected distinct ids when the same idempotency_key is "
+        "blocked by different safety layers; layer-mixing in the "
+        "UUID5 seed regressed"
+    )
+
+
+def test_a10_overwrites_idempotency_cache_with_canned_payload(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient, fake_redis,
+) -> None:
+    """WHAT: when A10 rewrites a handler response, the F10 cache
+          payload (in fakeredis) is the CANNED reply, NOT the
+          unfiltered handler output the handler's mark_complete
+          initially wrote.
+    WHEN: every A10 rewrite path — today: the test rigs
+          STUB_CONTENT to a flagged string.
+    WHY:  Codex PR-#112 round-4 BLOCKER 1 closure. Cached payload
+          MUST match client-visible body so future audit / replay
+          features don't surface the unfiltered output.
+    """
+    _open_both_gates(monkeypatch)
+
+    # Rig the stub to trigger A10's pattern.
+    monkeypatch.setattr(
+        "app.run_turn.STUB_CONTENT",
+        "Day-2 stub but with adult-content test marker hidden in it",
+    )
+
+    headers = _required_headers()
+    response = client.post(
+        "/v1/turn", json=VALID_BODY, headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.headers["X-Safety-Decision"] == "A10"
+    canned_content = response.json()["content"]
+    assert canned_content == "I can't help with that."
+
+    # Inspect fakeredis: the cached payload should be the canned one.
+    # The handler's first mark_complete wrote the stub (with the rigged
+    # marker); A10's overwrite should have replaced it with the canned.
+    import asyncio
+    import json as _json
+
+    # Derive the redis_key the handler used.
+    expected_redis_key = (
+        f"idempotency:orchestrator:run-turn:{headers['X-User-Id']}:"
+        f"{headers['X-Idempotency-Key']}"
+    )
+
+    cached_raw = asyncio.run(fake_redis.get(expected_redis_key))
+    assert cached_raw is not None, (
+        f"Expected mark_complete to have written to fakeredis at "
+        f"key={expected_redis_key!r}; got None. The handler's path "
+        f"may not have reached mark_complete."
+    )
+
+    cached_envelope = _json.loads(cached_raw)
+    assert cached_envelope["state"] == "done", (
+        f"expected cache state='done' after mark_complete; got "
+        f"{cached_envelope!r}"
+    )
+    cached_response = cached_envelope["response"]
+
+    # CORE assertion: cached content matches the canned reply, NOT
+    # the unfiltered stub-with-test-marker output. Without A10's
+    # mark_complete overwrite, this would be the unfiltered string
+    # "Day-2 stub but with adult-content test marker hidden in it".
+    assert cached_response["content"] == "I can't help with that.", (
+        f"A10 cache overwrite regressed — cached payload still "
+        f"carries the unfiltered handler output. "
+        f"cached={cached_response!r}"
+    )
+    assert cached_response["count_toward_paywall"] is False
+
+
+# ===========================================================================
 # ⭐ A10 CONTENT-TYPE GUARD (Codex PR-#112 round-3 CONCERN closure)
 # ===========================================================================
 

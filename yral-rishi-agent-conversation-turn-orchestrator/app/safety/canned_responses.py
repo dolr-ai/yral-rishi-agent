@@ -45,10 +45,16 @@
 # MessageResponse wire shape per A8.
 from datetime import datetime, timezone
 
-# stdlib `uuid4` — fresh UUID per canned reply's `id` field. Same
-# generation pattern the run_turn handler uses for its happy-path
-# MessageResponse, so log + trace correlation works uniformly.
-from uuid import uuid4
+# stdlib UUID. `uuid5` derives a deterministic UUID from a namespace
+# + a string seed — used here to make safety-canned `id` fields
+# byte-identical on retry (per Codex PR-#112 round-4 BLOCKER 2 +
+# F10 row 104's "Per-endpoint opt-out for truly stateless"
+# affordance: safety canned replies opt out of Redis dedup AND are
+# byte-identical-on-retry via determinism, so the F10 idempotent-
+# replay contract is satisfied without the dedup write).
+# `NAMESPACE_OID` is one of the standard UUID5 namespaces; we use
+# it as the deterministic seed-namespace.
+from uuid import NAMESPACE_OID, uuid5
 
 
 # ===========================================================================
@@ -74,31 +80,76 @@ CRISIS_PLACEHOLDER_CONTENT: str = (
 # ===========================================================================
 
 
-def _canned_message_response_dict(conversation_id: str, content: str) -> dict:
+def _canned_message_response_dict(
+    conversation_id: str,
+    content: str,
+    idempotency_key: str,
+    safety_layer: str,
+) -> dict:
     """Return a MessageResponse-shaped dict for a safety-blocked reply.
 
     WHAT: assembles the 8 required MessageResponse fields with the safety
           short-circuit defaults (role=assistant, no media, no client
-          message id, fresh UUID, ISO8601 UTC `Z` timestamp, paywall
-          count flipped OFF).
+          message id, DETERMINISTIC UUID5 + ISO timestamp derived from
+          the idempotency_key + safety_layer, paywall count flipped OFF).
     WHEN: invoked by the three public callables below.
     WHY:  one builder means a future MessageResponse schema bump only
           changes ONE file in `app/safety/`; tests will catch any
           downstream divergence.
+
+          Codex PR-#112 round-4 BLOCKER 2 — the canned reply MUST be
+          byte-identical on retry with the same X-Idempotency-Key
+          (F10 idempotent-replay contract). Without determinism the
+          `id` + `created_at` fields drift on each safety short-circuit
+          → duplicate visible assistant replies in the mobile UI.
+
+          Determinism strategy:
+            - `id`         = UUID5(NAMESPACE_OID, `{layer}:{key}`)
+                             → same input → same UUID forever
+            - `created_at` = fixed marker `1970-01-01T00:00:00Z`. The
+                             ISO8601 wire shape is preserved (chat-ai
+                             parity per A8) but the value is constant
+                             so retries are byte-identical. Operator
+                             timing for safety-blocked turns lives in
+                             Sentry / Langfuse trace records, NOT in
+                             this user-visible field.
+
+    Args:
+      conversation_id  — echoed verbatim into the response (consumer
+                         correlation).
+      content          — the canned reply text per layer.
+      idempotency_key  — the validated X-Idempotency-Key value the
+                         middleware already enforced. Used as the
+                         UUID5 seed.
+      safety_layer     — "H5" / "H4" / "A10". Mixed into the UUID5
+                         seed so the same key blocked by different
+                         layers produces distinct ids.
     """
-    # ISO8601 UTC `Z` suffix matches what `app/run_turn.py` writes and
-    # what chat-ai persists. Kept identical so a future shadow-traffic
-    # comparator (Day 7) sees no timestamp-format delta.
-    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Deterministic UUID5: namespace + (layer + key) → stable id
+    # across retries. Layer-mixing means a clean message that later
+    # triggers a different layer's match (e.g. user changes the
+    # content and reuses the key — already rejected by F10's
+    # fingerprint-mismatch, but defence-in-depth here) gets a
+    # distinct id, surfacing the divergence in logs.
+    deterministic_id = str(
+        uuid5(NAMESPACE_OID, f"{safety_layer}:{idempotency_key}")
+    )
+
+    # Deterministic timestamp marker. Chat-ai parity preserves the
+    # ISO8601 `Z` wire shape (per A8) but the VALUE is constant so
+    # retries are byte-identical. Operators correlate safety-blocked
+    # turns via Sentry+Langfuse traces (real wall-clock there), not
+    # via this field.
+    SAFETY_CANNED_TIMESTAMP_MARKER = "1970-01-01T00:00:00Z"
 
     return {
-        "id": str(uuid4()),
+        "id": deterministic_id,
         "conversation_id": conversation_id,
         "role": "assistant",
         "content": content,
         "media_urls": None,
         "client_message_id": None,
-        "created_at": now_iso,
+        "created_at": SAFETY_CANNED_TIMESTAMP_MARKER,
         # Safety-blocked turns don't count toward the paywall — see
         # the file-header rationale on E7.
         "count_toward_paywall": False,
@@ -110,11 +161,15 @@ def _canned_message_response_dict(conversation_id: str, content: str) -> dict:
 # ===========================================================================
 
 
-def prompt_injection_blocked(conversation_id: str) -> dict:
+def prompt_injection_blocked(
+    conversation_id: str, idempotency_key: str
+) -> dict:
     """Canned reply for H5 (prompt-injection defense).
 
     WHAT: the MessageResponse a user sees when their input matches the
-          prompt-injection rule set.
+          prompt-injection rule set. DETERMINISTIC on
+          `idempotency_key` — retries produce a byte-identical body
+          (Codex PR-#112 round-4 BLOCKER 2 closure).
     WHEN: called by `app/middleware/h5_prompt_injection.py` when the
           dispatcher detects a jailbreak / role-override / base64
           blob / known-bad pattern in `user_message`.
@@ -122,14 +177,21 @@ def prompt_injection_blocked(conversation_id: str) -> dict:
           (NOT in middleware) — the detector + the response are
           separate concerns per the file-header "split rationale".
     """
-    return _canned_message_response_dict(conversation_id, GENERIC_BLOCKED_CONTENT)
+    return _canned_message_response_dict(
+        conversation_id, GENERIC_BLOCKED_CONTENT,
+        idempotency_key=idempotency_key,
+        safety_layer="H5",
+    )
 
 
-def crisis_response(conversation_id: str) -> dict:
+def crisis_response(
+    conversation_id: str, idempotency_key: str
+) -> dict:
     """Canned reply for H4 (crisis / mental-health-adjacent input).
 
     WHAT: the MessageResponse a user sees when their input contains
-          self-harm / suicide / crisis-language keywords.
+          self-harm / suicide / crisis-language keywords. DETERMINISTIC
+          on `idempotency_key`.
     WHEN: called by `app/middleware/h4_crisis_detection.py` when the
           dispatcher matches a crisis pattern in `user_message`.
     WHY:  the content is intentionally a bracketed-stub string per
@@ -137,14 +199,21 @@ def crisis_response(conversation_id: str) -> dict:
           harmful than a placeholder. Product (Day-3.5) replaces this
           with the real copy + locale-aware helpline routing.
     """
-    return _canned_message_response_dict(conversation_id, CRISIS_PLACEHOLDER_CONTENT)
+    return _canned_message_response_dict(
+        conversation_id, CRISIS_PLACEHOLDER_CONTENT,
+        idempotency_key=idempotency_key,
+        safety_layer="H4",
+    )
 
 
-def adult_content_blocked(conversation_id: str) -> dict:
+def adult_content_blocked(
+    conversation_id: str, idempotency_key: str
+) -> dict:
     """Canned reply for A10 (adult-content output-filter).
 
     WHAT: the MessageResponse a user sees when the handler's RESPONSE
-          content (not the user's input) matches the adult-content rule set.
+          content (not the user's input) matches the adult-content rule
+          set. DETERMINISTIC on `idempotency_key`.
     WHEN: called by `app/middleware/a10_adult_content_filter.py` after the
           handler returns, when the response payload contains
           flagged content.
@@ -153,7 +222,11 @@ def adult_content_blocked(conversation_id: str) -> dict:
           input was clean. Today the rule set is a tiny keyword list;
           Day-5+ swaps it for the real moderation service classifier.
     """
-    return _canned_message_response_dict(conversation_id, GENERIC_BLOCKED_CONTENT)
+    return _canned_message_response_dict(
+        conversation_id, GENERIC_BLOCKED_CONTENT,
+        idempotency_key=idempotency_key,
+        safety_layer="A10",
+    )
 
 
 # ===========================================================================

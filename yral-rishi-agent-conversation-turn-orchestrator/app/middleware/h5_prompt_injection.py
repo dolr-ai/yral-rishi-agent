@@ -347,8 +347,20 @@ class H5PromptInjectionMiddleware(BaseHTTPMiddleware):
                 },
             )
 
+            # Read the validated X-Idempotency-Key (validate_required_headers
+            # already ran, so the header is present + UUID-shape valid).
+            # Threaded into the canned builder so the response `id` is
+            # deterministic from the key — Codex PR-#112 round-4 BLOCKER
+            # 2 closure: same key + same blocked input → byte-identical
+            # canned body on retry (F10 idempotent-replay contract via
+            # the row's "Per-endpoint opt-out for truly stateless"
+            # affordance).
+            idempotency_key = request.headers["x-idempotency-key"]
+
             response = JSONResponse(
-                content=prompt_injection_blocked(conversation_id),
+                content=prompt_injection_blocked(
+                    conversation_id, idempotency_key=idempotency_key,
+                ),
                 status_code=200,
             )
             # Header is informational — Session 3 + Sentry can branch

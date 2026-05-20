@@ -250,8 +250,14 @@ class H4CrisisDetectionMiddleware(BaseHTTPMiddleware):
                 },
             )
 
+            # Same deterministic-canned pattern as H5 — UUID5 derived
+            # from the idempotency_key + the safety_layer marker.
+            idempotency_key = request.headers["x-idempotency-key"]
+
             response = JSONResponse(
-                content=crisis_response(conversation_id),
+                content=crisis_response(
+                    conversation_id, idempotency_key=idempotency_key,
+                ),
                 status_code=200,
             )
             response.headers["X-Safety-Decision"] = "H4"
