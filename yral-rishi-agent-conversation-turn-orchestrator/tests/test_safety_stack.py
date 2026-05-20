@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# test_safety_stack.py — Day-3 coverage for the H5 → H4 → A10 middleware
+# test_safety_stack.py — Day-3 coverage for the H5 → H4 → adult-content middleware
 # chain mounted in front of `POST /v1/turn`.
 #
 # ⭐ START HERE: this file exercises the SAFETY STACK as a unit — both
@@ -17,8 +17,8 @@
 #     test_clean_message_passes_all_three_layers
 #         200 + count_toward_paywall=True (Day-2 stub content survives)
 #     test_clean_message_executes_middlewares_in_documented_order
-#         audit trail == [H5_entry, H4_entry, A10_entry, handler,
-#                         A10_exit, H4_exit, H5_exit]
+#         audit trail == [H5_entry, H4_entry, adult_content_entry, handler,
+#                         adult_content_exit, H4_exit, H5_exit]
 #
 #   ERROR / SHORT-CIRCUIT PATHS
 #     test_h5_blocks_jailbreak_phrase
@@ -27,8 +27,8 @@
 #         200+ char base64 → 200 H5 canned (different reason code)
 #     test_h4_blocks_crisis_language
 #         "I want to die" → 200 H4 canned + helpline placeholder
-#     test_a10_blocks_adult_content_in_handler_output
-#         monkeypatch STUB_CONTENT → 200 A10 canned + flipped paywall
+#     test_adult_content_filter_blocks_marker_in_handler_output
+#         monkeypatch STUB_CONTENT → 200 adult-content canned + flipped paywall
 #
 #   GATE-RESPECT / NO-BYPASS
 #     test_jailbreak_in_production_still_503s_not_safety_canned
@@ -43,9 +43,9 @@
 # Langfuse trace as a span attribute (per the agent definition's
 # Day-3 plan).
 #
-# WHY MONKEYPATCH STUB_CONTENT FOR THE A10 TEST
+# WHY MONKEYPATCH STUB_CONTENT FOR THE adult-content TEST
 # Per the Day-3 directive verbatim: "rig handler to return adult-content
-# content → 200 safety-canned, blocked_by=A10." The handler itself
+# content → 200 safety-canned, blocked_by=adult-content." The handler itself
 # is out-of-scope to modify; the cleanest way to make the handler
 # return adult-content content is to swap the module-level `STUB_CONTENT`
 # constant via `monkeypatch.setattr` for the duration of the test.
@@ -72,7 +72,7 @@ from app.middleware._safety_audit import SAFETY_AUDIT_TRAIL
 
 # A fixed valid UUID for X-Idempotency-Key per PR #96 round-4's
 # UUID-format gate. Tests that reach the handler (clean-pass-through +
-# A10-output-rewrite + the gate-closed 503 paths) all need this; tests
+# adult-content-output-rewrite + the gate-closed 503 paths) all need this; tests
 # that short-circuit at H5/H4 don't (the safety middleware fires
 # BEFORE the handler's header gate).
 _SAFETY_TEST_IDEMPOTENCY_KEY: str = "550e8400-e29b-41d4-a716-446655440090"
@@ -193,7 +193,7 @@ def test_clean_message_passes_all_three_layers(
 def test_clean_message_executes_middlewares_in_documented_order(
     monkeypatch: pytest.MonkeyPatch, client: TestClient
 ) -> None:
-    """WHAT: audit trail matches the H5 → H4 → A10 → handler chain.
+    """WHAT: audit trail matches the H5 → H4 → adult-content → handler chain.
     WHEN: both gates open + clean input + audit ContextVar bound to a list.
     WHY:  the Day-3 directive specifies the exact order — this test
           is the regression gate that catches anyone reordering the
@@ -214,9 +214,9 @@ def test_clean_message_executes_middlewares_in_documented_order(
     assert audit_trail == [
         "H5_entry",
         "H4_entry",
-        "A10_entry",
+        "adult_content_entry",
         "handler",
-        "A10_exit",
+        "adult_content_exit",
         "H4_exit",
         "H5_exit",
     ], f"middleware order regression: {audit_trail!r}"
@@ -278,7 +278,7 @@ def test_h5_blocked_request_stops_chain_before_h4(
 ) -> None:
     """WHAT: H5-blocked audit trail has H5 entry+exit only.
     WHEN: jailbreak input + both gates open + audit ContextVar set.
-    WHY:  confirms H5's short-circuit really skips H4/A10 — neither
+    WHY:  confirms H5's short-circuit really skips H4/adult-content — neither
           downstream layer's entry marker should appear when H5
           blocked. Defence against a regression where H5 calls
           `call_next` even on match.
@@ -293,7 +293,7 @@ def test_h5_blocked_request_stops_chain_before_h4(
         SAFETY_AUDIT_TRAIL.reset(token)
 
     assert audit_trail == ["H5_entry", "H5_exit"], (
-        f"H5 short-circuit should skip H4 + A10; got: {audit_trail!r}"
+        f"H5 short-circuit should skip H4 + adult-content; got: {audit_trail!r}"
     )
 
 
@@ -330,11 +330,11 @@ def test_h4_blocks_crisis_language(
 def test_h4_blocked_request_stops_chain_before_a10(
     monkeypatch: pytest.MonkeyPatch, client: TestClient
 ) -> None:
-    """WHAT: H4-blocked audit trail has H5+H4 entries only — no A10.
+    """WHAT: H4-blocked audit trail has H5+H4 entries only — no adult-content.
     WHEN: crisis input + both gates open + audit ContextVar set.
-    WHY:  proves H4's short-circuit skips A10. H5 fires (no jailbreak
+    WHY:  proves H4's short-circuit skips adult-content. H5 fires (no jailbreak
           in this input, so H5 passes through to H4); H4 matches +
-          short-circuits before A10 can run.
+          short-circuits before adult-content can run.
     """
     _open_both_gates(monkeypatch)
 
@@ -346,28 +346,28 @@ def test_h4_blocked_request_stops_chain_before_a10(
         SAFETY_AUDIT_TRAIL.reset(token)
 
     assert audit_trail == ["H5_entry", "H4_entry", "H4_exit", "H5_exit"], (
-        f"H4 short-circuit should skip A10; got: {audit_trail!r}"
+        f"H4 short-circuit should skip adult-content; got: {audit_trail!r}"
     )
 
 
 # ===========================================================================
-# SHORT-CIRCUIT PATHS — A10 (rig handler via monkeypatch)
+# SHORT-CIRCUIT PATHS — adult-content (rig handler via monkeypatch)
 # ===========================================================================
 
 
-def test_a10_blocks_adult_content_in_handler_output(
+def test_adult_content_filter_blocks_marker_in_handler_output(
     monkeypatch: pytest.MonkeyPatch, client: TestClient
 ) -> None:
-    """WHAT: monkeypatch STUB_CONTENT to adult-content → 200 + A10 canned reply.
+    """WHAT: monkeypatch STUB_CONTENT to adult-content → 200 + adult-content canned reply.
     WHEN: both gates open + handler returns adult-content content via patched
           STUB_CONTENT.
-    WHY:  proves A10's output-side filter rewrites adult-content content even
+    WHY:  proves adult-content's output-side filter rewrites adult-content content even
           when the user input was clean. Day-5+ LLM swap flows
-          through this same A10 layer unchanged — when the real LLM
-          drifts adult-content, A10 catches it.
+          through this same adult-content layer unchanged — when the real LLM
+          drifts adult-content, adult-content catches it.
     """
     _open_both_gates(monkeypatch)
-    # Swap the Day-2 stub content for a string that matches one of A10's
+    # Swap the Day-2 stub content for a string that matches one of adult-content's
     # patterns (`adult-content test marker`). The string is in the rule set
     # explicitly for this test so the codebase doesn't have to carry
     # crude example content.
@@ -381,8 +381,8 @@ def test_a10_blocks_adult_content_in_handler_output(
     )
 
     assert response.status_code == 200, response.text
-    assert response.headers["X-Safety-Decision"] == "A10"
-    assert response.headers["X-Safety-Reason"] == "a10_adult_content_keyword"
+    assert response.headers["X-Safety-Decision"] == "adult_content"
+    assert response.headers["X-Safety-Reason"] == "adult_content_keyword"
     body = response.json()
     # Canned adult-content reply replaces the handler's (rigged-adult-content) content.
     assert body["content"] == "I can't help with that."
@@ -624,11 +624,11 @@ def test_h5_block_emits_sentry_event_with_prompt_injection_type(
 # deterministic on the key (UUID5 + fixed timestamp marker). Result:
 # F10's idempotent-replay contract holds without the write.
 #
-# BLOCKER 1 closure — A10 calls mark_complete after rewriting so the
+# BLOCKER 1 closure — adult-content calls mark_complete after rewriting so the
 # cached F10 payload matches the client-visible body. Without this,
 # the handler's earlier mark_complete (with unfiltered LLM output)
 # left a stale unfiltered payload in cache; a retry's replay_done
-# would deliver the unfiltered payload to A10 again, which would
+# would deliver the unfiltered payload to adult-content again, which would
 # rewrite a second time — correct on the surface but the cached
 # payload diverged from client-visible reality (operator-side leak
 # surface).
@@ -778,14 +778,14 @@ def test_h5_safety_path_returns_409_envelope_on_fingerprint_mismatch(
     assert body["data"] is None
 
 
-def test_a10_overwrites_idempotency_cache_with_canned_payload(
+def test_adult_content_filter_overwrites_idempotency_cache_with_canned_payload(
     monkeypatch: pytest.MonkeyPatch, client: TestClient, fake_redis,
 ) -> None:
-    """WHAT: when A10 rewrites a handler response, the F10 cache
+    """WHAT: when adult-content rewrites a handler response, the F10 cache
           payload (in fakeredis) is the CANNED reply, NOT the
           unfiltered handler output the handler's mark_complete
           initially wrote.
-    WHEN: every A10 rewrite path — today: the test rigs
+    WHEN: every adult-content rewrite path — today: the test rigs
           STUB_CONTENT to a flagged string.
     WHY:  Codex PR-#112 round-4 BLOCKER 1 closure. Cached payload
           MUST match client-visible body so future audit / replay
@@ -793,7 +793,7 @@ def test_a10_overwrites_idempotency_cache_with_canned_payload(
     """
     _open_both_gates(monkeypatch)
 
-    # Rig the stub to trigger A10's pattern.
+    # Rig the stub to trigger adult-content's pattern.
     monkeypatch.setattr(
         "app.run_turn.STUB_CONTENT",
         "Day-2 stub but with adult-content test marker hidden in it",
@@ -805,13 +805,13 @@ def test_a10_overwrites_idempotency_cache_with_canned_payload(
     )
 
     assert response.status_code == 200, response.text
-    assert response.headers["X-Safety-Decision"] == "A10"
+    assert response.headers["X-Safety-Decision"] == "adult_content"
     canned_content = response.json()["content"]
     assert canned_content == "I can't help with that."
 
     # Inspect fakeredis: the cached payload should be the canned one.
     # The handler's first mark_complete wrote the stub (with the rigged
-    # marker); A10's overwrite should have replaced it with the canned.
+    # marker); adult-content's overwrite should have replaced it with the canned.
     import asyncio
     import json as _json
 
@@ -836,11 +836,11 @@ def test_a10_overwrites_idempotency_cache_with_canned_payload(
     cached_response = cached_envelope["response"]
 
     # CORE assertion: cached content matches the canned reply, NOT
-    # the unfiltered stub-with-test-marker output. Without A10's
+    # the unfiltered stub-with-test-marker output. Without adult-content's
     # mark_complete overwrite, this would be the unfiltered string
     # "Day-2 stub but with adult-content test marker hidden in it".
     assert cached_response["content"] == "I can't help with that.", (
-        f"A10 cache overwrite regressed — cached payload still "
+        f"adult-content cache overwrite regressed — cached payload still "
         f"carries the unfiltered handler output. "
         f"cached={cached_response!r}"
     )
@@ -848,21 +848,21 @@ def test_a10_overwrites_idempotency_cache_with_canned_payload(
 
 
 # ===========================================================================
-# ⭐ A10 CONTENT-TYPE GUARD (Codex PR-#112 round-3 CONCERN closure)
+# ⭐ adult-content CONTENT-TYPE GUARD (Codex PR-#112 round-3 CONCERN closure)
 # ===========================================================================
 
 
-def test_a10_passes_through_non_json_responses_without_buffering() -> None:
-    """WHAT: A10 only inspects responses with Content-Type starting
+def test_adult_content_filter_passes_through_non_json_responses() -> None:
+    """WHAT: adult-content only inspects responses with Content-Type starting
           `application/json`. A non-JSON response (e.g. a streaming
           `text/event-stream`, a `text/plain` health probe, or a
           `text/html` debug page) MUST pass through unmodified —
-          A10 does NOT drain+rebuild the body in that case.
-    WHEN: A future route reuses A10 (or this middleware fires against
+          adult-content does NOT drain+rebuild the body in that case.
+    WHEN: A future route reuses adult-content (or this middleware fires against
           a streaming response). Today's `/v1/turn` always returns
-          JSON, so this regression gate unit-tests A10's dispatch
+          JSON, so this regression gate unit-tests adult-content's dispatch
           directly with a non-JSON mock response.
-    WHY:  Codex PR-#112 round-3 CONCERN — A10's drain-and-rebuild
+    WHY:  Codex PR-#112 round-3 CONCERN — adult-content's drain-and-rebuild
           assumes a small JSON body. Without the content-type guard
           a future SSE / streaming path would silently lose
           streaming semantics or fail-open. The guard makes the
@@ -871,7 +871,7 @@ def test_a10_passes_through_non_json_responses_without_buffering() -> None:
           A16 / agent-def divide.
 
     Regression-gate shape:
-      - Direct unit test of `A10AdultContentFilterMiddleware.dispatch`
+      - Direct unit test of `AdultContentOutputFilterMiddleware.dispatch`
         with a stubbed `call_next` that returns a PlainTextResponse.
       - Avoid the full FastAPI routing stack so the test is
         decoupled from any future change in how the run_turn route
@@ -885,8 +885,8 @@ def test_a10_passes_through_non_json_responses_without_buffering() -> None:
     import asyncio
     from fastapi.responses import PlainTextResponse
     from starlette.requests import Request
-    from app.middleware.a10_adult_content_filter import (
-        A10AdultContentFilterMiddleware,
+    from app.middleware.adult_content_output_filter import (
+        AdultContentOutputFilterMiddleware,
     )
 
     # Build a minimal request object scoped to /v1/turn (so the
@@ -912,7 +912,7 @@ def test_a10_passes_through_non_json_responses_without_buffering() -> None:
     async def _stub_call_next(_request):
         return plain_response
 
-    # A10 needs `enable_run_turn_stub` on so the gate-respect passes.
+    # adult-content needs `enable_run_turn_stub` on so the gate-respect passes.
     # We set the env vars + clear the settings cache so the dispatch
     # reads the test-scoped config. clean_settings_cache fixture is
     # autouse — clears before + after the test.
@@ -922,7 +922,7 @@ def test_a10_passes_through_non_json_responses_without_buffering() -> None:
     from app.config import get_settings
     get_settings.cache_clear()
 
-    middleware = A10AdultContentFilterMiddleware(app=lambda *_: None)
+    middleware = AdultContentOutputFilterMiddleware(app=lambda *_: None)
 
     try:
         result = asyncio.run(middleware.dispatch(request, _stub_call_next))
@@ -933,11 +933,11 @@ def test_a10_passes_through_non_json_responses_without_buffering() -> None:
         os.environ.pop("ENABLE_RUN_TURN_STUB", None)
         get_settings.cache_clear()
 
-    # The CORE assertion: A10 passed through. The returned response
+    # The CORE assertion: adult-content passed through. The returned response
     # is the same PlainTextResponse object the stub call_next
-    # produced; A10 did NOT drain + rebuild + attach an A10 header.
+    # produced; adult-content did NOT drain + rebuild + attach an adult-content header.
     assert result is plain_response, (
-        f"A10 should have passed through the non-JSON response "
+        f"adult-content should have passed through the non-JSON response "
         f"unchanged. Got a different response object: {result!r}"
     )
     assert "X-Safety-Decision" not in result.headers
@@ -1188,11 +1188,11 @@ def test_h4_crisis_short_circuits_before_llm_client_is_invoked(
 #                                     — H5 pattern set + dispatch under test
 #   ../app/middleware/h4_crisis_detection.py
 #                                     — H4 pattern set + dispatch under test
-#   ../app/middleware/a10_adult_content_filter.py
-#                                     — A10 pattern set + dispatch under test
+#   ../app/middleware/adult_content_output_filter.py
+#                                     — adult-content pattern set + dispatch under test
 #   ../app/middleware/_safety_audit.py
 #                                     — SAFETY_AUDIT_TRAIL ContextVar the
 #                                       order tests bind a list to
 #   ../app/safety/canned_responses.py — canned reply text the tests assert on
-#   ../app/run_turn.py                — STUB_CONTENT the A10 test monkeypatches
+#   ../app/run_turn.py                — STUB_CONTENT the adult-content test monkeypatches
 # ===========================================================================

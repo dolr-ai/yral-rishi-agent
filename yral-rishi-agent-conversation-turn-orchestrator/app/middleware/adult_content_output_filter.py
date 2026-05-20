@@ -1,31 +1,31 @@
 # ---------------------------------------------------------------------------
-# a10_adult_content_filter.py — Day-3 A10 adult-content output-side filter middleware.
+# adult_content_output_filter.py — Day-3 adult_content adult_content output-side filter middleware.
 #
-# ⭐ START HERE: this module exports `A10AdultContentFilterMiddleware`, the
-# INNERMOST safety layer in the H5 → H4 → A10 → handler chain. Unlike
+# ⭐ START HERE: this module exports `AdultContentOutputFilterMiddleware`, the
+# INNERMOST safety layer in the H5 → H4 → adult_content → handler chain. Unlike
 # H5 + H4 (which inspect the request body BEFORE the handler runs),
-# A10 inspects the RESPONSE body AFTER the handler returns. If the
-# response's `content` field matches the adult-content rule set, A10 rewrites
+# adult_content inspects the RESPONSE body AFTER the handler returns. If the
+# response's `content` field matches the adult_content rule set, adult_content rewrites
 # the response with a canned safety reply (per
 # `app/safety/canned_responses.py::adult_content_blocked`) + flips
 # `count_toward_paywall` to False.
 #
-# WHY A10 IS OUTPUT-SIDE
-# Per the Day-3 directive verbatim: "A10 — adult-content filter (output-side).
+# WHY adult_content IS OUTPUT-SIDE
+# Per the Day-3 directive verbatim: "adult_content — adult_content filter (output-side).
 # For Day-3 stub: runs on the handler's RETURN value (the stub
-# MessageResponse.content). Checks against an adult-content keyword list."
+# MessageResponse.content). Checks against an adult_content keyword list."
 # Day-5+ real LLM enablement feeds actual model output through this
 # layer unchanged — same dispatch path, same canned reply, just with
 # real content as the inspected payload instead of the Day-2 stub.
 #
-# WHY A10 ALSO RECORDS THE "handler" MARKER
+# WHY adult_content ALSO RECORDS THE "handler" MARKER
 # Per the Day-3 directive's order-verification spec:
-#   assert order is [H5_entry, H4_entry, A10_entry, handler,
-#                    A10_exit, H4_exit, H5_exit]
+#   assert order is [H5_entry, H4_entry, adult_content_entry, handler,
+#                    adult_content_exit, H4_exit, H5_exit]
 # AND per the directive's scope guardrail: "ONLY new middleware files +
 # main.py wiring. Do NOT modify run_turn.py or models/turn.py." The
 # run_turn handler itself is out-of-scope to modify, so it cannot
-# append "handler" to the audit trail directly. Instead, A10 — which
+# append "handler" to the audit trail directly. Instead, adult_content — which
 # wraps the handler call inside its own `call_next` — appends the
 # synthetic "handler" marker immediately after `call_next` returns.
 # By construction, the handler executed (or H5/H4 short-circuited)
@@ -44,14 +44,14 @@
 #
 # THE GATE-RESPECT PATTERN
 # Same as H5 + H4 — when EITHER `environment == "production"` or
-# `enable_run_turn_stub` is false, A10 passes through without
+# `enable_run_turn_stub` is false, adult_content passes through without
 # inspecting the response so the handler's 503-emission fires
 # unchanged. Avoids "leak via safety bypass".
 #
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
 
-# stdlib `json` — parses the response body so the A10 keyword set
+# stdlib `json` — parses the response body so the adult_content keyword set
 # can scan the handler's reply text + rebuild the body when the
 # rewrite path fires.
 import json
@@ -75,11 +75,11 @@ from typing import Final
 from starlette.middleware.base import BaseHTTPMiddleware
 
 # `Request` — the typed inbound request wrapper. Used for
-# `request.url.path` (route gating). A10 doesn't read the request
+# `request.url.path` (route gating). adult_content doesn't read the request
 # body (it's an OUTPUT-side filter).
 from starlette.requests import Request
 
-# `JSONResponse` builds the A10 canned reply when a match fires.
+# `JSONResponse` builds the adult_content canned reply when a match fires.
 # `Response` is the typed return shape of dispatch().
 from starlette.responses import JSONResponse, Response
 
@@ -95,18 +95,18 @@ from app.config import get_settings
 from app.middleware._safety_audit import record
 
 # `adult_content_blocked(conversation_id, idempotency_key)` returns
-# the canned MessageResponse-shaped dict A10 rewrites the body with.
+# the canned MessageResponse-shaped dict adult_content rewrites the body with.
 # `count_toward_paywall=False` per E4. The idempotency_key arg makes
 # the canned `id` deterministic across retries (Codex PR-#112
 # round-4 BLOCKER 2).
 from app.safety.canned_responses import adult_content_blocked
 
 # F10 idempotency helpers — Codex PR-#112 round-4 BLOCKER 1 closure:
-# A10 calls `mark_complete` AFTER rewriting the response body so the
+# adult_content calls `mark_complete` AFTER rewriting the response body so the
 # cached payload in Redis matches the client-visible canned reply.
 # Without this, the handler's earlier `mark_complete` left the
 # unfiltered LLM output in the F10 cache; a retry's `replay_done`
-# would return the unfiltered version (A10 would rewrite again on
+# would return the unfiltered version (adult_content would rewrite again on
 # the way out, but other readers of the cache — log dumps, future
 # audit features — would see the unfiltered cached payload).
 from app.idempotency import (
@@ -125,17 +125,17 @@ GUARDED_PATH: Final[str] = "/v1/turn"
 
 
 # ===========================================================================
-# Rule set — Phase-1 adult-content keyword list (intentionally minimal)
+# Rule set — Phase-1 adult_content keyword list (intentionally minimal)
 # ===========================================================================
 
 # Phase-1 keyword list. Day-5+ replaces this with the real
 # `yral-rishi-agent-content-safety-and-moderation` RPC + the
 # `influencer.is_nsfw` routing decision per A10's full text. The
 # Day-3 list is deliberately SHORT — enough to test the dispatch
-# path + catch obviously-adult-content outputs, but not exhaustive (that's
+# path + catch obviously-adult_content outputs, but not exhaustive (that's
 # Phase-2's content-safety service's job).
 #
-# Note: the `adult-content test marker` entry exists so the test suite can
+# Note: the `adult_content test marker` entry exists so the test suite can
 # rig the handler's stub content to a flagged string without
 # requiring crude content in the test file itself.
 _ADULT_CONTENT_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
@@ -145,22 +145,22 @@ _ADULT_CONTENT_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
 )
 
 
-_REASON_ADULT_CONTENT_KEYWORD: Final[str] = "a10_adult_content_keyword"
+_REASON_ADULT_CONTENT_KEYWORD: Final[str] = "adult_content_keyword"
 
 
-_log = logging.getLogger("app.middleware.a10_adult_content_filter")
+_log = logging.getLogger("app.middleware.adult_content_output_filter")
 
 
 def _match_adult_content(content: str) -> str | None:
-    """Return a reason code if `content` matches any A10 pattern, else None.
+    """Return a reason code if `content` matches any adult_content pattern, else None.
 
-    WHAT: walks the adult-content pattern list; returns the reason code on
+    WHAT: walks the adult_content pattern list; returns the reason code on
           FIRST match.
     WHEN: called once per /v1/turn response inside `dispatch()` AFTER
           `call_next` returns.
     WHY:  isolated so unit tests can exercise the matcher directly.
     """
-    # Walk every compiled adult-content pattern; first-hit short-
+    # Walk every compiled adult_content pattern; first-hit short-
     # circuit (cheap micro-opt + Day-5+ real LLM output paths benefit
     # from any saved regex scans on the hot path).
     for pattern in _ADULT_CONTENT_PATTERNS:
@@ -179,9 +179,9 @@ def _match_adult_content(content: str) -> str | None:
 # ===========================================================================
 
 
-class A10AdultContentFilterMiddleware(BaseHTTPMiddleware):
+class AdultContentOutputFilterMiddleware(BaseHTTPMiddleware):
     """Innermost safety layer — inspects the handler's response and
-    rewrites adult-content content with a canned safety reply.
+    rewrites adult_content content with a canned safety reply.
 
     WHAT: BaseHTTPMiddleware whose `dispatch()` calls `call_next`,
           drains the response body, parses + inspects the `content`
@@ -190,7 +190,7 @@ class A10AdultContentFilterMiddleware(BaseHTTPMiddleware):
     WHEN: invoked once per request by the FastAPI middleware chain,
           AFTER H5 and H4 (request side).
     WHY:  output-side safety — even with clean user input, the LLM
-          (Day-5+) can drift into adult-content territory; A10 is the last
+          (Day-5+) can drift into adult_content territory; adult_content is the last
           gate before the response leaves the orchestrator.
     """
 
@@ -212,7 +212,7 @@ class A10AdultContentFilterMiddleware(BaseHTTPMiddleware):
         if gate_closed:
             return await call_next(request)
 
-        record("A10_entry")
+        record("adult_content_entry")
 
         # Run the inner chain (H5/H4 already passed since we're here;
         # this call hits the handler unless those layers short-circuit).
@@ -223,12 +223,12 @@ class A10AdultContentFilterMiddleware(BaseHTTPMiddleware):
 
         # Only inspect 200 JSON responses. 422 (Pydantic), 503 (gate),
         # 500 (unhandled exception) all pass through unmodified —
-        # those are different failure surfaces, not A10's concern.
+        # those are different failure surfaces, not adult_content's concern.
         if response.status_code != 200:
-            record("A10_exit")
+            record("adult_content_exit")
             return response
 
-        # Codex PR-#112 round-3 CONCERN — content-type guard. A10's
+        # Codex PR-#112 round-3 CONCERN — content-type guard. adult_content's
         # drain-and-rebuild approach assumes the response is a small
         # non-streaming JSON body (the contract on the v1 path per
         # the agent definition's "JSON, NOT SSE" rule). If a future
@@ -242,7 +242,7 @@ class A10AdultContentFilterMiddleware(BaseHTTPMiddleware):
         # for `/v2/turn-stream` (when it lands) is a separate piece.
         content_type = response.headers.get("content-type", "")
         if not content_type.lower().startswith("application/json"):
-            record("A10_exit")
+            record("adult_content_exit")
             return response
 
         # Drain the response body iterator. BaseHTTPMiddleware wraps
@@ -261,17 +261,17 @@ class A10AdultContentFilterMiddleware(BaseHTTPMiddleware):
             payload = json.loads(body)
             content = payload.get("content", "") if isinstance(payload, dict) else ""
         except (json.JSONDecodeError, AttributeError):
-            record("A10_exit")
+            record("adult_content_exit")
             return self._rebuild_response(response, body)
 
         # Run the matcher on the content field. No match → return the
         # response as-is (rebuilt from the drained body bytes).
         reason = _match_adult_content(content)
         if reason is None:
-            record("A10_exit")
+            record("adult_content_exit")
             return self._rebuild_response(response, body)
 
-        # Match — emit the canned adult-content reply. conversation_id comes
+        # Match — emit the canned adult_content reply. conversation_id comes
         # from the inspected payload so the rewritten response stays
         # correlated with the request the handler was answering.
         conversation_id = payload.get("conversation_id", "") if isinstance(payload, dict) else ""
@@ -279,7 +279,7 @@ class A10AdultContentFilterMiddleware(BaseHTTPMiddleware):
         _log.warning(
             "a10_blocked",
             extra={
-                "safety_layer": "A10",
+                "safety_layer": "adult_content",
                 "reason": reason,
                 "conversation_id": conversation_id,
                 "original_content_length": len(content),
@@ -287,10 +287,10 @@ class A10AdultContentFilterMiddleware(BaseHTTPMiddleware):
         )
 
         # Read the validated X-User-Id + X-Idempotency-Key from the
-        # request. The handler already validated these (A10's call_next
+        # request. The handler already validated these (adult_content's call_next
         # only returned 200 if the handler accepted the request); the
         # KeyError-on-missing pattern would only fire on a future
-        # regression where A10 sees a 200 from a handler that
+        # regression where adult_content sees a 200 from a handler that
         # bypassed the gate. Defensive `.get(..., "")` would mask
         # such a regression — better to surface as a 500.
         user_id = request.headers["x-user-id"]
@@ -305,7 +305,7 @@ class A10AdultContentFilterMiddleware(BaseHTTPMiddleware):
         # Codex PR-#112 round-4 BLOCKER 1 — overwrite the F10 cache
         # with the canned reply so the stored payload matches the
         # client-visible body. Without this, the handler's earlier
-        # `mark_complete` cached the unfiltered LLM output; A10 would
+        # `mark_complete` cached the unfiltered LLM output; adult_content would
         # rewrite on every retry (correct user-visible behaviour) but
         # the cached payload would remain unfiltered (operator-side
         # leak surface via direct Redis reads / log dumps).
@@ -314,7 +314,7 @@ class A10AdultContentFilterMiddleware(BaseHTTPMiddleware):
         # — Starlette's BaseHTTPMiddleware builds a NEW Request
         # instance per layer (each with its own `_body` cache); after
         # the handler consumed the body via its Pydantic parse,
-        # `await request.body()` on A10's Request raises
+        # `await request.body()` on adult_content's Request raises
         # "Stream consumed". H5's `read_and_replay_body` helper stashes
         # the bytes on `request.state` (scope-shared) precisely so
         # this post-call_next read works.
@@ -332,7 +332,7 @@ class A10AdultContentFilterMiddleware(BaseHTTPMiddleware):
             )
         except Exception as cache_overwrite_failure:
             # Best-effort — if the cache overwrite fails, the client
-            # still sees the canned reply (A10's primary job). The
+            # still sees the canned reply (adult_content's primary job). The
             # operator-side concern (cached unfiltered payload) is
             # logged so a Sentry alert can spot the gap.
             # `exc_info=True` surfaces the traceback into the log
@@ -352,10 +352,10 @@ class A10AdultContentFilterMiddleware(BaseHTTPMiddleware):
             content=canned_payload,
             status_code=200,
         )
-        new_response.headers["X-Safety-Decision"] = "A10"
+        new_response.headers["X-Safety-Decision"] = "adult_content"
         new_response.headers["X-Safety-Reason"] = reason
 
-        record("A10_exit")
+        record("adult_content_exit")
         return new_response
 
     @staticmethod
@@ -367,7 +367,7 @@ class A10AdultContentFilterMiddleware(BaseHTTPMiddleware):
               the original headers MINUS `content-length` (Starlette
               recomputes content-length on construction from the new
               body).
-        WHEN: called when A10 inspected the body but decided NOT to
+        WHEN: called when adult_content inspected the body but decided NOT to
               rewrite (pass-through happy path or unparseable body).
         WHY:  the original response's body_iterator is exhausted after
               we drained it; returning the original would yield an
@@ -393,13 +393,13 @@ class A10AdultContentFilterMiddleware(BaseHTTPMiddleware):
 # RELATED FILES:
 #   __init__.py                — package marker + visual ASCII chain
 #   _safety_audit.py           — audit-trail ContextVar + record() helper
-#                                (A10 also records the synthetic "handler"
+#                                (adult_content also records the synthetic "handler"
 #                                marker between its entry + exit)
 #   h5_prompt_injection.py     — outer safety layer (request-side)
 #   h4_crisis_detection.py     — middle safety layer (request-side)
 #   ../safety/canned_responses.py
 #                              — `adult_content_blocked()` returns the canned
-#                                MessageResponse when A10 rewrites the response
+#                                MessageResponse when adult_content rewrites the response
 #   ../config.py               — `environment` + `enable_run_turn_stub`
 #                                settings the gate-respect check reads
 #   ../run_turn.py             — Day-2 handler whose response this layer
@@ -407,6 +407,6 @@ class A10AdultContentFilterMiddleware(BaseHTTPMiddleware):
 #                                this same layer unchanged
 #   ../main.py                 — mounts this middleware via `add_middleware()`
 #   ../../tests/test_safety_stack.py
-#                              — A10-blocked path (monkeypatches STUB_CONTENT
-#                                to "adult-content test marker") + order-verification
+#                              — adult_content-blocked path (monkeypatches STUB_CONTENT
+#                                to "adult_content test marker") + order-verification
 # ===========================================================================

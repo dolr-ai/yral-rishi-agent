@@ -100,8 +100,8 @@ def validate_required_headers(request: Request) -> JSONResponse | None:
           400 JSONResponse envelope on failure; returns None on success.
     WHEN: called from H5 + H4 middleware `dispatch()` AFTER the gate-
           respect check and BEFORE the body-replay / pattern-match
-          stages. (A10 doesn't need it — the handler's existing inline
-          check fires on the same path A10 wraps.)
+          stages. (adult_content doesn't need it — the handler's existing inline
+          check fires on the same path adult_content wraps.)
     WHY:  Codex PR-#112 round-3 BLOCKER 1 closure. Universal header
           contract; safety short-circuit must honour it the same way
           the handler does. Run_turn.py keeps its own inline check

@@ -2,7 +2,7 @@
 # app/safety/__init__.py — package marker for safety-canned response helpers.
 #
 # ⭐ START HERE: this package holds the user-facing copy that the safety
-# stack (H5 prompt-injection / H4 crisis / A10 adult-content) returns when it
+# stack (H5 prompt-injection / H4 crisis / adult_content adult_content) returns when it
 # short-circuits the run_turn handler. Keeping the copy in ONE place
 # means Day-5+ real LLM enablement can swap the underlying detector
 # while the user-facing text stays canonical.
@@ -32,7 +32,7 @@
 #                              — consumer (calls prompt_injection_blocked)
 #   ../middleware/h4_crisis_detection.py
 #                              — consumer (calls crisis_response)
-#   ../middleware/a10_adult_content_filter.py
+#   ../middleware/adult_content_output_filter.py
 #                              — consumer (calls adult_content_blocked)
 #   ../models/turn.py          — MessageResponse shape these responses must match
 # ===========================================================================

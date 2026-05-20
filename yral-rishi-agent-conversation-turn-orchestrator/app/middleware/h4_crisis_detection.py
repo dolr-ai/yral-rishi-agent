@@ -2,7 +2,7 @@
 # h4_crisis_detection.py — Day-3 H4 crisis-detection middleware.
 #
 # ⭐ START HERE: this module exports `H4CrisisDetectionMiddleware`, the
-# MIDDLE safety layer in the H5 → H4 → A10 → handler chain. When the
+# MIDDLE safety layer in the H5 → H4 → adult_content → handler chain. When the
 # user-message body contains self-harm / suicide / mental-health-crisis
 # language, the middleware short-circuits the route with HTTP 200 + a
 # canned crisis-response (per
@@ -190,7 +190,7 @@ class H4CrisisDetectionMiddleware(BaseHTTPMiddleware):
           request bodies for crisis-language keywords + short-circuits
           with a canned 200 response on match.
     WHEN: invoked once per request by the FastAPI middleware chain,
-          AFTER H5 and BEFORE A10 (request side).
+          AFTER H5 and BEFORE adult_content (request side).
     WHY:  protects vulnerable users from receiving an unrelated stub
           / LLM reply when they're signalling a mental-health crisis.
           Default helpline-placeholder is intentionally a stub —
@@ -349,7 +349,7 @@ class H4CrisisDetectionMiddleware(BaseHTTPMiddleware):
             record("H4_exit")
             return response
 
-        # No match — propagate to A10.
+        # No match — propagate to adult_content.
         response = await call_next(request)
 
         record("H4_exit")
@@ -362,7 +362,7 @@ class H4CrisisDetectionMiddleware(BaseHTTPMiddleware):
 #   _body_replay.py            — used by H5 (outer); H4 reads cached _body
 #   _safety_audit.py           — audit-trail ContextVar + record() helper
 #   h5_prompt_injection.py     — outer safety layer this layer sits inside
-#   a10_adult_content_filter.py         — inner safety layer this layer passes to
+#   adult_content_output_filter.py         — inner safety layer this layer passes to
 #   ../safety/canned_responses.py
 #                              — `crisis_response()` returns the canned
 #                                MessageResponse when H4 short-circuits

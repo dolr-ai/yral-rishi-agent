@@ -5,7 +5,7 @@
 # ⭐ START HERE: this module exports exactly three callables —
 #   prompt_injection_blocked(conversation_id)  — for H5
 #   crisis_response(conversation_id)           — for H4
-#   adult_content_blocked(conversation_id)              — for A10
+#   adult_content_blocked(conversation_id)              — for adult_content
 #
 # Each returns a `MessageResponse`-shaped DICT (NOT the Pydantic model) so a
 # `JSONResponse(content=...)` call in middleware can emit it directly
@@ -27,7 +27,7 @@
 # Per the Day-3 directive: safety-blocked turns must NOT count against
 # the user's 50-msg paywall window per E7. A user who happens to type
 # a self-harm phrase shouldn't burn a paywall slot on a crisis-helpline
-# auto-reply. Same logic for prompt-injection + adult-content: the user is being
+# auto-reply. Same logic for prompt-injection + adult_content: the user is being
 # blocked, not served, so it's not a paid turn.
 #
 # WHY THE H4 RESPONSE IS AN OBVIOUSLY-PLACEHOLDER STRING?
@@ -62,7 +62,7 @@ from uuid import NAMESPACE_OID, uuid5
 # Sentry / Langfuse traces when triaging false-positive blocks)
 # ===========================================================================
 
-# H5 / A10 share the same "I can't help with that." wording — short,
+# H5 / adult_content share the same "I can't help with that." wording — short,
 # neutral, doesn't hint at why we blocked. Product can refine later.
 GENERIC_BLOCKED_CONTENT: str = "I can't help with that."
 
@@ -121,7 +121,7 @@ def _canned_message_response_dict(
       idempotency_key  — the validated X-Idempotency-Key value the
                          middleware already enforced. Used as the
                          UUID5 seed.
-      safety_layer     — "H5" / "H4" / "A10". Mixed into the UUID5
+      safety_layer     — "H5" / "H4" / "adult_content". Mixed into the UUID5
                          seed so the same key blocked by different
                          layers produces distinct ids.
     """
@@ -213,23 +213,23 @@ def crisis_response(
 def adult_content_blocked(
     conversation_id: str, idempotency_key: str
 ) -> dict:
-    """Canned reply for A10 (adult-content output-filter).
+    """Canned reply for adult_content (adult_content output-filter).
 
     WHAT: the MessageResponse a user sees when the handler's RESPONSE
-          content (not the user's input) matches the adult-content rule
+          content (not the user's input) matches the adult_content rule
           set. DETERMINISTIC on `idempotency_key`.
-    WHEN: called by `app/middleware/a10_adult_content_filter.py` after the
+    WHEN: called by `app/middleware/adult_content_output_filter.py` after the
           handler returns, when the response payload contains
           flagged content.
     WHY:  output-side filtering catches cases where the upstream LLM
-          (Day-5+) drifts into adult-content territory even though the user
+          (Day-5+) drifts into adult_content territory even though the user
           input was clean. Today the rule set is a tiny keyword list;
           Day-5+ swaps it for the real moderation service classifier.
     """
     return _canned_message_response_dict(
         conversation_id, GENERIC_BLOCKED_CONTENT,
         idempotency_key=idempotency_key,
-        safety_layer="A10",
+        safety_layer="adult_content",
     )
 
 
@@ -241,7 +241,7 @@ def adult_content_blocked(
 #                              — consumes prompt_injection_blocked()
 #   ../middleware/h4_crisis_detection.py
 #                              — consumes crisis_response()
-#   ../middleware/a10_adult_content_filter.py
+#   ../middleware/adult_content_output_filter.py
 #                              — consumes adult_content_blocked()
 #   ../run_turn.py             — the handler the safety stack short-circuits
 #   ../../tests/test_safety_stack.py

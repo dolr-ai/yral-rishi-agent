@@ -65,7 +65,7 @@ def record(marker: str) -> None:
     WHAT: appends `marker` to the ContextVar-held list, or no-ops when
           the ContextVar is at its `None` default.
     WHEN: called by safety middlewares at entry (before `call_next`)
-          and exit (after `call_next`), and by `a10_adult_content_filter.py`
+          and exit (after `call_next`), and by `adult_content_output_filter.py`
           to record the synthetic "handler" marker between its entry
           and exit (since the handler itself is out-of-scope for
           modification per the Day-3 directive).
@@ -91,8 +91,8 @@ def record(marker: str) -> None:
 #                             the safety chain
 #   h5_prompt_injection.py  — calls record("H5_entry") + record("H5_exit")
 #   h4_crisis_detection.py  — calls record("H4_entry") + record("H4_exit")
-#   a10_adult_content_filter.py      — calls record("A10_entry"), record("handler"),
-#                             record("A10_exit") — A10 owns the synthetic
+#   adult_content_output_filter.py      — calls record("adult_content_entry"), record("handler"),
+#                             record("adult_content_exit") — adult_content owns the synthetic
 #                             "handler" marker because the handler itself
 #                             is out-of-scope per the Day-3 directive
 #   ../../tests/test_safety_stack.py

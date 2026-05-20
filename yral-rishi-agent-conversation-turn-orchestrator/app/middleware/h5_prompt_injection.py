@@ -12,7 +12,7 @@
 # WHY H5 LIVES IN MIDDLEWARE NOT IN THE HANDLER
 # Per the Session-4 agent definition's Day-3 plan + the verbatim Day-3
 # directive: "safety stack BEFORE any real LLM call." Putting H5 (and
-# H4, A10) in middleware means Day-5's real-LLM swap inside the handler
+# H4, adult_content) in middleware means Day-5's real-LLM swap inside the handler
 # automatically inherits the safety stack — the LLM never sees a
 # jailbreak input because the middleware short-circuited it first.
 #
@@ -26,7 +26,7 @@
 # ML classifier replaces this file's `_INJECTION_PATTERNS` constant
 # without touching the dispatch logic.
 #
-# THE GATE-RESPECT PATTERN (see file header of `a10_adult_content_filter.py` for
+# THE GATE-RESPECT PATTERN (see file header of `adult_content_output_filter.py` for
 # the same pattern in the output-side layer)
 # Per the Day-3 directive verbatim: "Flag-off behaviour unchanged:
 # env=production OR enable_run_turn_stub=false still 503s before
@@ -101,7 +101,7 @@ from starlette.types import ASGIApp
 from app.config import get_settings
 
 # `read_and_replay_body()` reads the request body ONCE + replays it
-# into `request._receive` so H4 + A10 + the handler can re-read.
+# into `request._receive` so H4 + adult_content + the handler can re-read.
 # Without this helper, the first `await request.body()` would drain
 # the body for everyone downstream.
 from app.middleware._body_replay import read_and_replay_body
@@ -233,7 +233,7 @@ def _match_injection(user_message: str) -> str | None:
 
 class H5PromptInjectionMiddleware(BaseHTTPMiddleware):
     """Outermost safety layer — blocks known prompt-injection shapes
-    before the request reaches H4 / A10 / the handler.
+    before the request reaches H4 / adult_content / the handler.
 
     WHAT: BaseHTTPMiddleware whose `dispatch()` inspects POST /v1/turn
           request bodies for jailbreak patterns + short-circuits with
@@ -263,7 +263,7 @@ class H5PromptInjectionMiddleware(BaseHTTPMiddleware):
         # had `env=production OR not (real_llm or stub)`, which means
         # once the cluster cutover allows real-LLM in production, the
         # safety stack would still pass through (the handler would
-        # serve a real LLM call, but H5/H4/A10 wouldn't fire). That
+        # serve a real LLM call, but H5/H4/adult_content wouldn't fire). That
         # bakes in a future production safety bypass.
         #
         # Correct gate: only pass through when NO orchestration path
@@ -296,7 +296,7 @@ class H5PromptInjectionMiddleware(BaseHTTPMiddleware):
         record("H5_entry")
 
         # Read + replay the request body. After this call, downstream
-        # layers (H4, A10) + the handler can re-read the body via
+        # layers (H4, adult_content) + the handler can re-read the body via
         # `await request.body()` and get the cached bytes back.
         body_bytes = await read_and_replay_body(request)
 
@@ -322,7 +322,7 @@ class H5PromptInjectionMiddleware(BaseHTTPMiddleware):
             user_message = ""
 
         # Run the matcher. On match, short-circuit with the canned
-        # response; no `call_next` so H4 / A10 / handler never run.
+        # response; no `call_next` so H4 / adult_content / handler never run.
         reason = _match_injection(user_message)
         if reason is not None:
             # Use the parsed conversation_id when present; fall back
@@ -479,7 +479,7 @@ class H5PromptInjectionMiddleware(BaseHTTPMiddleware):
 #   _body_replay.py            — body-read + receive-replay helper
 #   _safety_audit.py           — audit-trail ContextVar + record() helper
 #   h4_crisis_detection.py     — inner safety layer this layer passes to
-#   a10_adult_content_filter.py         — innermost safety layer (output-side filter)
+#   adult_content_output_filter.py         — innermost safety layer (output-side filter)
 #   ../safety/canned_responses.py
 #                              — `prompt_injection_blocked()` returns the
 #                                canned MessageResponse when H5 short-circuits

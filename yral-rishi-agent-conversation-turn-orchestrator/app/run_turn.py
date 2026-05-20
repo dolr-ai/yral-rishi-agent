@@ -6,7 +6,7 @@
 # defines one route, `POST /v1/turn`, which TODAY (Day 2) returns a
 # schema-valid stub `MessageResponse` with a placeholder body. Day 5
 # swaps the stub for the real LLM call; Day 3 adds the safety stack
-# (H5 prompt-injection → H4 crisis → A10 adult-content) IN FRONT of this handler
+# (H5 prompt-injection → H4 crisis → adult_content adult_content) IN FRONT of this handler
 # without touching the route signature.
 #
 # WHAT IS THIS ENDPOINT FOR?
@@ -632,10 +632,10 @@ async def run_turn(
         # -------------------------------------------------------------------
         # PATH SELECT — Day-5 real LLM if its flag is on; else Day-2 stub.
         # -------------------------------------------------------------------
-        # Day-6: the H5 → H4 → A10 safety stack now wraps this route
+        # Day-6: the H5 → H4 → adult_content safety stack now wraps this route
         # as middleware (see `app/main.py`'s LIFO add_middleware block).
         # H5 catches prompt-injection attempts BEFORE we reach this
-        # branch; H4 catches crisis-language input; A10 inspects the
+        # branch; H4 catches crisis-language input; adult_content inspects the
         # LLM's response on the way back out. By the time control
         # reaches the path-select below, the input was already cleared
         # by H5 + H4 — so the real LLM call is safe to make.
@@ -789,7 +789,7 @@ async def run_turn(
 #   idempotency.py     — F10 atomic-dedup helpers (acquire_or_check +
 #                        mark_complete + release_in_progress_lock +
 #                        compute_request_fingerprint)
-#   llm_client/        — A10 abstract LLM client interface + Gemini
+#   llm_client/        — adult_content abstract LLM client interface + Gemini
 #                        provider + lifespan singleton accessor
 #   soul_file_client.py — httpx-based Soul File Library RPC client +
 #                        the two typed exceptions this handler maps to

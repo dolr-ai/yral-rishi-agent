@@ -98,7 +98,7 @@ async def read_and_replay_body(request: Request) -> bytes:
     # per-layer Request instances Starlette's BaseHTTPMiddleware builds
     # do NOT share `_body` (each instance caches independently); but
     # `state` lives on `scope["state"]` so all layers see the same
-    # value. Codex PR-#112 round-4 BLOCKER 1 closure: A10 (post-handler)
+    # value. Codex PR-#112 round-4 BLOCKER 1 closure: adult_content (post-handler)
     # needs the bytes to compute the F10 fingerprint for the
     # mark_complete cache overwrite, and `await request.body()` at
     # that point raises "Stream consumed" — the patched _receive was
@@ -113,7 +113,7 @@ async def read_and_replay_body(request: Request) -> bytes:
 #   __init__.py             — package marker + ASCII chain diagram
 #   h5_prompt_injection.py  — outermost-safety consumer (calls this helper)
 #   h4_crisis_detection.py  — relies on the cached `_body` (no replay call)
-#   a10_adult_content_filter.py      — inspects RESPONSE, not request; doesn't use this
+#   adult_content_output_filter.py      — inspects RESPONSE, not request; doesn't use this
 #   ../../tests/test_safety_stack.py
 #                          — happy-path test proves the handler still sees
 #                            the body after the middleware chain runs
