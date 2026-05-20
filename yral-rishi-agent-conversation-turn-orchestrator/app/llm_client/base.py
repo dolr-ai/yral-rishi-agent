@@ -15,8 +15,9 @@
 #      "we crashed".
 #
 # WHY ABSTRACT — per A10 ("LLM-agnostic abstraction")
-# Every routing path (Tara → OpenRouter, crisis → Claude, adult-content →
-# OpenRouter, default → Gemini) calls into the SAME interface. The
+# Every routing path (Tara → OpenRouter, crisis → Claude, NSFW /
+# influencer.is_nsfw=TRUE → OpenRouter, default → Gemini) calls
+# into the SAME interface. The
 # decision of WHICH provider to instantiate lives in `run_turn.py` (or
 # Day 6+'s routing matrix); the calling code doesn't change when we
 # add a new provider — it just sees `LlmClient.generate(...)`.

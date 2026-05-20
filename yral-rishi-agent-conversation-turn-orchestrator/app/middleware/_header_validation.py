@@ -66,32 +66,6 @@ from starlette.responses import JSONResponse
 _log = logging.getLogger("app.middleware._header_validation")
 
 
-def _api_response_envelope(error_code: str, message_text: str) -> dict:
-    """Return the ApiResponse envelope (same shape as run_turn.py's).
-
-    WHAT: builds `{"success": False, "msg": message_text,
-          "error": error_code, "data": None}` per the contract at
-          `interface-contracts/00-api-contract.md`.
-    WHEN: called by the three header-validation failure paths below.
-    WHY:  mirrors `app/run_turn.py::_api_response_envelope` byte-for-byte
-          so middleware + handler emit identical error shapes. Centralised
-          to one helper here so a future schema bump edits one location.
-    """
-    # `success=False` marks the envelope as the error variant;
-    # mobile clients branch on this flag before inspecting `data`.
-    # `msg` carries human-readable diagnostic for log capture.
-    # `error` is the machine-readable code mobile clients dispatch
-    # on (per the API contract). `data=None` keeps the shape
-    # identical to the success envelope so JSON parsers don't
-    # need conditional logic.
-    return {
-        "success": False,
-        "msg": message_text,
-        "error": error_code,
-        "data": None,
-    }
-
-
 def validate_required_headers(request: Request) -> JSONResponse | None:
     """Validate X-User-Id + X-Idempotency-Key on a POST /v1/turn request.
 
@@ -186,6 +160,38 @@ def validate_required_headers(request: Request) -> JSONResponse | None:
 
     # All three checks passed.
     return None
+
+
+# ===========================================================================
+# Private helper (B7 priority order — entry-point above, helpers below)
+# ===========================================================================
+
+
+def _api_response_envelope(error_code: str, message_text: str) -> dict:
+    """Return the ApiResponse envelope (same shape as run_turn.py's).
+
+    WHAT: builds `{"success": False, "msg": message_text,
+          "error": error_code, "data": None}` per the contract at
+          `interface-contracts/00-api-contract.md`.
+    WHEN: called by the three failure-path branches inside
+          `validate_required_headers` above.
+    WHY:  mirrors `app/run_turn.py::_api_response_envelope` byte-for-byte
+          so middleware + handler emit identical error shapes. Centralised
+          to one helper here so a future schema bump edits one location.
+    """
+    # `success=False` marks the envelope as the error variant;
+    # mobile clients branch on this flag before inspecting `data`.
+    # `msg` carries human-readable diagnostic for log capture.
+    # `error` is the machine-readable code mobile clients dispatch
+    # on (per the API contract). `data=None` keeps the shape
+    # identical to the success envelope so JSON parsers don't
+    # need conditional logic.
+    return {
+        "success": False,
+        "msg": message_text,
+        "error": error_code,
+        "data": None,
+    }
 
 
 # ===========================================================================

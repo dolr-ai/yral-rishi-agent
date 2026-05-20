@@ -155,31 +155,8 @@ _REASON_ADULT_CONTENT_KEYWORD: Final[str] = "adult_content_keyword"
 _log = logging.getLogger("app.middleware.adult_content_output_filter")
 
 
-def _match_adult_content(content: str) -> str | None:
-    """Return a reason code if `content` matches any adult_content pattern, else None.
-
-    WHAT: walks the adult_content pattern list; returns the reason code on
-          FIRST match.
-    WHEN: called once per /v1/turn response inside `dispatch()` AFTER
-          `call_next` returns.
-    WHY:  isolated so unit tests can exercise the matcher directly.
-    """
-    # Walk every compiled adult_content pattern; first-hit short-
-    # circuit (cheap micro-opt + Day-5+ real LLM output paths benefit
-    # from any saved regex scans on the hot path).
-    for pattern in _ADULT_CONTENT_PATTERNS:
-        # `re.search` is truthy on match, None on no-match. We don't
-        # capture groups — just need the boolean.
-        if pattern.search(content):
-            # Single shared reason code; matches the X-Safety-Reason
-            # header value the response carries.
-            return _REASON_ADULT_CONTENT_KEYWORD
-
-    return None
-
-
 # ===========================================================================
-# Middleware
+# Middleware (B7 priority order — entry-point first; matcher helper below)
 # ===========================================================================
 
 
@@ -391,6 +368,35 @@ class AdultContentOutputFilterMiddleware(BaseHTTPMiddleware):
             headers=headers,
             media_type=original.media_type,
         )
+
+
+# ===========================================================================
+# Private helper (B7 priority order — middleware above, helpers below)
+# ===========================================================================
+
+
+def _match_adult_content(content: str) -> str | None:
+    """Return a reason code if `content` matches any adult-content pattern, else None.
+
+    WHAT: walks the adult-content pattern list; returns the reason code
+          on FIRST match.
+    WHEN: called once per /v1/turn response inside
+          `AdultContentOutputFilterMiddleware.dispatch()` above (AFTER
+          `call_next` returns).
+    WHY:  isolated so unit tests can exercise the matcher directly.
+    """
+    # Walk every compiled adult-content pattern; first-hit short-
+    # circuit (cheap micro-opt + Day-5+ real LLM output paths benefit
+    # from any saved regex scans on the hot path).
+    for pattern in _ADULT_CONTENT_PATTERNS:
+        # `re.search` is truthy on match, None on no-match. We don't
+        # capture groups — just need the boolean.
+        if pattern.search(content):
+            # Single shared reason code; matches the X-Safety-Reason
+            # header value the response carries.
+            return _REASON_ADULT_CONTENT_KEYWORD
+
+    return None
 
 
 # ===========================================================================

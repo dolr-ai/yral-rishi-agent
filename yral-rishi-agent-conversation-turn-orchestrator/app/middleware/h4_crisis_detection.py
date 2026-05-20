@@ -156,29 +156,6 @@ _REASON_CRISIS_LANGUAGE: Final[str] = "h4_crisis_language"
 _log = logging.getLogger("app.middleware.h4_crisis_detection")
 
 
-def _match_crisis(user_message: str) -> str | None:
-    """Return a reason code if `user_message` matches any H4 pattern, else None.
-
-    WHAT: walks the crisis keyword regex list; returns the reason code
-          on FIRST match.
-    WHEN: called once per /v1/turn request inside `dispatch()`.
-    WHY:  isolated so unit tests can exercise the matcher without
-          spinning up the full middleware chain.
-    """
-    # Walk every compiled crisis pattern; return on FIRST hit so we
-    # short-circuit further pattern scans (cheap but adds up on
-    # high-throughput turns).
-    for pattern in _CRISIS_PATTERNS:
-        # `re.search` returns a Match object on hit (truthy) or None
-        # (falsy). We don't need the match groups — just the boolean.
-        if pattern.search(user_message):
-            # Single shared reason code today; Day-5+ may expand to
-            # per-pattern codes if Langfuse triage needs finer split.
-            return _REASON_CRISIS_LANGUAGE
-
-    return None
-
-
 # ===========================================================================
 # Middleware
 # ===========================================================================
@@ -356,6 +333,35 @@ class H4CrisisDetectionMiddleware(BaseHTTPMiddleware):
 
         record("H4_exit")
         return response
+
+
+# ===========================================================================
+# Private helper (B7 priority order — middleware entry-point above, helpers below)
+# ===========================================================================
+
+
+def _match_crisis(user_message: str) -> str | None:
+    """Return a reason code if `user_message` matches any H4 pattern, else None.
+
+    WHAT: walks the crisis keyword regex list; returns the reason code
+          on FIRST match.
+    WHEN: called once per /v1/turn request inside
+          `H4CrisisDetectionMiddleware.dispatch()` above.
+    WHY:  isolated so unit tests can exercise the matcher without
+          spinning up the full middleware chain.
+    """
+    # Walk every compiled crisis pattern; return on FIRST hit so we
+    # short-circuit further pattern scans (cheap but adds up on
+    # high-throughput turns).
+    for pattern in _CRISIS_PATTERNS:
+        # `re.search` returns a Match object on hit (truthy) or None
+        # (falsy). We don't need the match groups — just the boolean.
+        if pattern.search(user_message):
+            # Single shared reason code today; Day-5+ may expand to
+            # per-pattern codes if Langfuse triage needs finer split.
+            return _REASON_CRISIS_LANGUAGE
+
+    return None
 
 
 # ===========================================================================

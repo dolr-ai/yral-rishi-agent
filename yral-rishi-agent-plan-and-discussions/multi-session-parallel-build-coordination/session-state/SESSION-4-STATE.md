@@ -1,6 +1,6 @@
 # Session 4 STATE — Orchestrator + Soul File + Influencer Directory
 
-> Updated: 2026-05-20 (Day-6 H5/H4/A10 safety stack restored + wired in front of LLM — Codex PR-#109 BLOCKER 2 closed; 52/52 tests green + 1 skipped).
+> Updated: 2026-05-20 (Day-6 orchestrator-side H5 prompt-injection + H4 crisis-detection + adult-content output filter restored + wired in front of LLM — defense-in-depth; full H5 still needs Session 3 public-api ingress per DEP-009. PR-#112 has been through 9 Codex rounds — wire identifiers fully renamed away from "A10" since A10 is the LLM-routing rule, not an output filter. 63 tests + 1 skipped.).
 > Updated: 2026-05-20 (Day-5 real LLM enablement PR opened — "the AI actually responds" milestone; 39/39 tests green + 1 env-gated integration skipped).
 > Updated: 2026-05-18 (Day-4 Soul File Library PR opened — first stateful v2 service for Session 4; 20/20 tests green incl. byte-identity × 5 reps).
 > Updated: 2026-05-18 (Day-2 `POST /v1/turn` RPC handler PR opened; Day-1 PR #95 merged earlier same day).
@@ -9,7 +9,7 @@
 
 I am Session 4. I own **three services** that together implement the conversation-turn business logic of v2:
 
-1. **yral-rishi-agent-conversation-turn-orchestrator** — runs the actual LLM turn for each chat message. Session 3 calls my `run_turn(...)` RPC; I do the safety stack (H5 prompt-injection defense → H4 crisis routing → A10 NSFW routing) → LLM call → return JSON `MessageDto` (NOT SSE on the v1 path per A16 parity).
+1. **yral-rishi-agent-conversation-turn-orchestrator** — runs the actual LLM turn for each chat message. Session 3 calls my `run_turn(...)` RPC; I do the safety stack (H5 prompt-injection defense → H4 crisis detection → adult-content output filter) → LLM call → return JSON `MessageResponse` (NOT SSE on the v1 path per A16 parity). Note: A10 in CONSTRAINTS is the **LLM-routing rule** (Tara/OpenRouter, `influencer.is_nsfw=TRUE` → OpenRouter), NOT a safety layer; PR #112 renamed all wire+code A10 references in the safety surface for that reason.
 2. **yral-rishi-agent-soul-file-library** — Postgres-backed Soul File store. CRUD endpoints for AI Influencers' personality definitions. Per B4 product vocab: NEVER say "system prompt" in code/comments/internal naming (only the API path `/system-prompt` is kept for chat-ai parity).
 3. **yral-rishi-agent-influencer-and-profile-directory** — Postgres-backed catalog of AI Influencers + their profile metadata. Read-heavy; Redis-cached for read latency (per the API contract's `GET /api/v1/influencers` Cache-Control 300s + the `GET /api/v1/influencers/{id}` per-influencer caching note). NOT to be confused with E7 (which is specifically yral-billing's 60s access-check cache).
 

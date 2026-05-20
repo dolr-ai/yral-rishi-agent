@@ -75,93 +75,8 @@ CRISIS_PLACEHOLDER_CONTENT: str = (
 
 
 # ===========================================================================
-# Shared builder — one place that knows the MessageResponse field set so
-# all three response builders stay in lockstep with `models/turn.py`.
-# ===========================================================================
-
-
-def _canned_message_response_dict(
-    conversation_id: str,
-    content: str,
-    idempotency_key: str,
-    safety_layer: str,
-) -> dict:
-    """Return a MessageResponse-shaped dict for a safety-blocked reply.
-
-    WHAT: assembles the 8 required MessageResponse fields with the safety
-          short-circuit defaults (role=assistant, no media, no client
-          message id, DETERMINISTIC UUID5 + ISO timestamp derived from
-          the idempotency_key + safety_layer, paywall count flipped OFF).
-    WHEN: invoked by the three public callables below.
-    WHY:  one builder means a future MessageResponse schema bump only
-          changes ONE file in `app/safety/`; tests will catch any
-          downstream divergence.
-
-          Codex PR-#112 round-4 BLOCKER 2 — the canned reply MUST be
-          byte-identical on retry with the same X-Idempotency-Key
-          (F10 idempotent-replay contract). Without determinism the
-          `id` + `created_at` fields drift on each safety short-circuit
-          → duplicate visible assistant replies in the mobile UI.
-
-          Determinism strategy:
-            - `id`         = UUID5(NAMESPACE_OID, `{layer}:{key}`)
-                             → same input → same UUID forever
-            - `created_at` = fixed marker `1970-01-01T00:00:00Z`. The
-                             ISO8601 wire shape is preserved (chat-ai
-                             parity per A8) but the value is constant
-                             so retries are byte-identical. Operator
-                             timing for safety-blocked turns lives in
-                             Sentry / Langfuse trace records, NOT in
-                             this user-visible field.
-
-    Args:
-      conversation_id  — echoed verbatim into the response (consumer
-                         correlation).
-      content          — the canned reply text per layer.
-      idempotency_key  — the validated X-Idempotency-Key value the
-                         middleware already enforced. Used as the
-                         UUID5 seed.
-      safety_layer     — "H5" / "H4" / "adult_content". Mixed into the UUID5
-                         seed so the same key blocked by different
-                         layers produces distinct ids.
-    """
-    # Deterministic UUID5: namespace + (layer + key) → stable id
-    # across retries. Layer-mixing means a clean message that later
-    # triggers a different layer's match (e.g. user changes the
-    # content and reuses the key — already rejected by F10's
-    # fingerprint-mismatch, but defence-in-depth here) gets a
-    # distinct id, surfacing the divergence in logs.
-    deterministic_id = str(
-        uuid5(NAMESPACE_OID, f"{safety_layer}:{idempotency_key}")
-    )
-
-    # Real ISO8601 UTC `Z` timestamp — chat-ai parity per A8 + A16
-    # (the mobile UI displays this as the message-sent time; a
-    # placeholder like 1970-01-01 would be a parity break per
-    # Codex PR-#112 round-5 BLOCKER 3). Byte-identical-on-retry is
-    # NOT delivered by determinism here — it's delivered by the F10
-    # cache REPLAY: the safety middleware now wires acquire_or_check
-    # + mark_complete, so retries get the cached FIRST-call
-    # timestamp via Redis replay, not via the builder regenerating
-    # the same value.
-    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    return {
-        "id": deterministic_id,
-        "conversation_id": conversation_id,
-        "role": "assistant",
-        "content": content,
-        "media_urls": None,
-        "client_message_id": None,
-        "created_at": now_iso,
-        # Safety-blocked turns don't count toward the paywall — see
-        # the file-header rationale on E7.
-        "count_toward_paywall": False,
-    }
-
-
-# ===========================================================================
-# Public callables — one per safety layer
+# Public callables — one per safety layer (B7 priority order: entry-points
+# first; private builder helper at the bottom of the module)
 # ===========================================================================
 
 
@@ -231,6 +146,74 @@ def adult_content_blocked(
         idempotency_key=idempotency_key,
         safety_layer="adult_content",
     )
+
+
+# ===========================================================================
+# Private builder helper (B7 priority order — public callables above)
+# ===========================================================================
+
+
+def _canned_message_response_dict(
+    conversation_id: str,
+    content: str,
+    idempotency_key: str,
+    safety_layer: str,
+) -> dict:
+    """Return a MessageResponse-shaped dict for a safety-blocked reply.
+
+    WHAT: assembles the 8 required MessageResponse fields with the safety
+          short-circuit defaults (role=assistant, no media, no client
+          message id, DETERMINISTIC UUID5 id, real ISO timestamp,
+          paywall count flipped OFF).
+    WHEN: invoked by the three public callables above
+          (prompt_injection_blocked / crisis_response /
+          adult_content_blocked).
+    WHY:  one builder means a future MessageResponse schema bump only
+          changes ONE file in `app/safety/`; tests will catch any
+          downstream divergence.
+
+          Codex PR-#112 round-5 BLOCKER 3 — `created_at` is a real
+          `datetime.now()` ISO8601 UTC `Z` string (chat-ai parity per
+          A8 + A16). Byte-identity on retry is delivered by the F10
+          cache REPLAY: middleware wires acquire_or_check + mark_complete
+          so the retry's `replay_done` returns the cached first-call
+          body — including its first-call timestamp.
+
+          UUID5 id is still deterministic per (layer, key) so logs +
+          observability correlate even on F10-cache-miss paths.
+
+    Args:
+      conversation_id  — echoed verbatim into the response.
+      content          — the canned reply text per layer.
+      idempotency_key  — the validated X-Idempotency-Key. UUID5 seed.
+      safety_layer     — "H5" / "H4" / "adult_content". Mixed into the
+                         UUID5 seed so the same key blocked by different
+                         layers produces distinct ids.
+    """
+    # Deterministic UUID5: namespace + (layer + key) → stable id
+    # across retries (defence-in-depth supplement to the F10 cache).
+    deterministic_id = str(
+        uuid5(NAMESPACE_OID, f"{safety_layer}:{idempotency_key}")
+    )
+
+    # Real ISO8601 UTC `Z` timestamp — chat-ai parity per A8/A16.
+    # Byte-identical-on-retry is delivered by the F10 cache replay
+    # (middleware mark_complete caches the first-call payload; retry's
+    # acquire_or_check returns replay_done with that cached body).
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    return {
+        "id": deterministic_id,
+        "conversation_id": conversation_id,
+        "role": "assistant",
+        "content": content,
+        "media_urls": None,
+        "client_message_id": None,
+        "created_at": now_iso,
+        # Safety-blocked turns don't count toward the paywall — see
+        # the file-header rationale on E7.
+        "count_toward_paywall": False,
+    }
 
 
 # ===========================================================================

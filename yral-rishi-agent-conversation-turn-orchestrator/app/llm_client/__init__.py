@@ -6,7 +6,8 @@
 # in Day 6+ per the agent definition + the `reference_yral_chat_v2_llm_
 # routing_tara` memory). Everything outside this package depends ONLY on
 # the abstract `LlmClient` interface — so a future routing matrix
-# (Tara → OpenRouter; crisis → Claude; adult-content → OpenRouter) can be added
+# (Tara → OpenRouter; crisis → Claude;
+#  influencer.is_nsfw=TRUE / NSFW → OpenRouter) can be added
 # without changing any caller code.
 #
 # WHY THE PACKAGE EXISTS (per A10 — LLM-agnostic abstraction)
