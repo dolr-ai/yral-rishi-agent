@@ -70,28 +70,10 @@ DEFAULT_ISSUER = "https://auth.yral.com"
 # ===========================================================================
 
 
-@pytest.fixture(scope="module")
-def rsa_keypair():
-    """Generate an RSA keypair once per test module.
-
-    WHAT: returns (private_key_pem_bytes, public_key_obj) tuple. Private
-          PEM is used to sign tokens; public key obj goes into the JWKS
-          JSON document the monkey-patched _fetch_jwks_from_upstream
-          returns.
-    WHEN: module-scoped — keygen is ~50ms, so per-test would slow the
-          module noticeably without value.
-    WHY:  real crypto path through PyJWT validates the actual RSA verify
-          (not a mocked happy path).
-    """
-    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    private_pem = private_key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
-    )
-    public_key = private_key.public_key()
-    return private_pem, public_key
-
+# NOTE: the module-local `rsa_keypair` fixture was deleted in Day-4B —
+# `conftest.py` now ships a session-scoped one shared with the chat /
+# influencer / handler-auth tests, so a single keypair powers the whole
+# pytest session (faster + simpler).
 
 class _FakeRedis:
     """Minimal dict-backed stand-in for redis.Redis used by tests.
@@ -222,9 +204,14 @@ def auth_test_client():
     test_app = FastAPI()
 
     @test_app.get("/test/whoami")
-    def whoami(user_id: str = Depends(authenticate_user_dual_validate)) -> dict:
-        # Returns the user_id the authoritative validator resolved.
-        return {"user_id": user_id}
+    def whoami(user=Depends(authenticate_user_dual_validate)) -> dict:
+        # `authenticate_user_dual_validate` returns `AuthenticatedUser`
+        # after the Day-4B refactor (was a bare `str` on Day 3). The
+        # /test/whoami endpoint extracts `.user_id` so the JWT shadow
+        # tests' assertions (`response.json() == {"user_id": "..."}`)
+        # keep matching the same wire shape without those test bodies
+        # having to know about the dataclass internals.
+        return {"user_id": user.user_id}
 
     # The dependency raises HTTPException with dict detail on 401 — the
     # main app's envelope-aware handler is in app/main.py, but THIS

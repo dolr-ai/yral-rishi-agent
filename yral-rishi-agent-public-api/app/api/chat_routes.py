@@ -80,18 +80,21 @@ from app.api.feature_flag import require_day_2_placeholder_flag_enabled
 # letting the locked paths 404.
 from app.api.errors import HTTP_STATUS_FOR_ERROR_CODE, error_response
 
-# Placeholder auth dependency (Codex PR #97 round-5 ITEM 4) — applied
-# to BOTH chat routers via the `dependencies=` parameter so every HTTP
-# endpoint on these routers requires `Authorization: Bearer <...>` until
-# PR #102 swaps in the real JWT-validating dependency.
-from app.api.auth_placeholder import require_authorization_header
-from fastapi import Depends as _Depends_for_router
+# Real auth dependency (Day 4B) — replaces the PR #97 round-5 placeholder
+# (`require_authorization_header`). Wired per-handler so every chat
+# endpoint receives an `AuthenticatedUser` argument with the validated
+# user_id + raw token (the latter Day-4C forwards to the orchestrator).
+from app.api.dependencies import AuthenticatedUser, require_authenticated_user
 
 # Router for the v1 surface every existing mobile build talks to. The
 # prefix means handlers below declare paths relative to `/api/v1/chat/`.
-# Codex PR #97 round-5 ITEM 4: router-level `dependencies=` applies the
-# placeholder auth check to every HTTP route on this router. WebSocket
-# routes (the BLOCKER-4 ws_inbox_stub at the bottom of this file) check
+# Day-4B replaced PR #97 round-5's router-level placeholder
+# `dependencies=` with per-handler `Depends(require_authenticated_user)`
+# so each handler receives the AuthenticatedUser as a parameter (the
+# router-level form only ran the dep + discarded the value, which the
+# real auth dep would have made unreachable for forwarding the user_id
+# / raw_token to Day-4C's orchestrator RPC). WebSocket routes — the
+# BLOCKER-4 ws_inbox_stub at the bottom of this file — still check
 # auth inline inside the handler body since FastAPI's Request-typed
 # Depends doesn't apply to WebSocket routes.
 #
@@ -104,27 +107,16 @@ from fastapi import Depends as _Depends_for_router
 # orchestrator RPC + the F10 Redis-backed dedup cache, those
 # handlers grow real state-mutation paths AND the idempotency
 # dependency at the same time. Tracked in PR #103 commit body.
-chat_v1_router = APIRouter(
-    prefix="/api/v1/chat",
-    tags=["chat-v1"],
-    dependencies=[_Depends_for_router(require_authorization_header)],
-)
+chat_v1_router = APIRouter(prefix="/api/v1/chat", tags=["chat-v1"])
 
 # Router for the v2 surface mobile uses for the bot-aware inbox.
-chat_v2_router = APIRouter(
-    prefix="/api/v2/chat",
-    tags=["chat-v2"],
-    dependencies=[_Depends_for_router(require_authorization_header)],
-)
+chat_v2_router = APIRouter(prefix="/api/v2/chat", tags=["chat-v2"])
 
-# Router for the WebSocket inbox stub (BLOCKER 4 + round-5 ITEM 4 inline
-# auth check). SEPARATE from `chat_v1_router` because router-level
-# `dependencies=` on the chat_v1_router includes the
-# `require_authorization_header` HTTP-Request-typed dep — FastAPI tries
-# to resolve it on WebSocket routes too and crashes with a TypeError.
-# The WS stub does its own auth check on the WebSocket's headers
-# (which expose them as a lowercase-keyed mapping) — kept on a
-# dedicated router so router-level HTTP-Request deps don't bleed in.
+# Router for the WebSocket inbox stub (BLOCKER 4). SEPARATE from
+# `chat_v1_router` because FastAPI's Request-typed `Depends` (which
+# Day-4B's real auth uses) does not apply to WebSocket routes. The WS
+# stub does its own auth check on the upgrade-request headers
+# (lowercase-keyed mapping) inline below.
 chat_v1_ws_router = APIRouter(prefix="/api/v1/chat", tags=["chat-v1-ws"])
 
 
@@ -321,6 +313,7 @@ def _stub_conversation(
 )
 async def create_or_get_conversation(
     body: CreateConversationRequest,
+    user: AuthenticatedUser = Depends(require_authenticated_user),
     _: None = Depends(require_day_2_placeholder_flag_enabled),
 ) -> ApiResponse[ConversationResponse]:
     """Create-or-get a conversation thread (Day-2 stub).
@@ -355,6 +348,7 @@ async def create_or_get_conversation(
     summary="v1 inbox — all conversations for the authenticated user",
 )
 async def list_conversations_v1(
+    user: AuthenticatedUser = Depends(require_authenticated_user),
     _: None = Depends(require_day_2_placeholder_flag_enabled),
 ) -> ApiResponse[list[ConversationResponse]]:
     """List the authenticated user's conversations (Day-2 stub).
@@ -381,6 +375,7 @@ async def list_conversations_v1(
 async def send_message(
     body: SendMessageRequest,
     conversation_id: str = Path(..., description="Conversation UUID"),
+    user: AuthenticatedUser = Depends(require_authenticated_user),
     _: None = Depends(require_day_2_placeholder_flag_enabled),
 ) -> ApiResponse[MessageResponse]:
     """Send a user message + return the assistant's reply (Day-2 stub).
@@ -416,6 +411,7 @@ async def list_messages(
     conversation_id: str = Path(..., description="Conversation UUID"),
     limit: int = Query(20, ge=1, le=100, description="Page size; default 20, max 100"),
     before: Optional[str] = Query(None, description="Message UUID; returns older-than-this"),
+    user: AuthenticatedUser = Depends(require_authenticated_user),
     _: None = Depends(require_day_2_placeholder_flag_enabled),
 ) -> ApiResponse[list[MessageResponse]]:
     """Paginated message history (Day-2 stub).
@@ -452,6 +448,7 @@ async def list_messages(
 async def mark_read(
     body: MarkReadRequest,
     conversation_id: str = Path(..., description="Conversation UUID"),
+    user: AuthenticatedUser = Depends(require_authenticated_user),
     _: None = Depends(require_day_2_placeholder_flag_enabled),
 ) -> ApiResponse[dict]:
     """Mark-read marker (Day-2 stub — returns success on any input).
@@ -479,6 +476,7 @@ async def mark_read(
 )
 async def delete_conversation(
     conversation_id: str = Path(..., description="Conversation UUID"),
+    user: AuthenticatedUser = Depends(require_authenticated_user),
     _: None = Depends(require_day_2_placeholder_flag_enabled),
 ) -> ApiResponse[dict]:
     """Soft-delete a conversation (Day-2 stub).
@@ -510,6 +508,7 @@ async def delete_conversation(
     summary="v2 bot-aware inbox — what current mobile build hits",
 )
 async def list_conversations_v2(
+    user: AuthenticatedUser = Depends(require_authenticated_user),
     _: None = Depends(require_day_2_placeholder_flag_enabled),
 ) -> ApiResponse[list[ConversationResponse]]:
     """v2 inbox (Day-2 stub).
@@ -548,14 +547,15 @@ async def ws_inbox_stub(websocket: WebSocket, user_id: str) -> None:
     """WebSocket inbox stream — BLOCKER 4 stub with inline auth check.
 
     WHAT: validates `Authorization: Bearer <...>` from the upgrade
-          request's headers (Codex PR #97 round-5 ITEM 4 — WS routes
-          can't use the Request-typed `require_authorization_header`
-          Depends, so the check is inlined here). On missing/malformed
-          auth, closes the connection with code 1008 ("policy
-          violation") and reason `unauthorized_stub_placeholder` BEFORE
-          accepting. On valid auth, accepts the upgrade, sends one
-          envelope-shaped service_unavailable frame, then closes with
-          code 1011 ("server error") and reason
+          request's headers. FastAPI's Request-typed `Depends` (which
+          Day-4B's real auth uses on the HTTP routes) does NOT apply
+          to WebSocket routes — so the WS upgrade does its own inline
+          Bearer-present check here. On missing/malformed auth, closes
+          the connection with code 1008 ("policy violation") and
+          reason `unauthorized` BEFORE accepting. On valid auth,
+          accepts the upgrade, sends one envelope-shaped
+          service_unavailable frame, then closes with code 1011
+          ("server error") and reason
           `service_unavailable_stub_days_14_18`. Real WS impl lands
           Days 14-18; this stub holds the wire contract per BLOCKER 4.
     WHEN: any client (mobile or contract test) connecting to
@@ -563,21 +563,25 @@ async def ws_inbox_stub(websocket: WebSocket, user_id: str) -> None:
     WHY:  locked contract path; without registration the route 404s
           on upgrade which mobile would surface as a routing bug
           rather than "feature not implemented yet."
-          The auth check matches the HTTP routes' placeholder gate
-          so unauthenticated WebSocket upgrades close the same way
-          (close code 1008 close-reason "unauthorized_stub_placeholder").
+          The inline Bearer-present check matches the HTTP routes'
+          unauthorized envelope (close code 1008 close-reason
+          "unauthorized") so mobile pattern-matches the same way on
+          WS as on HTTP. The real WS impl (Days 14-18) wires the
+          full JWT dual-validate shadow rig once a WebSocket-shaped
+          auth dependency lands; until then Bearer-present is the
+          minimum-viable contract.
     """
     _ = user_id  # accepted-and-ignored until the real impl lands
     auth_header = websocket.headers.get("authorization")  # WS headers lowercase
     if not auth_header or not auth_header.startswith("Bearer "):
         # Close with policy-violation code 1008 BEFORE accepting so an
         # unauthenticated client never sees the stub payload. Matches
-        # the HTTP routes' placeholder 401 envelope semantics.
-        await websocket.close(code=1008, reason="unauthorized_stub_placeholder")
+        # the HTTP routes' 401 envelope semantics.
+        await websocket.close(code=1008, reason="unauthorized")
         return
     raw_token = auth_header[len("Bearer ") :].strip()
     if not raw_token:
-        await websocket.close(code=1008, reason="unauthorized_stub_placeholder")
+        await websocket.close(code=1008, reason="unauthorized")
         return
 
     await websocket.accept()

@@ -68,22 +68,20 @@ from app.api.feature_flag import require_day_2_placeholder_flag_enabled
 # instead of accidental 404s that look like routing bugs to mobile.
 from app.api.errors import HTTP_STATUS_FOR_ERROR_CODE, error_response
 
-# Placeholder auth dependency (Codex PR #97 round-5 ITEM 4) — applied
-# to BOTH influencer routers (public + admin) via `dependencies=` so
-# every endpoint requires `Authorization: Bearer <...>` until PR #102
-# swaps in the real JWT-validating dependency.
-from app.api.auth_placeholder import require_authorization_header
-from fastapi import Depends as _Depends_for_router
+# Real auth dependency (Day 4B) — replaces the PR #97 round-5 placeholder
+# (`require_authorization_header`). Wired per-handler so every
+# influencer endpoint (read + BLOCKER-4 stubs + admin) receives an
+# `AuthenticatedUser` argument with the validated user_id + raw token.
+from app.api.dependencies import AuthenticatedUser, require_authenticated_user
 
 # Router for the influencer read endpoints. Prefix means handlers
-# declare paths relative to `/api/v1/influencers/`. Codex PR #97
-# round-5 ITEM 4: router-level `dependencies=` applies the placeholder
-# auth check to every endpoint on this router.
-influencer_router = APIRouter(
-    prefix="/api/v1/influencers",
-    tags=["influencers"],
-    dependencies=[_Depends_for_router(require_authorization_header)],
-)
+# declare paths relative to `/api/v1/influencers/`. Day-4B replaced
+# PR #97 round-5's router-level placeholder `dependencies=` with
+# per-handler `Depends(require_authenticated_user)` so each handler
+# receives the AuthenticatedUser as a parameter — same uniform-auth
+# coverage, but the AuthenticatedUser flows into the function body
+# (Day-4C's orchestrator RPC will forward user_id + raw_token from it).
+influencer_router = APIRouter(prefix="/api/v1/influencers", tags=["influencers"])
 
 
 # ===========================================================================
@@ -137,6 +135,7 @@ def _stub_influencer(
 )
 async def list_influencers(
     response: Response,
+    user: AuthenticatedUser = Depends(require_authenticated_user),
     _: None = Depends(require_day_2_placeholder_flag_enabled),
 ) -> ApiResponse[list[InfluencerResponse]]:
     """List active influencers (Day-2 stub).
@@ -168,6 +167,7 @@ async def list_influencers(
     summary="The currently-trending influencers (subset of the full list)",
 )
 async def list_trending_influencers(
+    user: AuthenticatedUser = Depends(require_authenticated_user),
     _: None = Depends(require_day_2_placeholder_flag_enabled),
 ) -> ApiResponse[list[InfluencerResponse]]:
     """Trending influencers (Day-2 stub).
@@ -193,6 +193,7 @@ async def list_trending_influencers(
 )
 async def get_influencer(
     influencer_id: str = Path(..., description="Influencer UUID (preserved from chat-ai per A4)"),
+    user: AuthenticatedUser = Depends(require_authenticated_user),
     _: None = Depends(require_day_2_placeholder_flag_enabled),
 ) -> ApiResponse[InfluencerResponse]:
     """Single-influencer detail (Day-2 stub).
@@ -265,8 +266,11 @@ def _service_unavailable_stub(handler_name: str) -> JSONResponse:
 
 
 @influencer_router.post("/generate-prompt", summary="Step 1 of 3-step creation (stub)")
-async def generate_prompt_stub() -> JSONResponse:
+async def generate_prompt_stub(
+    user: AuthenticatedUser = Depends(require_authenticated_user),
+) -> JSONResponse:
     """Step 1 of the 3-step influencer-creation flow — BLOCKER 4 stub."""
+    _ = user
     return _service_unavailable_stub("POST /api/v1/influencers/generate-prompt")
 
 
@@ -274,16 +278,22 @@ async def generate_prompt_stub() -> JSONResponse:
     "/validate-and-generate-metadata",
     summary="Step 2 of 3-step creation (stub)",
 )
-async def validate_and_generate_metadata_stub() -> JSONResponse:
+async def validate_and_generate_metadata_stub(
+    user: AuthenticatedUser = Depends(require_authenticated_user),
+) -> JSONResponse:
     """Step 2 of the 3-step influencer-creation flow — BLOCKER 4 stub."""
+    _ = user
     return _service_unavailable_stub(
         "POST /api/v1/influencers/validate-and-generate-metadata",
     )
 
 
 @influencer_router.post("/create", summary="Step 3 of 3-step creation (stub)")
-async def create_influencer_stub() -> JSONResponse:
+async def create_influencer_stub(
+    user: AuthenticatedUser = Depends(require_authenticated_user),
+) -> JSONResponse:
     """Step 3 of the 3-step influencer-creation flow — BLOCKER 4 stub."""
+    _ = user
     return _service_unavailable_stub("POST /api/v1/influencers/create")
 
 
@@ -296,6 +306,7 @@ async def create_influencer_stub() -> JSONResponse:
 )
 async def edit_system_prompt_stub(
     influencer_id: str = Path(..., description="Influencer UUID"),
+    user: AuthenticatedUser = Depends(require_authenticated_user),
 ) -> JSONResponse:
     """Edit the AI Influencer's Soul File — BLOCKER 4 stub.
 
@@ -303,7 +314,7 @@ async def edit_system_prompt_stub(
     "system prompt." The path keeps the chat-ai contract name verbatim
     (mobile uses it today) but the docs + future logs use Soul File.
     """
-    _ = influencer_id
+    _ = (influencer_id, user)
     return _service_unavailable_stub(
         "PATCH /api/v1/influencers/{influencer_id}/system-prompt",
     )
@@ -315,9 +326,10 @@ async def edit_system_prompt_stub(
 )
 async def generate_video_prompt_stub(
     influencer_id: str = Path(..., description="Influencer UUID"),
+    user: AuthenticatedUser = Depends(require_authenticated_user),
 ) -> JSONResponse:
     """Generate a video-prompt seeded by the influencer — BLOCKER 4 stub."""
-    _ = influencer_id
+    _ = (influencer_id, user)
     return _service_unavailable_stub(
         "POST /api/v1/influencers/{influencer_id}/generate-video-prompt",
     )
@@ -329,6 +341,7 @@ async def generate_video_prompt_stub(
 )
 async def delete_influencer_stub(
     influencer_id: str = Path(..., description="Influencer UUID"),
+    user: AuthenticatedUser = Depends(require_authenticated_user),
 ) -> JSONResponse:
     """Soft-delete an AI Influencer — BLOCKER 4 stub.
 
@@ -336,7 +349,7 @@ async def delete_influencer_stub(
     conversations stay readable. Locked path; stub holds the wire
     contract.
     """
-    _ = influencer_id
+    _ = (influencer_id, user)
     return _service_unavailable_stub("DELETE /api/v1/influencers/{influencer_id}")
 
 
@@ -351,10 +364,6 @@ async def delete_influencer_stub(
 admin_influencer_router = APIRouter(
     prefix="/api/v1/admin/influencers",
     tags=["admin-influencers"],
-    # Codex PR #97 round-5 ITEM 4: same placeholder auth gate as the
-    # public influencer router. PR #102 will likely add a stricter
-    # admin-only auth layer (e.g., X-Admin-Key validation) on top.
-    dependencies=[_Depends_for_router(require_authorization_header)],
 )
 
 
@@ -362,9 +371,17 @@ admin_influencer_router = APIRouter(
 async def admin_ban_stub(
     influencer_id: str = Path(..., description="Influencer UUID"),
     x_admin_key: "str | None" = Header(default=None, alias="X-Admin-Key"),
+    user: AuthenticatedUser = Depends(require_authenticated_user),
 ) -> JSONResponse:
-    """Admin: ban an AI Influencer (X-Admin-Key required) — BLOCKER 4 stub."""
-    _ = (influencer_id, x_admin_key)
+    """Admin: ban an AI Influencer (X-Admin-Key required) — BLOCKER 4 stub.
+
+    DAY-4B: real JWT auth is wired per-handler (replacing the PR #97
+    round-5 placeholder). A stricter admin-only auth layer (e.g.,
+    X-Admin-Key validation against a Swarm secret) lands when the
+    real admin endpoints' bodies land; for now, X-Admin-Key is parsed
+    but unenforced (the stub returns service_unavailable regardless).
+    """
+    _ = (influencer_id, x_admin_key, user)
     return _service_unavailable_stub(
         "POST /api/v1/admin/influencers/{influencer_id}/ban",
     )
@@ -374,9 +391,13 @@ async def admin_ban_stub(
 async def admin_unban_stub(
     influencer_id: str = Path(..., description="Influencer UUID"),
     x_admin_key: "str | None" = Header(default=None, alias="X-Admin-Key"),
+    user: AuthenticatedUser = Depends(require_authenticated_user),
 ) -> JSONResponse:
-    """Admin: unban an AI Influencer (X-Admin-Key required) — BLOCKER 4 stub."""
-    _ = (influencer_id, x_admin_key)
+    """Admin: unban an AI Influencer (X-Admin-Key required) — BLOCKER 4 stub.
+
+    See `admin_ban_stub` for the Day-4B auth wiring note.
+    """
+    _ = (influencer_id, x_admin_key, user)
     return _service_unavailable_stub(
         "POST /api/v1/admin/influencers/{influencer_id}/unban",
     )
