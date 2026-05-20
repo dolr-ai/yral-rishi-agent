@@ -3,6 +3,143 @@
 
 ## OPEN
 
+### DEP-006 — Session 1 to declare Redis Sentinel config in shared-config.yaml so public-api can wire a real async-Sentinel readiness check
+
+**Status: self-resolved 2026-05-19 pending coordinator move to RESOLVED.**
+
+Session 3 self-resolved the technical question on 2026-05-19 (config was already present in `yral-rishi-agent-public-api/shared-config.yaml`'s `redis:` section — `sentinel_master_name: "yral-v2-redis-primary"` + 3 `sentinel_hosts` entries; the round-3 fixup raised the DEP on a stale read). Session 4's PR #96 round-3 verified independently. Coordinator confirmed + signalled to flip /health/ready from the round-3 503 stub to the real async-Sentinel-aware check (shipped in PR #97 round-4, commit 7aaaf6d). Per the kanban convention — sessions raise to OPEN, coordinator moves to RESOLVED — this entry stays in OPEN with the resolution write-up below until the coordinator runs the formal move in a separate PR.
+
+Raised: 2026-05-19 by Session 3
+
+What:    Session 3's PR #97 round-3 fixup landed an F9-honest 503
+         fallback for `GET /health/ready` (per Codex round-3 BLOCKER 2
+         + coordinator preference). The handler returned envelope-
+         shaped 503 with `error="service_unavailable"` and a
+         `data.dependencies.redis = "not_yet_implemented"` marker
+         until the real async Sentinel-aware Redis readiness check
+         could be wired.
+
+         The real check needs two fields in `shared-config.yaml`
+         (Session 1 cluster-bootstrap scope):
+
+           redis.sentinel_master_name: <e.g. "yral-v2-redis-primary">
+           redis.sentinel_hosts:
+             - host:port  (one per Sentinel node, typically rishi-4/5/6)
+
+         The follow-up Session 3 PR (= the round-4 fixup ALREADY
+         landed; details in the Status line above):
+           1. Read those fields via the YAML loader.
+           2. Build a `redis.asyncio.sentinel.Sentinel` client per F12
+              + C11 (async-native, Sentinel-aware).
+           3. Replace the stub `_check_redis_reachable()` (was
+              returning False) with `await sentinel_client.master_for(...).ping()`
+              with a 200ms per-call timeout — health probes fail fast,
+              not block the event loop.
+           4. Flip the readiness probe from default-503 to "200 when
+              Sentinel ping succeeds, envelope-shaped 503 when it
+              fails."
+
+         Cross-session coordination note: Session 4's PR #96 round-3
+         hit the same config + correctly chose NOT to raise an I6
+         DEP. Coordinator can fold both threads when running the
+         formal move.
+
+Why:    Until DEP-006 was self-resolved:
+         - /health/ready returned 503 unconditionally → Swarm rolling-
+           update + Caddy `health_uri /health/ready` (per C10) +
+           Uptime Kuma (per D5) all saw the service as down →
+           Day-5 cluster deploy would have failed the I2 health gate
+           + auto-rollback.
+         - Day-4A's JWKS cache (PR #101) + Day-4C's idempotency cache
+           (PR #103) also need the Sentinel client when they promote
+           from plain-redis-URL to C11-compliant Sentinel routing.
+
+Blocks (RESOLVED in practice — pending coordinator-move bookkeeping):
+         Day-5 cluster deploy + M0 milestone evaluation for Session 3.
+
+ETA needed: Already resolved technically. Coordinator move-to-RESOLVED
+         is a paper trail item.
+
+Suggested
+resolution: Coordinator moves this entry from OPEN to RESOLVED in a
+         separate PR (the move itself is coordinator scope per the
+         kanban contract; sessions append to OPEN only).
+
+Lessons:  (1) Always grep before raising a DEP — `grep -A 30 "^redis:"
+         yral-rishi-agent-public-api/shared-config.yaml` would have
+         shown the Sentinel config in 1 second + saved a round-trip.
+         (2) Cross-check with parallel sessions wrestling the same
+         constraint before raising — Session 4 had already verified
+         the same config without raising an I6 DEP. Memory entry
+         queued to capture this for future-self.
+
+---
+
+### DEP-005 — Session 2 needs to mirror `/health/{live,ready,deep}` in the template (per F9)
+
+Raised: 2026-05-18 by Session 3
+
+What:    Session 3's Day-2 PR ships `app/api/health_routes.py` locally
+         in `yral-rishi-agent-public-api/` because the template
+         (`yral-rishi-agent-new-service-template/app/`) does not yet
+         include health endpoints. F9 requires the three-tier split
+         (`/health/live` cheap, `/health/ready` deps-aware,
+         `/health/deep` real round-trip) on EVERY service. Codex
+         flagged the gap on Session 3 Day-1 PR #94; coordinator
+         confirmed it's template-inherited, not Session 3-introduced.
+
+         The local file Session 3 just shipped is intentionally a
+         bridge — same FastAPI APIRouter + handler signatures the
+         template should adopt. Copy-paste should work:
+
+         `yral-rishi-agent-public-api/app/api/health_routes.py` →
+         `yral-rishi-agent-new-service-template/app/health_routes.py`
+         (drop the `/api/` subfolder since the template lacks one;
+         re-add the subfolder when the template's `app/api/`
+         submodule is built — likely never, since the template stays
+         minimal per A2.1).
+
+         OR — keep my file in the spawned copy as the canonical
+         version and have the template ship `health_routes.py` at the
+         top of `app/` with identical shape. Either way, all 13 v2
+         services need these endpoints by the time Day-5 cluster
+         deploy lands (per I2 + the Swarm rolling-update health gate
+         + the rishi-1/2 Caddy `health_uri /health/ready` per C10).
+
+Why:     Without health endpoints on every v2 service:
+         - Swarm rolling-update treats every replica as "unhealthy"
+           and auto-rolls-back on first deploy (per I2).
+         - rishi-1/2 Caddy's `reverse_proxy ... { health_uri /health/ready }`
+           (per C10) marks the upstream dead → 502s the request.
+         - Uptime Kuma (per D5) shows the service down forever.
+
+         Bridge in place for `yral-rishi-agent-public-api` so my
+         Day-5 deploy isn't blocked, but Session 4's three services
+         (orchestrator + soul-file-library + influencer-and-profile-
+         directory) + Session 5's user-memory-service + the other 8
+         deferred services need the template fix.
+
+Blocks:  NOT a hard block on Session 3 (the local bridge works). DOES
+         block all OTHER sessions' first cluster deploys until they
+         either re-spawn from a fixed template OR back-fill the local
+         bridge in each service folder.
+
+ETA needed: Before Day 5 cluster deploy for any service (so Session 4's
+         services don't all hit auto-rollback on first deploy attempt).
+         Generous estimate: 1-2 days of Session 2 work.
+
+Suggested
+resolution: Session 2 adds `app/health_routes.py` to the template
+         (mirror of `yral-rishi-agent-public-api/app/api/health_routes.py`,
+         minus the `api/` package nesting) + wires
+         `app.include_router(health_router)` in the template's
+         `app/main.py`. Spawned services pick it up at next spawn.
+         For already-spawned services (Session 3 public-api +
+         Session 4's three services), back-fill the local bridge OR
+         re-spawn fresh.
+
+---
+
 ### DEP-004 — Session 4 asks coordinator to update interface-contracts/01-internal-rpc-contracts.md (public-api → orchestrator section) from SSE to JSON-MessageDto
 
 Raised: 2026-05-18 by Session 4

@@ -125,6 +125,14 @@ dependencies = [
     # ships an allowlist-based redaction processor (in app/logging.py)
     # that drops any field key not on a known-safe list.
     "structlog==24.4.0",
+
+    # PyYAML — used by `app/api/health_routes.py` to read the `redis:`
+    # section of `shared-config.yaml` (per C7 — sentinel master name +
+    # sentinel hosts come from the single source of truth Session 1's
+    # cluster bootstrap populates). Pinned to match Session 4's
+    # orchestrator + soul-file-library so the whole v2 monorepo runs
+    # the same YAML library version.
+    "PyYAML==6.0.2",
 ]
 
 # ===========================================================================
@@ -143,6 +151,19 @@ dev = [
     # Required because every endpoint in this template is async.
     "pytest-asyncio==0.25.2",
 ]
+
+
+# ===========================================================================
+# [tool.pytest.ini_options] — how pytest discovers + runs tests.
+# ===========================================================================
+#
+# `testpaths` tells pytest where to look so it doesn't crawl the whole
+# repo. `asyncio_mode = "auto"` is the modern pytest-asyncio idiom —
+# every `async def test_*()` runs in the event loop without needing
+# `@pytest.mark.asyncio` on each one.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
 
 # ===========================================================================
 # [tool.hatch.build.targets.wheel] — which folders end up in the wheel.
