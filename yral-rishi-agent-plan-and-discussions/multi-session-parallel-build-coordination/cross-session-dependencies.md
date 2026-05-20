@@ -140,6 +140,95 @@ resolution: Session 2 adds `app/health_routes.py` to the template
 
 ---
 
+### DEP-004 — Session 4 asks coordinator to update interface-contracts/01-internal-rpc-contracts.md (public-api → orchestrator section) from SSE to JSON-MessageDto
+
+Raised: 2026-05-18 by Session 4
+
+What:    `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/interface-contracts/01-internal-rpc-contracts.md`,
+         "public-api → orchestrator" section (lines 14-36 today).
+         The current text shows:
+
+             POST http://yral-rishi-agent-conversation-turn-orchestrator:8000/turn
+             Response: SSE stream of events
+               event: token       data: { delta: "..." }
+               event: complete    data: { message: MessageDto }
+               event: error       data: { code, message }
+
+         The actual Day-2 implementation (this session, PR opened
+         2026-05-18 — `session-4/orchestrator-run-turn-rpc-handler`)
+         ships `POST /v1/turn` returning a plain JSON `MessageDto`
+         (NOT SSE) per:
+           - CONSTRAINTS A8 + A16 (feature parity HARD; mobile sees
+             the same JSON shape chat-ai returns today)
+           - The Session-4 agent definition's Day-2 plan (verbatim:
+             "Return shape is plain JSON MessageDto matching chat-ai's
+             existing `/api/v1/.../messages` parity contract — NOT
+             SSE. SSE streaming (if added later) lives behind a
+             separate `/api/v2/...` feature-flagged path that cannot
+             affect mobile parity traffic.")
+           - Rishi's typed Day-2 green-light 2026-05-18 with the
+             explicit "plain JSON, NOT SSE — A16 parity" directive.
+
+         Proposed update (coordinator-owned file; Session 4 only
+         proposes, doesn't edit per its scope-not-allowed list):
+
+             POST http://yral-rishi-agent-conversation-turn-orchestrator:8000/v1/turn
+
+             Request:
+             {
+               conversation_id: string,
+               user_message: string
+             }
+             Headers:
+               X-User-Id          (forwarded from public-api after JWT validation, per E6)
+               X-Idempotency-Key  (per F10)
+               X-Request-Id       (per Langfuse correlation, D4)
+
+             Response: JSON MessageDto (matches chat-ai parity, per A16)
+               {
+                 id: string,
+                 conversation_id: string,
+                 role: "user" | "assistant",
+                 content: string,
+                 media_urls: string[] | null,
+                 client_message_id: string | null,
+                 created_at: string,
+                 count_toward_paywall: boolean
+               }
+
+             SSE streaming (if added later) lives at a separate
+             `POST /v2/turn-stream` path behind a feature flag per
+             the Session-4 agent definition; the v1 path stays
+             plain-JSON forever for parity stability.
+
+Why:     Session 3's public-api integration on Day 4+ will read
+         `01-internal-rpc-contracts.md` to wire its outbound call to
+         the orchestrator. If the contract still shows SSE, Session
+         3 will write a streaming-response consumer + then have to
+         rewrite once the contract aligns with the actual
+         implementation. Easier to land the doc update now.
+
+Blocks:  No HARD block — Session 3 reads PR `session-4/orchestrator-
+         run-turn-rpc-handler`'s `app/run_turn.py` + `app/models/
+         turn.py` directly to see the real contract, so its Day-4
+         integration can proceed regardless. But future Codex / new-
+         contributor reads of `01-internal-rpc-contracts.md` will
+         hit the same JSON-vs-SSE drift unless the doc updates.
+
+ETA needed: Before Session 3's Day-4 public-api → orchestrator wiring
+         work (~3-5 days from now).
+
+Suggested
+resolution: Coordinator edits the `public-api → orchestrator` section
+         of `01-internal-rpc-contracts.md` to reflect the JSON
+         response shape (per the "Proposed update" block above).
+         Same edit should also update the request fields to match
+         the Pydantic models in
+         `yral-rishi-agent-conversation-turn-orchestrator/app/models/turn.py`
+         landed on `session-4/orchestrator-run-turn-rpc-handler`.
+
+---
+
 ---
 
 ## RESOLVED

@@ -13,39 +13,125 @@ Downstream services trust X-User-Id without re-validating (per E6).
 
 ## public-api → orchestrator
 
+> **READ THIS FIRST.** The shape below is the INTERNAL RPC payload that
+> the orchestrator returns to public-api. It is NOT what mobile clients
+> receive. Public-api wraps this payload inside the locked
+> `ApiResponse<MessageResponse>` envelope (per `00-api-contract.md`)
+> before returning to mobile. Internal callers and mobile clients see
+> DIFFERENT outer shapes; only the inner `MessageResponse` fields are
+> byte-shape-identical to chat-ai's existing parity contract. Do not
+> copy this internal-bare shape into any handler that returns to mobile.
+
 ```
-POST http://yral-rishi-agent-conversation-turn-orchestrator:8000/turn
+POST http://yral-rishi-agent-conversation-turn-orchestrator:8000/v1/turn
 
 Request:
 {
-  user_id: string,
-  conversation_id: string,
-  ai_influencer_id: string,
-  message_content: string,
-  client_message_id: string,
-  media_urls: string[] | null
+  conversation_id: string,         // UUID of the conversation row;
+                                   // orchestrator joins on this to find
+                                   // user_id + ai_influencer_id (the
+                                   // latter feeds the Soul-File lookup).
+                                   // Orchestrator MUST verify the
+                                   // conversation row's user_id equals
+                                   // X-User-Id below before responding;
+                                   // mismatch returns 403 (a caller may
+                                   // never query another user's
+                                   // conversation by id-guessing).
+  user_message: string,            // Raw text the user typed. PII per
+                                   // H6 — log only LENGTH, never the
+                                   // value.
+  media_urls: string[] | null,     // Attachment URLs from the user's
+                                   // message (images/audio/video). REQUIRED
+                                   // by A8 multi-modal parity; do NOT
+                                   // drop. Public-api forwards these
+                                   // inline so the orchestrator does not
+                                   // need a second DB read per turn.
+  client_message_id: string | null // Optional client-side dedup id the
+                                   // mobile app may attach to the user
+                                   // message; orchestrator echoes it
+                                   // onto persisted user-msg traces but
+                                   // assistant replies do NOT carry one.
 }
 
-Response: SSE stream of events
-  event: token       data: { delta: "..." }
-  event: token       data: { delta: "..." }
-  event: complete    data: { message: MessageDto }
-  event: error       data: { code, message }
+Headers (ALL three required on every call):
+  X-User-Id          Forwarded from public-api after JWT validation, per E6.
+                     Orchestrator MUST cross-check this against the
+                     conversation_id's owning user before doing any work;
+                     reject 403 on mismatch.
+  X-Idempotency-Key  REQUIRED from day 1, per F10 (default-on for every
+                     non-GET endpoint). Same key + same user/conversation
+                     within 24h MUST return the previously created
+                     assistant MessageResponse from Redis without a
+                     second LLM call. Implementations MUST ship the
+                     Redis-backed dedup at the same time as the route
+                     itself — F10 forbids deferring it.
+                     Backend MUST be the C11 Sentinel-aware Redis client
+                     (NOT `redis.asyncio.Redis.from_url(...)` directly).
+                     Dedup MUST be atomic against concurrent duplicate
+                     requests (e.g. `SET NX` in-progress lock + completed
+                     payload, or Lua/transaction). Reject 400 if the
+                     header is missing.
+  X-Request-Id       Per Langfuse correlation, D4.
+
+Response (internal-bare): JSON MessageResponse — the orchestrator returns
+the bare object below to public-api over the internal RPC. The mobile-
+facing endpoint (`POST /api/v1/chat/conversations/{id}/messages` on the
+public-api) wraps this object in `ApiResponse<MessageResponse>{success,
+msg, error, data}` per `00-api-contract.md`. The inner field names and
+types below are byte-shape-identical to chat-ai's existing parity
+contract — do not mutate them, only the outer wrapper differs by hop.
+{
+  id: string,                        // fresh UUID per assistant reply
+  conversation_id: string,           // echoes the request's conversation_id
+  role: "user" | "assistant",        // orchestrator always returns "assistant"
+  content: string,                   // the assistant reply text
+  media_urls: string[] | null,       // attachment URLs the assistant
+                                     // returns (null today; real Day-5+
+                                     // may include generated images)
+  client_message_id: string | null,  // null on assistant replies; copied
+                                     // from request on user messages
+                                     // (public-api owns user-msg persist)
+  created_at: string,                // ISO8601 UTC, "YYYY-MM-DDTHH:MM:SSZ"
+  count_toward_paywall: boolean      // E7 paywall counter; safety-blocked
+                                     // turns flip false once H4/H5 land
+}
 ```
 
-Used: every chat turn. Streaming response per E2.
+Used: every chat turn. Plain JSON response (NOT SSE) per A16 — mobile
+parity requires byte-shape-identical to chat-ai's existing
+`POST /api/v1/chat/conversations/{id}/messages` contract. The v1 path
+stays plain-JSON forever for parity stability. SSE streaming per E2
+(first-token <200ms p95 target) lives at a separate `POST /v2/turn-stream`
+path behind a feature flag per the Session-4 agent definition — the v1
+JSON shape above never silently mutates into a stream.
+
+Naming note (B1 + B2 + Rishi 2026-05-19): the response model is
+`MessageResponse`, NOT `MessageDto`. The "DTO" abbreviation is not on the
+B2 allowed-abbreviation list and the project's English-naming rule applies
+to Python class names, not only JSON fields. Same rule applies to every
+other internal response model owned by v2 (`InfluencerResponse`, etc.).
+EXCEPTION — external contracts we consume but do not own (e.g.
+yral-billing's `ChatAccessDataDto` later in this doc) keep their source-
+party name in the doc + JSON shape; the internal Python class that
+deserializes it may use a B-rules-compliant alias, but the wire format
+and the doc reference both keep the external-owned name.
+
+Source of truth: `yral-rishi-agent-conversation-turn-orchestrator/app/models/turn.py`
+(`RunTurnRequest` + `MessageResponse` Pydantic models) and
+`yral-rishi-agent-conversation-turn-orchestrator/app/run_turn.py`
+(`POST /v1/turn` handler). Update this section if those models change.
 
 ## public-api → influencer-and-profile-directory
 
 ```
 GET http://yral-rishi-agent-influencer-and-profile-directory:8000/influencers/{id}
-→ InfluencerDto
+→ InfluencerResponse
 
 POST .../influencers (create flow)
-→ InfluencerDto
+→ InfluencerResponse
 
 PATCH .../influencers/{id}/system-prompt
-→ InfluencerDto
+→ InfluencerResponse
 
 DELETE .../influencers/{id}
 → {}
@@ -120,7 +206,15 @@ Pre-LLM check on user message + post-LLM check on response. Per H4, must be live
 GET https://yral-billing.../google/chat-access/check
   ?user_id=<id>&bot_id=<id>
 
-→ ApiResponse<ChatAccessDataDto>
+→ ApiResponse<ChatAccessDataDto>  // External contract from yral-billing
+                                  // (Ravi-owned). Keep the source-party
+                                  // name in this doc + JSON wire shape.
+                                  // Per E7. Our internal Python class
+                                  // may alias to a B-rules-compliant name
+                                  // (e.g. ChatAccessData), but the
+                                  // serialised JSON field and class
+                                  // identifier mirror yral-billing's
+                                  // existing release contract.
 ```
 
 Cached in v2 Redis 60s per E7. Per D1 — yral-billing is external; we consume.
