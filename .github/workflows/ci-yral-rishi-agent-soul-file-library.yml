@@ -135,7 +135,7 @@ jobs:
   # stay in the `docker-build` job above without pushing.
   # -------------------------------------------------------------------------
   docker-push-to-ghcr:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
     needs: [lint, docker-build]
     runs-on: ubuntu-latest
     # `packages: write` lets GITHUB_TOKEN push to ghcr.io for this repo.
