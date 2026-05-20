@@ -2,6 +2,116 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-20 — Day 5: real LLM enablement (the AI actually responds)
+
+### Action
+PR #96 (Day-2 stub) + PR #104 (Day-4 Soul File Library) merged to main this morning (07:50 + 07:56 UTC). Day-5 milestone: replace the orchestrator's `STUB_CONTENT` literal with a real Gemini call routed through the soul-file-library's 4-layer composed prompt. Per the coordinator directive's "minimum viable AI actually responds" framing, five pieces in this PR.
+
+### CONSTRAINTS citation verification — directive cited D4 / A8 / J1 / E1 / A2.1 / B7
+Opened CONSTRAINTS.md verbatim. All six citations check out:
+- D4 row 71 (Langfuse self-hosted; LLM trace every call) — used for the Gemini provider's generation span.
+- A8 row 26 (feature parity HARD constraint) — `MessageResponse` wire shape preserved verbatim; LLM reply content slots into `.content` without any other field changing.
+- J1 row 166 (HOT tier 75-80% floor; orchestrator included) — Day-5 tests added: 4 new gemini-provider + 6 new soul-file-client + 7 new run_turn integration tests.
+- E1 row 81 (≥50% faster; 50% latency budget) — drives the 30s Gemini timeout + the 5s soul-file RPC timeout.
+- A2.1 row 20 (avoid over-engineering; check in before >100-line solutions) — minimal scope honored: 1 abstract interface + 1 concrete provider + 1 RPC client + handler wire + tests.
+- B7 row 46 (3-tier doc standard) — every new file ships the file-header + WHAT/WHEN/WHY + role-comments + RELATED FILES footer.
+
+### Pushback raised pre-code — PR #100 (Day-3 safety stack) was CLOSED not merged
+Coordinator directive's step 4(a) said "After safety stack passes (existing H5/H4/A10 middleware chain stays in place — no change to that order)" — but the safety stack files were never merged. PR #100 auto-closed at 2026-05-20T07:50:16Z (two seconds after PR #96 merged, because #100 was stacked on #96's base branch). `app/safety/` + `app/middleware/` are empty in main.
+
+Surfaced to coordinator via `AskUserQuestion`. Coordinator (Rishi 2026-05-20) call: ship Day-5's 5-piece scope as written but treat "safety stack passes" as a no-op. Added the directive's stipulated one-line comment above the LLM call:
+
+```
+# NOTE: Safety stack (H5/H4/A10) is being re-landed in a parallel
+# coordinator PR (replacement for auto-closed PR #100). Once that
+# merges, a small follow-up PR wires the safety middleware in
+# front of this LLM call. Day-5 staging-cluster scope is acceptable
+# without safety because no production traffic reaches this code
+# yet (rishi-4/5/6 only; production stays on chat-ai.rishi.yral.com).
+```
+
+Auto-closed PR #100 still exists on GitHub at commit `dbd40c0a` (the safety branch head — coordinator's restoration PR can reuse the diff verbatim). Cause: PR #96 admin-merge deleted PR #100's base branch.
+
+### The five pieces shipped
+
+**1. LLM client abstraction** — `app/llm_client/__init__.py` + `base.py`.
+- `LlmClient` ABC with one async method `generate(*, prompt, user_message, temperature, max_tokens) → LlmResponse`. Keyword-only args per B1 readability.
+- `LlmResponse` frozen dataclass: content / provider / model / prompt_tokens / completion_tokens / latency_milliseconds.
+- `LlmClientTimeoutError` + `LlmClientUpstreamError` — typed exceptions the handler maps to 504/502 envelopes.
+- `init_default_llm_client` + `get_default_llm_client` + `close_default_llm_client` — lifespan singleton mirroring the soul-file pattern.
+
+**2. Gemini provider** — `app/llm_client/gemini.py`.
+- Uses `google-generativeai==0.8.3` (added to pyproject.toml runtime deps).
+- Model id `gemini-2.5-flash` (locked via `_DEFAULT_GEMINI_MODEL_ID` Final constant for git-blame discoverability).
+- 30s timeout via `asyncio.wait_for` per E1.
+- Langfuse trace span name `llm.gemini.generate` per D4; metadata = provider, model, prompt_tokens, completion_tokens, latency_milliseconds, temperature, max_tokens (and `failure_kind` on the failure-path span).
+- Constructor refuses empty `api_key` (fail-fast on half-configured env).
+- `GEMINI_API_KEY` declared in `secrets.yaml` per D8: blast_radius=high (quota-burning); rotation 90d.
+
+**3. Soul File RPC client** — `app/soul_file_client.py`.
+- `SoulFileClient.compose(*, influencer_id, user_segment) → ComposedPrompt(layered_prompt, version_pin, cache_hit)` matches the locked contract at `interface-contracts/01-internal-rpc-contracts.md`.
+- Lifespan-managed `httpx.AsyncClient` singleton (init/get/close trio).
+- 5s timeout; typed exceptions `SoulFileInfluencerNotFoundError` (404) + `SoulFileUpstreamError` (5xx/timeout/unparseable).
+- Defensive body parsing — missing contract field becomes `SoulFileUpstreamError` (clean 503 envelope) instead of a KeyError crash.
+
+**4. Wire into `run_turn.py`**.
+- Replaced "Gate 2: enable_run_turn_stub" with the new two-flag gate: real_llm OR stub. Production gate stays unconditional 503.
+- After idempotency `acquired` decision, the path-select branches on `enable_run_turn_real_llm`. Real-LLM path calls `_generate_real_llm_reply()` (new helper); else stub path keeps `STUB_CONTENT`.
+- Four new typed `except` branches map SoulFileInfluencerNotFoundError / SoulFileUpstreamError / LlmClientTimeoutError / LlmClientUpstreamError to 404/503/504/502 envelopes. Each calls `_safely_release_lock(...)` (new helper) so a retry starts fresh per the round-5 96-A pattern.
+- Five new Settings fields: `enable_run_turn_real_llm`, `gemini_api_key`, `llm_temperature` (0.7 default), `llm_max_tokens` (800 default), `soul_file_library_base_url`, `day_5_placeholder_ai_influencer_id`.
+- Lifespan in `app/main.py` adds `init_soul_file_client()` + `init_default_llm_client()` at startup; `close_default_llm_client()` + `close_soul_file_client()` at shutdown (LLM closes first so we stop issuing new RPCs before the downstream client tears down).
+
+**5. Tests (J1 HOT)**.
+- `tests/test_llm_client_gemini.py` (new) — 6 tests: prompt+user_message passthrough; LlmResponse field population; missing usage_metadata defensive defaults; timeout → LlmClientTimeoutError; upstream error → LlmClientUpstreamError; constructor empty-key guard. Plus env-gated `test_gemini_client_real_api_round_trip_when_env_flag_set` skipped unless `INTEGRATION_TEST_GEMINI=true` (CI never runs it).
+- `tests/test_soul_file_client.py` (new) — 6 tests: typed 200 happy path; query-param shape per contract; 404 → SoulFileInfluencerNotFoundError; httpx.TimeoutException → SoulFileUpstreamError; 5xx → SoulFileUpstreamError; unparseable body → SoulFileUpstreamError; constructor empty-base-url guard.
+- `tests/test_run_turn.py` (extended) — 7 new tests: real-LLM path returns LLM content (NOT stub); 504 envelope on timeout; 502 envelope on upstream error; 404 envelope on unknown influencer; 503 envelope on soul-file upstream; both-flags-off still 503s; stub flag still works when only stub flag is set. All existing 20 tests preserved as regression gates.
+
+### Conftest update — stub the new lifespan helpers
+`tests/conftest.py`'s `fake_redis` autouse fixture extended to also stub `init_soul_file_client` + `init_default_llm_client` (and their close pairs) to empty coroutines / no-ops. Without this, `init_default_llm_client` calls `get_settings()` at TestClient lifespan startup, pre-fills the lru_cache with default Settings (real_llm=False, etc.), and every Day-5 test's `monkeypatch.setenv("ENABLE_RUN_TURN_REAL_LLM", "true")` silently fails to take effect.
+
+Patched both the source-module references (`app.soul_file_client.init_soul_file_client`) AND the `app.main` imported references — same import-shadowing pattern PR #96 round-3 established for `mark_complete`.
+
+### Files touched
+- `app/llm_client/__init__.py` (new)
+- `app/llm_client/base.py` (new)
+- `app/llm_client/gemini.py` (new)
+- `app/soul_file_client.py` (new)
+- `app/run_turn.py` (handler + helpers + gate refactor + docstring)
+- `app/config.py` (5 new Settings fields)
+- `app/main.py` (lifespan init/close pairs for soul-file + LLM clients)
+- `secrets.yaml` (GEMINI_API_KEY declaration per D8)
+- `pyproject.toml` (google-generativeai==0.8.3 runtime dep)
+- `tests/test_llm_client_gemini.py` (new)
+- `tests/test_soul_file_client.py` (new)
+- `tests/test_run_turn.py` (7 new tests appended)
+- `tests/conftest.py` (Day-5 lifespan-helper stubs)
+- `SESSION-4-LOG.md` (this entry)
+
+### Constraints honoured / touched
+- **A2.1** — minimal scope: 1 abstract interface + 1 provider + 1 RPC client + handler wire + tests. No routing matrix (deferred per directive), no user-segment tracking, no conversation-row lookup, no Redis caching, no E1 latency-bound assertion (test scaffolding present, no numerical bound until cluster).
+- **A8** — MessageResponse wire shape unchanged; LLM reply slots into `.content` only.
+- **A10** — concrete Gemini client behind the LlmClient interface; consumers in `run_turn.py` depend on the abstraction only. Day 6+ routing matrix can swap clients without touching the handler.
+- **B7** — every new file ships the full file-header + WHAT/WHEN/WHY blocks + role-comments + RELATED FILES footer.
+- **B4** — DOLR product vocab honored: "AI Influencer", "Soul File" (the L3 row is the per-influencer soul file). No "system prompt" / "bot" in code or comments.
+- **D4** — Langfuse trace span on every Gemini call (success + failure); attributes match the directive's piece-2 list verbatim.
+- **D8** — GEMINI_API_KEY declared in secrets.yaml; per-service rotation policy.
+- **E1** — 30s LLM timeout + 5s soul-file RPC timeout; LLM reply latency surfaces in LlmResponse for future cluster-side benchmark.
+- **F10** — F10 dedup contract preserved across all five new error paths (each calls `_safely_release_lock` so a retry starts fresh).
+- **F12** — Python 3.12, asyncio-native throughout.
+- **H6** — no prompt / user_message content in logs; only metadata (length, token counts, latency, conversation_id, provider, model).
+- **I6** — pushback on directive's "safety stack stays in place" assumption (PR #100 was closed); coordinator confirmed Option 1 (proceed without safety wiring; document gap).
+- **J1** — 17 new tests added (6 + 6 + 7) for the HOT-tier orchestrator path.
+
+### Notes
+- **Day-5 placeholder ai_influencer_id** — operator-configurable via `DAY_5_PLACEHOLDER_AI_INFLUENCER_ID` env. Empty default; the real-LLM path refuses to run until set. Day 6+ replaces this with the conversation-row lookup per directive.
+- **Hardcoded `user_segment="new"`** — per directive verbatim. User-segment tracking lands later phase.
+- **Real Gemini integration test** — env-gated; OFF in CI. Run manually before each SDK version bump.
+- **Stub path stays accessible** — `enable_run_turn_stub=True` keeps the Day-2 literal reply for diagnostics per agent definition.
+- **Safety stack restoration** — coordinator parallel PR (per the Option-1 call). Once that merges, a small follow-up PR mounts the H5/H4/A10 middleware in front of `/v1/turn`. No code change to `run_turn.py` expected — middleware sits OUTSIDE the route handler.
+- **Day 6** — either (a) provider routing matrix (Tara → OpenRouter; crisis → Claude; NSFW → OpenRouter) per agent-def + memory `reference_yral_chat_v2_llm_routing_tara`, or (b) coordinator-direction depending on Session 3's endpoint needs by then.
+
+---
+
 ## 2026-05-20 — PR #104 round-5 fixup: DSN B2 abbreviation rename (Codex 104-A); 104-B + 104-C false-positive I6 pushbacks
 
 ### Action

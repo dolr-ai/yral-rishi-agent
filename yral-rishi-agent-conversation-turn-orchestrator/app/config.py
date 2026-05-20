@@ -134,6 +134,74 @@ class Settings(BaseSettings):
     # — no need to expose it as a setting.
     redis_url: str = "redis://localhost:6379/0"
 
+    # -- Day-5 real LLM enablement (per agent-def Day-5 plan) -----------
+    # Three-flag pattern mirrors the Day-2 stub gate:
+    #   * `enable_run_turn_real_llm` — explicit opt-in for the Day-5
+    #     real LLM path. Default OFF everywhere; non-prod environments
+    #     flip via env injection. When OFF the Day-2 stub path runs
+    #     (if `enable_run_turn_stub` is also ON) or the handler 503s.
+    #   * `enable_run_turn_stub` — the Day-2 stub gate (kept from Day-2
+    #     for diagnostics + smoke testing per the agent definition's
+    #     "Day-2 stub stays accessible in non-prod for diagnostics").
+    #   * `environment=="production"` — unconditional safety net; both
+    #     paths 503 in production (production cutover requires A6's
+    #     typed YES, not a flag flip).
+    #
+    # Priority: real_llm > stub. If BOTH flags are on in non-prod, the
+    # real LLM path runs (the directive's intent — Day-5 is "the AI
+    # actually responds"; the stub is the fallback diagnostic).
+    enable_run_turn_real_llm: bool = False
+
+    # -- Day-5 LLM provider config (per A10 + C7 + D8) --------------------
+    # GEMINI_API_KEY declared in secrets.yaml per D8; empty default so a
+    # half-configured environment runs (just without real LLM — the
+    # provider refuses to init on empty key per its constructor guard).
+    gemini_api_key: str = ""
+
+    # Sampling params for the LLM call. Defaults are conservative;
+    # Day 6+ routing can override per-influencer. Temperature 0.7 is
+    # the chat-ai parity default (per audit doc); max_tokens 800 is
+    # one-message-shape cap matching the chat-ai per-turn budget.
+    llm_temperature: float = 0.7
+    llm_max_tokens: int = 800
+
+    # Per C7 ("model names, timeouts, thresholds, all configurable"):
+    # the Gemini model id + provider-side timeout are env-configurable.
+    # PR #109 round-2 (Codex C7 BLOCKER): these were hardcoded constants
+    # in `app/llm_client/gemini.py` round-1; moved here so Day 6+ tuning
+    # (model bump, latency tightening) flips an env var instead of
+    # editing source.
+    gemini_model_id: str = "gemini-2.5-flash"
+    gemini_call_timeout_seconds: float = 30.0
+
+    # -- Day-5 Soul File Library RPC (per C7 + the locked contract) -----
+    # Default points at the Docker DNS name for the sibling service. In
+    # the cluster the Caddy service-mesh resolves the same name. C7
+    # invites moving to shared-config.yaml when nested config arrives;
+    # today the single scalar fits in env.
+    soul_file_library_base_url: str = "http://yral-rishi-agent-soul-file-library:8000"
+
+    # Per C7 — soul-file RPC timeout. 5s gives the soul-file-library's
+    # 4-sequential-DB-reads breathing room (Day-4 build) without blowing
+    # E1's latency budget at the orchestrator boundary. Day-5+ Redis
+    # caching on the soul-file side will pull this down further.
+    # PR #109 round-2 (Codex C7 BLOCKER): was hardcoded constant in
+    # `app/soul_file_client.py` round-1.
+    soul_file_call_timeout_seconds: float = 5.0
+
+    # -- Day-5 placeholder AI Influencer id ----------------------------
+    # Day 5 hardcodes a single influencer_id via this setting because
+    # the conversation-row → ai_influencer_id lookup is Day 6+ scope
+    # per the directive ("placeholder for Day 5: hardcode a test
+    # ai_influencer_id read from settings; the real conversation-row
+    # lookup comes when public-api forwards it explicitly OR when the
+    # orchestrator has DB access for conversations").
+    #
+    # Empty default makes the real-LLM path refuse to run until an
+    # operator sets it — defence-in-depth so a forgotten env var can't
+    # silently route turns to a wrong influencer.
+    day_5_placeholder_ai_influencer_id: str = ""
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

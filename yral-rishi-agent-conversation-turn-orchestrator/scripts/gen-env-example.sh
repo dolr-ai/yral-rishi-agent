@@ -80,6 +80,19 @@ if [ ! -f "$SECRETS_YAML" ]; then
     echo "Error: $SECRETS_YAML not found in $(pwd)." >&2
     exit "$EXIT_TOOLING_ERROR"
 fi
+# Malformed-YAML pre-flight. Without this, a syntactically-broken
+# secrets.yaml falls into the per-secret yq calls below + each one
+# emits stderr noise then propagates whatever exit code yq picks
+# (usually 1) up through `set -e`. The test framework expects
+# EXIT_TOOLING_ERROR (2) for malformed YAML so it can distinguish
+# "your YAML is broken" from "drift detected" (1). Mirrors the same
+# check in `validate-secrets.sh`. Added Day-5 PR #109 after the
+# template-wide gap surfaced in CI; other services' copies will need
+# the same fix synced back through the template (Session-2 owns).
+if ! yq eval '.' "$SECRETS_YAML" >/dev/null 2>&1; then
+    echo "Error: $SECRETS_YAML is malformed YAML. Run 'yq eval . $SECRETS_YAML' to see the parse error." >&2
+    exit "$EXIT_TOOLING_ERROR"
+fi
 
 
 # ===========================================================================

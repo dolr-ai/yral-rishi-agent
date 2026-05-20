@@ -58,6 +58,18 @@ from app.run_turn import router as run_turn_router
 # previously cached MessageResponse byte-for-byte.
 from app.idempotency import close_redis, init_redis
 
+# Day-5 — Soul File Library RPC client lifespan pair. The lifespan
+# opens the httpx.AsyncClient once at startup so chat-turn calls
+# don't pay TCP-handshake cost per turn (E1 budget). Closed cleanly
+# on SIGTERM so no socket leaks on Swarm rolling updates.
+from app.soul_file_client import close_soul_file_client, init_soul_file_client
+
+# Day-5 — default LLM client lifespan pair. Builds the Gemini client
+# once at startup when `enable_run_turn_real_llm=True`; the SDK's
+# process-wide `configure(api_key=...)` happens here so the chat-turn
+# hot path doesn't pay that side-effect cost.
+from app.llm_client import close_default_llm_client, init_default_llm_client
+
 
 # Run Sentry init now, at module import time. After this line, every
 # unhandled exception below is shipped to sentry.rishi.yral.com (per A7).
@@ -90,8 +102,23 @@ async def lifespan(_app: FastAPI):
     # runs. The connection is pooled internally by redis-py; one
     # client serves every concurrent request.
     await init_redis()
+    # Day-5 — open the Soul File Library RPC client. Same lifespan-
+    # singleton pattern as Redis; warm connection pool means the
+    # chat-turn hot path doesn't pay TCP handshake on every call.
+    await init_soul_file_client()
+    # Day-5 — build the default LLM client (Gemini) when the real-LLM
+    # flag is on. No-op when the flag is off (handler routes to the
+    # Day-2 stub path instead).
+    init_default_llm_client()
     yield
     # --- shutdown -------------------------------------------------------
+    # Day-5 — release the LLM client reference (GC handles the SDK's
+    # internal pool). Runs before the RPC clients so we stop issuing
+    # NEW LLM calls before tearing down the downstream RPC pool.
+    close_default_llm_client()
+    # Day-5 — close the Soul File client before Redis so any
+    # in-flight RPC has a chance to drain cleanly.
+    await close_soul_file_client()
     # Close Redis cleanly so connections don't linger on the server
     # side past their idle timeout. Cleaner shutdown == faster Swarm
     # rolling updates.
