@@ -2,6 +2,58 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-20 — Day 5 BLOCKED — I6 pushback on missing CI / GHCR / deploy workflows (coordinator-owned per I9)
+
+### Action
+Branched `session-3/day-5-cluster-deploy-and-smoke` from current `origin/main` (which now includes the merged Day-4 stack — PRs #101 + #102 + #103 + #106). Started Day-5 Step 1 (verify deploy artifacts) and immediately hit the F13 / I9 pre-existing infrastructure gap that has been flagged across SESSION-2-STATE.md (line 38), SESSION-3-LOG.md (line 353), and SESSION-4-LOG.md (line 796): **the per-service CI workflow is not installed at repo root for ANY of the 6 spawned services**, so GitHub Actions has never built or pushed an image for public-api (or any other v2 service) since the project started. The directive explicitly says "If you hit ANY infrastructure gap on the cluster (overlay missing, secret-injection workflow broken, Caddy snippet absent, image push failing), I6-pushback and STOP." Image push isn't even wired up — that's a more fundamental gap than "image push failing" — so I6-pushed back to coordinator with the comprehensive memo below + did NOT proceed to Steps 2-5.
+
+Before stopping, verified everything in MY scope that the coordinator will need when they tackle the gap, so this isn't a round-trip-and-bounce-back:
+
+- **Dockerfile builds clean.** Ran `docker build -t public-api-day5-localverify:latest .` from `yral-rishi-agent-public-api/` — succeeded in <3s on cached layers. Multi-stage build (builder + runtime), non-root appuser, image manifest tagged.
+- **docker-compose.swarm.yml declares all 3 overlays.** `yral-v2-public-web`, `yral-v2-internal`, `yral-v2-data-plane` all referenced + declared as `external: true` (correct per C3 + the Session 1 bootstrap convention).
+- **Dockerfile / config / app code all import as expected.** No syntax-level surprises; the Day-4 stack's new modules (`app/api/auth/`, `app/api/dependencies.py`, `app/orchestrator_client.py`, `app/api/idempotency.py`, `app/request_id_middleware.py`) all wire cleanly via the lifespan/import graph.
+
+### The blocker memo (for coordinator)
+
+**BLOCKER 1 — CI workflow not installed at repo root (I9 + F13).** No per-service-ci.yml at `.github/workflows/` for any of the 6 services. The TEMPLATE lives at `yral-rishi-agent-public-api/.github/workflows/per-service-ci.yml` (and similarly for the other 5 services), but GitHub Actions only discovers workflows at the repo root. Sessions 2/3/4 all flagged this for coordinator at scaffold time. `gh run list --branch main --limit 10` confirms no per-service CI run has ever fired — only repo-wide lint workflows are active. `gh api /orgs/dolr-ai/packages/container/yral-rishi-agent-public-api/versions` returns `404 Package not found` — confirming no image exists at ghcr.io for this service. **Even if the workflow were installed at root, the template has `push: false`** (build-verify only, no GHCR push); F13 mandates "every service's Dockerfile + deploy workflow pushes to GHCR" but no deploy workflow exists. Coordinator decision needed: (a) install per-service-ci.yml at root for all 6 services AND augment the template to enable `push: true` + GHCR login step + the appropriate GITHUB_TOKEN permissions block; OR (b) create a separate `.github/workflows/<service>-deploy.yml` per service that runs after CI passes. Either way, this is a `.github/workflows/` write — coordinator-owned per I9 — and I cannot do it from Session 3.
+
+**BLOCKER 2 — secrets.yaml ↔ docker-compose.swarm.yml mismatch.** Cross-check found:
+- `secrets.yaml` declares 5 secrets: `DATABASE_URL`, `REDIS_SENTINEL_PASSWORD`, `SENTRY_DSN`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`.
+- `docker-compose.swarm.yml` declares 3 external secrets: `database_password`, `redis_password`, `sentry_dsn`.
+- Naming + count both diverge: compose references `database_password` (should be `DATABASE_URL` per the manifest's secret_id), `redis_password` (should be `REDIS_SENTINEL_PASSWORD`), and is missing both Langfuse keys.
+- Per D8 the per-service `secrets.yaml` is the source of truth for declaration; compose should reference the same secret IDs. Two options for coordinator: align compose to manifest, OR rev the manifest if the compose-side names are actually what's intended. Not Session 3's call.
+
+**BLOCKER 3 — runtime imports don't match the secrets manifest.** Cross-check:
+- `secrets.yaml: DATABASE_URL` says `consumed_by: app/database.py + alembic/env.py`. Neither file exists in `yral-rishi-agent-public-api/app/`. Phase 1 public-api is a thin HTTP gateway (Day-2 stubs + Day-4 orchestrator RPC); it has no direct Postgres consumer. DATABASE_URL may not be needed at all for Phase 1, or it's a copy-paste from the template that should be removed for THIS service per A2.1.
+- `secrets.yaml: REDIS_SENTINEL_PASSWORD` says `consumed_by: app/redis_client.py`, but `app/redis_client.py` uses `REDIS_URL` (a connection string), not a separate password env var. Either the manifest needs to declare `REDIS_URL` (and drop `REDIS_SENTINEL_PASSWORD`), or the Redis client needs a password parameter. Per C11 the cluster Redis is Sentinel-quorum-managed; the Sentinel-aware client wiring lands in a later PR. For Phase 1, REDIS_URL with embedded password (`redis://:<password>@host:6379/0`) is the docker-compose convention + matches Session 1's stateful-core pattern.
+- 5 new Day-4C `orchestrator_*` settings have safe defaults (the orchestrator base URL is a public Swarm-DNS hostname; timeouts are scalars). No secret declaration needed.
+
+**NOT BLOCKERS, but worth coordinator note:**
+- **Session 4's orchestrator must deploy alongside public-api** for end-to-end M0 smoke (the full chat round-trip). If Session 4's Day-5 hasn't shipped, smoke degrades to "stub orchestrator returns placeholder text but exercises the HTTP routing chain." Status per `git log` on `main`: PR #104 landed Session 4's Day-4 Soul File Library; PR #96 landed the orchestrator's `POST /v1/turn` JSON skeleton (stub body). Stub orchestrator should be sufficient for smoke if both services deploy together.
+- **Caddy snippet on rishi-1/2 → cluster** is coordinator/Session-1 territory per the directive. Per `memory/feedback_coordinator_grants_session_access_for_safe_ops.md` I'm pre-authorized to run read-only commands on rishi-1/2, but installing Caddy snippets is a coordinator write. Worth confirming the snippet exists before re-attempting Day 5.
+- **3 external Swarm secrets** in compose (`database_password`, `redis_password`, `sentry_dsn`) need to be created via `docker secret create` on rishi-4 BEFORE first `docker stack deploy` (otherwise `external: true` fails). Per D8 + the secrets-management-pattern doc, the production flow is: GitHub Secret → Swarm secret at deploy. The CI/GHCR pipeline gap above means there's no automated path for that yet either.
+
+### Files touched
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-3-LOG.md` — this entry
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-state/SESSION-3-STATE.md` — updated to reflect Day-5 BLOCKED state
+- (no app/ files touched — Session 3 stays out of `.github/workflows/` per I9 + out of cluster setup per directive's pushback policy)
+
+### Why
+The directive's pushback policy is explicit: image-push failure is one of the listed "STOP and pushback" conditions. The CI/GHCR pipeline isn't just failing — it's not wired at all. Improvising a workflow at root would violate I9; cross-service compose-secret renames touch other sessions' surfaces; the rishi-4 deploy attempt has nothing to pull. The least-cost path is to surface all 3 blockers + the additional notes in one comprehensive memo so coordinator can resolve them in one batch rather than iterating session-to-coordinator-to-session on each.
+
+### Test evidence
+- `docker build -t public-api-day5-localverify:latest .` → built cleanly in <3s (cached layers; full build verified earlier this session).
+- `gh run list --branch main --limit 10` → only `Auto-Merge Small Session Fix PRs` runs visible; no per-service CI.
+- `gh api /orgs/dolr-ai/packages/container/yral-rishi-agent-public-api/versions` → 404 Package not found.
+- `grep -nE "yral-v2-(public-web|internal|data-plane)" yral-rishi-agent-public-api/docker-compose.swarm.yml` → all 3 overlays declared + marked external.
+- `grep -nE "^  [a-z_-]+:" yral-rishi-agent-public-api/secrets.yaml` vs compose secrets block → mismatch confirmed (per BLOCKER 2).
+
+### Notes
+- Branch `session-3/day-5-cluster-deploy-and-smoke` exists with this LOG/STATE update only, so coordinator has a place to land any follow-up Session-3-scope changes (e.g., aligning secrets.yaml ↔ compose naming once decided) without disturbing the Day-4 cascade branches.
+- Once coordinator resolves the CI/GHCR pipeline + secrets-alignment, Session 3 resumes Day 5 from Step 2 (CI pipeline check) onward — Steps 1 already done locally.
+
+---
+
 ## 2026-05-20 — Day 4C rebase, PR #103 onto rebased PR #102
 
 ### Action

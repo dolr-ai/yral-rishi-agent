@@ -1,6 +1,6 @@
 # Session 3 STATE — Public-API
 
-> Updated: 2026-05-20 (Rebase cascade COMPLETE — PRs #99 + #101 + #102 + #103 all rebased onto post-#97 main; 77/77 contract tests green on rebased PR #103 tip; merge cascade pending coordinator routing + Codex re-review on each).
+> Updated: 2026-05-20 (Day 4 stack MERGED — PRs #101 + #102 + #103 + #106 all on main. Day 5 STARTED + I6-pushback-blocked on missing CI/GHCR/deploy pipeline (coordinator-owned per I9). See latest LOG entry for 3-blocker memo.)
 
 ## ⭐ START-OF-SESSION SUMMARY (read first when resuming)
 
@@ -14,14 +14,14 @@ Full agent definition: `.claude/agents/session-3-public-api.md`.
 
 ## LAST THING I DID
 
-**2026-05-20 — Day-4 stack rebase cascade COMPLETE.** All 4 Day-4 stack PRs rebased onto post-PR-#97-squash-merge main. PR #99 + PR #101 rebased cleanly. PRs #102 + #103 required manual-re-apply because their original commits were written against PR #97 BEFORE its R1 Dto→Response rename + R3/R5 health changes + R5 placeholder-auth (so `from app.api.dtos import ConversationDto, MessageDto` was dead post-rebase + Day-4B's auth wiring needed to supersede R5's placeholder + Day-4C's `send_message` rewrite needed adapting from `MessageDto` → `MessageResponse`). Strategy for both: aborted auto-rebase, reset branch to rebased-prior-PR tip, re-applied INTENT manually as fresh commit. Day-4B: per-handler `Depends(require_authenticated_user)` on all 17 chat + influencer + admin handlers; deleted `auth_placeholder.py` + its tests; loosened the F9 health auth-exempt test to `status_code != 401`. Day-4C: rewrote `send_message` to call `orchestrator_client.run_turn(...)` + F10 Redis dedup; added 3 clean files (orchestrator_client.py, idempotency.py, test_orchestrator_proxy.py); added 5 config settings + shared-config.yaml `services.orchestrator` section + main.py lifespan init/close; deleted 4 deprecated Day-2 send_message tests. 73/73 tests green on PR #102, 77/77 green on PR #103. Both force-pushed via `git push --force-with-lease`.
+**2026-05-20 — Day 5 STARTED + BLOCKED (I6 pushback to coordinator).** Branched `session-3/day-5-cluster-deploy-and-smoke` from current `main` (Day-4 stack now merged: PRs #101 + #102 + #103 + #106). Verified locally that the Dockerfile builds cleanly + docker-compose.swarm.yml declares all 3 yral-v2-* overlays. Then I6-pushed back per the directive's explicit pushback policy ("if image push failing, STOP") because the CI/GHCR pipeline isn't just failing, it doesn't exist: per-service-ci.yml lives only as a TEMPLATE inside each service folder (`yral-rishi-agent-public-api/.github/workflows/`) and was never installed at repo root — a known gap flagged across SESSION-2-STATE.md (line 38), SESSION-3-LOG.md (line 353), and SESSION-4-LOG.md (line 796). `gh run list --branch main` confirms no per-service CI has ever run; `gh api .../packages/container/yral-rishi-agent-public-api/versions` returns 404 (no image at ghcr.io). Plus 2 secondary blockers: secrets.yaml ↔ docker-compose.swarm.yml naming + count mismatch (manifest has 5 secrets w/ uppercase names; compose has 3 with lowercase names); and the manifest's `consumed_by` annotations point at files that don't exist in this service yet (`app/database.py`, `alembic/env.py`). Full memo in the 2026-05-20 Day-5 LOG entry. Branch pushed for visibility; Session 3 idle until coordinator resolves the 3 blockers.
 
 ## CURRENT TASK
 
-Idle. Day-4 stack PRs (#99 + #101 + #102 + #103) all rebased + force-pushed + green. Awaiting Codex re-review on each (Codex re-runs on each force-push) + coordinator's merge-cascade decision.
+Idle pending coordinator decision on the Day 5 I6 pushback. Day-4 stack PRs (#101, #102, #103, #106) all merged. Day 5 cluster deploy depends on coordinator landing the CI/GHCR/deploy workflow at repo root + resolving the secrets-manifest naming alignment.
 
-Progress: Day-4 stack rebase cascade 100% complete. Phase 1 ~36% (5 of ~14 working days; rebase cascade itself was ~half a day's work).
-ETA to merge: dependent on Codex turnaround + coordinator routing + Rishi YES on the merge cascade order (4A → 4B → 4C, naturally enforced by the stack).
+Progress: Day-4 stack 100% merged; Day 5 ~10% (deploy artifacts verified locally, but cluster steps blocked).
+ETA to resume: dependent on coordinator's resolution of CI/GHCR pipeline + secrets-alignment. When resumed, Session 3 picks up Day 5 from Step 2 (CI pipeline check) onward.
 
 ## NEXT 3 PLANNED ACTIONS
 
