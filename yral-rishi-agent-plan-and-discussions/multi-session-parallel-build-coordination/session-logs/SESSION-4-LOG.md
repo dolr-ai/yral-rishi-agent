@@ -2,6 +2,60 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-20 — PR #96 round-5 fixup: idempotency lock failure cleanup (Codex 96-A); 96-B false-positive I6 pushback
+
+### Action
+Coordinator routed two Codex round-5 findings on PR #96. One real (96-A — lock-failure cleanup); one verified as a false-positive (96-B — alleged `monkeypatch.setenv` Redis-init race, but the conftest uses `monkeypatch.setattr` to pre-inject fakeredis instead).
+
+### 96-A — Idempotency lock failure cleanup (executed)
+
+**Bug Codex flagged.** Round-4's `acquire_or_check` returns `state="acquired"` and the handler then runs the work + calls `mark_complete`. If anything between those two calls raises (handler bug today; Day-5+ LLM-client transient failure tomorrow; Pydantic validation error on response build), `mark_complete` never runs + the in-progress lock stays in Redis for the full 24-hour F10 dedup TTL. A buggy chat turn locks that idempotency key for 24 hours, blocking every legitimate retry with the same key.
+
+**Fix.**
+- Added `release_in_progress_lock(redis_key)` to `app/idempotency.py`. Issues `DELETE redis_key` against Redis; verbose role-comment explains why DELETE (not "mark as failed" — F10 + the contract at `interface-contracts/01-internal-rpc-contracts.md` don't define a "failed" state; A2.1 keeps the dispatch surface at 4 states); why on failure ONLY (mark_complete's `done` payload is what concurrent waiters + retries within the 24h window expect); concurrent-waiter behaviour (a polling waiter loses its view of in-progress state; its next poll-loop iteration treats missing key as a SET-NX miss + eventually returns `in_flight_timeout` to the waiter, which is the correct shape for "original request failed; retry from the top").
+- Wrapped the post-acquire window in `app/run_turn.py` in `try / except Exception / raise`. Verbose role-comment explains why the try block starts AFTER `acquire_or_check` (lines before it cannot hold a lock — nothing to release); why release ONLY on failure (don't overwrite the `done` state mark_complete just wrote); why re-raise instead of returning a bespoke 500 envelope (uses FastAPI's default exception handler → Sentry capture + structured-log traceback for free + matches every other 500 surface).
+- Best-effort cleanup pattern: if `release_in_progress_lock` ITSELF raises (e.g. Redis is down), we LOG the release failure at ERROR (operator-visible signal that the lock will stick until the 24h TTL) but STILL re-raise the original handler exception so the caller sees a 500.
+
+**Regression test.** Added `test_run_turn_releases_idempotency_lock_when_handler_raises_so_retry_starts_fresh` to `tests/test_run_turn.py`:
+- Monkeypatches `app.run_turn.mark_complete` to a `raising_mark_complete_for_failure_test` stub. Patches `app.run_turn` (import-shadowed local reference), NOT `app.idempotency` — same pattern PR #96 round-3's concurrent test + PR #104 round-4's parallel-fetch test established; documented in the test's docstring for future readers.
+- POSTs once → asserts HTTP 500.
+- Inspects `fake_redis` directly: asserts the computed redis_key is absent (the CORE invariant — without `release_in_progress_lock`, the key would still hold `state=in_progress`).
+- Un-patches mark_complete + POSTs AGAIN with the SAME idempotency key → asserts 200 + `response.id` is a freshly-generated UUID (proving fresh execution, not a replay of any cached payload).
+
+### 96-B — Test fixture monkeypatch race (I6 pushback — false-positive)
+
+**Verification.** Re-read `tests/conftest.py` + the round-4 `init_redis()` + the conftest's `_REAL_INIT_REDIS_FOR_TESTS` import-time capture pattern.
+
+**The conftest does NOT use `monkeypatch.setenv` to control Redis init.** Concretely:
+- The `fake_redis` autouse fixture calls `monkeypatch.setattr(app_idempotency, "_redis", fake)` to pre-inject a `fakeredis.aioredis.FakeRedis(decode_responses=True)` instance into the module-level `_redis` global BEFORE the TestClient lifespan runs.
+- The same fixture also stubs `init_redis` + `close_redis` to empty coroutines via `monkeypatch.setattr(app_idempotency, "init_redis", empty_initialize_redis_for_tests)` — so the FastAPI lifespan's startup hook doesn't overwrite the patched `_redis` with a real connection (the prior round-3 fix established this; round-4 preserved it).
+- The round-4 production-fail-closed regression test explicitly sets `app_idempotency._redis = None` THEN calls `_REAL_INIT_REDIS_FOR_TESTS()` (the un-stubbed init_redis captured at conftest module-load time) so the new fail-closed gate fires the way it would on a fresh production process startup.
+- The fail-closed gate in round-4 was deliberately moved AFTER the `_redis is not None` short-circuit (see round-4 LOG entry) PRECISELY to avoid the kind of test-order/cache-state race Codex is describing — the gate only fires on the production-fail-closed test's bypass path, never during the autouse fixture's pre-injection path.
+
+**Conclusion.** Codex appears to be reading the round-3 state of the file (before the round-4 short-circuit-ordering fix) — same truncation-diff symptom as PR #104's 104-B + 104-C false-positives. The Settings-injection model is already in place via the `monkeypatch.setattr` + `_REAL_INIT_REDIS_FOR_TESTS` pattern; no code change. I6 pushback.
+
+### Files touched
+- `app/idempotency.py` — added `release_in_progress_lock(redis_key)` helper with verbose role-comment (DELETE-not-failed-state rationale + on-failure-only rationale + concurrent-waiter behaviour).
+- `app/run_turn.py` — added `release_in_progress_lock` to the F10 imports block + wrapped the post-acquire window in `try / except / raise` with best-effort release-failure logging.
+- `tests/test_run_turn.py` — added `test_run_turn_releases_idempotency_lock_when_handler_raises_so_retry_starts_fresh` regression gate.
+- `SESSION-4-LOG.md` (this entry).
+
+### Constraints touched
+- **F10** — "default-on idempotency" is preserved for the happy + replay + 409 + 503 paths; the failure path now also honours the contract by releasing the lock instead of holding a stale entry for 24h.
+- **A2.1** — minimal change: ONE new helper + ONE try/except wrap + ONE new test. Did NOT add a "failed" cache state (would have expanded the 4-state dispatch surface + required contract amendment); did NOT introduce a bespoke 500 envelope (would have created a divergent error surface); did NOT add retries to the release call (best-effort is sufficient — fallback is the 24h TTL).
+- **C11** — Sentinel-aware client + production-fail-closed gate from round-4 unchanged.
+- **H6** — release-on-failure log site uses hash-prefix (via the existing `_idempotency_key_hash_prefix` helper) just like every other log site in idempotency.py; no raw header value leaks on the failure path.
+- **A8** — MessageResponse contract unchanged; 200/409/400/503/500 wire shapes unchanged.
+- **I6** — pushback raised on 96-B (false-positive); code change limited to 96-A.
+
+### Notes
+- **Best-effort release semantics.** If Redis itself is down at the moment of release, we log + still re-raise the original handler exception. The lock will expire at the 24h F10 TTL on its own. This avoids a second exception drowning out the diagnostic value of the original one; operators see both via the structured-log site `idempotency_lock_release_failed`.
+- **Codex truncation surface.** 96-B is the third PR-#96/PR-#104 round in which Codex has re-raised already-closed findings while reading what its review notes flag as a truncated diff. Coordinator handles via manual audit per the same routing as PR #104's 104-B + 104-C.
+- **Day-5 implication.** When the LLM client lands, transient upstream failures (rate-limit, timeout, 5xx from OpenRouter/Gemini) become routine. This fix means a retry with the same key naturally re-runs the LLM call instead of getting stuck behind a 24h dangling lock.
+- **Next:** PR #96 + PR #104 both land → Day 5 real LLM enablement unblocks per the coordinator's standing plan.
+
+---
+
 ## 2026-05-19 — PR #96 round-4 fixup: production-fail-closed + X-User-Id required + UUID-validated key + TTL rename
 
 ### Action

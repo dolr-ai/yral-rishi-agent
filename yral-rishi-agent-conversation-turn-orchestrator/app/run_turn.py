@@ -133,12 +133,16 @@ from app.config import get_settings
 # F10 idempotency module — round-3 swap from the prior
 # `get_cached_response` / `cache_response` pair to the atomic-lock
 # API. `acquire_or_check` returns a typed decision; `mark_complete`
-# overwrites the in-progress lock with the completed response.
+# overwrites the in-progress lock with the completed response;
+# `release_in_progress_lock` (added round-5 per Codex BLOCKER 96-A)
+# is the failure-path cleanup that prevents an exception mid-handler
+# from holding the dedup lock for the full 24h F10 window.
 from app.idempotency import (
     acquire_or_check,
     compute_idempotency_key,
     compute_request_fingerprint,
     mark_complete,
+    release_in_progress_lock,
 )
 
 # Pydantic models the route declares — FastAPI uses these for
@@ -412,40 +416,97 @@ async def run_turn(
     # decision.state == "acquired" — we won the SET NX race; proceed.
 
     # -----------------------------------------------------------------------
-    # STUB PROCESSING (Day-5+ replaces this with the real LLM call;
-    # safety stack from Day-3 runs as middleware OUTSIDE this handler).
+    # STUB PROCESSING — wrapped in try/except per Codex round-5 BLOCKER
+    # 96-A so a handler-side exception releases the in-progress lock
+    # instead of leaving it held for the full 24h F10 dedup window.
     # -----------------------------------------------------------------------
+    # WHY THE try BLOCK STARTS HERE (not earlier):
+    #   The lock was acquired by the `acquire_or_check(...)` call
+    #   above. Everything BEFORE that call (gates, header checks, key
+    #   construction, fingerprint) cannot hold a lock — there's
+    #   nothing for the failure path to release. The try block only
+    #   needs to cover the post-acquire window, which is exactly the
+    #   "handler did the work but never marked complete" failure mode
+    #   Codex flagged. Day-5+ LLM-client errors fall into this same
+    #   window; the same cleanup applies.
+    #
+    # WHY release ONLY on the failure path:
+    #   On the happy path `mark_complete(...)` overwrites the lock
+    #   with the `done`-state payload that every concurrent waiter +
+    #   every subsequent retry within the 24h F10 window expects to
+    #   serve from. Releasing AFTER `mark_complete` would erase the
+    #   cached response + defeat F10's "byte-identical replay"
+    #   contract. So `release_in_progress_lock` runs strictly inside
+    #   the `except` branch.
+    #
+    # WHY re-raise (not swallow + return 500 ourselves):
+    #   Letting the exception propagate to FastAPI's default
+    #   exception handler gives us the same 500 envelope shape every
+    #   other unhandled-exception path produces + Sentry capture +
+    #   structured-log traceback for free. Swallowing + returning a
+    #   bespoke JSONResponse here would create a divergent error
+    #   surface the alerting + tracing rules would have to learn
+    #   about. Per A2.1: keep the minimum addition that fixes the
+    #   bug.
+    try:
+        # ISO8601 UTC, `YYYY-MM-DDTHH:MM:SSZ`. Matches chat-ai's wire
+        # shape; renamed from the round-2 `now_iso` per Codex round-3
+        # BLOCKER 3 (B2 disallows the `iso` abbreviation).
+        current_utc_timestamp_text = datetime.now(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ",
+        )
 
-    # ISO8601 UTC, `YYYY-MM-DDTHH:MM:SSZ`. Matches chat-ai's wire
-    # shape; renamed from the round-2 `now_iso` per Codex round-3
-    # BLOCKER 3 (B2 disallows the `iso` abbreviation).
-    current_utc_timestamp_text = datetime.now(timezone.utc).strftime(
-        "%Y-%m-%dT%H:%M:%SZ",
-    )
+        response = MessageResponse(
+            id=str(uuid4()),
+            conversation_id=request.conversation_id,
+            role="assistant",
+            content=STUB_CONTENT,
+            media_urls=None,
+            client_message_id=None,
+            created_at=current_utc_timestamp_text,
+            count_toward_paywall=True,
+        )
 
-    response = MessageResponse(
-        id=str(uuid4()),
-        conversation_id=request.conversation_id,
-        role="assistant",
-        content=STUB_CONTENT,
-        media_urls=None,
-        client_message_id=None,
-        created_at=current_utc_timestamp_text,
-        count_toward_paywall=True,
-    )
+        # Overwrite the in-progress lock with the completed response.
+        # Every concurrent waiter that's polling will harvest this
+        # payload on its next GET. `model_dump(mode="json")` serialises
+        # Pydantic-typed values to JSON-native primitives so the
+        # `json.dumps` inside `mark_complete` always succeeds.
+        await mark_complete(
+            redis_key=redis_key,
+            fingerprint=request_fingerprint,
+            response_payload=response.model_dump(mode="json"),
+        )
 
-    # Overwrite the in-progress lock with the completed response.
-    # Every concurrent waiter that's polling will harvest this payload
-    # on its next GET. `model_dump(mode="json")` serialises Pydantic-
-    # typed values to JSON-native primitives so the `json.dumps`
-    # inside `mark_complete` always succeeds.
-    await mark_complete(
-        redis_key=redis_key,
-        fingerprint=request_fingerprint,
-        response_payload=response.model_dump(mode="json"),
-    )
-
-    return response
+        return response
+    except Exception:
+        # Log + release the in-progress lock so a client retry with
+        # the same X-Idempotency-Key gets a fresh `acquired` decision
+        # within the 24h window (instead of the 503 in_flight_timeout
+        # it would have hit if we left the lock dangling).
+        # `release_in_progress_lock` is best-effort — if Redis itself
+        # is down, the original handler exception still propagates +
+        # the lock will expire at the 24h F10 TTL.
+        _log.warning(
+            "run_turn_handler_failed_releasing_idempotency_lock",
+            extra={
+                "conversation_id": request.conversation_id,
+            },
+        )
+        try:
+            await release_in_progress_lock(redis_key)
+        except Exception as release_failure:
+            # Surface the release failure so an operator notices the
+            # lock will stick for 24h. Original handler exception
+            # still re-raises so the caller sees a 500.
+            _log.error(
+                "idempotency_lock_release_failed",
+                extra={
+                    "conversation_id": request.conversation_id,
+                    "release_failure_type": type(release_failure).__name__,
+                },
+            )
+        raise
 
 
 # ===========================================================================

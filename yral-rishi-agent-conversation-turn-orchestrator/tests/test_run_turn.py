@@ -802,6 +802,173 @@ def test_run_turn_returns_422_when_user_message_is_empty_string(
 
 
 # ===========================================================================
+# ⭐ ROUND-5 BLOCKER 96-A — IDEMPOTENCY LOCK FAILURE CLEANUP
+# ===========================================================================
+
+
+def test_run_turn_releases_idempotency_lock_when_handler_raises_so_retry_starts_fresh(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_redis,
+) -> None:
+    """WHAT: when the handler raises mid-execution AFTER acquiring the
+          F10 dedup lock (we monkeypatch `mark_complete` to raise),
+          the lock is released from Redis + a same-key retry sees a
+          fresh `acquired` decision (different response.id proves it
+          ran the handler again instead of replaying a cached
+          payload).
+    WHEN: every chat turn that hits an exception between
+          `acquire_or_check` returning `acquired` and `mark_complete`
+          running — bug in our code today, transient downstream
+          failure once Day-5+ LLM calls land.
+    WHY:  Codex PR-#96 round-5 BLOCKER 96-A. The round-4 (and
+          earlier) code had no failure-path cleanup; an exception in
+          this window held the in-progress lock for the full 24h F10
+          dedup TTL, blocking every legitimate retry with the same
+          X-Idempotency-Key for 24 hours. The fix wraps the
+          post-acquire window in try/except + calls
+          `release_in_progress_lock` on exception (then re-raises
+          so FastAPI's default exception handler produces the 500).
+
+          Regression-gate shape:
+          - Patch `app.run_turn.mark_complete` (the import-shadowed
+            local reference; same pattern PR #96 round-3's concurrent
+            test uses + same pattern PR #104 round-4's parallel-fetch
+            test uses) to raise `RuntimeError`.
+          - POST with a unique X-Idempotency-Key + verify 500.
+          - Inspect fake_redis directly: the key must be gone (a
+            DELETE was issued by `release_in_progress_lock`).
+          - Un-patch + POST again with the SAME key + verify 200 +
+            response.id is fresh (NOT a replay of any cached
+            payload, since no payload was cached + the lock no
+            longer holds the retry off).
+
+          Why `response.id` proves "fresh execution":
+          `MessageResponse.id = str(uuid4())` at handler-time; if the
+          second request returned a replayed cached payload from the
+          first attempt, the `id` would have been frozen at the
+          first attempt. Different `id` → fresh handler invocation,
+          which is the exact "retry starts fresh" property the fix
+          promises.
+    """
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("ENABLE_RUN_TURN_STUB", "true")
+
+    # Build a dedicated TestClient with `raise_server_exceptions=False`
+    # so the simulated handler exception becomes the expected HTTP 500
+    # response instead of propagating into the test thread + crashing
+    # the test before we can assert on the lock state. The default
+    # TestClient (used by every other test in this file) re-raises
+    # server-side exceptions for fast diagnostics; here we deliberately
+    # want the production-shape error path that FastAPI's exception
+    # handler produces in real deployments.
+    from app.main import app
+
+    failure_test_client = TestClient(app, raise_server_exceptions=False)
+
+    # Unique key for this test (avoids any cross-test fakeredis bleed
+    # despite the per-test fixture reset).
+    failure_test_idempotency_key = _fresh_uuid_key()
+    headers = _required_headers(idempotency_key=failure_test_idempotency_key)
+
+    # Compute the Redis key the handler will use so we can inspect
+    # fakeredis state directly. Mirrors `compute_idempotency_key`'s
+    # format string — kept inline to avoid coupling the test to the
+    # production helper's internals (a future refactor of the helper
+    # MUST update both sites; explicit copy makes the test failure
+    # mode loud rather than silent).
+    expected_redis_key = (
+        f"idempotency:orchestrator:run-turn:{headers['X-User-Id']}:"
+        f"{failure_test_idempotency_key}"
+    )
+
+    # Patch mark_complete to raise. Use `monkeypatch.setattr` so the
+    # un-patch happens automatically when this test function returns,
+    # leaving the second request (below) to hit the REAL mark_complete.
+    async def raising_mark_complete_for_failure_test(*args, **kwargs):
+        """WHAT: drop-in coroutine that raises RuntimeError every time.
+        WHEN: substituted in for `app.run_turn.mark_complete` for the
+              first POST in this regression test.
+        WHY:  simulates a handler-side failure AFTER lock acquisition
+              + BEFORE `mark_complete` ran. Day-5+ LLM-client errors,
+              Pydantic validation errors on response build, etc.
+              all land in this same window.
+        """
+        raise RuntimeError(
+            "simulated handler failure for round-5 BLOCKER 96-A regression test"
+        )
+
+    monkeypatch.setattr(
+        app_run_turn, "mark_complete", raising_mark_complete_for_failure_test,
+    )
+
+    # First POST — handler acquires lock, builds response, hits the
+    # patched raising `mark_complete`, the try/except catches +
+    # releases the lock + re-raises, FastAPI maps it to a 500.
+    first_response = failure_test_client.post(
+        "/v1/turn", json=VALID_BODY, headers=headers,
+    )
+    assert first_response.status_code == 500, (
+        f"expected handler exception to surface as HTTP 500; "
+        f"got status_code={first_response.status_code}, "
+        f"body={first_response.text!r}"
+    )
+
+    # Verify the lock was released — fakeredis should not have the key.
+    # This is the CORE assertion: without the release_in_progress_lock
+    # call in the handler's except branch, this key would still exist
+    # in fakeredis (state=in_progress + 24h TTL) + the same-key retry
+    # below would 503 with in_flight_timeout (or replay-done if some
+    # other code path had cached a fake response).
+    # `fakeredis.aioredis.FakeRedis.get(...)` is an async coroutine
+    # (it mirrors `redis.asyncio.Redis.get`); driving it from this sync
+    # test requires `asyncio.run(...)` to push the coroutine through
+    # to its return value. Returns the raw value (decode_responses=True
+    # → str) on hit, None on miss. We expect None.
+    cached_value_after_failure = asyncio.run(fake_redis.get(expected_redis_key))
+    assert cached_value_after_failure is None, (
+        f"expected the in-progress lock to be released after handler "
+        f"exception; fakeredis still has key={expected_redis_key!r} "
+        f"with value={cached_value_after_failure!r}. The "
+        f"release_in_progress_lock call in the except branch is the "
+        f"only mechanism that should clear this; if this assertion "
+        f"fails, the lock-leak bug is back."
+    )
+
+    # Un-patch + POST again with the SAME idempotency key. The handler
+    # should treat this as a fresh request (acquired decision) +
+    # execute end-to-end (real mark_complete is back) + return a
+    # MessageResponse with a NEWLY-generated `id`. If the lock had
+    # leaked, this retry would 503 (in_flight_timeout after the poll
+    # ceiling) instead of 200.
+    monkeypatch.setattr(
+        app_run_turn, "mark_complete", app_idempotency.mark_complete,
+    )
+
+    second_response = failure_test_client.post(
+        "/v1/turn", json=VALID_BODY, headers=headers,
+    )
+    assert second_response.status_code == 200, (
+        f"expected same-key retry after lock-release to start fresh + "
+        f"return 200; got status_code={second_response.status_code}, "
+        f"body={second_response.text!r}. If this is 503 with "
+        f"`idempotency_in_flight`, the round-5 fix didn't release the "
+        f"lock; if it's 200 but the id matches the first attempt, the "
+        f"retry replayed a stale cached payload."
+    )
+
+    second_body = second_response.json()
+    assert second_body["conversation_id"] == VALID_BODY["conversation_id"]
+    # `id` should be a freshly-generated uuid4 from the second handler
+    # invocation. There's no first-attempt `id` to compare against
+    # (first attempt 500'd before returning a body), but we can still
+    # verify the id is a valid UUID-shaped string + non-empty.
+    assert isinstance(second_body["id"], str) and len(second_body["id"]) >= 32, (
+        f"expected freshly-generated UUID id on the second attempt; "
+        f"got {second_body['id']!r}"
+    )
+
+
+# ===========================================================================
 # RELATED FILES:
 #   conftest.py              — `client` + `async_client` + `clean_settings_cache`
 #                               + `fake_redis` fixtures

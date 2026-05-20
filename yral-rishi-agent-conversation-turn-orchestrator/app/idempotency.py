@@ -642,6 +642,63 @@ async def mark_complete(
     )
 
 
+async def release_in_progress_lock(redis_key: str) -> None:
+    """Delete the in-progress lock so a retry can acquire fresh.
+
+    WHAT: issues `DELETE redis_key` against Redis. Safe to call when the
+          key may or may not exist (Redis DELETE is a no-op for missing
+          keys + returns the count of removed keys).
+    WHEN: called from the run_turn handler's exception path AFTER
+          `acquire_or_check` returned `state="acquired"` but BEFORE
+          `mark_complete` ran (i.e. the handler raised mid-execution).
+          NEVER called on the happy path — `mark_complete` already
+          transitioned the lock to `done`, which is the cached payload
+          every concurrent waiter + every subsequent retry expects to
+          serve from the F10 dedup window.
+    WHY:  Codex PR-#96 round-5 finding: the previous round-4 code had no
+          failure-path cleanup. If the handler raised between
+          `acquire_or_check` returning `acquired` and `mark_complete`
+          running, the in-progress lock stayed in Redis for the full
+          24-hour dedup window. A buggy chat turn (or a transient
+          downstream failure once Day-5+ LLM calls land) would block
+          every legitimate retry with the same X-Idempotency-Key for
+          24 hours. Releasing the lock on failure means a client retry
+          with the same key gets a fresh `acquired` decision + a fresh
+          execution — exactly what F10's "default-on idempotency"
+          contract promises for the failure case.
+
+          Why DELETE not "mark as failed":
+          - F10 + the contract at `interface-contracts/01-internal-rpc-contracts.md`
+            don't define a "failed" cache state. Adding one would
+            require a third dispatch branch in `acquire_or_check`
+            (currently 4 states: acquired / replay_done /
+            fingerprint_mismatch / in_flight_timeout) + new handler
+            logic + new contract wording. Per A2.1: keep the smallest
+            change that fixes the bug.
+          - DELETE is atomic in Redis; no race with concurrent waiters
+            (they'd see the key vanish + their next poll attempt
+            would get a fresh `acquired` if they SET NX'd next).
+          - The concurrent-waiter case is the only mild gotcha: a
+            polling waiter loses its view of the in-progress state +
+            its next poll-loop iteration sees the key missing. Per
+            the poll-loop body in `acquire_or_check`, missing-key on
+            a poll iteration is already handled gracefully — it just
+            sleeps + retries until the ceiling, at which point it
+            returns `in_flight_timeout`. The waiter's 503 envelope
+            is the right shape for "the original request failed; you
+            should retry from the top with a fresh request".
+    """
+    redis_client = get_redis()
+    deleted_count = await redis_client.delete(redis_key)
+    _log.info(
+        "idempotency_lock_released_on_failure",
+        extra={
+            "idempotency_key_hash_prefix": _idempotency_key_hash_prefix(redis_key),
+            "deleted_count": deleted_count,
+        },
+    )
+
+
 # ===========================================================================
 # RELATED FILES:
 #   config.py                 — `redis_url` + `redis_sentinel_enabled` settings
