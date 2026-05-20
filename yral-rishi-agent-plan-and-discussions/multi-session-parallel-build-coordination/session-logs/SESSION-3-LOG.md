@@ -2,6 +2,35 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-20 — Day 4B rebase, PR #102 onto rebased PR #101 (post-PR-#97 squash-merge)
+
+### Action
+Rebased `session-3/day-4b-auth-as-real-dependency` onto the rebased `session-3/day-4a-jwt-shadow-e9-reconciliation` tip (`6828db8`, which itself sits on `origin/main` after PR #97's squash-merge brought R1/R3/R4/R5/R6 fixups into main). The Day-4B commit's substance — wire `require_authenticated_user` as a real per-handler `Depends(...)` replacing PR #97 R5's placeholder router-level dep — was re-applied manually because the surrounding code on main had drifted: PR #97 R1 renamed `Dto` → `Response` (so Day-4B's stale `from app.api.dtos import ConversationDto, MessageDto` imports were dead); PR #97 R1 added 8 BLOCKER-4 stubs + the WS inbox stub on a separate `chat_v1_ws_router` + Cache-Control header + `CreateConversationRequest.model_validator` (none of which Day-4B's original diff included); PR #97 R5 added the placeholder auth (which Day-4B was always meant to supersede). Took the rebased PR #101 tip as base + applied Day-4B's intent on top: (1) replaced `from app.api.auth_placeholder import require_authorization_header` + `from fastapi import Depends as _Depends_for_router` + router-level `dependencies=[_Depends_for_router(require_authorization_header)]` on all 3 routers with per-handler `user: AuthenticatedUser = Depends(require_authenticated_user)` on every chat + influencer + admin-influencer handler (6 chat + 3 influencer-read + 6 BLOCKER-4 stubs + 2 admin stubs = 17 handlers); (2) deleted `app/api/auth_placeholder.py` + `tests/contract/test_handler_auth_placeholder.py` (superseded by real dep + `test_handler_auth.py`); (3) WS stub keeps inline Bearer-present check (FastAPI Request-typed Depends doesn't apply to WS routes) but close-reason changed from `unauthorized_stub_placeholder` → `unauthorized` to match the HTTP routes' real envelope semantics; (4) cleaned dead code in `app/api/auth/dependency.py` (Day-4B's original commit had an unreachable `return authoritative.user_id` after the new `return AuthenticatedUser(...)`); (5) loosened `test_health_endpoints_answer_without_auth` assertion from `status_code == 200` to `status_code != 401` to absorb PR #97 R3+R5's 503-fallback for `/health/ready` when Redis is unreachable in the test env + the F9-honest 503 for `/health/deep` — the test's true intent is the auth-contract regression guard, not the status code.
+
+### Files touched (effective end-state vs `origin/main`)
+- **MODIFIED** `yral-rishi-agent-public-api/app/api/auth/dependency.py` — added `@dataclass AuthenticatedUser {user_id, raw_token, validation_result}`; changed `authenticate_user_dual_validate` return type from `str` → `AuthenticatedUser`; dead-code cleanup
+- **ADDED** `yral-rishi-agent-public-api/app/api/dependencies.py` — re-export module: `from app.api.auth.dependency import AuthenticatedUser, authenticate_user_dual_validate` + `require_authenticated_user = authenticate_user_dual_validate`
+- **MODIFIED** `yral-rishi-agent-public-api/app/api/chat_routes.py` — placeholder imports + router-level deps → per-handler real-auth Depends on all 7 routes (6 HTTP + 1 WS inline)
+- **MODIFIED** `yral-rishi-agent-public-api/app/api/influencer_routes.py` — same swap on all 11 routes (3 read + 6 stubs + 2 admin)
+- **DELETED** `yral-rishi-agent-public-api/app/api/auth_placeholder.py` — superseded by real dep
+- **MODIFIED** `yral-rishi-agent-public-api/tests/contract/conftest.py` — `_auth_mocks` fixture (FakeRedis + JWKS upstream stub); `auth_headers` fixture; `client`/`client_flag_off` bake default Bearer header; new `client_no_auth` + `client_no_auth_flag_off`
+- **ADDED** `yral-rishi-agent-public-api/tests/contract/test_handler_auth.py` — Day-4B auth-edge tests (missing/malformed/empty/expired Bearer + health auth-exempt regression guard)
+- **DELETED** `yral-rishi-agent-public-api/tests/contract/test_handler_auth_placeholder.py` — superseded
+- **MODIFIED** `yral-rishi-agent-public-api/tests/contract/test_jwt_shadow.py` — adapted for `AuthenticatedUser` return type
+
+### Why
+Rebase-cascade discipline per A8 + the user's "stacked-PR rebase cascade" directive: PR #97 merged into main → PR #99/#101/#102/#103 each needed to rebase onto the new main in order. PRs #99 + #101 rebased cleanly (mostly auto-merged with 2-3 union-merge conflicts each in pyproject.toml + config.py). PR #102 had 3 file-level conflicts (chat_routes.py, influencer_routes.py, conftest.py) whose resolution was non-trivial because Day-4B's commit was written against PR #97 BEFORE the R1 rename + R5 placeholder + R3+R5 health changes. Per the user's "prefer YOUR branch's version (stacked-PR content is the more recent intent)" guidance: took Day-4B's auth wiring intent + preserved the rebased main's surrounding work (R1 renames, BLOCKER 4 stubs, Cache-Control, WS stub, model_validator, async-Sentinel health). Strategy: reset the branch to the rebased PR #101 tip + apply Day-4B's intent as a fresh commit instead of fighting the `git rebase --onto` conflict markers.
+
+### Test evidence
+`docker run --rm python:3.12-slim` → `pip install . .[dev] pyjwt[crypto] PyYAML cryptography` → `pytest tests/contract/ -q` → **73 passed in 1.43s**. Zero warnings other than the pre-existing pytest-asyncio deprecation notice about `asyncio_default_fixture_loop_scope`.
+
+### Notes
+- PR #103 (Day-4C orchestrator RPC + F10 idempotency) rebase queued next; will base on this rebased Day-4B tip.
+- Day-4B's stub `_ = (influencer_id, x_admin_key, user)` ignores `user` deliberately — the BLOCKER-4 stubs return `service_unavailable` regardless of authenticated identity; real bodies (Day 6-7 parity + admin sprints) will switch on `user.user_id` when they implement actual behavior.
+- The WS stub's inline auth check is still a placeholder; real WS impl (Days 14-18) wires the full JWT dual-validate shadow rig once a WebSocket-shaped auth dependency lands.
+
+---
+
 ## 2026-05-18 — Day 4A, PR 4 (E9 reconciliation — flag rename + Redis JWKS cache per E9)
 
 ### Action

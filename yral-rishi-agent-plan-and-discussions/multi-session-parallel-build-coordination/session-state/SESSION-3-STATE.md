@@ -1,6 +1,6 @@
 # Session 3 STATE — Public-API
 
-> Updated: 2026-05-18 (Day 4A PR drafted; Day-3 PR rebased semantics into Day 4A — flag rename + Redis JWKS cache per E9; awaiting Codex + coordinator review + Rishi YES on PRs #97, #99, and the Day-4A PR).
+> Updated: 2026-05-20 (PR #97 merged into main; PRs #99 + #101 + #102 rebased onto post-#97 main; Day-4B PR #102 re-applied manually because of non-trivial conflicts vs PR #97 R1+R3+R5 work; 73/73 contract tests green; PR #103 rebase queued next).
 
 ## ⭐ START-OF-SESSION SUMMARY (read first when resuming)
 
@@ -14,14 +14,14 @@ Full agent definition: `.claude/agents/session-3-public-api.md`.
 
 ## LAST THING I DID
 
-**2026-05-18 — Day 4A E9 reconciliation + 43 tests green.** Per the coordinator's Day-4A directive: (1) renamed the JWT shadow flag `jwt_strict_validation_enabled` → `enable_strict_jwt_signature_validation` (E9 verbatim — Day-3 used the wrong name); 13 references swept across 6 files. (2) Promoted the JWKS cache from in-process 6h to **Redis 1hr per E9 verbatim** — new `app/redis_client.py` singleton (lru_cache-backed `get_redis()` returning a `redis.Redis` instance); `app/api/auth/jwks_client.py` refactored to GET/SET raw JWKS bytes against key `jwks:auth.yral.com:v1` with TTL 3600s. On Redis errors at GET or SET → `JwksFetchError` raised → strict fails closed with `jwks_fetch_error` reason → legacy still answers (request returns 200). Caught + fixed a Python import-binding bug in jwks_client (was `from app.redis_client import get_redis` which binds at import time + misses monkey-patches) — switched to `from app import redis_client as redis_client_module` + late-binding `_get_redis()`. 11 JWT tests (9 existing + 2 new): cache-hit (1 upstream fetch over 2 calls), Redis-down (strict fails-closed + divergence emission verified). 32 Day-2 still green. Total 43/43 in 0.37s. PR drafted on `session-3/day-4a-jwt-shadow-e9-reconciliation` (based on PR #99 tip).
+**2026-05-20 — Rebase cascade after PR #97 squash-merged into main.** PRs #99 (Day-3 JWT shadow), #101 (Day-4A E9 reconciliation), #102 (Day-4B real-auth on handlers) all needed to rebase onto the new `origin/main` tip (which now includes PR #97's R1 rename + R3 health stub + R5 placeholder auth + R6 tweaks). PR #99 + PR #101 rebased cleanly with 2-3 union-merge conflicts each (pyproject.toml + config.py — both took new content from both sides). PR #102 had 3 file-level conflicts whose resolution was non-trivial: Day-4B was written against PR #97 BEFORE the R1 rename, R5 placeholder, and R3 health changes landed, so its `from app.api.dtos import ConversationDto, MessageDto` imports + zero-overlap with the R5 `auth_placeholder.py` were dead. Strategy: aborted the auto-rebase, reset `session-3/day-4b-auth-as-real-dependency` to the rebased PR #101 tip (`6828db8`), then re-applied Day-4B's INTENT manually as a fresh commit — per-handler `Depends(require_authenticated_user)` on all 17 chat + influencer + admin handlers (replacing PR #97 R5's router-level placeholder); deleted `auth_placeholder.py` + `test_handler_auth_placeholder.py`; loosened `test_health_endpoints_answer_without_auth` to `status_code != 401` (absorbs the new 503-on-Redis-unreachable for `/health/ready` + F9-honest 503 for `/health/deep`); cleaned dead code in `app/api/auth/dependency.py`. WS stub keeps inline Bearer-present check (FastAPI Request-typed Depends doesn't apply to WS). 73 contract tests pass (vs 43 pre-rebase — picked up the BLOCKER 4 stubs' tests + Day-4B's auth-edge tests). Day-4C rebase queued next.
 
 ## CURRENT TASK
 
-Day 4A PR pending (E9 reconciliation: flag rename + Redis JWKS cache). PR #97 (Day 2) + PR #99 (Day 3) also pending review. Day 4A stacks on PR #99. Next: Day 4B (auth as real dependency on handlers), then Day 4C (orchestrator RPC + idempotency).
+Push the rebased PR #102 with `--force-with-lease`; then queue PR #103 (Day-4C) rebase onto the new PR #102 tip.
 
-Progress: Day 4A 100% (PR drafted + 43/43 tests green); Phase 1 ~29% (4 of ~14 working days; Day 4 split into 3 stacked PRs per coordinator).
-ETA to merge: dependent on Codex turnaround + coordinator routing.
+Progress: PRs #99 + #101 + #102 rebased + locally green; PR #103 rebase pending. Phase 1 ~36% (5 of ~14 working days; rebase cascade itself was a half-day's work).
+ETA to merge: dependent on Codex re-review (Codex re-runs on each force-push) + coordinator routing + Rishi YES on the merge order.
 
 ## NEXT 3 PLANNED ACTIONS
 
