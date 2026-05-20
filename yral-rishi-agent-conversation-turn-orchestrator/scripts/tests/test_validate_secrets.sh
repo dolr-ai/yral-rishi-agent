@@ -39,6 +39,14 @@ FAIL=0
 
 # Run validate-secrets.sh from inside a fixture dir; capture exit code only.
 # Expected exit code passed in $1; case label in $2.
+#
+# On FAIL: dump the captured stdout + stderr from the under-test script
+# so CI logs surface the actual diagnostic. Without this, a happy-path
+# regression like "snap-yq emits a warning that pollutes the secret-name
+# list" silently fails the assertion + leaves nothing to debug from.
+# Day-5 PR #109 hit exactly this — the first CI run failed the happy
+# path with no visible cause; this diagnostic surfaces the underlying
+# script output on the next failure.
 assert_exit_code() {
     local expected=$1
     local fixture=$2
@@ -46,8 +54,12 @@ assert_exit_code() {
 
     local fixture_dir="$TESTS_DIR/fixtures/$fixture"
     local actual=0
+    # Capture stdout + stderr separately so we can dump both on failure.
     # `cd` into the fixture so validate-secrets.sh reads that fixture's files.
-    ( cd "$fixture_dir" && bash "$SCRIPT_UNDER_TEST" ) >/dev/null 2>&1 || actual=$?
+    local captured_combined_output
+    captured_combined_output=$(
+        ( cd "$fixture_dir" && bash "$SCRIPT_UNDER_TEST" ) 2>&1
+    ) || actual=$?
 
     if [ "$actual" -eq "$expected" ]; then
         PASS=$((PASS + 1))
@@ -55,6 +67,11 @@ assert_exit_code() {
     else
         FAIL=$((FAIL + 1))
         echo "FAIL  $label  (expected exit=$expected, got=$actual)"
+        echo "    --- captured output from $SCRIPT_UNDER_TEST in $fixture_dir ---"
+        # Indent each line so the diagnostic stands out + nests visually
+        # under the FAIL line.
+        echo "$captured_combined_output" | sed 's/^/      /'
+        echo "    --- end captured output ---"
     fi
 }
 
