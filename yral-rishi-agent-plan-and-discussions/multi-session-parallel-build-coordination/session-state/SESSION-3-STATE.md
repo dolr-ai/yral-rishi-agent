@@ -1,6 +1,6 @@
 # Session 3 STATE — Public-API
 
-> Updated: 2026-05-18 (Day 2 PR drafted; awaiting Codex + coordinator review + Rishi YES).
+> Updated: 2026-05-18 (Day 3 PR drafted off Day-2 branch tip; awaiting Codex + coordinator review + Rishi YES on PR #97 + the Day-3 PR).
 
 ## ⭐ START-OF-SESSION SUMMARY (read first when resuming)
 
@@ -14,28 +14,29 @@ Full agent definition: `.claude/agents/session-3-public-api.md`.
 
 ## LAST THING I DID
 
-**2026-05-18 — Day 2 endpoint handlers + 32 contract tests green.** Implemented every Day-2 endpoint from `interface-contracts/00-api-contract.md`: 7 chat handlers (POST/GET conversations, POST/GET conv/{id}/messages, POST conv/{id}/read, DELETE conv/{id}, GET /api/v2/conversations), 3 influencer-read handlers (list, trending, single), 3 health handlers (/health/{live,ready,deep} — local bridge with DEP-005 raised for Session 2 template mirror per F9). All chat + influencer endpoints gated behind feature flag `enable_session_3_phase_1_day_2_placeholder_responses` (default False); flag-off returns HTTP 503 with envelope-shaped error body; flag-on returns SCHEMA-VALID stubs with the `[v2 phase-1 day-2 placeholder ...]` non-confusable text. Envelope-aware HTTPException handler in `app/main.py` so 503 body keeps the `{success, msg, error, data}` shape mobile parses. 32/32 contract tests pass in 0.09s. Live HTTP smoke against `docker run` validated both flag states + all 11 OpenAPI paths registered. PR drafted on branch `session-3/day-2-endpoint-handlers`.
+**2026-05-18 — Day 3 JWT shadow rig + 9 J1-HOT tests green.** Per E9 + Rishi's Day-3 directive, built the dual-validate shadow rig: every request runs BOTH a `LegacyJwtValidator` (decode-without-verify, byte-equivalent to chat-ai's current behavior) AND a `StrictJwtValidator` (full JWKS RS256 + expiry + issuer + audience). Legacy is authoritative today; strict's result + reason logged to Sentry (breadcrumb every call, WARN-level capture on divergence) + Langfuse (trace event with locked metadata schema `jwt.shadow.{legacy,strict}.{ok,reason}` + `jwt.shadow.divergence_vs_legacy`). Feature flag `jwt_strict_validation_enabled` (default False) flips authoritative-answer to strict after 7-day soak + Rishi typed YES per E9 + the JWT shadow-rollout memory. JWKS cached in-process per-replica 6h per Rishi's Day-3 directive (E9 says Redis 1hr — push-back-once per I6 surfaced the discrepancy for coordinator). All 41 tests green (32 Day-2 + 9 Day-3) in 0.30s. Dependency NOT wired into real handlers per Day-3 scope guardrail; Day-4 PR wires it. PR drafted on branch `session-3/day-3-jwt-shadow-mode` (based on day-2 branch tip per Rishi's instruction so shadow rig can integrate against real Day-2 handlers without waiting for PR #97 merge).
 
 ## CURRENT TASK
 
-Day 2 PR pending: awaiting Codex + coordinator review + Rishi YES (real implementation code per I14, NOT auto-mergeable). After merge, advance to Day 3.
+Day 3 PR pending: awaiting Codex + coordinator review + Rishi YES (real implementation code per I14, NOT auto-mergeable). After merge, advance to Day 4. PR #97 (Day 2) also still pending review — Day 3 stacks on it.
 
-Progress: Day 2 100% (PR drafted + smoke-tested + 32 tests green); Phase 1 ~14% (2 of ~14 working days).
+Progress: Day 3 100% (PR drafted + 41/41 tests green); Phase 1 ~21% (3 of ~14 working days).
 ETA to merge: dependent on Codex turnaround + coordinator routing.
 
 ## NEXT 3 PLANNED ACTIONS
 
-1. Day 3 — JWT auth middleware in SHADOW mode per E9. JWKS fetch from `https://auth.yral.com/.well-known/jwks.json`, Redis 1hr TTL cache, `enable_strict_jwt_signature_validation: false` default (matches chat-ai), validate-but-don't-enforce, log validation-mismatch metric to Sentry per the 7-day-divergence shadow-rollout plan. Test: valid JWT passes, invalid JWT also passes (shadow), Sentry receives the mismatch. Wire as a FastAPI middleware that runs INSIDE `RequestIdMiddleware` (per the LIFO ordering rule in CLAUDE.md). Branch: `session-3/jwt-auth-middleware-shadow-mode`.
-2. Day 4 — Internal RPC client to Session 4's orchestrator. Read `interface-contracts/01-internal-rpc-contracts.md`; implement typed client; wire `POST /api/v1/chat/conversations/{id}/messages` handler to `orchestrator.run_turn(...)` (SSE stream). Honor `X-Idempotency-Key` per F10 with 60s Redis cache. Remove the Day-2 placeholder feature flag from that handler (and the others as Session 4 RPCs become available). If Session 4 isn't ready by Day-4 EOD, raise DEP-xxx for the missing RPC + idle on that handler + continue non-blocking work.
-3. Day 5 — Deploy to v2 cluster on `yral-v2-public-web` overlay (Session 1 ops support for the actual `docker stack deploy`). Smoke test: curl from rishi-4 reaches the service over the overlay; envelope shape returned; auth middleware (shadow) logs JWT validation result; orchestrator RPC reachable. M0 milestone evaluation. Health endpoints (already local-bridged) gate the rolling-update health check per I2.
+1. Day 4 — Internal RPC client to Session 4's orchestrator + wire `authenticate_user_dual_validate` into real chat / influencer handlers. Read `interface-contracts/01-internal-rpc-contracts.md`; implement typed client; wire `POST /api/v1/chat/conversations/{id}/messages` handler to `orchestrator.run_turn(...)` (SSE stream). Honor `X-Idempotency-Key` per F10 with 60s Redis cache. Remove the Day-2 placeholder feature flag from the wired handlers. Add the dual-validate dependency to every authenticated route. If Session 4 isn't ready by Day-4 EOD, raise DEP-xxx + idle on that handler + continue non-blocking work. Branch: `session-3/day-4-orchestrator-rpc-and-auth-wiring`.
+2. Day 5 — Deploy to v2 cluster on `yral-v2-public-web` overlay (Session 1 ops support for the actual `docker stack deploy`). Smoke test: curl from rishi-4 reaches the service over the overlay; envelope shape returned; dual-validate logs JWT divergence to Sentry; orchestrator RPC reachable. M0 milestone evaluation. Health endpoints (already local-bridged) gate the rolling-update health check per I2.
+3. Day 6-7 — Feature parity sprint. Pull yral-chat-ai's live OpenAPI; validate every endpoint shape against the contract (with A14 typed YES first). Influencer write set (generate-prompt, validate-and-generate-metadata, create, system-prompt edit, video-prompt, delete, admin ban/unban). Shadow-traffic harness comparing v2 ↔ chat-ai for >95% shape match on 100 conversations + 50 influencer reads.
 
 ## BLOCKERS
 
-None hard. Day-4 orchestrator-RPC integration depends on Session 4 shipping the `run_turn` RPC handler stub; Session 4 Day-1 spawned 3 services per commit `6d8c597` so they're on track for Day 4. DEP-005 (template health endpoints) is in flight but doesn't block Session 3 since the local bridge ships.
+None hard. Day-4 orchestrator-RPC integration depends on Session 4 shipping the `run_turn` RPC handler skeleton; Session 4 has PR #96 open with that exact deliverable. DEP-005 (template `/health/*` mirror) remains OPEN; doesn't block Session 3.
 
 ## PENDING PRs (mine)
 
-- `session-3/day-2-endpoint-handlers` (Day 2 PR — awaiting review/merge).
+- `session-3/day-2-endpoint-handlers` (PR #97 — Day 2 endpoint handlers + 32 tests; coordinator-review-needed)
+- `session-3/day-3-jwt-shadow-mode` (Day 3 JWT shadow rig + 9 J1-HOT tests; based on the day-2 branch tip per Rishi)
 
 ## CROSS-SESSION DEPS (mine)
 

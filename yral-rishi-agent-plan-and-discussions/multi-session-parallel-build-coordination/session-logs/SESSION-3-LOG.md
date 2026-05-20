@@ -2,6 +2,81 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-18 — Day 3, PR 3 (JWT signature-validation shadow rig per E9 + 9 J1-HOT tests)
+
+### Action
+Day 3 of Phase 1, off the back of PR #97 (Day-2) tip per Rishi's explicit base instruction. Built the dual-validate JWT shadow rig E9 mandates: every request runs BOTH a legacy validator (decode-without-verify, byte-equivalent to chat-ai's current behavior) AND a strict validator (full JWKS RS256 + expiry + issuer + audience). Legacy is authoritative today; strict's result + reason is logged to Sentry (breadcrumb on every call, WARN-level capture on divergence) + Langfuse (trace event with the locked metadata schema `jwt.shadow.{legacy,strict}.{ok,reason}` + `jwt.shadow.divergence_vs_legacy`). Feature flag `jwt_strict_validation_enabled` (default False) flips authoritative-answer to strict after the 7-day soak per E9 + the JWT shadow-rollout memory + Rishi typed YES.
+
+### Files touched
+- `yral-rishi-agent-public-api/pyproject.toml` — added `pyjwt[crypto]==2.10.1` runtime dep (pulls `cryptography` for RS256)
+- `yral-rishi-agent-public-api/app/config.py` — added 5 new settings: `jwt_strict_validation_enabled` (default False), `jwks_url` (default `https://auth.yral.com/.well-known/jwks.json`), `jwt_expected_issuer` (default `https://auth.yral.com`), `jwt_expected_audience` (default empty — audience-check skipped until set), `jwks_cache_ttl_seconds` (default 21600 = 6h per Rishi's Day-3 directive)
+- `yral-rishi-agent-public-api/app/api/auth/__init__.py` (new) — package marker with full Day-3 doc header
+- `yral-rishi-agent-public-api/app/api/auth/jwks_client.py` (new) — fetch + per-replica in-process cache; `JwksFetchError` typed exception; `reset_cache_for_testing()` helper
+- `yral-rishi-agent-public-api/app/api/auth/validators.py` (new) — `LegacyJwtValidator` (skip-sig) + `StrictJwtValidator` (full RS256 + JWKS + iss + aud); `ValidationResult` dataclass; locked Literal sets for legacy + strict failure reasons
+- `yral-rishi-agent-public-api/app/api/auth/observability.py` (new) — `emit_dual_validate_result()` — Sentry breadcrumb on every call + WARN-level capture on divergence (with tags so the divergence-reason histogram pivots in 2 clicks) + Langfuse trace event with the locked metadata schema; broad except so observability never crashes auth
+- `yral-rishi-agent-public-api/app/api/auth/dependency.py` (new) — `authenticate_user_dual_validate(request) -> user_id`; extracts Bearer token; runs both validators; emits divergence; returns authoritative user_id (legacy when flag off, strict when flag on); raises envelope-shaped 401 on auth failure
+- `yral-rishi-agent-public-api/tests/contract/test_jwt_shadow.py` (new) — 9 J1-HOT tests: happy / expired / tampered-sig / wrong-iss / JWKS-unreachable / flag-on smoke / missing-header / malformed-header / empty-token. Uses a test-internal `FastAPI()` app + test-internal `/whoami` endpoint that applies the dependency — does NOT touch real chat / influencer handlers per the Day-3 scope guardrail.
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-3-LOG.md` (this entry)
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-state/SESSION-3-STATE.md` — advanced to Day-4 next-action
+
+### Architecture decisions (worth recording)
+
+- **Test-internal FastAPI app for the dependency** — Day-3 scope guardrail says "Do NOT touch handlers or DTOs." Tests register a `/test/whoami` endpoint on a fresh `FastAPI()` instance + apply `Depends(authenticate_user_dual_validate)` there. Production wiring (real chat / influencer handlers) is Day-4's job. This satisfies BOTH the scope guardrail AND the directive's "every request runs both validators" requirement (which is forward-looking — Day-4 wires the dep on real handlers + every request through them triggers dual-validate).
+- **In-process per-replica JWKS cache (not Redis)** — E9 says Redis 1hr TTL; Rishi's Day-3 directive says 6h "per E9." Per I6 (push back once), I implemented in-process 6h + flagged the storage-layer + TTL discrepancy in this LOG entry for coordinator reconciliation. Trade-off: in-process means 3 replicas × 1 JWKS fetch per 6h vs Redis-shared 1 fetch per 1h cluster-wide. Both produce trivial load on auth.yral.com. Day-4 (Redis client lands for idempotency) can promote to Redis-shared as a 1-function-body edit; the public API of `get_signing_keys()` stays identical.
+- **Audience check is OPT-IN (skipped when `jwt_expected_audience` is empty)** — current chat-ai doesn't enforce audience; flipping ON before knowing the real `aud` value would cause 100% strict divergence on the audience dimension. Empty default + explicit env var to enable matches the conservative E9 rollout philosophy. Configurable via env so the auth team can confirm the value + we flip without a deploy.
+- **One single helper for emission (not separate Sentry + Langfuse callsites)** — `emit_dual_validate_result()` is the SINGLE place the divergence metric is recorded. Sentry alert config (deferred — happens in Sentry UI per Rishi's "Sentry alert if divergence > 1%/hr" directive) targets one event name + one tag schema. When Rishi asks "what's the divergence rate now," it's one query.
+- **Broad `except Exception` around Langfuse emit** — observability MUST NOT crash authentication. If langfuse SDK errors (network blip, API drift, etc.), we drop a Sentry breadcrumb + carry on. Auth still answers.
+- **`ValidationResult` dataclass, not tuple** — named fields prevent "what's at index 1?" papercut. The dependency reads `.ok`, `.reason`, `.user_id` directly. mypy / IDE catch field-name typos. Locked Literal sets for `LegacyFailureReason` + `StrictFailureReason` mean the Sentry divergence histogram pivots by reason without parsing free-form strings.
+- **Authoritative-answer toggle is ONE-LINE** — `authoritative = strict_result if settings.jwt_strict_validation_enabled else legacy_result`. After the 7-day soak + Rishi typed YES, flipping prod is an env-var change. No code deploy.
+- **`sentry_sdk.new_scope()` (not deprecated `push_scope()`)** — sentry-sdk v2 migration; v1 form emits a deprecation warning that pytest surfaces. Caught locally, fixed before opening the PR.
+
+### Why
+Per E9 + the JWT shadow-rollout memory + the agent definition Day 3 spec (verbatim): "JWKS fetch from `https://auth.yral.com/.well-known/jwks.json`, Cache in Redis (1hr TTL, per E9 in CONSTRAINTS), Validate-but-don't-enforce mode (`enable_strict_jwt_signature_validation: false` default, matches chat-ai's current behavior + sets up the shadow-rollout per E9), Test: valid JWT passes, invalid JWT passes (shadow mode — log mismatch metric to Sentry)." Day 3 is the security-posture upgrade we want for v2: full RS256 verification without a flag-day risk to existing users. The shadow run gives us 7 days of empirical divergence data BEFORE flipping production — we'll see exactly how many users have expired-but-cached tokens, how many have wrong-issuer tokens from older auth-server versions, etc. + can coordinate the fix BEFORE the strict path becomes authoritative.
+
+### Test evidence
+- `python3 -m py_compile` against all new `app/api/auth/*.py` + `tests/contract/test_jwt_shadow.py` → 0 errors
+- `docker compose build service` → image rebuilt with pyjwt[crypto] dep
+- `pytest tests/contract/ -v` inside the rebuilt docker image:
+  ```
+  collected 41 items
+  ... [ALL 41 PASSED] ...
+  ============================== 41 passed in 0.30s ==============================
+  ```
+  - 32 Day-2 tests (chat + influencer + health) — STILL GREEN, nothing regressed
+  - 9 Day-3 tests (test_jwt_shadow.py):
+    - test_happy_both_paths_agree ✅
+    - test_expired_token_legacy_ok_strict_fail_expired ✅
+    - test_tampered_signature_legacy_ok_strict_fail_bad_sig ✅
+    - test_wrong_issuer_legacy_ok_strict_fail_bad_iss ✅
+    - test_jwks_unreachable_strict_fail_no_crash ✅ (most important resilience test — proves auth.yral.com outage cannot take down v2)
+    - test_flag_on_strict_authoritative_expired_token_401 ✅
+    - test_missing_authorization_header_returns_401 ✅
+    - test_malformed_bearer_header_returns_401 ✅
+    - test_empty_bearer_token_returns_401 ✅
+- 0 deprecation warnings (after the `push_scope()` → `new_scope()` fix)
+
+### Constraints honored
+- **A1 (relaxed)** — no deletions; only new files + 2 edits (config.py, pyproject.toml). Cleaned up `.pytest_cache` from docker mount (gitignored regardless).
+- **A2.1** — tight scope per the directive. Did NOT wire the dependency into real handlers; did NOT add a Redis client; did NOT touch DTOs/handlers; did NOT add a flag-flip workflow. New deps minimized to one (`pyjwt[crypto]`).
+- **A7 + C4 + D3** — Sentry events emit through the existing middleware (DSN = `sentry.rishi.yral.com`, service tag inherited).
+- **B1 + B2** — English names; only allowlisted abbreviations (`id`, `url`, `jwt` — JWT is universally recognized in auth space; `jwks` likewise). If Codex flags either I'll surface for the B2 ecosystem-convention carve-out path.
+- **B7** — every new file: ⭐ START HERE file header + function WHAT/WHEN/WHY + role-not-syntax line comments + RELATED FILES footer. Functions in priority order (validate first, helpers after).
+- **C7** — all auth settings via `app/config.py` pydantic-settings singleton; no hardcoded URL / TTL / issuer / audience.
+- **E6** — JWKS fetch from `https://auth.yral.com/.well-known/jwks.json` (the configured default).
+- **E9** — dual-validate shadow exactly as specified; default OFF; the 7-day divergence rollout is documented in code comments + this LOG so the flag-flip PR (separate, future) has a clear ramp.
+- **F16** — all code changes inside `yral-rishi-agent-public-api/`.
+- **I6** — pushed back ONCE on the E9 vs Day-3-directive TTL/storage discrepancy (6h in-process vs 1hr Redis); documented + proceeded per Rishi's direct instruction; logged for coordinator reconciliation.
+- **I9** — no edits to `.github/workflows/` at repo root.
+- **J1 HOT-tier coverage** — auth path is HOT; 9 tests cover the happy path + 5 failure modes + 3 header-edge cases. Coverage delta on `app/api/auth/` should be > 90% per `pytest --cov` (CI workflow will measure).
+
+### Blockers raised
+None new. DEP-005 (Session 2 template `/health/*` mirror, raised Day 2) remains OPEN; doesn't block Day 4.
+
+### Next
+Day 4 — Internal RPC client to Session 4's orchestrator + wire `authenticate_user_dual_validate` into the real chat / influencer handlers. Separate branch + PR.
+
+---
+
 ## 2026-05-18 — Day 2, PR 2 (endpoint handlers per the locked API contract + 32 contract tests)
 
 ### Action
