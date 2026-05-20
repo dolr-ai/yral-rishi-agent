@@ -2,7 +2,7 @@
 # app/safety/__init__.py — package marker for safety-canned response helpers.
 #
 # ⭐ START HERE: this package holds the user-facing copy that the safety
-# stack (H5 prompt-injection / H4 crisis / A10 NSFW) returns when it
+# stack (H5 prompt-injection / H4 crisis / A10 adult-content) returns when it
 # short-circuits the run_turn handler. Keeping the copy in ONE place
 # means Day-5+ real LLM enablement can swap the underlying detector
 # while the user-facing text stays canonical.

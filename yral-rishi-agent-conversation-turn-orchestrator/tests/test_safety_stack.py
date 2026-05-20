@@ -27,7 +27,7 @@
 #         200+ char base64 → 200 H5 canned (different reason code)
 #     test_h4_blocks_crisis_language
 #         "I want to die" → 200 H4 canned + helpline placeholder
-#     test_a10_blocks_nsfw_in_handler_output
+#     test_a10_blocks_adult_content_in_handler_output
 #         monkeypatch STUB_CONTENT → 200 A10 canned + flipped paywall
 #
 #   GATE-RESPECT / NO-BYPASS
@@ -44,10 +44,10 @@
 # Day-3 plan).
 #
 # WHY MONKEYPATCH STUB_CONTENT FOR THE A10 TEST
-# Per the Day-3 directive verbatim: "rig handler to return NSFW
+# Per the Day-3 directive verbatim: "rig handler to return adult-content
 # content → 200 safety-canned, blocked_by=A10." The handler itself
 # is out-of-scope to modify; the cleanest way to make the handler
-# return NSFW content is to swap the module-level `STUB_CONTENT`
+# return adult-content content is to swap the module-level `STUB_CONTENT`
 # constant via `monkeypatch.setattr` for the duration of the test.
 # When the test ends, monkeypatch auto-reverts the constant.
 #
@@ -350,25 +350,25 @@ def test_h4_blocked_request_stops_chain_before_a10(
 # ===========================================================================
 
 
-def test_a10_blocks_nsfw_in_handler_output(
+def test_a10_blocks_adult_content_in_handler_output(
     monkeypatch: pytest.MonkeyPatch, client: TestClient
 ) -> None:
-    """WHAT: monkeypatch STUB_CONTENT to NSFW → 200 + A10 canned reply.
-    WHEN: both gates open + handler returns NSFW content via patched
+    """WHAT: monkeypatch STUB_CONTENT to adult-content → 200 + A10 canned reply.
+    WHEN: both gates open + handler returns adult-content content via patched
           STUB_CONTENT.
-    WHY:  proves A10's output-side filter rewrites NSFW content even
+    WHY:  proves A10's output-side filter rewrites adult-content content even
           when the user input was clean. Day-5+ LLM swap flows
           through this same A10 layer unchanged — when the real LLM
-          drifts NSFW, A10 catches it.
+          drifts adult-content, A10 catches it.
     """
     _open_both_gates(monkeypatch)
     # Swap the Day-2 stub content for a string that matches one of A10's
-    # patterns (`nsfw test marker`). The string is in the rule set
+    # patterns (`adult-content test marker`). The string is in the rule set
     # explicitly for this test so the codebase doesn't have to carry
     # crude example content.
     monkeypatch.setattr(
         "app.run_turn.STUB_CONTENT",
-        "Day-2 stub but with nsfw test marker hidden in it",
+        "Day-2 stub but with adult-content test marker hidden in it",
     )
 
     response = client.post(
@@ -379,7 +379,7 @@ def test_a10_blocks_nsfw_in_handler_output(
     assert response.headers["X-Safety-Decision"] == "A10"
     assert response.headers["X-Safety-Reason"] == "a10_adult_content_keyword"
     body = response.json()
-    # Canned NSFW reply replaces the handler's (rigged-NSFW) content.
+    # Canned adult-content reply replaces the handler's (rigged-adult-content) content.
     assert body["content"] == "I can't help with that."
     assert body["count_toward_paywall"] is False
     assert body["conversation_id"] == VALID_BODY["conversation_id"]
@@ -432,6 +432,67 @@ def test_jailbreak_with_flag_off_still_503s_not_safety_canned(
 
     assert response.status_code == 503, response.text
     assert "X-Safety-Decision" not in response.headers
+
+
+# ===========================================================================
+# ⭐ NON-STRING `user_message` GUARD (Codex PR-#112 round-2 CONCERN)
+# ===========================================================================
+
+
+def test_h5_does_not_500_when_user_message_is_non_string(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient
+) -> None:
+    """WHAT: a body like `{"user_message": 123}` MUST NOT crash H5's
+          matcher with a 500. The middleware passes through + Pydantic
+          downstream returns the documented 422 validation envelope.
+    WHEN: a malformed client sends a non-string user_message.
+    WHY:  Codex PR-#112 round-2 CONCERN. Without the isinstance(str)
+          guard, `re.search(pattern, 123)` raises TypeError → 500.
+          The right shape is 422 (Pydantic field-type validation),
+          not 500 (server crash).
+    """
+    _open_both_gates(monkeypatch)
+
+    # Send `user_message` as an integer instead of a string. Pydantic
+    # will 422 this at the route layer; the middleware MUST pass
+    # through harmlessly without crashing first.
+    response = client.post(
+        "/v1/turn",
+        json={"conversation_id": "non-string-test", "user_message": 123},
+    )
+
+    # 422 is the expected outcome from Pydantic's int→str validation.
+    # The KEY assertion is "not 500" — anything in the 4xx range
+    # proves the middleware didn't crash.
+    assert response.status_code != 500, (
+        f"H5 middleware crashed (500) on non-string user_message — "
+        f"the isinstance(str) guard regressed. body={response.text!r}"
+    )
+    assert 400 <= response.status_code < 500, (
+        f"expected 4xx from Pydantic validation; got "
+        f"{response.status_code}: {response.text!r}"
+    )
+
+
+def test_h4_does_not_500_when_user_message_is_non_string(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient
+) -> None:
+    """WHAT: same as the H5 test above but for H4 (the crisis matcher
+          is the same regex.search shape and would crash identically
+          without the guard).
+    WHEN: malformed client + the body somehow slips past H5.
+    WHY:  defence-in-depth + symmetric to the H5 guard. Each safety
+          middleware MUST be 422-tolerant on bad input shapes.
+    """
+    _open_both_gates(monkeypatch)
+
+    response = client.post(
+        "/v1/turn",
+        json={"conversation_id": "non-string-test", "user_message": 456},
+    )
+
+    assert response.status_code != 500
+    assert 400 <= response.status_code < 500
 
 
 # ===========================================================================

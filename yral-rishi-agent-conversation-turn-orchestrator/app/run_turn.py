@@ -6,7 +6,7 @@
 # defines one route, `POST /v1/turn`, which TODAY (Day 2) returns a
 # schema-valid stub `MessageResponse` with a placeholder body. Day 5
 # swaps the stub for the real LLM call; Day 3 adds the safety stack
-# (H5 prompt-injection → H4 crisis → A10 NSFW) IN FRONT of this handler
+# (H5 prompt-injection → H4 crisis → A10 adult-content) IN FRONT of this handler
 # without touching the route signature.
 #
 # WHAT IS THIS ENDPOINT FOR?

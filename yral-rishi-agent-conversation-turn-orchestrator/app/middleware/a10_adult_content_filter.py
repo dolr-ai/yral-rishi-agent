@@ -1,19 +1,19 @@
 # ---------------------------------------------------------------------------
-# a10_adult_content_filter.py — Day-3 A10 NSFW output-side filter middleware.
+# a10_adult_content_filter.py — Day-3 A10 adult-content output-side filter middleware.
 #
 # ⭐ START HERE: this module exports `A10AdultContentFilterMiddleware`, the
 # INNERMOST safety layer in the H5 → H4 → A10 → handler chain. Unlike
 # H5 + H4 (which inspect the request body BEFORE the handler runs),
 # A10 inspects the RESPONSE body AFTER the handler returns. If the
-# response's `content` field matches the NSFW rule set, A10 rewrites
+# response's `content` field matches the adult-content rule set, A10 rewrites
 # the response with a canned safety reply (per
 # `app/safety/canned_responses.py::adult_content_blocked`) + flips
 # `count_toward_paywall` to False.
 #
 # WHY A10 IS OUTPUT-SIDE
-# Per the Day-3 directive verbatim: "A10 — NSFW filter (output-side).
+# Per the Day-3 directive verbatim: "A10 — adult-content filter (output-side).
 # For Day-3 stub: runs on the handler's RETURN value (the stub
-# MessageResponse.content). Checks against an NSFW keyword list."
+# MessageResponse.content). Checks against an adult-content keyword list."
 # Day-5+ real LLM enablement feeds actual model output through this
 # layer unchanged — same dispatch path, same canned reply, just with
 # real content as the inspected payload instead of the Day-2 stub.
@@ -104,36 +104,36 @@ GUARDED_PATH: Final[str] = "/v1/turn"
 
 
 # ===========================================================================
-# Rule set — Phase-1 NSFW keyword list (intentionally minimal)
+# Rule set — Phase-1 adult-content keyword list (intentionally minimal)
 # ===========================================================================
 
 # Phase-1 keyword list. Day-5+ replaces this with the real
 # `yral-rishi-agent-content-safety-and-moderation` RPC + the
 # `influencer.is_nsfw` routing decision per A10's full text. The
 # Day-3 list is deliberately SHORT — enough to test the dispatch
-# path + catch obviously-NSFW outputs, but not exhaustive (that's
+# path + catch obviously-adult-content outputs, but not exhaustive (that's
 # Phase-2's content-safety service's job).
 #
-# Note: the `nsfw test marker` entry exists so the test suite can
+# Note: the `adult-content test marker` entry exists so the test suite can
 # rig the handler's stub content to a flagged string without
 # requiring crude content in the test file itself.
 _ADULT_CONTENT_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(r"\bexplicit\s+sexual\s+content\b", re.IGNORECASE),
     re.compile(r"\bgraphic\s+violence\b", re.IGNORECASE),
-    re.compile(r"\bnsfw\s+test\s+marker\b", re.IGNORECASE),
+    re.compile(r"\badult-content\s+test\s+marker\b", re.IGNORECASE),
 )
 
 
-_REASON_NSFW_KEYWORD: Final[str] = "a10_adult_content_keyword"
+_REASON_ADULT_CONTENT_KEYWORD: Final[str] = "a10_adult_content_keyword"
 
 
 _log = logging.getLogger("app.middleware.a10_adult_content_filter")
 
 
-def _match_nsfw(content: str) -> str | None:
+def _match_adult_content(content: str) -> str | None:
     """Return a reason code if `content` matches any A10 pattern, else None.
 
-    WHAT: walks the NSFW pattern list; returns the reason code on
+    WHAT: walks the adult-content pattern list; returns the reason code on
           FIRST match.
     WHEN: called once per /v1/turn response inside `dispatch()` AFTER
           `call_next` returns.
@@ -141,7 +141,7 @@ def _match_nsfw(content: str) -> str | None:
     """
     for pattern in _ADULT_CONTENT_PATTERNS:
         if pattern.search(content):
-            return _REASON_NSFW_KEYWORD
+            return _REASON_ADULT_CONTENT_KEYWORD
 
     return None
 
@@ -153,7 +153,7 @@ def _match_nsfw(content: str) -> str | None:
 
 class A10AdultContentFilterMiddleware(BaseHTTPMiddleware):
     """Innermost safety layer — inspects the handler's response and
-    rewrites NSFW content with a canned safety reply.
+    rewrites adult-content content with a canned safety reply.
 
     WHAT: BaseHTTPMiddleware whose `dispatch()` calls `call_next`,
           drains the response body, parses + inspects the `content`
@@ -162,7 +162,7 @@ class A10AdultContentFilterMiddleware(BaseHTTPMiddleware):
     WHEN: invoked once per request by the FastAPI middleware chain,
           AFTER H5 and H4 (request side).
     WHY:  output-side safety — even with clean user input, the LLM
-          (Day-5+) can drift into NSFW territory; A10 is the last
+          (Day-5+) can drift into adult-content territory; A10 is the last
           gate before the response leaves the orchestrator.
     """
 
@@ -225,12 +225,12 @@ class A10AdultContentFilterMiddleware(BaseHTTPMiddleware):
 
         # Run the matcher on the content field. No match → return the
         # response as-is (rebuilt from the drained body bytes).
-        reason = _match_nsfw(content)
+        reason = _match_adult_content(content)
         if reason is None:
             record("A10_exit")
             return self._rebuild_response(response, body)
 
-        # Match — emit the canned NSFW reply. conversation_id comes
+        # Match — emit the canned adult-content reply. conversation_id comes
         # from the inspected payload so the rewritten response stays
         # correlated with the request the handler was answering.
         conversation_id = payload.get("conversation_id", "") if isinstance(payload, dict) else ""
@@ -305,5 +305,5 @@ class A10AdultContentFilterMiddleware(BaseHTTPMiddleware):
 #   ../main.py                 — mounts this middleware via `add_middleware()`
 #   ../../tests/test_safety_stack.py
 #                              — A10-blocked path (monkeypatches STUB_CONTENT
-#                                to "nsfw test marker") + order-verification
+#                                to "adult-content test marker") + order-verification
 # ===========================================================================

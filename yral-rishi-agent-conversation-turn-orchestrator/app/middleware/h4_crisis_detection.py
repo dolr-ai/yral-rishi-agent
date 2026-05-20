@@ -211,6 +211,14 @@ class H4CrisisDetectionMiddleware(BaseHTTPMiddleware):
             payload = None
             user_message = ""
 
+        # Codex PR-#112 round-2 CONCERN: non-string user_message would
+        # crash the matcher (re.search on int → TypeError → 500 before
+        # Pydantic emits its 422). Mirror of the H5 guard above. Drop
+        # to "" so the matcher passes through harmlessly + downstream
+        # Pydantic returns the documented validation envelope.
+        if not isinstance(user_message, str):
+            user_message = ""
+
         reason = _match_crisis(user_message)
         if reason is not None:
             conversation_id = (

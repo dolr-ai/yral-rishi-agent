@@ -27,7 +27,7 @@
 # Per the Day-3 directive: safety-blocked turns must NOT count against
 # the user's 50-msg paywall window per E7. A user who happens to type
 # a self-harm phrase shouldn't burn a paywall slot on a crisis-helpline
-# auto-reply. Same logic for prompt-injection + NSFW: the user is being
+# auto-reply. Same logic for prompt-injection + adult-content: the user is being
 # blocked, not served, so it's not a paid turn.
 #
 # WHY THE H4 RESPONSE IS AN OBVIOUSLY-PLACEHOLDER STRING?
@@ -141,15 +141,15 @@ def crisis_response(conversation_id: str) -> dict:
 
 
 def adult_content_blocked(conversation_id: str) -> dict:
-    """Canned reply for A10 (NSFW output-filter).
+    """Canned reply for A10 (adult-content output-filter).
 
     WHAT: the MessageResponse a user sees when the handler's RESPONSE
-          content (not the user's input) matches the NSFW rule set.
+          content (not the user's input) matches the adult-content rule set.
     WHEN: called by `app/middleware/a10_adult_content_filter.py` after the
           handler returns, when the response payload contains
           flagged content.
     WHY:  output-side filtering catches cases where the upstream LLM
-          (Day-5+) drifts into NSFW territory even though the user
+          (Day-5+) drifts into adult-content territory even though the user
           input was clean. Today the rule set is a tiny keyword list;
           Day-5+ swaps it for the real moderation service classifier.
     """

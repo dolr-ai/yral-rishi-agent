@@ -6,7 +6,7 @@
 #
 #   h5_prompt_injection.py  — rule-based jailbreak / role-override / base64 detection
 #   h4_crisis_detection.py  — keyword-based self-harm / crisis-language detection
-#   a10_adult_content_filter.py      — output-side NSFW filter on the handler's response
+#   a10_adult_content_filter.py      — output-side adult-content filter on the handler's response
 #
 # Plus two PRIVATE helpers (leading underscore so they don't accidentally
 # get imported by other services):

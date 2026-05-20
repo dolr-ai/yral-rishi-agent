@@ -268,6 +268,17 @@ class H5PromptInjectionMiddleware(BaseHTTPMiddleware):
             payload = None
             user_message = ""
 
+        # Codex PR-#112 round-2 CONCERN: a body like
+        # `{"user_message": 123}` makes the matcher call `re.search`
+        # on a non-string + crash → 500 before FastAPI / Pydantic gets
+        # a chance to emit the proper 422 validation response.
+        # Guard with isinstance: if the field isn't a string, drop it
+        # to "" so the matcher passes through harmlessly and the
+        # downstream handler's Pydantic validation returns the
+        # documented 422 envelope. Same guard mirrored in H4.
+        if not isinstance(user_message, str):
+            user_message = ""
+
         # Run the matcher. On match, short-circuit with the canned
         # response; no `call_next` so H4 / A10 / handler never run.
         reason = _match_injection(user_message)

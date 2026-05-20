@@ -3,6 +3,83 @@
 
 ## OPEN
 
+### DEP-009 — Session 3 needs to install H5 prompt-injection middleware in public-api (pre-orchestration placement) to satisfy CONSTRAINTS H5 verbatim
+
+Raised: 2026-05-20 by Session 4 (PR #112 — Day-6 safety stack restoration)
+
+What:    Codex PR-#112 round-2 review correctly flagged that PR #112
+         mounts the H5 prompt-injection middleware in the
+         **orchestrator** (in front of `/v1/turn`) but CONSTRAINTS
+         H5 verbatim places it in **public-api**:
+
+             | H5 | Prompt injection defense middleware pre-orchestration.
+                  Blocks extraction attempts, logs to Sentry with
+                  `type=prompt_injection`, returns safe fallback |
+                  🔒 | V2_TEMPLATE_AND_CLUSTER_PLAN §7.3 |
+                  Middleware in public-api; tests include known
+                  injection payloads |
+
+         The Mitigation column ("Middleware in public-api") is the
+         load-bearing placement spec — H5 is meant to block at the
+         ingress before requests reach the orchestrator RPC at all.
+
+         Session 4 cannot edit Session 3's public-api files per I9 +
+         the agent-definition split.
+
+Why:     Orchestrator-side H5 (Session 4's PR #112) is real
+         defence-in-depth — it catches jailbreaks that somehow slip
+         past public-api OR that originate from a non-public-api
+         caller (internal compromise scenario). But it does NOT
+         protect public-api's own ingress logging + routing layer,
+         and a strict H5 reading requires the public-api placement.
+
+         Concretely: a jailbreak hitting public-api today reaches the
+         public-api logs + the orchestrator-RPC dispatcher BEFORE
+         orchestrator-side H5 fires. Public-api may also expose
+         non-`/chat` routes (auth, influencer-list, etc.) that the
+         orchestrator-side H5 doesn't see at all.
+
+Blocks:  Does NOT block PR #112 merge — Codex acknowledged
+         orchestrator-side H5 is "useful orchestrator-side safety";
+         the cross-session work just needs to be tracked. Day-5+6
+         together = "AI responds WITH safety on staging" per
+         Rishi 2026-05-20 directive; "WITH safety" includes the
+         orchestrator wrap.
+
+         BUT before canary traffic + before the H5 constraint can
+         be marked "fully satisfied", Session 3 needs the
+         public-api-side H5 middleware.
+
+ETA needed: Before public-api canary traffic + before the strict
+         H5 sign-off. No hard calendar date.
+
+Suggested
+resolution: Session 3 ports the H5 middleware from Session 4's
+         `app/middleware/h5_prompt_injection.py` (or equivalent
+         pattern set) into public-api's middleware chain. Same
+         Sentry `type=prompt_injection` contract; same
+         `_INJECTION_PATTERNS` + base64 threshold; same canned
+         "I can't help with that." fallback. Easiest path: copy
+         the file + adapt the gate-respect logic to public-api's
+         own gating shape (no run_turn flags at the public-api
+         layer; the gate-respect concern there is different — e.g.
+         maintenance-mode / read-only flags).
+
+         Once Session 3 lands public-api-side H5, Session 4's
+         orchestrator-side H5 stays as defence-in-depth (per the
+         agent definition's "defence-in-depth" framing in the
+         Day-3 plan). Both layers active = the H5 constraint is
+         fully satisfied at both placements.
+
+How spotted:
+         Codex round-2 review on PR #112 (2026-05-20 11:45 UTC)
+         BLOCKER on `app/main.py:155` flagging the orchestrator-only
+         placement against H5's documented public-api placement.
+         Session 4 verified the citation against CONSTRAINTS.md
+         row 129 verbatim before raising this DEP.
+
+---
+
 ### DEP-008 — Session 1 needs to add GEMINI_API_KEY to bootstrap/secrets-manifest.yaml so Day-5 LLM enablement deploys cleanly
 
 Raised: 2026-05-20 by Session 4 (PR #109 — Day-5 real LLM enablement)

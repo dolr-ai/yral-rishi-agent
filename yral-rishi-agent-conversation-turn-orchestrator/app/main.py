@@ -73,7 +73,7 @@ from app.llm_client import close_default_llm_client, init_default_llm_client
 # Day-6 — H5 / H4 / A10 safety stack middleware. Restored from
 # PR #100 (auto-closed when PR #96's base branch was cascade-deleted).
 # Per the agent definition's Day-3 + Day-6 plan: ALL request bodies
-# flow through prompt-injection → crisis-detection → NSFW-output-filter
+# flow through prompt-injection → crisis-detection → adult-content-output-filter
 # BEFORE reaching the run_turn handler. LIFO `add_middleware` ordering
 # below produces request flow H5 → H4 → A10 → handler (see comment
 # above the calls for the LIFO mapping).
