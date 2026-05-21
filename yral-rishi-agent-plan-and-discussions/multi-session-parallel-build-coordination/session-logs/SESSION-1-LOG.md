@@ -1,6 +1,240 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-21 — OPERATOR ACTION: alembic upgrade head against soul_file_library on Patroni leader rishi-5 (Day-7 close-out for Session 4's soul-file-library)
+
+### Action
+
+operator-action: ran `alembic upgrade head` against `soul_file_library` on Patroni leader rishi-5 via one-off Swarm task; schema + 7 seed rows landed; PR #118 image artifact (`alembic.ini` bundled in soul-file image) verified end-to-end.
+
+### Wire bytes (assembled heredoc — copy-pasteable template for future per-service migrations)
+
+```bash
+ssh rishi-deploy@138.201.128.108 'bash -s' <<'OUTER_EOF'
+set -euo pipefail
+
+# ===========================================================================
+# Pre-flight gates — distinct exit codes 10/11/12 so the LOG-PR can cite
+# exactly which gate fired if anything tripped before the destructive write.
+# ===========================================================================
+
+# Gate 10: yral-v2-data-plane overlay network must exist.
+docker network ls --filter name=yral-v2-data-plane --format '{{.Name}}' \
+  | grep -qx yral-v2-data-plane \
+  || { echo "FATAL: yral-v2-data-plane overlay missing"; exit 10; }
+
+# Gate 11: POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY Swarm secret must exist.
+docker secret ls --filter name=POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY \
+  --format '{{.Name}}' \
+  | grep -qx POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY \
+  || { echo "FATAL: POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY secret missing"; exit 11; }
+
+# Gate 12: no leftover one-off service with the same name (idempotency guard).
+docker service ls --filter name=yral-rishi-agent-soul-file-library-alembic-oneoff \
+  --format '{{.Name}}' \
+  | grep -q . \
+  && { echo "FATAL: one-off service with this name already exists; clean up first"; exit 12; } \
+  || true
+
+# ===========================================================================
+# Create the one-off Swarm service. NOTE for future operators: this heredoc
+# does NOT pass --detach=true. On our cluster's Docker engine the effective
+# default is --detach=false, which made `docker service create` hang in the
+# verify-stable phase after the task exited Complete. Add --detach=true to
+# this line in any future per-service migration heredoc. See Notes section
+# below for the full lesson.
+# ===========================================================================
+echo "---STARTING docker service create at $(date -u +%FT%TZ)---"
+docker service create \
+  --name yral-rishi-agent-soul-file-library-alembic-oneoff \
+  --restart-condition=none \
+  --replicas=1 \
+  --constraint 'node.hostname==rishi-4' \
+  --network yral-v2-data-plane \
+  --secret source=POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY,target=POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY,uid=1001,gid=1001,mode=0400 \
+  --workdir /app \
+  --entrypoint sh \
+  ghcr.io/dolr-ai/yral-rishi-agent-soul-file-library:df2a9111a7539b001431b1d2a10a232b09b455bb \
+  -c 'for s in /run/secrets/*; do [ -f "$s" ] && export "$(basename "$s")=$(cat "$s")"; done; alembic upgrade head && echo "---POST-UPGRADE alembic current---" && alembic current'
+
+# ===========================================================================
+# Bounded wait for task to converge (120-second ceiling). Hung-state silent
+# failure is what this catches.
+# ===========================================================================
+DEADLINE=$((SECONDS + 120))
+state=""
+while (( SECONDS < DEADLINE )); do
+  state=$(docker service ps yral-rishi-agent-soul-file-library-alembic-oneoff \
+    --no-trunc --format '{{.CurrentState}}' | head -1)
+  case "$state" in
+    Complete*) echo "Task complete after ${SECONDS}s; final state: $state"; break ;;
+    Failed*|Rejected*|Shutdown*) echo "Task failed after ${SECONDS}s; final state: $state"; break ;;
+    *) sleep 2 ;;
+  esac
+done
+
+if (( SECONDS >= DEADLINE )); then
+  echo "WARN: Task did NOT converge within 120s; last observed state: $state"
+fi
+
+# ===========================================================================
+# Capture final state + logs UNCONDITIONALLY before teardown.
+# ===========================================================================
+echo "---FINAL docker service ps---"
+docker service ps yral-rishi-agent-soul-file-library-alembic-oneoff --no-trunc
+
+echo "---docker service logs---"
+docker service logs yral-rishi-agent-soul-file-library-alembic-oneoff
+
+# ===========================================================================
+# Tear down the one-off service.
+# ===========================================================================
+echo "---docker service rm---"
+docker service rm yral-rishi-agent-soul-file-library-alembic-oneoff
+
+echo "---DONE at $(date -u +%FT%TZ)---"
+OUTER_EOF
+```
+
+### Execution transcript
+
+The heredoc executed at 2026-05-21T12:53:34Z but did not run end-to-end because of the missing `--detach=true` (see Notes section). The alembic task itself **succeeded**; the surrounding `docker service create` invocation hung on Swarm's post-task verify-stable phase. Captured via two sources: (i) the local tee'd output of the original SSH up to the kill point, (ii) a parallel diagnostic SSH that pulled `docker service ps` + `docker service logs` while the original SSH was still hung.
+
+```
+log file: /tmp/soul-file-alembic-1779368009.log
+---STARTING docker service create at 2026-05-21T12:53:34Z---
+xxk99ghzzgeaf9k64wxjjzvnr            ← service ID returned by `docker service create`
+overall progress: 0 out of 1 tasks
+1/1:  
+overall progress: 0 out of 1 tasks
+... (Swarm schedules task) ...
+overall progress: 1 out of 1 tasks    ← task transitioned to Running
+verify: Waiting 5 seconds to verify that tasks are stable...
+verify: Waiting 5 seconds to verify that tasks are stable...
+verify: Waiting 4 seconds to verify that tasks are stable...
+overall progress: 0 out of 1 tasks    ← task exited Complete (no longer Running)
+verify: Detected task failure         ← Swarm UX false-alarm (see Notes b)
+overall progress: 0 out of 1 tasks
+... (~22 min of identical lines while docker service create hangs waiting for
+     a "Running" state that never returns; my poll loop never reached because
+     it sits AFTER docker service create in the heredoc) ...
+```
+
+After ~22 minutes the local SSH was killed (`kill 6705`) to break the hang. Parallel diagnostic SSH then captured the actual task state and logs:
+
+```
+===== docker service ps (real task state) =====
+ID                          NAME                                                  IMAGE                                                                                                                                                                 NODE      DESIRED STATE   CURRENT STATE             ERROR     PORTS
+txfhuwubu5vlpz60iyrp8bb7f   yral-rishi-agent-soul-file-library-alembic-oneoff.1   ghcr.io/dolr-ai/yral-rishi-agent-soul-file-library:df2a9111a7539b001431b1d2a10a232b09b455bb@sha256:c571599c48abcd294a5b33a872ac65d04c309f3ead7f768b3bb595d062fbd3dc   rishi-4   Shutdown        Complete 20 minutes ago             
+```
+
+CURRENT STATE = `Complete` (clean exit-0), ERROR column empty, NODE = `rishi-4` (the constraint held).
+
+```
+===== docker service logs =====
+yral-rishi-agent-soul-file-library-alembic-oneoff.1.txfhuwubu5vl@rishi-4    | ---POST-UPGRADE alembic current---
+yral-rishi-agent-soul-file-library-alembic-oneoff.1.txfhuwubu5vl@rishi-4    | 001_initial_schema_and_seed (head)
+```
+
+The `alembic upgrade head` step itself produced no captured stdout (alembic's default Python-logging config doesn't route `alembic.runtime.migration` INFO logs — see Notes c). The post-upgrade `alembic current` line proves the migration was applied: revision `001_initial_schema_and_seed` is at head.
+
+```
+===== docker service rm =====
+yral-rishi-agent-soul-file-library-alembic-oneoff
+```
+
+Service ID echoed back — Complete one-off cleaned off the Swarm.
+
+### Verification (read-only psql probe via Patroni Leader, peer auth, no DSN exposure)
+
+Cluster state at probe time:
+
+```
++ Cluster: yral-v2-postgres --+--------------+--------------+----+-----------+
+| Member          | Host      | Role         | State        | TL | Lag in MB |
++-----------------+-----------+--------------+--------------+----+-----------+
+| patroni-rishi-4 | 10.0.3.23 | Sync Standby | running      | 14 |         0 |
+| patroni-rishi-5 | 10.0.3.30 | Leader       | running      | 14 |           |
+| patroni-rishi-6 | 10.0.3.4  | Replica      | start failed |    |   unknown |
++-----------------+-----------+--------------+--------------+----+-----------+
+```
+
+Probe via `docker exec yral-v2-patroni_patroni-rishi-5.1.<task-id> psql -U postgres -d soul_file_library` (peer auth on the Leader's local Unix socket — no DSN, no password).
+
+```
+===== \dt (public schema, soul_file_library DB) =====
+ Schema |       Name       | Type  |         Owner          
+--------+------------------+-------+------------------------
+ public | alembic_version  | table | soul_file_library_role
+ public | soul_file_layers | table | soul_file_library_role
+(2 rows)
+
+===== seed rows grouped by layer =====
+ layer | rows 
+-------+------
+     1 |    1
+     2 |    3
+     4 |    3
+(3 rows)
+
+===== alembic_version =====
+         version_num         
+-----------------------------
+ 001_initial_schema_and_seed
+(1 row)
+```
+
+| Verification | Expected | Observed | Result |
+|---|---|---|---|
+| Tables in public schema | `alembic_version` + `soul_file_layers`, owned by `soul_file_library_role` | both present, both owned by `soul_file_library_role` | ✅ |
+| L1 + L2 + L4 seed rows present, total > 0 | L1=1, L2=3, L4=3 per migration file's seed declarations | L1=1, L2=3, L4=3, total=7 | ✅ |
+| L3 absent (deferred per A4) | no Layer-3 row | no Layer-3 row in GROUP-BY output | ✅ |
+| `version_num` matches `alembic current` from one-off | `001_initial_schema_and_seed` | `001_initial_schema_and_seed` | ✅ |
+| Sync-standby caught up (data durable under failover) | TL=14 on rishi-4 with lag=0 | TL=14, lag=0 | ✅ |
+
+### Pre-existing CI-red disclaimer (load-bearing — cite when next operator-action hits a similar yellow shape)
+
+The overall workflow run for `ci-yral-rishi-agent-soul-file-library` on main at `df2a9111` was **YELLOW** (mixed). The `shell-tests` job failed on `scripts/tests/test_validate_secrets.sh` — diagnosed earlier this morning as a **pre-existing, template-owned bug**: repo-root `.gitignore:25` (the unscoped `.env.local` glob) silently swallowed `scripts/tests/fixtures/valid/.env.local` when 3 of 4 services were spawned from the template. The bug **pre-dates PR #118** (red on main since 2026-05-21T07:01Z; PR #118 merged at 10:45Z) and has zero impact on the runtime image. The `docker-push-to-ghcr` job (id `77156695470`) **succeeded inside the SAME workflow run** — same git SHA, same image digest `sha256:c571599c48abcd294a5b33a872ac65d04c309f3ead7f768b3bb595d062fbd3dc`. We proceeded because (i) the runtime artifact we depend on is provably green, (ii) the CI failure is unrelated to the artifact we're using, and (iii) the template-side fix is routed to Session 2 as DEP-XXX <!-- coordinator-patch --> (coordinator-owned filing). **This is a one-time exception, not normalized practice**; cite this paragraph if a future operator-action faces a similar yellow-workflow shape.
+
+Affected services from the same template-fixture bug: soul-file-library, public-api, influencer-and-profile-directory (3 of 4 spawned services have the missing fixture file; conversation-turn-orchestrator force-added it and is the only one where this CI is green).
+
+### Constraints touched
+
+- **A2.1** — single concern: one service's migration; not other services' DBs, not rishi-6 triage, not the template fixture fix
+- **B7** — this LOG entry captures the WHY for each step (pre-flight gates, the secret-bridge wrapper rationale, logs-before-rm ordering, why the verify-stable hang is a false-alarm not a failure)
+- **C8** — operator action only; no sudoers changes
+- **D1** — no DSN passed via `-e` env var or shell history; secret reached the container only via Swarm `--secret` mount + the PR #116 file→env bridge wrapper inside the container
+- **F3** — per-service role + per-service schema ownership verified via the psql probe (`soul_file_library_role` owns both tables)
+- **I11** — same-commit LOG entry (this PR adds the LOG entry in the same commit as the STATE update)
+- **I14** — `.md`-only, auto-merge eligible
+
+### Notes (operator-action lessons for the template RUNBOOK — captured here; fix routed separately, NOT in this PR)
+
+a. **`docker service create` does NOT default to `--detach=true` on our cluster's Docker engine.** The effective default is verify-stable wait, which hangs after the task transitions to Complete-not-Running (because `--restart-condition=none` means there's no respawning task to "stabilize" at Running). Always pass `--detach=true` explicitly on **all `docker service create` invocations from scripts/CI/operator-actions** to avoid the hang. The heredoc in the Wire-bytes section above retains the bug for historical accuracy; the RUNBOOK fix lands separately.
+
+b. **"Detected task failure" during the verify-stable phase is a Swarm UX false-alarm** when the task has already transitioned to Complete (clean exit-0). Swarm's stability detector reports "no Running task = failure", but `docker service ps --no-trunc --format '{{.CurrentState}}' | head -1` reads the actual state authoritatively. Check `ps` before reacting to the verify-phase noise.
+
+c. **alembic's default logger config doesn't route `alembic.runtime.migration` INFO logs to stdout/stderr** — silent `alembic upgrade head` output is benign. The migration's evidence is the post-state: `\dt` showing tables exist, row counts matching the migration's seed declarations, `alembic_version.version_num` matching the migration file's `revision = ...` declaration. Don't infer no-op from silent output.
+
+### Sub-followups queued (NOT bundled in this PR)
+
+- **`session-1/triage-patroni-rishi-6-start-failed`** — still deferred from PR #117 LOG. Cluster runs fine on 2-of-3 quorum + sync standby on rishi-4 (TL=14, lag=0), but rishi-6 should be triaged before the next chaos-test parity check. Possible causes to investigate per yesterday's notes: container restart loop, config drift, disk issue.
+- **DEP-XXX <!-- coordinator-patch --> template fixture bug** — coordinator-owned write to `cross-session-dependencies.md`; routed to Session 2. Repo-root `.gitignore:25` silently swallowing `scripts/tests/fixtures/valid/.env.local` across 3 of 4 spawned services.
+- **Worktree drift cleanup across Sessions 1+2+3+4** — coordinator-owned; queued post-this-PR. Sessions 1 + 2 worktrees are parked on stale Phase-0 branches; this operator action ran from the main repo path instead of the session-1 worktree.
+- **Template RUNBOOK.md doc fix** — bake the three notes from above into the template's "Schema migration" runbook section so the next operator-action team doesn't relearn `--detach=true` + Swarm-verify-false-alarm + alembic-silent-logger. Template-owned; routed to Session 2 as a separate DEP after the fixture DEP.
+- **Auto-merge held until Codex round 1** — one-time eyeball gate on the precedent-setting Section-5 disclaimer wording; not normalized for future `.md`-only LOG PRs. Per coordinator's call 2026-05-21.
+
+### Files touched
+
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-1-LOG.md` — this entry
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-state/SESSION-1-STATE.md` — resume-snapshot update reflecting Day-7 close-out
+
+### Diff size
+
+`.md`-only, ~280 lines added across the two files. Well under any cap. Auto-merge eligible per I14.
+
+---
+
 ## 2026-05-21 — OPERATOR ACTION: provisioned Postgres role + database + Swarm secret for soul-file-library (Session 4 unblocker)
 
 ### Action
