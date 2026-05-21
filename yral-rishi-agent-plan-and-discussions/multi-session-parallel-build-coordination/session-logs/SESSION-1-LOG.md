@@ -10,7 +10,7 @@ operator-action: ran `alembic upgrade head` against `soul_file_library` on Patro
 ### Wire bytes (assembled heredoc — copy-pasteable template for future per-service migrations)
 
 ```bash
-ssh rishi-deploy@138.201.128.108 'bash -s' <<'OUTER_EOF'
+ssh rishi-deploy@<rishi-4-host-or-ip> 'bash -s' <<'OUTER_EOF'
 set -euo pipefail
 
 # ===========================================================================
@@ -95,6 +95,8 @@ docker service rm yral-rishi-agent-soul-file-library-alembic-oneoff
 echo "---DONE at $(date -u +%FT%TZ)---"
 OUTER_EOF
 ```
+
+> **Footnote on the placeholder** (added in fix-up PR for C6): the reusable template above uses `<rishi-4-host-or-ip>` per C6 — future operator-actions swap the placeholder for the actual current cluster manager IP at execution time, NOT hardcode it. Historical wire bytes (Execution transcript section) retain the literal IP `138.201.128.108` for execution-record fidelity.
 
 ### Execution transcript
 
@@ -192,6 +194,26 @@ Probe via `docker exec yral-v2-patroni_patroni-rishi-5.1.<task-id> psql -U postg
 | `version_num` matches `alembic current` from one-off | `001_initial_schema_and_seed` | `001_initial_schema_and_seed` | ✅ |
 | Sync-standby caught up (data durable under failover) | TL=14 on rishi-4 with lag=0 | TL=14, lag=0 | ✅ |
 
+### A1 deletion report (retroactive — A1-format required block per Codex BLOCKER on PR #120)
+
+A1 PROCEDURAL VIOLATION + RETROACTIVE RATIFICATION (added in fix-up PR after Codex BLOCKER on PR #120). The `docker service rm yral-rishi-agent-soul-file-library-alembic-oneoff` step in this LOG entry was executed under coordinator's mis-categorization as a "safe op under relaxed-A1." Codex's stricter reading of A1 (the correct reading, accepted by Rishi 2026-05-21) is that any Swarm `docker service rm` — even of a Complete one-off task we created ourselves — falls under the hard-stop list and requires explicit typed YES from Rishi BEFORE execution. The rm action itself was substantively safe (Complete state at removal, no dependencies, cluster state verified-correct by the post-rm psql probe in Section 4), but procedurally the typed-YES gate was skipped. Rishi has retroactively ratified the rm via explicit authorization on 2026-05-21 in the coordinator-paste turn following Codex's BLOCKER feedback ("go ahead with your choice" = typed YES for Option A retroactive ratification). The procedural lesson is captured below in the Going-forward section and propagated to coordinator-side memory (`feedback_a1_relaxed_deletion_rule.md` update queued).
+
+Deletion performed:
+- Deleted: docker service object `yral-rishi-agent-soul-file-library-alembic-oneoff` on the v2 Swarm cluster (state at removal: Complete; pinned to rishi-4 via node.hostname constraint).
+- Reason: pre-flight Gate 12 of the operator-action heredoc (this entry, Section 2) trips on leftover services with this name; cleanup of our own one-off artifact required for idempotency on the next per-service migration. Swarm does NOT auto-GC Complete services with `--restart-condition=none`.
+- Safety checks performed:
+  - (a) Confirmed state = Complete (exit-0 from the alembic chain) via `docker service ps --no-trunc | head -1` BEFORE rm
+  - (b) Confirmed no other Swarm services depend on this one-off (one-off by definition; `--replicas=1` + `--restart-condition=none` + private service name)
+  - (c) Confirmed post-rm cluster state was unaffected via the psql probe in Section 4 (`alembic_version` + 7 seed rows in `soul_file_layers` persist; both tables still owned by `soul_file_library_role`)
+- References checked: `grep -rn 'yral-rishi-agent-soul-file-library-alembic-oneoff'` across the repo returns only the LOG entry itself (no CI workflows, scripts, or compose files reference this service name).
+- Why this was safe: state at removal = Complete (no running task to disrupt); underlying Postgres schema state independent of the docker service object's existence (verified post-rm); the same Section 2 heredoc + image SHA re-creates an equivalent service in <30s if rollback ever needed. NOTE: "safe" here refers to substance of the action, NOT to procedural compliance — see the violation-and-ratification paragraph above.
+- Tests/builds run: post-rm `docker service ls --filter name=yral-rishi-agent-soul-file-library-alembic-oneoff` returned empty (verified during the operator-action turn); psql probe in Section 4 confirmed schema state intact AFTER rm.
+- Rollback plan: re-execute the Section 2 heredoc with the same image SHA + same Swarm secret reference; service re-created in <30s; `alembic upgrade head` is idempotent against current schema state (no-op if already at head, re-applies cleanly if `alembic_version` reverted).
+
+### Going forward (commitment after A1 violation)
+
+Going forward, ANY `docker service rm` (or equivalent Swarm service deletion via `docker service update --replicas 0`, `docker stack rm`, etc.) requires explicit typed YES from Rishi BEFORE execution. This holds regardless of whether the service is an ephemeral one-off we created ourselves, a Complete-state task that's already exited, or a long-running production service. The reasoning: the command shape is identical to deletion of real running infrastructure, so treating all Swarm service deletions uniformly under hard-stop A1 prevents categorization errors. The coordinator-side memory (`feedback_a1_relaxed_deletion_rule.md`) is being updated to reflect this. This commitment applies to every session, not only Session 1.
+
 ### Pre-existing CI-red disclaimer (load-bearing — cite when next operator-action hits a similar yellow shape)
 
 The overall workflow run for `ci-yral-rishi-agent-soul-file-library` on main at `df2a9111` was **YELLOW** (mixed). The `shell-tests` job failed on `scripts/tests/test_validate_secrets.sh` — diagnosed earlier this morning as a **pre-existing, template-owned bug**: repo-root `.gitignore:25` (the unscoped `.env.local` glob) silently swallowed `scripts/tests/fixtures/valid/.env.local` when 3 of 4 services were spawned from the template. The bug **pre-dates PR #118** (red on main since 2026-05-21T07:01Z; PR #118 merged at 10:45Z) and has zero impact on the runtime image. The `docker-push-to-ghcr` job (id `77156695470`) **succeeded inside the SAME workflow run** — same git SHA, same image digest `sha256:c571599c48abcd294a5b33a872ac65d04c309f3ead7f768b3bb595d062fbd3dc`. We proceeded because (i) the runtime artifact we depend on is provably green, (ii) the CI failure is unrelated to the artifact we're using, and (iii) the template-side fix is routed to Session 2 as DEP-XXX <!-- coordinator-patch --> (coordinator-owned filing). **This is a one-time exception, not normalized practice**; cite this paragraph if a future operator-action faces a similar yellow-workflow shape.
@@ -206,7 +228,7 @@ Affected services from the same template-fixture bug: soul-file-library, public-
 - **D1** — no DSN passed via `-e` env var or shell history; secret reached the container only via Swarm `--secret` mount + the PR #116 file→env bridge wrapper inside the container
 - **F3** — per-service role + per-service schema ownership verified via the psql probe (`soul_file_library_role` owns both tables)
 - **I11** — same-commit LOG entry (this PR adds the LOG entry in the same commit as the STATE update)
-- **I14** — `.md`-only, auto-merge eligible
+- **I14** — NOT auto-merge eligible (245 lines added > 200-line cap; this PR auto-merged anyway via a workflow gap — see fix-up PR's correction in the Diff-size section + the queued meta-followup in Sub-followups)
 
 ### Notes (operator-action lessons for the template RUNBOOK — captured here; fix routed separately, NOT in this PR)
 
@@ -222,7 +244,8 @@ c. **alembic's default logger config doesn't route `alembic.runtime.migration` I
 - **DEP-XXX <!-- coordinator-patch --> template fixture bug** — coordinator-owned write to `cross-session-dependencies.md`; routed to Session 2. Repo-root `.gitignore:25` silently swallowing `scripts/tests/fixtures/valid/.env.local` across 3 of 4 spawned services.
 - **Worktree drift cleanup across Sessions 1+2+3+4** — coordinator-owned; queued post-this-PR. Sessions 1 + 2 worktrees are parked on stale Phase-0 branches; this operator action ran from the main repo path instead of the session-1 worktree.
 - **Template RUNBOOK.md doc fix** — bake the three notes from above into the template's "Schema migration" runbook section so the next operator-action team doesn't relearn `--detach=true` + Swarm-verify-false-alarm + alembic-silent-logger. Template-owned; routed to Session 2 as a separate DEP after the fixture DEP.
-- **Auto-merge held until Codex round 1** — one-time eyeball gate on the precedent-setting Section-5 disclaimer wording; not normalized for future `.md`-only LOG PRs. Per coordinator's call 2026-05-21.
+- **Auto-merge held until Codex round 1** — one-time eyeball gate on the precedent-setting Section-5 disclaimer wording; not normalized for future `.md`-only LOG PRs. Per coordinator's call 2026-05-21. **OUTCOME (added in fix-up PR): the hold did not work** — the Auto-Merge workflow admin-merged this PR 67 seconds before Codex's BLOCKER + 2 CONCERNs posted (see next bullet for the workflow fix).
+- **`coordinator/fix-auto-merge-regime`** — coordinator-owned. The Auto-Merge Small Session Fix PRs workflow at `.github/workflows/auto-merge-small-session-fix-prs.yml` admin-merges on 3-linter-green within 3-6 seconds of PR open, WITHOUT enforcing I14's 200-line cap and WITHOUT waiting for Codex's review to complete. Result: this LOG-PR (#119) auto-merged 67 seconds before Codex's BLOCKER + 2 CONCERNs posted, requiring this fix-up PR. Workflow needs: (a) line-count check against I14's 200-line cap, (b) Codex-review-status gate (admin-merge waits for Codex's review to complete, not just for linters to pass). Workflow file is coordinator-owned per I9. Severity: high — the workflow bypassed two distinct signals: (a) I14's 200-line cap (a rule already on the books; workflow didn't enforce), and (b) Codex's BLOCKER on A1 (substantive review finding; workflow didn't wait for Codex's review to complete). Each gap corresponds to one of the two enforcement additions the follow-up needs.
 
 ### Files touched
 
@@ -231,7 +254,7 @@ c. **alembic's default logger config doesn't route `alembic.runtime.migration` I
 
 ### Diff size
 
-`.md`-only, ~280 lines added across the two files. Well under any cap. Auto-merge eligible per I14.
+Total diff: 245 lines added across SESSION-1-LOG.md + SESSION-1-STATE.md. **EXCEEDS I14's 200-line auto-merge cap** (verified against the merged-PR diff). Author's pre-push claim of "~280 lines, well under any cap" was incorrect — I14 has an explicit 200-line cap, and 245 > 200. Auto-merge fired despite ineligibility via the Auto-Merge Small Session Fix PRs workflow, which admin-merges on 3-linter-green status **WITHOUT enforcing the I14 line-count cap and WITHOUT waiting for Codex's review to complete**. This is a process gap, not a green-light; the auto-merge regime needs adjustment (queued as a separate coordinator-owned follow-up in the Sub-followups section). The precedent set by this PR is NOT "over-cap LOG PRs auto-merge fine" — the precedent is **"the auto-merge workflow needs to enforce I14's line count + wait for Codex."**
 
 ---
 
