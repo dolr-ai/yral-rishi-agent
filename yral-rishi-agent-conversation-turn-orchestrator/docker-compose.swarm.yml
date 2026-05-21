@@ -124,12 +124,18 @@ services:
     # If 3 in a row fail, Swarm marks the replica unhealthy and the
     # rolling-update logic kicks in. We hit /health/ready (per F9), which
     # returns 503 when any downstream dep is unreachable.
+    # Healthcheck — uses python's stdlib urllib instead of wget because
+    # the slim image doesn't ship wget. `--spider` (HEAD-only) intent
+    # is preserved via urllib's "open + check status + close" pattern.
+    # start_period bumped 20s→40s so app boot + Redis lifespan init
+    # don't race the first healthcheck on cold cluster startup
+    # (Session-3 deploy lesson + PR-#108 inheritance).
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8000/health/ready"]
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:8000/health/ready', timeout=2).status == 200 else sys.exit(1)"]
       interval: 10s
       timeout: 3s
       retries: 3
-      start_period: 20s
+      start_period: 40s
 
     # Three Swarm overlay networks (per CONSTRAINTS C3):
     #   - yral-v2-public-web   front-facing traffic from edge Caddy
@@ -145,15 +151,43 @@ services:
     # `docker secret create <name> <file>` (or via Session 1's
     # cluster-bootstrap automation). The app reads them as files from
     # /run/secrets/<name>.
+    # Secrets aligned verbatim with secrets.yaml (the D8 manifest is
+    # source of truth). Per Session-3 PR-#108 in-deploy fix: explicit
+    # uid/gid 1001 per mount so the non-root user the Dockerfile
+    # creates can actually read the secret files (default mode 0444
+    # is owner-readable; without explicit uid/gid mount fails on the
+    # secret file when accessed by uid 1001).
+    #
+    # DATABASE_URL is intentionally NOT mounted — orchestrator is a
+    # thin HTTP service (RPC to soul-file-library + Gemini SDK; no
+    # direct asyncpg consumer). Same trim Session 3 did for
+    # public-api in PR #108. Re-adds the day a future RPC turns into
+    # an in-process DB read.
     secrets:
-      - source: database_password
-        target: database_password
+      - source: REDIS_URL
+        target: REDIS_URL
+        uid: "1001"
+        gid: "1001"
         mode: 0400
-      - source: redis_password
-        target: redis_password
+      - source: SENTRY_DSN
+        target: SENTRY_DSN
+        uid: "1001"
+        gid: "1001"
         mode: 0400
-      - source: sentry_dsn
-        target: sentry_dsn
+      - source: LANGFUSE_PUBLIC_KEY
+        target: LANGFUSE_PUBLIC_KEY
+        uid: "1001"
+        gid: "1001"
+        mode: 0400
+      - source: LANGFUSE_SECRET_KEY
+        target: LANGFUSE_SECRET_KEY
+        uid: "1001"
+        gid: "1001"
+        mode: 0400
+      - source: GEMINI_API_KEY
+        target: GEMINI_API_KEY
+        uid: "1001"
+        gid: "1001"
         mode: 0400
 
 
@@ -188,11 +222,15 @@ networks:
 # `secrets.yaml` (per CONSTRAINTS D8, added in PR 3). new-service.sh
 # generates the `secrets:` block above from secrets.yaml automatically.
 secrets:
-  database_password:
+  REDIS_URL:
     external: true
-  redis_password:
+  SENTRY_DSN:
     external: true
-  sentry_dsn:
+  LANGFUSE_PUBLIC_KEY:
+    external: true
+  LANGFUSE_SECRET_KEY:
+    external: true
+  GEMINI_API_KEY:
     external: true
 
 

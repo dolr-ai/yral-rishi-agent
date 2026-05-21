@@ -124,12 +124,16 @@ services:
     # If 3 in a row fail, Swarm marks the replica unhealthy and the
     # rolling-update logic kicks in. We hit /health/ready (per F9), which
     # returns 503 when any downstream dep is unreachable.
+    # Healthcheck — uses python's stdlib urllib instead of wget because
+    # the slim image doesn't ship wget. start_period bumped 20s→40s so
+    # app boot + asyncpg pool init don't race the first healthcheck on
+    # cold cluster startup (Session-3 deploy lesson + PR-#108 pattern).
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8000/health/ready"]
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:8000/health/ready', timeout=2).status == 200 else sys.exit(1)"]
       interval: 10s
       timeout: 3s
       retries: 3
-      start_period: 20s
+      start_period: 40s
 
     # Three Swarm overlay networks (per CONSTRAINTS C3):
     #   - yral-v2-public-web   front-facing traffic from edge Caddy
@@ -145,15 +149,33 @@ services:
     # `docker secret create <name> <file>` (or via Session 1's
     # cluster-bootstrap automation). The app reads them as files from
     # /run/secrets/<name>.
+    # Secrets aligned verbatim with secrets.yaml (D8 manifest = source
+    # of truth). Per Session-3 PR-#108 in-deploy fix: explicit
+    # uid/gid 1001 per mount so the non-root user the Dockerfile
+    # creates can read the secret files. REDIS_SENTINEL_PASSWORD
+    # trimmed at Day-7 deploy time — soul-file-library has NO Redis
+    # consumer in app/ (no redis.* imports); re-adds when the Day-5+
+    # Redis cache layer ships.
     secrets:
-      - source: database_password
-        target: database_password
+      - source: POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY
+        target: POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY
+        uid: "1001"
+        gid: "1001"
         mode: 0400
-      - source: redis_password
-        target: redis_password
+      - source: SENTRY_DSN
+        target: SENTRY_DSN
+        uid: "1001"
+        gid: "1001"
         mode: 0400
-      - source: sentry_dsn
-        target: sentry_dsn
+      - source: LANGFUSE_PUBLIC_KEY
+        target: LANGFUSE_PUBLIC_KEY
+        uid: "1001"
+        gid: "1001"
+        mode: 0400
+      - source: LANGFUSE_SECRET_KEY
+        target: LANGFUSE_SECRET_KEY
+        uid: "1001"
+        gid: "1001"
         mode: 0400
 
 
@@ -188,11 +210,13 @@ networks:
 # `secrets.yaml` (per CONSTRAINTS D8, added in PR 3). new-service.sh
 # generates the `secrets:` block above from secrets.yaml automatically.
 secrets:
-  database_password:
+  POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY:
     external: true
-  redis_password:
+  SENTRY_DSN:
     external: true
-  sentry_dsn:
+  LANGFUSE_PUBLIC_KEY:
+    external: true
+  LANGFUSE_SECRET_KEY:
     external: true
 
 
