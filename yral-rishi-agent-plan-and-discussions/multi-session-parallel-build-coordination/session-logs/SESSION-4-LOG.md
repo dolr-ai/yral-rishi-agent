@@ -2,6 +2,114 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-21 — Day-7 deploy CLOSE-OUT: orchestrator + influencer GREEN (3/3 ea.), soul-file BLOCKED on Postgres role provisioning (I6 pushback)
+
+### Deploy outcome — table per Day-7 directive step E
+
+| Service                                              | Deployed | Replicas | /health/live | /health/ready | /docs | /redoc | Note                                                                    |
+|---                                                   |---       |---       |---           |---            |---    |---     |---                                                                      |
+| yral-rishi-agent-conversation-turn-orchestrator      | YES      | 3/3      | 200          | 200           | 200   | 200    | Sentinel-aware Redis init OK; soul-file RPC client init OK; safety stack live |
+| yral-rishi-agent-influencer-and-profile-directory    | YES      | 3/3      | 200          | 200           | 200   | 200    | Day-1 spawn scaffold; no influencer routes yet (Day-8+)                 |
+| yral-rishi-agent-soul-file-library                   | NO       | 0/3      | n/a          | n/a           | n/a   | n/a    | I6-pushback: Postgres role + schema for `soul_file_library_role` not provisioned in Patroni cluster |
+
+Spread across rishi-4 + rishi-5 + rishi-6 (1 replica per node per service).
+
+### Fix #3 in this PR: Day-7 secret-file → env-var bridge for all 3 composes
+
+After the /health stubs landed (PR #115) + the fresh images shipped,
+the orchestrator + influencer composes deployed with 3/3 replicas but
+the deployed services were **silently observability-dark** — Sentry +
+Langfuse SDKs no-op on empty/missing config and the secret files at
+`/run/secrets/*` weren't being exported as env vars. Verified by
+`docker service inspect --format Args`: null. Soul-file's deploy
+crash-looped LOUDLY with `RuntimeError: POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY is empty`.
+
+Public-api solved this on Day 5 (PR #108) via a one-line shell wrapper
+in `command:` that exports every `/run/secrets/*` file's content as an
+env var of the same name, then `exec`'s uvicorn:
+
+```yaml
+command:
+  - sh
+  - -c
+  - |
+    for s in /run/secrets/*; do
+      if [ -f "$$s" ]; then
+        export "$$(basename "$$s")=$$(cat "$$s")"
+      fi
+    done
+    exec uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+Bundled per A2.1: 3 services, same 11-line wrapper inserted in same
+spot in each compose. Verified post-fix via in-cluster debug swarm-
+service (uid=1001, soul-file image): wrapper exports the env var,
+pydantic-settings BaseSettings sees 128 bytes, prefix `postgresql://soul_file_li…`.
+
+### Soul-file I6 pushback detail
+
+With the wrapper landed + image redeployed, soul-file got past the
+"env var empty" check, but `asyncpg.create_pool(dsn=...)` failed with
+`ConnectionRefusedError: [Errno 111] Connection refused`.
+
+**Root cause**: the cluster-side `POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY`
+secret I provisioned manually on Day-7 was a placeholder URL. The real
+Postgres role + schema for `soul_file_library_role` (per F3: per-service
+role + GRANT-restricted schema on the shared Patroni cluster) has NOT
+been provisioned yet — that's a Session 1 / cluster bootstrap step.
+
+Per Day-7 directive: "If you hit cluster infra gaps (overlays missing,
+secrets-injection workflow broken, Caddy snippet absent on rishi-1/2
+— that's NORMAL, coordinator is fixing separately), I6-pushback and
+stop on that specific service." This is exactly that scenario.
+
+Soul-file stack is now `docker stack rm`'d (clean state, no crash-loop
+noise). Re-deployment is **gated on coordinator provisioning**:
+
+1. Create Postgres role `soul_file_library_role` in Patroni
+2. Create schema `yral_rishi_agent_soul_file_library` with role-restricted GRANTs
+3. Update Swarm secret `POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY`
+   with real `postgresql://soul_file_library_role:<password>@<pgbouncer-host>:6432/yral_v2?options=-csearch_path%3Dyral_rishi_agent_soul_file_library`
+4. After Rishi YES, Session 4 redeploys soul-file via the existing
+   `/tmp/soul-file-compose.yml` already staged on rishi-4 + smoke verifies.
+
+### Coordinator pre-auth invoked
+`docker stack deploy` + `docker stack rm` + `docker service inspect/logs/create/rm` on rishi-4 + diagnostic swarm-services (dbg4/5/6) — all authorized per Day-7 directive's pre-auth.
+
+### Files touched
+- `yral-rishi-agent-conversation-turn-orchestrator/docker-compose.swarm.yml` (+15)
+- `yral-rishi-agent-soul-file-library/docker-compose.swarm.yml` (+15)
+- `yral-rishi-agent-influencer-and-profile-directory/docker-compose.swarm.yml` (+15)
+- `yral-rishi-agent-plan-and-discussions/.../session-logs/SESSION-4-LOG.md` (this entry)
+
+### Constraints satisfied
+- **D8** — secrets manifest is source of truth; the wrapper now actually
+  delivers the secret values to the running app per the D8 contract.
+- **A2.1** — bundled wrapper-add for 3 services that share shape.
+- **F9** — orchestrator + influencer /health/{live,ready} reachable.
+- **I6** — pushed back on soul-file deploy instead of inventing a fake
+  Postgres role / silently degrading.
+
+### What's STILL silently-degraded (observability)
+Sentry + Langfuse cluster-side secrets are placeholder values per the
+Day-7 directive ("empty placeholders for SENTRY_DSN + LANGFUSE_PUBLIC_KEY
++ LANGFUSE_SECRET_KEY (SDKs no-op on empty values)"). With the wrapper
+now landed, the env vars are populated with whatever was provisioned
+to the cluster secrets — if those are real values, observability is
+on; if placeholders, SDKs no-op. **Coordinator should verify cluster
+secret values + replace placeholders with real Sentry + Langfuse project
+keys when ready.**
+
+GEMINI_API_KEY likewise — orchestrator's real-LLM feature flag stays
+OFF per the directive until coordinator provisions the real key.
+
+### Next
+PR for the wrapper-bridge fix → auto-merge → coordinator status post.
+Soul-file redeploy gated on Postgres role provisioning (DEP-NNN raised
+in this entry).
+
+---
+
 ## 2026-05-21 — Day-7 deploy fix #2: add /health/{live,ready} stubs to all 3 services so Swarm healthchecks pass
 
 After the PR #113 shared-config + Sentinel-path fix landed, the

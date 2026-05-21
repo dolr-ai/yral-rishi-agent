@@ -74,6 +74,25 @@ services:
       # shared-config.yaml's `redis:` section (bundled by Dockerfile).
       REDIS_SENTINEL_ENABLED: "true"
 
+    # Entrypoint wrapper — Day-7 secret-file → env-var bridge per D8
+    # (Session-3 public-api pattern from PR #108). Swarm mounts each
+    # secret as a file at /run/secrets/<name>; pydantic-settings reads
+    # from os.environ — so without this bridge, the secret files are
+    # mounted but the app sees empty env vars (e.g. soul-file-library
+    # crash-loops with "POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY is
+    # empty"). Wrapper exports each `/run/secrets/*` file's content as
+    # an env var of the same name, then exec's uvicorn.
+    command:
+      - sh
+      - -c
+      - |
+        for s in /run/secrets/*; do
+          if [ -f "$$s" ]; then
+            export "$$(basename "$$s")=$$(cat "$$s")"
+          fi
+        done
+        exec uvicorn app.main:app --host 0.0.0.0 --port 8000
+
     # Per-replica resource caps. The defaults below are conservative
     # starting points; tune per service after the first week of prod
     # data. Reservations are guarantees; limits are hard caps.
