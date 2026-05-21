@@ -2,6 +2,80 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-21 — Day-7 deploy fix: bundle shared-config.yaml in orchestrator + soul-file images; flip orchestrator to Sentinel path
+
+First Day-7 deploy attempt of orchestrator to rishi-4/5/6 surfaced a
+class-of-bug in the template Dockerfile that affects 2 of 3 Session-4
+services. The runtime stage COPYs only `app/` + `pyproject.toml`, but
+two services load `shared-config.yaml` from `/app/shared-config.yaml`
+at runtime:
+
+- **orchestrator**: `app/idempotency.py::_load_redis_section_from_shared_config`
+  reads `redis.sentinel_master_name` + `redis.sentinel_hosts` when the
+  C11-compliant Sentinel path is enabled. Hit the C11 fail-closed gate
+  (`c11_violation_production_requires_sentinel`) on first deploy
+  because `environment=production` + `redis_sentinel_enabled=False`
+  (the gate refuses to start with no Sentinel in production).
+- **soul-file-library**: `app/composer/four_layer_composer.py::_load_layer_separator`
+  loads `LAYER_SEPARATOR` at module-import time. Without the file the
+  import chain would `FileNotFoundError` before uvicorn could start
+  (didn't actually attempt soul-file deploy yet; caught by audit while
+  diagnosing the orchestrator crash-loop).
+
+**Two-line fix in this PR (#113):**
+- Dockerfile (both services): add
+  `COPY --chown=appuser:appuser shared-config.yaml ./shared-config.yaml`
+  after the `app/` COPY. Influencer's Dockerfile unchanged — it's a
+  Day-1 spawn scaffold with no shared-config readers in app/.
+- Orchestrator compose: add `REDIS_SENTINEL_ENABLED: "true"` to the
+  `environment:` block so the C11 gate takes the Sentinel path
+  (sentinel hosts + master name come from shared-config.yaml).
+
+**Deploy state at fix time:**
+- Failed orchestrator stack already `docker stack rm`'d on rishi-4 so
+  no replicas are crash-looping while CI rebuilds the image.
+- Soul-file + influencer not yet deployed — sequence stops on
+  orchestrator per the pause-fix-merge-retry pattern.
+
+### Coordinator pre-auth invoked
+`docker stack deploy` + diagnostic ops on rishi-4/5/6 (v2 cluster)
+authorized per Day-7 directive. Stack-removal of the failed deploy
+counts as diagnostic cleanup, not destructive ops.
+
+### Files touched
+- `yral-rishi-agent-conversation-turn-orchestrator/Dockerfile` (+5)
+- `yral-rishi-agent-conversation-turn-orchestrator/docker-compose.swarm.yml` (+7)
+- `yral-rishi-agent-soul-file-library/Dockerfile` (+5)
+
+### Why
+The C11 fail-closed gate is correct behavior (it's there to refuse
+silent fallback to single-primary Redis in production), but the
+template Dockerfile pre-dated the introduction of the gate +
+LAYER_SEPARATOR module-load — both landed in Day-5 work. The Dockerfile
+gap was masked by laptop dev (which mounts the source tree, not a
+built image) and by CI builds (which only test `docker build` succeeds,
+not that the image can start the app in production mode).
+
+### Constraints satisfied
+- **C7** — shared values live in shared-config.yaml; image now ships it
+  alongside the app code so the loader paths still resolve to the
+  same logical "service root".
+- **C11** — orchestrator now enters the Sentinel-compliant init path in
+  production; the fail-closed gate stays in place as defense-in-depth.
+
+### Notes
+- **Soul-file + influencer Postgres + Redis trimming preserved**: this
+  fix only adds the shared-config.yaml COPY + the orchestrator's
+  REDIS_SENTINEL_ENABLED env. The Day-7 secret-mount trims from earlier
+  in PR #113 (soul-file drops REDIS_SENTINEL_PASSWORD; influencer
+  drops DATABASE_URL + REDIS_SENTINEL_PASSWORD) stay intact.
+- **Next**: wait for PR #113 to land main → re-trigger workflow_dispatch
+  on orchestrator + soul-file-library → re-pull images on rishi-4 →
+  redeploy orchestrator (3/3 replica convergence) → continue to
+  soul-file → influencer per the original Day-7 sequence.
+
+---
+
 ## 2026-05-20 — Day-6 framing correction #3 (supersedes #2): full A10 rename DONE in round-7, NOT deferred; PR title also rewritten
 
 Codex PR-#112 round-7 escalated the A10-misnaming BLOCKER and
