@@ -1,6 +1,70 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-21 — OPERATOR ACTION: provisioned Postgres role + database + Swarm secret for soul-file-library (Session 4 unblocker)
+
+### Action
+Session 4's Day-7 soul-file-library deploy was crash-looping because (a) the `POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY` Swarm secret existed but had empty content (created 3h prior with placeholder), AND (b) the Patroni cluster had no `soul_file_library_role` role or `soul_file_library` database for the service to connect to. Coordinator routed both to Session 1 (cluster-bootstrap territory).
+
+Operator action — no code changes; provisioned per-service Postgres + secret in a single tight subshell:
+
+1. **Generated 40-char base64url password** locally (`[A-Za-z0-9]` alphabet — SQL-single-quote-safe). Password held in subshell variable only; never echoed, never in command-line args, scope dies at subshell exit.
+2. **Created role + database + schema ownership** via `docker exec patroni-rishi-5 psql -U postgres` (peer auth on the current Patroni leader's local socket) with `SET log_statement = 'none'` wrapping the CREATE ROLE so the plaintext password doesn't land in Patroni's DDL log (Patroni config has `log_statement: ddl`). DDL stream piped via SSH stdin to avoid process-list exposure:
+   ```sql
+   SET log_statement = 'none';
+   CREATE ROLE soul_file_library_role WITH LOGIN PASSWORD '<pwd>';
+   RESET log_statement;
+   CREATE DATABASE soul_file_library OWNER soul_file_library_role;
+   \connect soul_file_library
+   ALTER SCHEMA public OWNER TO soul_file_library_role;
+   GRANT ALL ON SCHEMA public TO soul_file_library_role;
+   ```
+3. **Rotated Swarm secret** on rishi-4 manager: `docker secret rm POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY` (safe — no service referenced the empty secret) + `printf '%s' "$DSN" | docker secret create POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY -`. DSN composed as `postgresql://soul_file_library_role:<pwd>@pgbouncer:5432/soul_file_library` — bare `pgbouncer` overlay-DNS name (same routing pattern Langfuse uses per PR #61).
+
+### Verification
+- DDL exit code: 0; `pg_roles` confirms `rolcanlogin=t` for `soul_file_library_role`; `pg_database` shows `soul_file_library` owned by the new role; `information_schema.schemata` shows `public` schema in `soul_file_library` owned by the new role.
+- Swarm secret created (new ID `prxo4bb9zyr29eykxl10l34e0`), inspect confirms metadata.
+- **Pgbouncer auth_query verification** (non-leaking smoke): from inside a patroni container, `PGPASSWORD=intentionally-wrong-pwd psql -h pgbouncer -U soul_file_library_role -d soul_file_library -c 'SELECT 1'` returned `FATAL: SASL authentication failed`. SASL-specific failure confirms (i) pgbouncer's auth_query found the role in `pg_shadow`, (ii) pgbouncer routed the SCRAM handshake to a Postgres backend, (iii) only the password check failed (expected for a wrong password). A non-existent role would have surfaced a different error class.
+- **Sync-standby caught up**: `pg_stat_replication` shows `patroni-rishi-4` with `write_lsn == flush_lsn == 0/131C2588` (sync state). CREATE ROLE + CREATE DATABASE are durable under failover.
+
+### Cluster state observed during this work
+```
+$ patronictl list  (yral-v2-postgres)
+patroni-rishi-4  | Sync Standby  | running       | TL 14 | lag 0
+patroni-rishi-5  | Leader        | running       | TL 14 |
+patroni-rishi-6  | Replica       | start failed  |       | unknown
+```
+
+**Note**: `patroni-rishi-6` is in `start failed` state — separate issue, not blocking this provisioning (2-of-3 quorum + sync standby on rishi-4 keep the cluster correct). Flagging for follow-up triage; rishi-6's Patroni container may need a restart or deeper diagnosis. Did not address as part of this Session 4-unblock task to keep scope tight.
+
+### Cross-session handoff
+- Session 4 can re-deploy soul-file-library against the staged compose at `rishi-4:/tmp/soul-file-compose.yml`. The `POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY` secret now contains the actual DSN; service should connect, Alembic should run schema migrations against the empty `public` schema (role has CREATE + GRANT ALL there), HTTP server should start.
+- After Session 4 redeploys, this Session 1 task verifies: `docker service ps yral-rishi-agent-soul-file-library_service` shows 1/1 Running, container logs show clean Alembic upgrade + uvicorn boot.
+
+### Constraints touched
+A2.1 (single concern: one service's Postgres provisioning; not other services' DBs, not the rishi-6 Patroni failure, not cluster Caddy / rishi-1/2/3 routing), B7 (this LOG entry captures the WHY for each step + the SET log_statement='none' password-hiding rationale + the wrong-pwd-SASL smoke-test method), C8 (operator action only — no sudoers changes), I11 (same-commit LOG entry), I14 (this is a `.md`-only PR; auto-merge eligible).
+
+### Diff size
+LOG entry only. ~70 lines added. Well under 400-line cap.
+
+### Captured insight (for future per-service Postgres provisioning)
+**Provisioning a per-service Postgres role + DB on Patroni** has a clean reusable recipe:
+1. `docker exec <patroni-leader>` (peer auth — no superuser password needed)
+2. `SET log_statement = 'none'` to suppress plaintext-password DDL logging for the CREATE ROLE statement
+3. CREATE ROLE WITH LOGIN PASSWORD + CREATE DATABASE OWNER + ALTER SCHEMA public OWNER + GRANT ALL (PG15+ public-schema-not-shared default)
+4. `RESET log_statement` after the password-bearing statement
+5. Send via SSH stdin (heredoc-style) to avoid command-line argv exposure
+6. Compose DSN: `postgresql://<role>:<pwd>@pgbouncer:5432/<db>` — bare `pgbouncer` overlay DNS resolves on `yral-v2-data-plane`
+7. Create matching Swarm secret with `docker secret create <name> -` (stdin)
+8. Smoke-test pgbouncer routing with `PGPASSWORD=intentionally-wrong-pwd` — SASL-failure response confirms auth_query saw the role; non-SASL response indicates a deeper issue (replication lag, pgbouncer cache, etc.)
+
+Same recipe applies to every future per-service DB (Session 3's public-api, Session 4's other services, Session 5's ETL target DBs).
+
+### Sub-followup queued (not bundled in this PR)
+**`session-1/triage-patroni-rishi-6-start-failed`** — investigate why patroni-rishi-6 is in `start failed` state. Cluster is correct (sync standby on rishi-4, 2-of-3 quorum), so not urgent, but it should be a healthy 3-member cluster for chaos-test parity with what Phase 0 closed against. Likely root causes to check: container restart loop / config drift since last bootstrap / disk issue on rishi-6.
+
+---
+
 ## 2026-05-17 — MILESTONE: Day-5 COMPLETE — Phase 0 H3 exit criterion SATISFIED, v2 stateful core operational
 
 ### Status
