@@ -110,6 +110,22 @@ app = FastAPI(
 # (Day-5+) per `interface-contracts/01-internal-rpc-contracts.md`.
 app.include_router(composed_prompt_router)
 
+
+# Day-7 deploy stubs: Swarm's compose healthcheck hits /health/ready
+# every 10s. Public-api wired the full F9 contract (live + ready + deep
+# with Sentinel-aware Redis ping) in app/api/health_routes.py; this
+# service ships minimal stubs here so deploy converges, with the real
+# F9 wiring (Patroni connection ping for ready, end-to-end round-trip
+# for deep) landing in a follow-up.
+@app.get("/health/live", include_in_schema=False)
+async def _health_live() -> dict[str, str]:
+    return {"status": "ok", "service": "yral-rishi-agent-soul-file-library"}
+
+
+@app.get("/health/ready", include_in_schema=False)
+async def _health_ready() -> dict[str, str]:
+    return {"status": "ok", "service": "yral-rishi-agent-soul-file-library"}
+
 # Mount RequestIdMiddleware. In Starlette/FastAPI, `add_middleware`
 # is LIFO for incoming requests — the LAST added is the FIRST to
 # see the request. We want the request ID assigned before anything

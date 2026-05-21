@@ -2,6 +2,93 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-21 — Day-7 deploy fix #2: add /health/{live,ready} stubs to all 3 services so Swarm healthchecks pass
+
+After the PR #113 shared-config + Sentinel-path fix landed, the
+orchestrator deploy got further — `redis_client_initialised_via_sentinel`,
+`soul_file_client_initialised`, `Application startup complete` all
+fired cleanly. But Swarm immediately started thrashing the replicas:
+the compose healthcheck hits `/health/ready` every 10s, and the
+template ships with ZERO health routes. Every probe returned 404,
+Swarm marked each replica unhealthy after 3 fails, killed it, started
+a new one — repeating until restart_policy.max_attempts ran out.
+
+Public-api solved this on Day 2 by wiring a full F9 contract in
+`app/api/health_routes.py` (460 lines: live + ready + deep with
+Sentinel-aware async Redis ping + 200ms timeout per probe). Session 4
+ships minimal stubs in this PR — the deploy-blocking minimum, with
+the real F9 wiring (Redis ping for orchestrator, Patroni ping for
+soul-file, etc.) deferred to follow-up PRs that wire each service's
+real downstream-dep contract.
+
+### What this PR adds (4 lines × 3 services × 2 routes = 24 strict LOC)
+Each service's `app/main.py` gets:
+
+```python
+@app.get("/health/live", include_in_schema=False)
+async def _health_live() -> dict[str, str]:
+    return {"status": "ok", "service": "<service-name>"}
+
+
+@app.get("/health/ready", include_in_schema=False)
+async def _health_ready() -> dict[str, str]:
+    return {"status": "ok", "service": "<service-name>"}
+```
+
+`include_in_schema=False` per public-api's pattern — health probes
+don't pollute the OpenAPI doc. Routes mount BEFORE the middleware
+stack so Swarm probes bypass the request-id + safety middlewares
+(probes shouldn't burn middleware overhead).
+
+### Why stubs not the full F9 contract
+Per the pause-fix-merge-retry pattern: the IMMEDIATE blocker is "Swarm
+can't pin a replica as healthy because /health/ready 404s." Stubs
+unblock the deploy. The full F9 contract is a real chunk of work
+(see public-api's 460-line file) and belongs in a dedicated PR per
+service, not bolted onto a deploy-fix.
+
+### Deploy state at fix time
+- Orchestrator stack `docker stack rm`'d (was thrashing on 404 healthchecks).
+- Soul-file + influencer not yet deployed — same template gap would
+  hit both, so we stop here, push the fix, wait for fresh images,
+  redeploy all 3 in sequence.
+
+### Coordinator pre-auth invoked
+`docker stack rm yral-rishi-agent-conversation-turn-orchestrator` on
+rishi-4 — diagnostic cleanup of the failed deploy, per Day-7 directive.
+
+### Files touched
+- `yral-rishi-agent-conversation-turn-orchestrator/app/main.py` (+15)
+- `yral-rishi-agent-soul-file-library/app/main.py` (+15)
+- `yral-rishi-agent-influencer-and-profile-directory/app/main.py` (+15)
+
+### Constraints satisfied
+- **F9** — bare-minimum probe surface present so Swarm + Caddy + Uptime
+  Kuma + the directive's intra-cluster smoke can pin readiness. Real
+  Sentinel-aware / Postgres-aware probe bodies stay TODO per service.
+- **A2.1** — bundled PR for 3 services that share shape (same 15-LOC
+  insertion in same conceptual spot in each main.py).
+
+### Notes
+- **`/health/deep` deferred**: public-api ships it for Caddy + Uptime
+  Kuma to deep-probe. Session 4 services don't have a public-internet
+  surface yet (Caddy snippet on rishi-1/2 not wired per the directive),
+  so `/health/deep` adds nothing the Swarm-internal probe needs today.
+- **Why stubs returning 200 are acceptable interim**: each service's
+  REAL readiness already crashes the process if init fails (orchestrator
+  hits the C11 fail-closed gate; soul-file fails at module-load if
+  shared-config.yaml is missing). So a process that's RUNNING is by
+  construction past the heaviest init failures. The follow-up F9 PR
+  adds finer-grained "downstream dep is currently reachable" detection.
+
+### Next
+- PR for this fix → wait for auto-merge → trigger workflow_dispatch
+  on all 3 services on main → re-pull on rishi-4 → deploy orchestrator
+  → smoke → deploy soul-file → smoke → deploy influencer → smoke →
+  coordinator status post.
+
+---
+
 ## 2026-05-21 — Day-7 deploy fix: bundle shared-config.yaml in orchestrator + soul-file images; flip orchestrator to Sentinel path
 
 First Day-7 deploy attempt of orchestrator to rishi-4/5/6 surfaced a
