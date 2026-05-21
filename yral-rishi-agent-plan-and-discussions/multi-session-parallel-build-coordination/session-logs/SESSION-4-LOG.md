@@ -2,6 +2,62 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-21 — Day-7 deploy fix #4: bundle alembic.ini in soul-file image so the one-off migration task can run
+
+Session 1 finished provisioning the soul-file Postgres role + database
++ Swarm secret (PR #117, merged earlier today by coordinator). Soul-
+file redeploy went 3/3 across rishi-4/5/6, `asyncpg pool initialised`
+on every replica, `Application startup complete`, no empty-env error
+— the F3 per-service-role + pgbouncer routing is healthy end-to-end.
+
+But the operator's one-off `alembic upgrade head` task (per RUNBOOK
+"Schema migration: from a one-off task container") fails with:
+
+    No config file 'alembic.ini' found, or file has no '[alembic]' section
+
+Same Dockerfile gap as shared-config.yaml (closed in PR #113): the
+runtime stage COPYs only `app/` + `pyproject.toml`, but `alembic.ini`
+sits at the service root. `alembic upgrade head` looks for it at the
+CWD (which is `/app` in the image).
+
+**Fix in this PR**: one-line addition to soul-file's Dockerfile
+runtime stage:
+
+    COPY --chown=appuser:appuser alembic.ini ./alembic.ini
+
+The file is config-only (no secrets — DB URL is read from
+`POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY` env var by
+`app/migrations/env.py` per D1+D8). Orchestrator + influencer
+Dockerfiles unchanged — they don't have Alembic migrations today.
+
+### Why fix this NOW vs after Day-7
+Day-7 directive's exit checklist included "Alembic upgrade succeeds
+against the empty public schema" — that's the gating verification for
+Session 1's hand-off. Without alembic.ini bundled the operator can't
+run the one-off task, so the schema stays empty + the seed data
+(`001_initial_schema_and_seed.py`) never lands. Sub-2 LOC fix.
+
+### Files touched
+- `yral-rishi-agent-soul-file-library/Dockerfile` (+8 lines incl. role-comment)
+- this LOG entry
+
+### Soul-file deploy state at fix time
+- 3/3 replicas Running on rishi-4 + rishi-5 + rishi-6 from the prior
+  PR #116 wrapper-bridge deploy
+- `asyncpg pool initialised` on all three
+- /health/{live,ready,docs,redoc} all 200 (verified intra-cluster)
+- DB schema is empty (no Alembic ran yet) — service serves health +
+  docs but the `composed_prompt_router` would 500 on first real
+  request because the seed tables don't exist
+
+### Next
+PR → auto-merge → workflow_dispatch on soul-file → pull on rishi-4 →
+run one-off `alembic upgrade head` task → verify `alembic current ==
+head` → re-smoke. Then post the final 3-service deploy table for
+Day-7 close-out.
+
+---
+
 ## 2026-05-21 — Day-7 deploy CLOSE-OUT: orchestrator + influencer GREEN (3/3 ea.), soul-file BLOCKED on Postgres role provisioning (I6 pushback)
 
 ### Deploy outcome — table per Day-7 directive step E
