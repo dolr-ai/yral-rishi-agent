@@ -156,6 +156,23 @@ app = FastAPI(
 # route signature.
 app.include_router(run_turn_router)
 
+
+# Day-7 deploy stubs: Swarm's compose healthcheck hits /health/ready
+# every 10s. Public-api wired the full F9 contract (live + ready +
+# deep with Sentinel-aware Redis ping) in app/api/health_routes.py;
+# Session 4 services ship minimal stubs here so deploy converges, and
+# the real F9 wiring (Redis Sentinel ping on ready, deep round-trip)
+# lands in a follow-up PR. /live = process is alive; /ready = stub 200
+# until the F9 ping is wired.
+@app.get("/health/live", include_in_schema=False)
+async def _health_live() -> dict[str, str]:
+    return {"status": "ok", "service": "yral-rishi-agent-conversation-turn-orchestrator"}
+
+
+@app.get("/health/ready", include_in_schema=False)
+async def _health_ready() -> dict[str, str]:
+    return {"status": "ok", "service": "yral-rishi-agent-conversation-turn-orchestrator"}
+
 # -------------------------------------------------------------------
 # Day-6 safety stack — H5 → H4 → adult_content → handler (REQUEST flow).
 # -------------------------------------------------------------------
