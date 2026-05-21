@@ -1,5 +1,5 @@
 # Session 1 STATE — Infra & Cluster
-> Updated: 2026-05-17 (**Day-5 COMPLETE — Phase 0 OFFICIALLY CLOSED.** All 5 Day-5 steps closed, H3 chaos verification 3-of-4 PASS with Test 4 deferred to Phase 1+ per coordinator call. v2 stateful core operational on rishi-4/5/6. Session 1 idle pending Phase 1 green-light).
+> Updated: 2026-05-21 (**Day-7 close-out for Session 4's soul-file-library COMPLETE.** alembic upgrade head ran cleanly via one-off Swarm task; schema + 7 seed rows landed on the Patroni leader; sync-standby caught up at TL=14 lag=0. CI-red proceed-with-yellow precedent set + documented. Phase 1 progression: Session 4's soul-file-library is now functionally deployable end-to-end on the v2 cluster.).
 
 ## ⭐ START-OF-SESSION SUMMARY (read first when resuming)
 
@@ -11,7 +11,15 @@ spec + A2 tightening 2026-05-13).
 
 ## LAST THING I DID
 
-**Day-5 COMPLETE 2026-05-17. PHASE 0 OFFICIALLY CLOSED.**
+**Day-7 close-out for Session 4's soul-file-library 2026-05-21.** Operator action: ran `alembic upgrade head` against `soul_file_library` on Patroni leader rishi-5 via one-off Swarm task using image `ghcr.io/...:df2a9111...` (built by PR #118 which bundled `alembic.ini` into the image). Schema landed (`alembic_version` + `soul_file_layers` tables in `public`, owned by `soul_file_library_role`), 7 seed rows landed (L1=1, L2=3, L4=3; L3 deferred per A4), `alembic_version.version_num = 001_initial_schema_and_seed`. Verified via read-only psql probe with peer auth on the Patroni Leader (no DSN exposure).
+
+CI-red proceed-with-yellow precedent set on this PR: overall workflow YELLOW because of pre-existing template-fixture bug (3 of 4 services' fixtures missing `.env.local` due to repo-root `.gitignore:25`); runtime artifact `docker-push-to-ghcr` job inside the same run was GREEN; image digest `sha256:c571599c...` is the one we used. DEP-XXX <!-- coordinator-patch --> routed to Session 2 for the template fix.
+
+Full operator-action detail: see latest SESSION-1-LOG.md entry above the Day-5 close-out (wire bytes, transcript, verification probe, three Notes for the RUNBOOK).
+
+---
+
+**Previous milestone — Day-5 COMPLETE 2026-05-17. PHASE 0 OFFICIALLY CLOSED.**
 
 All 5 Day-5 steps closed in sequence (Patroni HA → Redis Sentinel → Langfuse → Caddy edge-ingress → chaos-test H3 verification). v2 cluster stateful core operational on rishi-4/5/6 with verified HA semantics.
 
@@ -34,7 +42,7 @@ caddy-edge-ingress   : 2/2 on edge nodes (rishi-4 + rishi-5)
 
 H3 chaos verification: Tests 1+2+3 PASSED programmatically (drain, kill-leader, fill-disk). Test 4 (partition) deferred to Phase 1+ per coordinator call — partition-graceful-degradation testing is moot until Sessions 3+4 deploy apps with that behavior; sudoers expansion for `sudo iptables` deferred to bounded privileged-sidecar approach when Phase 1 begins.
 
-Full Day-5 close detail: see latest SESSION-1-LOG.md entry (timeline, 17-bug audit, 2 override invocations, 25 captured insights, 5 queued follow-ups).
+Full Day-5 close detail: see SESSION-1-LOG.md (timeline, 17-bug audit, 2 override invocations, 25 captured insights, 5 queued follow-ups).
 
 ## CURRENT TASK
 
