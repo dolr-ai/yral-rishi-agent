@@ -135,6 +135,15 @@ COPY --chown=appuser:appuser app ./app
 # raises FileNotFoundError before uvicorn can start.
 COPY --chown=appuser:appuser shared-config.yaml ./shared-config.yaml
 
+# Day-7 deploy fix #4: bundle alembic.ini at /app/alembic.ini so the
+# operator's one-off `alembic upgrade head` task container (per
+# RUNBOOK "Schema migration") finds the Alembic config. Without it
+# `alembic upgrade head` fails with `No config file 'alembic.ini'
+# found, or file has no '[alembic]' section`. The file is config-only
+# (no secrets — DB URL is read from POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY
+# env var by `app/migrations/env.py` per D1+D8).
+COPY --chown=appuser:appuser alembic.ini ./alembic.ini
+
 # Switch to the non-root user. Every subsequent CMD / shell command
 # (and the running process at startup) runs as appuser, not root.
 USER appuser
