@@ -67,6 +67,12 @@ services:
     environment:
       ENVIRONMENT: ${ENVIRONMENT:-production}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Day-7 deploy: flip to the C11-compliant Sentinel path. The
+      # production C11 fail-closed gate in app/idempotency.py refuses
+      # to start when environment=production AND redis_sentinel_enabled
+      # is False. Sentinel hosts + master name come from
+      # shared-config.yaml's `redis:` section (bundled by Dockerfile).
+      REDIS_SENTINEL_ENABLED: "true"
 
     # Per-replica resource caps. The defaults below are conservative
     # starting points; tune per service after the first week of prod
