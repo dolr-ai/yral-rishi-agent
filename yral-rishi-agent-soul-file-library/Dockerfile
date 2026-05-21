@@ -129,6 +129,12 @@ WORKDIR /app
 # service can read its own code.
 COPY --chown=appuser:appuser app ./app
 
+# Day-7 deploy fix: bundle shared-config.yaml at /app/shared-config.yaml
+# so app/composer/four_layer_composer.py can load `LAYER_SEPARATOR` at
+# module-import (C7). Without this the soul-file-library import chain
+# raises FileNotFoundError before uvicorn can start.
+COPY --chown=appuser:appuser shared-config.yaml ./shared-config.yaml
+
 # Switch to the non-root user. Every subsequent CMD / shell command
 # (and the running process at startup) runs as appuser, not root.
 USER appuser

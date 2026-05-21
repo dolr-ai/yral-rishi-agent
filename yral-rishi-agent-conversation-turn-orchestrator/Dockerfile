@@ -129,6 +129,13 @@ WORKDIR /app
 # service can read its own code.
 COPY --chown=appuser:appuser app ./app
 
+# Day-7 deploy fix: bundle shared-config.yaml at /app/shared-config.yaml
+# so app/idempotency.py::_load_redis_section_from_shared_config can read
+# `redis.sentinel_master_name` + `redis.sentinel_hosts` (C7 + C11). The
+# production C11 fail-closed gate requires this file present — without
+# it the service crash-loops at startup.
+COPY --chown=appuser:appuser shared-config.yaml ./shared-config.yaml
+
 # Switch to the non-root user. Every subsequent CMD / shell command
 # (and the running process at startup) runs as appuser, not root.
 USER appuser
