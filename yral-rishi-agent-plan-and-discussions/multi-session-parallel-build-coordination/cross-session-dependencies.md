@@ -88,6 +88,38 @@ Why:     Session 1 hit this on 2026-05-21 while diagnosing why
 Scope —  Per-owner fix routing. NO `.gitignore` edit.
 who fixes:
 
+         **A1 hard-stop applies to every fixture migration
+         in this DEP.** The literal filename `.env.local` is
+         in A1's env/config/secrets-shaped hard-stop class
+         (CONSTRAINTS.md A1) — even when the contents are
+         fixture data, not real secrets. EACH affected
+         session's rename/migration PR MUST:
+
+         - Obtain Rishi's typed YES BEFORE staging the
+           `git rm` / `git mv` step for any tracked
+           `.env.local` path (one typed YES covers the full
+           rename + migration for that one service's fixture
+           set; does NOT need a fresh YES per file).
+         - Include in the PR body either (a) the A1 deletion
+           safety report in the required format:
+              Deletion performed:
+              - Deleted:
+              - Reason:
+              - Safety checks performed:
+              - References checked:
+              - Why this was safe:
+              - Tests/builds run:
+              - Rollback plan:
+           OR (b) a clear `git mv` safety explanation if the
+           operation is purely a content-preserving rename
+           (path-preserving move, reversible via `git mv` in
+           the other direction). Either format is acceptable;
+           the choice is up to the session, but the PR body
+           must include one of them.
+         - Verify post-merge that the literal `.env.local`
+           path is gone from the tracked tree for that
+           service (no leftover under `git ls-files`).
+
          **Session 2 (template — root of the fix tree)**:
          - Rename the fixture file in the template from
            `.env.local` to `env.local.fixture` (or another
@@ -192,10 +224,19 @@ resolution: Sequential per-owner ordering — Session 2 first
             Restores public-api CI to green.
          3. Session 4: soul-file backport + influencer
             backport + orchestrator hygiene migration in
-            separate PRs (one per service per A2.1 single-
-            concern; bundled bundle is also OK if all three
-            share identical mechanical shape per A2.1's
-            "bundled if shape-identical" carve-out).
+            separate PRs per A2.1 (use separate PRs by
+            default; if Session 4 is tempted to bundle
+            multiple service migrations into one PR because
+            the changes have identical mechanical shape,
+            Session 4 must STOP and obtain Rishi's explicit
+            confirmation before bundling — A2.1's actual
+            rule per CONSTRAINTS.md is "use separate PRs by
+            default, or stop and get Rishi confirmation
+            before bundling if the change is >100 lines,
+            multi-step, or otherwise elaborate"). The same
+            applies to Session 3 if their public-api
+            backport ever expands to touch more than the
+            single fixture path.
          4. Coordinator (optional): one-line comment on
             `.gitignore:25` documenting the fixture-rename
             requirement.
