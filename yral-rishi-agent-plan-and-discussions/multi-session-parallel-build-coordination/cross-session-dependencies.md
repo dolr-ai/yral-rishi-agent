@@ -140,18 +140,37 @@ who fixes:
            never the literal `.env.local`. Documentation only;
            does NOT change the rule itself.
 
-Blocks:  Does NOT block any active work. All v2 services that
-         need to ship Phase 1 (public-api, orchestrator, soul-
-         file, influencer) deploy fine despite this CI red —
-         the runtime artifacts (Docker images) are built and
-         pushed independently. The bug only affects CI signal
-         hygiene + the soul-file Day-7 operator-action had to
-         set the "proceed with yellow" precedent earlier than
-         we'd have liked.
+Blocks:  BLOCKS PR merges + deploy promotions on the three
+         affected services (soul-file-library, public-api,
+         influencer-and-profile-directory) by default. The
+         shell-tests job is red-on-main for those services;
+         per I10 / I2 / J4, CI gates must be trusted and
+         green for routine work to proceed.
 
-         Worth fixing within Phase 1 so CI signal is restored
-         before we'd ever rely on it for canary / cutover
-         gating.
+         EXPLICIT EXCEPTION REQUIRED for any work that
+         proceeds while affected-service CI is red. Each
+         exception must be (a) documented in the proceeding
+         PR's body with the specific reason red CI does not
+         undermine that PR's claims, AND (b) recorded as a
+         one-off, NOT normalized as a recurring pattern. The
+         coordinator records each exception in the relevant
+         SESSION-N-LOG.md entry's body with the three-part
+         justification below.
+
+         One such exception was recorded on 2026-05-21 for
+         the soul-file Day-7 alembic operator-action (see
+         SESSION-1-LOG.md PR #119 entry's Section 5 — "Pre-
+         existing CI-red disclaimer"). That exception was
+         based on: (i) failing job unrelated to runtime
+         artifact, (ii) failure pre-existed the PR, (iii)
+         this DEP routed the fix in parallel. The same
+         three criteria are the bar for any future
+         exception; absent all three, the default block
+         applies.
+
+         Phase 1 work that does NOT touch the three affected
+         services (e.g., orchestrator changes — orchestrator
+         CI is green) is unaffected by this DEP.
 
 ETA needed: No hard calendar date. Phase 1 close.
 
