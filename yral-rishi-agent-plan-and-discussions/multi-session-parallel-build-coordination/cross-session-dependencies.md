@@ -3,6 +3,132 @@
 
 ## OPEN
 
+### DEP-010 — Session 2 must fix template fixture bug: repo-root `.gitignore:25` silently swallows `scripts/tests/fixtures/valid/.env.local` at spawn time, leaving 3 of 4 spawned services with a failing `test_validate_secrets.sh` happy-path
+
+Raised: 2026-05-21 by Session 1 (diagnosed while triaging Day-7 CI-red gate on soul-file-library post-PR-#118)
+
+What:    The repo-root `.gitignore:25` is the unscoped glob
+         `.env.local`. It matches at every nested level, including
+         the template's per-service test fixtures at
+         `<service>/scripts/tests/fixtures/valid/.env.local`. When
+         `new-service.sh` spawns a service from the template, the
+         spawned `.env.local` fixture is copied to disk but then
+         silently dropped on `git add` because of the unscoped
+         gitignore rule. The spawned `secrets.yaml` (sibling
+         fixture) commits cleanly; only `.env.local` is swallowed.
+
+         Per-service `scripts/tests/test_validate_secrets.sh`'s
+         happy-path test exercises `validate-secrets.sh` against
+         the fixture pair `{secrets.yaml + complete .env.local}`
+         and expects exit-0. With `.env.local` missing, the
+         validator correctly reports EXIT_MISSING_VALUE → exit 1 →
+         the happy-path case fails. The other 4 negative-path
+         cases (missing/incomplete .env.local, malformed/missing
+         secrets.yaml) still pass because the validator is doing
+         the right thing — only the happy path needs the present-
+         and-populated fixture pair.
+
+         Per-service repo-wide audit (`git ls-files --error-unmatch
+         <svc>/scripts/tests/fixtures/valid/.env.local`):
+
+         | Service                                                | valid/.env.local tracked? | CI on main           |
+         |---                                                     |---                        |---                   |
+         | yral-rishi-agent-new-service-template                  | YES (force-added)         | N/A — no CI          |
+         | yral-rishi-agent-conversation-turn-orchestrator        | YES (force-added)         | green                |
+         | yral-rishi-agent-soul-file-library                     | NO                        | red since ≥07:01Z    |
+         | yral-rishi-agent-public-api                            | NO                        | red since 2026-05-20 |
+         | yral-rishi-agent-influencer-and-profile-directory      | NO                        | red since ≥07:17Z    |
+
+         Template + orchestrator have force-added the fixture
+         (likely via `git add -f` when the author noticed the
+         miss). The other 3 spawned services don't — the bug
+         silently cascaded into them at spawn time.
+
+Why:     Session 1 hit this on 2026-05-21 while diagnosing why
+         the post-PR-#118 ci-yral-rishi-agent-soul-file-library
+         workflow_dispatch run came back YELLOW (shell-tests job
+         FAILED while docker-build + docker-push-to-ghcr both
+         succeeded). We proceeded with the soul-file alembic
+         operator-action despite YELLOW CI because the failing
+         job was unrelated to the runtime artifact + the failure
+         was pre-existing (not caused by PR #118). See
+         SESSION-1-LOG.md PR #119 entry's Section 5 ("Pre-existing
+         CI-red disclaimer") for the precedent-setting paragraph
+         that documents this proceed-with-yellow decision.
+
+         The CI signal is real even if non-blocking: 3 of 4
+         spawned services have red CI on main, and that's
+         actively eroding the value of CI as a quality signal
+         across the v2 build. Every future PR to those 3
+         services lands against a red-on-main baseline, making
+         it harder to detect new failures.
+
+Scope —  Template (Session 2) owns the underlying bug shape
+who fixes:
+         (the `.gitignore` rule + the template's fixture
+         spawn-time handling). Per I9, repo-root `.gitignore`
+         is coordinator-territory (same logic as
+         `.github/workflows/`), so the actual `.gitignore` edit
+         is coordinator-owned; the per-service fixture force-
+         adds are Session 2 / per-session work.
+
+         Two-path fix:
+         - **Path A (coordinator)**: scope the `.gitignore:25`
+           rule. Replace unscoped `.env.local` with a path-
+           negation pattern that exempts the fixture directory,
+           e.g.:
+               .env.local
+               !*/scripts/tests/fixtures/valid/.env.local
+               !*/scripts/tests/fixtures/*/.env.local
+           Or equivalent. The aim: developer-local .env.local
+           files at service roots stay gitignored; fixture
+           .env.local files inside scripts/tests/fixtures/
+           DO get tracked.
+
+         - **Path B (Session 2 backport)**: after Path A lands,
+           force-add the three currently-missing fixture
+           .env.local files (soul-file, public-api, influencer)
+           with `git add -f` and commit. ALSO update the
+           template's spawn-time logic in `new-service.sh` (or
+           its post-spawn step) to verify `.env.local` was
+           actually added — fail the spawn loudly if the fixture
+           file is on disk but not tracked, so future spawns
+           don't silently re-create this bug if the gitignore
+           ever drifts.
+
+Blocks:  Does NOT block any active work. All v2 services that
+         need to ship Phase 1 (public-api, orchestrator, soul-
+         file, influencer) deploy fine despite this CI red —
+         the runtime artifacts (Docker images) are built and
+         pushed independently. The bug only affects CI signal
+         hygiene + the soul-file Day-7 operator-action had to
+         set the "proceed with yellow" precedent earlier than
+         we'd have liked.
+
+         Worth fixing within Phase 1 so CI signal is restored
+         before we'd ever rely on it for canary / cutover
+         gating.
+
+ETA needed: No hard calendar date. Phase 1 close.
+
+Suggested
+resolution: Path A first (coordinator scopes the .gitignore),
+         then Path B (Session 2 force-adds the 3 missing
+         fixtures + adds spawn-time verification). Both paths
+         are small (.gitignore edit is 2-3 lines; the 3 force-
+         adds are sub-second commits; the spawn-time check is
+         one bash one-liner). Coordinator should land Path A
+         before Session 2 starts Path B so Session 2's commits
+         don't need `git add -f`.
+
+How spotted:
+         Session 1 diagnosis 2026-05-21 morning while
+         triaging the soul-file Day-7 CI-red gate after PR
+         #118 (alembic.ini bundle) merged. Full diagnosis
+         pasted into the coordinator session + captured
+         verbatim in SESSION-1-LOG.md PR #119 entry's
+         Section 5 + this DEP entry's tables above.
+
 ### DEP-009 — Session 3 needs to install H5 prompt-injection middleware in public-api (pre-orchestration placement) to satisfy CONSTRAINTS H5 verbatim
 
 Raised: 2026-05-20 by Session 4 (PR #112 — Day-6 safety stack restoration)
