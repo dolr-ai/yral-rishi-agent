@@ -2,6 +2,43 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-22 — PR-C2 — retroactive LOG corrections to PR-C (#123) per Codex round-1 BLOCKERs
+
+### Action
+PR #123 (PR-C) was auto-merged at the initial commit (`4056112`) by the Auto-Merge regime at 10:23:30Z based on 3-linter-green, racing Codex's BLOCKER review which surfaced at 10:24:25Z — 55 seconds too late to gate the merge. Same race-condition bug that bit PR #119 yesterday; tracked as `coordinator/fix-auto-merge-regime` follow-up, now critical-path.
+
+Two Codex BLOCKERs landed on main verbatim inside the PR-C LOG entry below. This PR-C2 retroactively corrects the wording in place, with audit-trail markers on each edited line pointing back here. Append-only-diary norm relaxed for in-PR factual-error correction (per coordinator directive — "replace" wording on both lines) since the corrections are forward-fixes to factual claims Codex flagged, not historical revisions of superseded context.
+
+### Files touched
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-3-LOG.md` — three line replacements in the PR-C entry (lines 27, 29, 33 on the just-merged version) + this audit-trail entry at TOP.
+
+### Corrections applied
+
+**BLOCKER 1 (A2 — false attribution of rishi-1 read):**
+- Original: "verified via rishi-1:/app/auth.py" — implied Session 3 performed the read.
+- Corrected: chat-ai `auth.py` read was done by coordinator session (2026-05-22) under standing rishi-1/2/3 read authorization (memory `feedback_rishi_1_2_3_ssh_read_always_ok.md` + `.claude/settings.json` SSH allow rule). Coordinator surfaced the finding; Session 3 received it. No rishi-1 read by Session 3 itself.
+
+**BLOCKER 2 (I14 false claim — twice in the entry):**
+- Original (Notes section): "I14 auto-merge eligible (single `.yml`-file + LOG/STATE only; under the 50-strict-line A2.1 cap)."
+- Original (Constraints touched): "I14 (auto-merge eligible)."
+- Corrected: NOT I14 auto-merge eligible. I14 covers `.md`-only / test-only / lint-format-only / comment-only; a compose default flip is behavior-changing YAML config (changes the runtime tag of every replica spawned without an explicit `ENVIRONMENT` override). Coordinator manually merges via `gh pr merge --squash` after Codex APPROVE.
+
+### Why
+Codex's BLOCKERs are correct on both points. Both wordings shipped to main verbatim because Auto-Merge raced Codex by 55 seconds. The .yml flip itself (intended outcome) landed cleanly — cluster impact zero since public-api was already running `ENVIRONMENT=staging` from coordinator's earlier env-add; the compose flip just brings the file default in sync with runtime. Only the LOG entry's wording is wrong on main, and only that wording is fixed here.
+
+### Constraints touched
+A2.1 (single concern: LOG wording fixes; no behavior change), B7 (audit-trail markers `[Retroactive correction in PR-C2 — see ... entry above]` on each edited line so future readers see the correction chain inline), I11 (same-commit LOG entry — this entry), **I14 auto-merge eligible** (this PR-C2 IS `.md`-only — but per the Auto-Merge race precedent, opening as **DRAFT** to gate the merge until Codex APPROVE, then manual squash-merge by coordinator).
+
+### Notes
+- DRAFT discipline on PR-C2 specifically to prevent the Auto-Merge race from firing on this fix-PR before Codex can review it. Lift from DRAFT after Codex APPROVE; coordinator manually merges.
+- Dangling artifact: `session-3/compose-env-default-staging` branch on the remote still carries the round-2 fixup commit `6e93322`. Harmless (no PR ever opened against round-2); local branch to be deleted after PR-C2 lands per coordinator directive.
+- Same regime bug recurred (PR #119 → PR #123 in 24h). Routed in coordinator's existing `coordinator/fix-auto-merge-regime` follow-up; not in Session 3's scope to fix the regime itself.
+
+### Diff size
+Strict code: 0 lines (no code touched). LOG: this entry (~40 lines) + 3 line replacements in the PR-C entry. STATE: untouched (the merged STATE never claimed the rishi-1 read; the Updated/LAST-THING wording stands). Well under 400-line cap.
+
+---
+
 ## 2026-05-22 — PR-C — docker-compose.swarm.yml ENVIRONMENT default flip production → staging
 
 ### Action
@@ -24,13 +61,13 @@ Single-line value flip + 10-line role-comment block above it explaining the WHY:
 `.yml`-only change. No code paths altered. `python3 -c "import yaml; yaml.safe_load(open('yral-rishi-agent-public-api/docker-compose.swarm.yml'))"` parses cleanly. Compose syntax for `${VAR:-default}` interpolation unchanged; default-when-unset behavior verified mentally against the existing `LOG_LEVEL: ${LOG_LEVEL:-INFO}` precedent immediately below.
 
 ### Notes
-- I14 auto-merge eligible (single `.yml`-file + LOG/STATE only; under the 50-strict-line A2.1 cap).
+- **NOT I14 auto-merge eligible** (behavior-changing YAML config). I14 covers `.md`-only / test-only / lint-format-only / comment-only; the compose default flip changes runtime behavior of every replica spawned without an explicit `ENVIRONMENT` override. Coordinator manually merges via `gh pr merge --squash` after Codex APPROVE. [**Retroactive correction in PR-C2** — see the 2026-05-22 PR-C2 entry above. Original line incorrectly claimed I14 eligibility; the Auto-Merge regime fired anyway before Codex's BLOCKER review could surface, shipping the wrong wording to main.]
 - DRAFT discipline: open as ready-for-review (not DRAFT) per the directive — coordinator triggers ready + squash-merge.
-- PR-A (JWT issuer config) is **deferred** as a watch-item: v2's `jwt_expected_issuer=https://auth.yral.com` already matches chat-ai's canonical issuer (verified via rishi-1:/app/auth.py). No work until mobile login is repaired AND (a real rejection is observed OR round-trip is confirmed). A2.1 — no hypothetical-future-requirements build.
+- PR-A (JWT issuer config) is **deferred** as a watch-item: JWT issuer canonical confirmed at `https://auth.yral.com` per coordinator session (2026-05-22) reading chat-ai `auth.py` under standing rishi-1/2/3 read authorization (memory `feedback_rishi_1_2_3_ssh_read_always_ok.md` + `.claude/settings.json` SSH allow rule). Coordinator surfaced the finding; Session 3 received it. No rishi-1 read by Session 3 itself. v2's `jwt_expected_issuer=https://auth.yral.com` already matches; no work until mobile login is repaired AND (a real rejection is observed OR round-trip is confirmed). A2.1 — no hypothetical-future-requirements build. [**Retroactive correction in PR-C2** — see the 2026-05-22 PR-C2 entry above. Original line incorrectly attributed the rishi-1 read to Session 3.]
 - PR-B (real `GET /api/v1/influencers` as a directory-RPC wrapper) is queued as DRAFT-blocked-on-Session-4-influencer-directory; will open after this lands.
 
 ### Constraints touched
-A2.1 (single concern; ≤50 strict lines), B7 (role-comment captures the WHY + parallel-Session-4 reference + production-override-still-works reasoning), C3 (no overlay changes), D3 (Sentry environment tag correctness), D4 (Langfuse environment tag correctness), I11 (same-commit LOG entry), I14 (auto-merge eligible).
+A2.1 (single concern; ≤50 strict lines), B7 (role-comment captures the WHY + parallel-Session-4 reference + production-override-still-works reasoning), C3 (no overlay changes), D3 (Sentry environment tag correctness), D4 (Langfuse environment tag correctness), I11 (same-commit LOG entry). **NOT I14 eligible** — behavior-changing YAML config; coordinator manual squash-merge after Codex APPROVE. [**Retroactive correction in PR-C2** — see the 2026-05-22 PR-C2 entry above. Original line incorrectly cited I14.]
 
 ### Diff size
 Strict code: 1 value-character changed (`production` → `staging`). With role-comment block: 12 lines added in the `.yml`. LOG entry ~50 lines (this entry). STATE update ~2 lines. Well under 400-line cap.
