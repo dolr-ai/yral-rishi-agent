@@ -65,7 +65,17 @@ services:
     # Day 2). This keeps secrets out of `docker inspect` output and out
     # of process env vars (which can leak via /proc/<pid>/environ).
     environment:
-      ENVIRONMENT: ${ENVIRONMENT:-production}
+      # Default `staging` (NOT `production`): the v2 cluster on rishi-4/5/6
+      # currently runs as a staging mirror of chat-ai while we drive Phase-1
+      # feature parity. Stamping `staging` here keeps Sentry events + Langfuse
+      # traces + structured logs out of the `environment=production` bucket
+      # until v2 actually takes real production traffic. The CI deploy
+      # pipeline overrides this with an explicit `ENVIRONMENT=production`
+      # injection when promoting a build to the production cluster — the
+      # default fires only when no value is set, so production deploys are
+      # unaffected. Session 4 is shipping the same flip across orchestrator
+      # + soul-file + influencer in their parallel PR.
+      ENVIRONMENT: ${ENVIRONMENT:-staging}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
 
     # Per-replica resource caps. The defaults below are conservative
