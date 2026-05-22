@@ -3,6 +3,60 @@
 
 ---
 
+## 2026-05-22 — DEP-010 PR-A: rename template `.env.local` fixtures → `env.local.fixture` + runtime-copy + post-spawn check (Phase 1, Session 2 resumes)
+
+**Branch:** `session-2/dep-010-template-fixture-rename` (off `origin/main` `b507e0c`)
+
+**DEP-010 root-cause (raised by Session 1 2026-05-21, rewritten by coordinator 2026-05-22 after Codex BLOCKERs on PR #121 round 1):** the repo-root `.gitignore:25` glob `.env.local` is correct + must NOT be weakened per D8/J5. But the template shipped fixture files at the literal filename `.env.local`, force-added via `git add -f`. When `new-service.sh` spawned downstream services, the spawned fixtures were silently dropped on `git add` — 3 of 4 spawned services (soul-file, public-api, influencer) hit red CI on the happy-path test case. Per DEP-010's per-owner routing, Session 2 owns the root fix in the template; Sessions 3 + 4 backport into the affected services in separate PRs.
+
+**Rishi authorization (typed YES via coordinator chat 2026-05-22):**
+> "Authorization granted for DEP-010 PR-A executing steps 1-5 of your planned diff. Scope: git mv of the two template fixture .env.local files to env.local.fixture + the supporting test_validate_secrets.sh + fixtures/README.md + new-service.sh edits per the planned diff Session 2 surfaced. Plan reviewed: content-preserving git mv, fixture-placeholder-content-only audit clean, runtime-copy pattern preserves validator behavior, full reversibility via reverse git mv, ~45 strict-code lines under A2.1 threshold."
+
+**Files touched (5 changes):**
+
+1. `git mv yral-rishi-agent-new-service-template/scripts/tests/fixtures/valid/.env.local → …/valid/env.local.fixture` — content-preserving rename. Both bytes match at HEAD.
+2. `git mv yral-rishi-agent-new-service-template/scripts/tests/fixtures/env-local-incomplete/.env.local → …/env-local-incomplete/env.local.fixture` — same.
+3. `yral-rishi-agent-new-service-template/scripts/tests/test_validate_secrets.sh` — `assert_exit_code` helper now copies the fixture dir into `mktemp -d`, renames `env.local.fixture` → `.env.local` inside the temp dir (when present), then `cd`s into the temp dir + invokes the validator. Cleanup is via subshell `EXIT` trap so it fires even if the validator aborts mid-run. Header comment updated to reflect the new convention.
+4. `yral-rishi-agent-new-service-template/scripts/tests/fixtures/README.md` — rewrote the "Note on the `.env.local` files" section to document the new `env.local.fixture` + runtime-copy pattern; replaced the bug-promoting `git add -f` guidance; updated the Layout block to reference `env.local.fixture` per fixture.
+5. `yral-rishi-agent-new-service-template/scripts/new-service.sh` — added a post-spawn step 6 that walks every `env.local.fixture` in the spawned tree and asserts `git -C $REPO_ROOT add --dry-run -- <rel>` outputs an `add '…'` line (i.e. NOT silently gitignored). Codex PR #121 round-7 chose `git add --dry-run` over `git check-ignore` because it surfaces the exact tracking outcome the spawn cares about. Dry-run preview output updated to list step 6.
+
+**A1 deletion safety report (literal `.env.local` filename is in A1 hard-stop class; full report required per DEP-010):**
+
+- **Deleted:**
+  - `yral-rishi-agent-new-service-template/scripts/tests/fixtures/valid/.env.local`
+  - `yral-rishi-agent-new-service-template/scripts/tests/fixtures/env-local-incomplete/.env.local`
+- **Reason:** DEP-010 — the literal `.env.local` filename in the tracked tree collides with `.gitignore:25` hygiene rule. Migration to `env.local.fixture` removes the hygiene violation; fixture function preserved via test-runtime copy-to-temp-`.env.local` pattern.
+- **Safety checks performed:**
+  - Content audit: both files contain only explicit fixture placeholders (`SAMPLE_DATABASE_URL=postgresql://test:test@localhost:5432/test`, `SAMPLE_REDIS_PASSWORD=test-password-not-real` or empty). Zero real-credential content.
+  - Operation: `git mv` (content-preserving). Old-path bytes are byte-identical to new-path bytes at HEAD of this PR.
+  - Reversibility: `git mv` in the opposite direction restores the previous state exactly. Full PR revert also valid.
+- **References checked:**
+  - `validate-secrets.sh` hardcodes `ENV_LOCAL=".env.local"` at line 44; reads from cwd, not from the fixture path. Runtime-copy pattern preserves this behavior unchanged.
+  - `gen-env-example.sh` + `sync-github-secrets.sh`: don't reference fixture paths.
+  - `fixtures/README.md`: narrative mention of `.env.local` — updated in same PR (file change #4).
+  - Sibling fixture `.env.local` paths in spawned services (orchestrator + soul-file + public-api + influencer) are out-of-scope per DEP-010's per-owner routing — Sessions 3+4 own those backports.
+- **Why this was safe:** content-preserving rename of placeholder-only fixture data; validator behavior unchanged; reversible.
+- **Tests/builds run:**
+  - `PATH=/opt/homebrew/bin:$PATH bash yral-rishi-agent-new-service-template/scripts/tests/test_validate_secrets.sh` → **5/5 PASS** locally (yq + bash 5+ required; macOS default `bash` is 3.2 + needs `mapfile`, so I installed homebrew bash for local validation. CI runs Linux which has bash 4+ by default).
+  - `bash yral-rishi-agent-new-service-template/scripts/new-service.sh yral-rishi-agent-spawn-smoke-test --dry-run` → exit 0 with the new step-6 line listed in the preview output.
+- **Rollback plan:**
+  - `git mv env.local.fixture .env.local` in both fixture dirs.
+  - Revert `test_validate_secrets.sh` + `new-service.sh` + `fixtures/README.md` edits via git revert of this PR (single squash commit).
+  - No external systems touched (no Swarm, no Postgres, no workflow dispatches).
+
+This operation is a content-preserving `git mv` (path-preserving move, reversible via `git mv` in the other direction). The above A1 deletion report is provided per DEP-010's explicit requirement; the `git mv` nature is a clarifying note, NOT a substitute for the report.
+
+**Diff size:** ~50 strict-code lines (2 file renames are 0 lines of content delta; new-service.sh +35 lines incl. role-comment; test_validate_secrets.sh +32/-9; fixtures/README.md +/-20). Well under A2.1's 100-line single-concern threshold.
+
+**Constraints touched:** A1 (typed-YES authorization recorded above + full deletion safety report for the two `.env.local` renames), A2.1 (single concern: template-side root fix only; Sessions 3+4 backports out of scope), B7 (every changed file carries a role-comment citing DEP-010 + the specific reason), D8/J5 (the bug DEP-010 closes), F1 (1-command spawn preserved — dry-run exit 0), I11 (this same-commit LOG entry).
+
+**Not eligible for I14 auto-merge** — this PR is behavior-changing test infrastructure (new mktemp+rename pattern in test helper + new post-spawn verification in new-service.sh). Coordinator manually merges after Codex APPROVE per the PR #126 (Codex-gate) workflow.
+
+**Cross-session handoff:**
+- Sessions 3 + 4 may now open their per-service backport PRs per DEP-010's "Suggested resolution" sequence: Session 3 (public-api), then Session 4 (soul-file + influencer + orchestrator hygiene migration). The template now ships the right pattern; backports are mechanical `git mv` + test-helper-port + A1-typed-YES gates.
+
+---
+
 ## 2026-05-14 — Phase 0 CLOSED. Session 2 idle pending Phase 1.
 
 PR #42 merged. Phase 0 template work is complete. Recording the close + 3 outstanding follow-ups so future-me (and Sessions 3+4 when they spawn from the template) have a clean handoff.

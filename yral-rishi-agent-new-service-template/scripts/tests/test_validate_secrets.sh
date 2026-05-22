@@ -4,9 +4,14 @@
 # validate-secrets.sh.
 #
 # ⭐ START HERE: invoke from the template root or from the tests folder.
-# Tests are read-only against the `fixtures/` directories — no temp dirs,
-# no cleanup needed (per A1 spirit: never delete what you don't have to
-# create).
+# Per DEP-010 the checked-in fixtures use `env.local.fixture` (NOT
+# `.env.local`, which would collide with the repo-root .gitignore:25
+# hygiene rule). At test runtime each fixture dir is copied into a
+# `mktemp -d` working dir and `env.local.fixture` is renamed to
+# `.env.local` inside that temp dir, so the validator (which reads
+# `.env.local` from cwd) sees the literal filename without it ever
+# existing in the tracked tree. Cleanup is automatic via subshell
+# EXIT trap.
 #
 # COVERED CASES:
 #   1. happy path — secrets.yaml + complete .env.local → exit 0
@@ -37,8 +42,13 @@ FAIL=0
 # Helpers
 # ===========================================================================
 
-# Run validate-secrets.sh from inside a fixture dir; capture exit code only.
-# Expected exit code passed in $1; case label in $2.
+# Run validate-secrets.sh against a runtime copy of the fixture dir;
+# capture exit code only. Expected exit code passed in $1; case label
+# in $2. Per DEP-010 the checked-in fixture uses `env.local.fixture`;
+# at runtime we copy the fixture dir into mktemp -d, rename
+# env.local.fixture → .env.local inside the temp dir, then cd + run
+# the validator there. Cleanup is via subshell EXIT trap so it fires
+# even if the validator aborts mid-run.
 assert_exit_code() {
     local expected=$1
     local fixture=$2
@@ -46,8 +56,16 @@ assert_exit_code() {
 
     local fixture_dir="$TESTS_DIR/fixtures/$fixture"
     local actual=0
-    # `cd` into the fixture so validate-secrets.sh reads that fixture's files.
-    ( cd "$fixture_dir" && bash "$SCRIPT_UNDER_TEST" ) >/dev/null 2>&1 || actual=$?
+    (
+        set -e
+        tmpdir="$(mktemp -d)"
+        trap 'rm -rf "$tmpdir"' EXIT
+        cp -R "$fixture_dir/." "$tmpdir/"
+        if [ -f "$tmpdir/env.local.fixture" ]; then
+            mv "$tmpdir/env.local.fixture" "$tmpdir/.env.local"
+        fi
+        cd "$tmpdir" && bash "$SCRIPT_UNDER_TEST"
+    ) >/dev/null 2>&1 || actual=$?
 
     if [ "$actual" -eq "$expected" ]; then
         PASS=$((PASS + 1))
