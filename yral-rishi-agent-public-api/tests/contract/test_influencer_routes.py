@@ -172,7 +172,7 @@ def test_list_influencers_propagates_limit_offset_to_directory(
           mocked directory_client.list_influencers was called with the
           same limit + offset kwargs.
     WHEN: pagination-aware mobile clients.
-    WHY:  PR-B's wrapper is a 1:1 proxy on pagination per the DEP-012
+    WHY:  PR-B's wrapper is a 1:1 proxy on pagination per the DEP-013
           proposed RPC contract; the public-api surface must NOT
           silently rewrite or drop the params.
     """
@@ -476,7 +476,20 @@ def test_get_influencer_directory_404_maps_to_envelope_404(client, monkeypatch):
 
 
 def test_get_influencer_directory_connect_error_maps_to_503(client, monkeypatch):
-    """Day-8: directory ConnectError on by-id → envelope-shaped 503."""
+    """Day-8: directory ConnectError on by-id → envelope-shaped 503.
+
+    WHAT: patches directory_client.get_influencer to raise
+          httpx.ConnectError (simulating directory container missing
+          OR DNS miss against the Swarm overlay); asserts public-api
+          returns 503 with the locked `service_unavailable` error code.
+    WHEN: directory service down (rolling-update window, crash, etc.)
+          on the by-id call path.
+    WHY:  guards against raw upstream codes leaking to mobile on the
+          detail-screen path. Per A8 + A16 every error must use the
+          envelope shape; an unhandled ConnectError would surface as
+          a 500 with FastAPI's default {"detail": "..."} body which
+          breaks mobile's parser.
+    """
     monkeypatch.setattr(
         directory_client,
         "get_influencer",
@@ -488,7 +501,21 @@ def test_get_influencer_directory_connect_error_maps_to_503(client, monkeypatch)
 
 
 def test_get_influencer_directory_timeout_maps_to_503(client, monkeypatch):
-    """Day-8: directory TimeoutException on by-id → envelope-shaped 503."""
+    """Day-8: directory TimeoutException on by-id → envelope-shaped 503.
+
+    WHAT: patches directory_client.get_influencer to raise
+          httpx.TimeoutException (simulating directory compute path
+          stalled past the 5s total / 2s connect timeout); asserts
+          public-api returns 503.
+    WHEN: directory hung on a slow DB query, blocked connection-pool
+          slot, or unreachable underlying datastore.
+    WHY:  same A8 envelope contract — envelope 503, not raw upstream
+          timeout. Sentry tag `directory.call.failed=timeout`
+          distinguishes from connect in on-call dashboards; the test
+          asserts the wire-shape contract while the Sentry tag
+          assertion lives in the directory_client unit-level coverage
+          (see PR body Test Architecture note).
+    """
     monkeypatch.setattr(
         directory_client,
         "get_influencer",
@@ -499,7 +526,22 @@ def test_get_influencer_directory_timeout_maps_to_503(client, monkeypatch):
 
 
 def test_get_influencer_directory_5xx_maps_to_503(client, monkeypatch):
-    """Day-8: directory 500 on by-id → envelope-shaped 503."""
+    """Day-8: directory 500 on by-id → envelope-shaped 503.
+
+    WHAT: patches directory_client.get_influencer to return a 500
+          response (simulating directory-side unhandled exception,
+          crashed DB query, etc.); asserts public-api returns 503.
+    WHEN: directory's own request handler raised + FastAPI emitted
+          a 500 to the public-api caller.
+    WHY:  internal-RPC 5xx should NEVER leak verbatim to mobile —
+          mobile's parser pattern-matches a single failure code
+          (`service_unavailable`) for any directory-side trouble,
+          rather than branching on every upstream 5xx variant. The
+          test guards the collapse-to-503 boundary; absent the route
+          handler's `if upstream.status_code != 200` check the 500
+          would surface as a FastAPI-default 500 with non-envelope
+          body.
+    """
     monkeypatch.setattr(
         directory_client,
         "get_influencer",
@@ -512,8 +554,22 @@ def test_get_influencer_directory_5xx_maps_to_503(client, monkeypatch):
 def test_get_influencer_directory_bad_shape_maps_to_503(client, monkeypatch):
     """Day-8: directory returns malformed shape on by-id → envelope-shaped 503.
 
-    WHY: same drift-defense as the list path; per-item validation
-         catches schema drift at the contract boundary.
+    WHAT: patches directory_client.get_influencer to return a 200
+          response carrying a malformed body (a dict with only an `id`
+          field, missing every other required `InfluencerResponse`
+          field); asserts public-api returns 503 rather than crashing
+          mid-Pydantic-decode or forwarding the malformed shape.
+    WHEN: directory-side schema drift (Session 4 changes the field
+          list of `InfluencerResponse` without coordinator review +
+          a contract update).
+    WHY:  defense-in-depth on the contract boundary. The route
+          handler's `InfluencerResponse(**upstream.json())` triggers
+          a Pydantic ValidationError on field-shape drift; the
+          `except (ValueError, TypeError)` clause catches that +
+          maps to the 503 envelope. Absent this guard, drift would
+          either crash the worker (Pydantic V2 raises) or — worse —
+          forward partial data to mobile whose parser then crashes
+          downstream.
     """
     monkeypatch.setattr(
         directory_client,

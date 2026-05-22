@@ -165,7 +165,7 @@ resolution:
              `count` field, OR wants different header set, etc.).
              Reply on PR-B review or the contract file with the
              counter-proposed shape; Session 3 adjusts public-api's
-             wrapper + DEP-012 stays open until both sides agree.
+             wrapper + DEP-013 stays open until both sides agree.
 
          The pagination defaults (limit=20 max=100; offset=0 min=0)
          specifically need Session 4 sign-off because they bound the

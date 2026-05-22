@@ -210,19 +210,19 @@ class Settings(BaseSettings):
     idempotency_dedup_ttl_seconds: int = 86400
 
     # -- Influencer-and-profile-directory RPC (per
-    # interface-contracts/01-internal-rpc-contracts.md + DEP-012) ---------
+    # interface-contracts/01-internal-rpc-contracts.md + DEP-013) ---------
     # The Session-4 influencer-directory base URL public-api proxies
     # /api/v1/influencers reads to. Local dev default routes to the
     # same compose host; in the cluster the Swarm DNS name resolves on
     # the yral-v2-internal overlay (note the `_service` suffix — Swarm's
     # DNS name for a stack service is `<stack>_<service>`). The
-    # list-RPC path shape is the DEP-012 proposed contract; the by-id
+    # list-RPC path shape is the DEP-013 proposed contract; the by-id
     # path is the declared contract on main.
     directory_base_url: str = (
         "http://yral-rishi-agent-influencer-and-profile-directory_service:8000"
     )
 
-    # The path under directory_base_url for the list endpoint. DEP-012
+    # The path under directory_base_url for the list endpoint. DEP-013
     # proposes `/v1/influencers` with `limit` + `offset` query params.
     # Session 4 ratifies when they build the real endpoint.
     directory_list_path: str = "/v1/influencers"

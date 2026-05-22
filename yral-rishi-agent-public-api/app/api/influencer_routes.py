@@ -182,7 +182,7 @@ async def list_influencers(
           everyone sees first.
     WHY:  highest-traffic influencer endpoint by far. Day-8 cuts
           over from the Day-2 stub to the directory RPC per the
-          DEP-012 proposed contract.
+          DEP-013 proposed contract.
     """
     request_id = get_request_id() or ""
     try:

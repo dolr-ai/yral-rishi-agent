@@ -127,7 +127,7 @@ Source of truth: `yral-rishi-agent-conversation-turn-orchestrator/app/models/tur
 GET http://yral-rishi-agent-influencer-and-profile-directory_service:8000/v1/influencers
   ?limit=<int 1..100>
   &offset=<int >=0>
-→ list[InfluencerResponse]    [PROPOSED — see DEP-012]
+→ list[InfluencerResponse]    [PROPOSED — see DEP-013]
 
 GET http://yral-rishi-agent-influencer-and-profile-directory_service:8000/v1/influencers/{id}
 → InfluencerResponse
@@ -156,7 +156,7 @@ the same-overlay-mesh trust model that orchestrator → soul-file
 already uses.
 
 **The list endpoint (`GET /v1/influencers?limit&offset`) is the
-PROPOSED contract from DEP-012 (Session 3, 2026-05-22).** Session 4
+PROPOSED contract from DEP-013 (Session 3, 2026-05-22).** Session 4
 ratifies when they build the real endpoint at
 `yral-rishi-agent-influencer-and-profile-directory/app/api/`, or
 pushes back with a different shape and Session 3 adjusts public-api's
