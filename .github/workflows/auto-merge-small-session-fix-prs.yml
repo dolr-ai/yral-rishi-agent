@@ -51,9 +51,15 @@
 # ║  - lint-scope-violations.yml         — gate 1 (must PASS)                ║
 # ║  - lint-naming-and-comments.yml      — gate 2 (must PASS)                ║
 # ║  - lint-state-hygiene.yml            — gate 3 (must PASS)                ║
-# ║  - pr-codex-review.yml               — informational only; not gated     ║
-# ║                                       on (truncation false positives    ║
-# ║                                       on small diffs are too common)    ║
+# ║  - pr-codex-review.yml               — gate 4 (must PASS, gating since   ║
+# ║                                       2026-05-22 — PR #119 + #123       ║
+# ║                                       fallout). If Codex emits a        ║
+# ║                                       truncation false-positive on a    ║
+# ║                                       legitimate small PR, the escape   ║
+# ║                                       hatch is the                      ║
+# ║                                       `coordinator-review-needed` label ║
+# ║                                       OR coordinator manual `gh pr      ║
+# ║                                       merge --squash` after review.     ║
 # ║  - CONSTRAINTS.md I14                — policy this workflow codifies    ║
 # ╚══════════════════════════════════════════════════════════════════════╝
 
@@ -72,6 +78,11 @@ on:
       - "Lint Scope Violations"
       - "Lint Naming and Comments"
       - "Lint State Hygiene"
+      # Added 2026-05-22 (after PR #119, #123 auto-merged with real
+      # Codex BLOCKERs still pending review). Codex now joins the
+      # required-check set below — re-evaluation must fire when its
+      # workflow completes so we don't admin-merge before its verdict.
+      - "Codex Review on PR"
     types: [completed]
 
   # Also fire on PR events for the initial evaluation + label changes.
@@ -203,14 +214,30 @@ jobs:
             exit 0
           fi
 
-          # Gate 5: All required linters must have completed SUCCESSFULLY.
-          # Required = the 3 hard-gate workflows. Codex is NOT in the
-          # required set because its truncation false-positives on small
-          # diffs would block the very PRs this workflow is designed for.
+          # Gate 5: All required checks must have completed SUCCESSFULLY.
+          # Required = the 3 hard-gate linters + Codex.
+          #
+          # Codex was added 2026-05-22 after PR #119 + PR #123 both auto-
+          # merged with real Codex BLOCKERs still pending review (the
+          # workflow fired on the 3-linter-green status within ~3s of PR
+          # open, before Codex's ~60-90s review completed). Trade-off
+          # acknowledged: Codex CAN emit truncation false-positives on
+          # small diffs, which will now block legitimate small fixes —
+          # the escape hatch for that case is the `coordinator-review-
+          # needed` label (Gate 4) plus the manual `gh pr merge --squash`
+          # path. Net: better to wait for Codex's verdict (~1-2 min) than
+          # to ship a real BLOCKER into main.
+          #
+          # The check name "Codex independent review" is the JOB name
+          # exposed in statusCheckRollup; the workflow name in the
+          # workflow_run trigger above is "Codex Review on PR" — these
+          # differ by GitHub Actions convention (workflow vs job naming
+          # is independent).
           REQUIRED_CHECK_NAMES=(
             "Verify PR stays in owning session's scope"
             "Verify explicit English naming + B7 doc standard"
             "Verify SESSION-N-LOG was updated"
+            "Codex independent review"
           )
 
           ALL_REQUIRED_PASS=true
@@ -235,12 +262,14 @@ jobs:
             exit 0
           fi
 
-          # All gates passed. Note Codex's result for the audit trail
-          # (may be SUCCESS, FAILURE-from-truncation, or still RUNNING —
-          # we proceed regardless since Codex is non-gating).
+          # All gates passed. Codex's result is now part of the required
+          # set above (was non-gating until 2026-05-22; see PR #119 +
+          # #123 fallout). We record it again here for the audit trail
+          # explicitness — when this line runs, Codex has already been
+          # confirmed SUCCESS by the required-checks loop above.
           CODEX_CONCLUSION="$(echo "$PR_JSON" | jq -r \
             '.statusCheckRollup[] | select(.name == "Codex independent review") | .conclusion // "ABSENT"')"
-          echo "  (Codex non-gating result: $CODEX_CONCLUSION)"
+          echo "  (Codex gating result: $CODEX_CONCLUSION)"
 
           echo "ALL GATES PASSED — proceeding to admin-merge."
           echo "eligible=true" >> $GITHUB_OUTPUT
@@ -271,12 +300,13 @@ jobs:
           Eligibility snapshot:
           - Branch: $BRANCH (matches session-N/ pattern ✓)
           - Total diff: $TOTAL_DIFF lines (under cap)
-          - Required lints all PASS:
+          - Required checks all PASS:
             - Verify PR stays in owning session's scope
             - Verify explicit English naming + B7 doc standard
             - Verify SESSION-N-LOG was updated
+            - Codex independent review (gating as of 2026-05-22)
           - No 'coordinator-review-needed' label
-          - Codex non-gating result: $CODEX_CONCLUSION
+          - Codex gating result: $CODEX_CONCLUSION
 
           Manual coordinator review remains required for:
           - PRs over $AUTO_MERGE_MAX_DIFF_LINES total diff lines
@@ -302,8 +332,8 @@ jobs:
           | Scope lint | ✓ |
           | Naming + B7 lint | ✓ |
           | State-hygiene lint | ✓ |
+          | Codex independent review (gating since 2026-05-22) | ✓ \`$CODEX_CONCLUSION\` |
           | \`coordinator-review-needed\` label | not present |
-          | Codex (non-gating, informational) | $CODEX_CONCLUSION |
 
           To force manual review on future similar PRs: add the
           \`coordinator-review-needed\` label before all lints finish.
