@@ -197,9 +197,12 @@ Blocks:  BLOCKS PR merges + deploy promotions on the three
          PR's body with the specific reason red CI does not
          undermine that PR's claims, AND (b) recorded as a
          one-off, NOT normalized as a recurring pattern. The
-         coordinator records each exception in the relevant
-         SESSION-N-LOG.md entry's body with the three-part
-         justification below.
+         coordinator records each exception in the PR body
+         plus `decision-log.md` (or `daily-reports/`); if a
+         session log must mention it, the owning session
+         adds an append-only follow-up entry to its
+         SESSION-N-LOG.md rather than editing existing
+         entry bodies (per I11 append-only discipline).
 
          One such exception was recorded on 2026-05-21 for
          the soul-file Day-7 alembic operator-action (see
@@ -230,8 +233,13 @@ Blocks:  BLOCKS PR merges + deploy promotions on the three
          criteria justification) as a red-CI exception.
 
          Phase 1 work that does NOT touch any tracked
-         `.env.local` path (regardless of CI status) is
-         unaffected by this DEP.
+         `.env.local` path is unaffected by THIS DEP's
+         fixture-migration requirement specifically. Normal
+         CI gates still apply to all PRs — any PR proceeding
+         while affected-service CI is red still needs the
+         explicit one-off exception (three-criteria
+         justification) defined above; this DEP does not
+         relax I10/I2/J4 for anything.
 
 ETA needed: No hard calendar date. Phase 1 close.
 
