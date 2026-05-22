@@ -3,6 +3,69 @@
 
 ## OPEN
 
+### DEP-012 — Coordinator / Session 1 must provision `user_memory_role` + `user_memory` database on the Patroni cluster before user-memory-service can deploy
+
+Raised: 2026-05-22 by Session 5 (Deliverable 1 — schema + Alembic migration)
+
+What:    `yral-rishi-agent-user-memory-service` (Phase 1) stores all
+         conversation history. Its Alembic migration creates the
+         `conversations` and `messages` tables inside the `user_memory`
+         schema. Before that migration can run on the Patroni cluster
+         (rishi-4/5/6), a Postgres operator must run once as the
+         `postgres` superuser:
+
+         ```sql
+         CREATE ROLE user_memory_role WITH LOGIN PASSWORD '<strong-password>';
+         CREATE DATABASE user_memory OWNER user_memory_role;
+         GRANT CONNECT ON DATABASE user_memory TO user_memory_role;
+         -- inside the user_memory database:
+         CREATE SCHEMA user_memory AUTHORIZATION user_memory_role;
+         GRANT ALL ON SCHEMA user_memory TO user_memory_role;
+         ```
+
+         Then create the Swarm secret (connection string must include
+         `?options=-csearch_path%3Duser_memory` for schema routing):
+
+         ```bash
+         echo -n "postgresql://user_memory_role:<password>@<pgbouncer-host>:6432/user_memory?options=-csearch_path%3Duser_memory" \
+           | docker secret create POSTGRES_CONNECTION_STRING_USER_MEMORY_SERVICE -
+         ```
+
+         The full Postgres provisioning procedure is documented in
+         `yral-rishi-agent-user-memory-service/RUNBOOK.md` (section
+         "Postgres provisioning — Session 1 / coordinator action").
+
+         ⚠️ Session 5 MUST NOT run CREATE ROLE / CREATE DATABASE —
+         this is an A1 hard-stop action (user data + privileged cluster
+         operation). Coordinator or Session 1 runs it as a one-time
+         operator-action on the cluster.
+
+Why:     Without the Swarm secret + Postgres role, the user-memory-
+         service container fails to start with:
+             RuntimeError: POSTGRES_CONNECTION_STRING_USER_MEMORY_SERVICE is empty
+         And the Alembic migration (`alembic upgrade head`) cannot
+         connect to create the schema. The Day-9 ETL (284K conversations
+         + 3.3M messages from chat-ai) cannot run until the tables exist.
+
+Blocks:  HARD BLOCK on user-memory-service deploy to staging cluster.
+         HARD BLOCK on Deliverable 2 (RPC endpoints) being testable
+         against the real cluster. HARD BLOCK on Day-9 ETL run.
+         No block on local `docker-compose up` (local compose brings
+         up its own Postgres container with a service-account user).
+
+ETA needed: Before Day-9 ETL run. Ideally before Deliverable 2 PR
+         merges so integration tests can run against the staging cluster.
+
+Suggested
+resolution: Coordinator / Session 1 operator runs the 4 SQL statements
+         + docker secret create on the Patroni primary node, verifies
+         with `\dt` (expect: zero tables yet, just the role + DB), then
+         creates the Swarm secret. Marks DEP-012 RESOLVED with the
+         secret-creation date. Session 5 then runs `alembic upgrade head`
+         via a one-off container to create the tables (per RUNBOOK.md).
+
+---
+
 ### DEP-011 — Session 3 needs to flip ENVIRONMENT default from `production` to `staging` in public-api's `docker-compose.swarm.yml` to match v2 dev cluster reality
 
 Raised: 2026-05-22 by Session 4 (PR-A — Day-8 env-gate fix)

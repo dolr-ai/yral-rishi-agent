@@ -1,0 +1,114 @@
+# ---------------------------------------------------------------------------
+# pyproject.toml — the SINGLE manifest of "what Python version + what
+# Python packages does the user-memory-service need to run."
+#
+# ⭐ START HERE if you're new to the file:
+#   1. [project] block lists the service's name, version, and Python pin.
+#   2. [project.dependencies] lists every library the RUNNING service uses.
+#   3. [project.optional-dependencies.dev] lists test-only / dev-only libs.
+#   4. [build-system] tells `pip install .` HOW to package this folder.
+#
+# WHAT IS pyproject.toml?
+# A standard Python file (PEP 517 + PEP 621) that replaces the older
+# `setup.py` + `requirements.txt` pair. Modern Python tooling — pip,
+# hatchling, uv — all read it. One file, one source of truth.
+#
+# IF YOU NEED TO ADD A DEPENDENCY: edit the dependencies list below.
+# Do NOT add a `requirements.txt` file — this manifest IS the dep source.
+#
+# RELATED FILES (footer at end).
+# ---------------------------------------------------------------------------
+
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "yral-rishi-agent-user-memory-service"
+version = "0.1.0"
+description = "Phase 1: conversation history persistence — append-only turn storage, ordered reads, CRUD. yral v2 service."
+
+# Python pin. Per CONSTRAINTS F12: one minor version = one mental model.
+requires-python = ">=3.12,<3.13"
+
+dependencies = [
+    # FastAPI — the HTTP framework. Routes URLs to async Python functions
+    # and auto-generates OpenAPI docs.
+    "fastapi==0.115.12",
+
+    # Uvicorn — the ASGI web server that hosts FastAPI in production.
+    # [standard] adds uvloop + httptools for better performance.
+    "uvicorn[standard]==0.34.0",
+
+    # asyncpg — asyncio-native Postgres driver. No blocking event loop,
+    # which keeps p99 latency low under concurrent chat turns.
+    "asyncpg==0.30.0",
+
+    # httpx — async HTTP client for outbound calls to other v2 services
+    # (orchestrator forwards conversation history context in Deliverable 2).
+    "httpx==0.28.1",
+
+    # pydantic — request/response model validation + serialization.
+    # FastAPI uses it internally; the repository layer (Deliverable 2)
+    # uses it for typed row models.
+    "pydantic==2.10.5",
+
+    # pydantic-settings — env-driven typed config models. Used by
+    # app/config.py to build the Settings singleton; one parse at
+    # startup, validated, served to every callsite.
+    "pydantic-settings==2.7.1",
+
+    # alembic — schema migration tool. One-off `alembic upgrade head`
+    # creates the conversations + messages tables on each new DB instance.
+    "alembic==1.14.0",
+
+    # sentry-sdk — error tracking to sentry.rishi.yral.com per A7 + D3.
+    # [fastapi] extra adds the Starlette integration for auto-capture.
+    "sentry-sdk[fastapi]==2.22.0",
+
+    # langfuse — LLM tracing client. Phase 1 no-ops this (user-memory
+    # doesn't make LLM calls). Phase 2 memory-extraction worker will use
+    # it. Included per template standard so Phase 2 doesn't need a dep PR.
+    "langfuse==2.59.7",
+
+    # structlog — structured JSON logging with PII-allowlist redaction
+    # per H6. Configured in app/logging.py.
+    "structlog==24.4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    # pytest — the test runner.
+    "pytest==8.3.4",
+
+    # pytest-asyncio — lets pytest run `async def test_*()` functions.
+    # Required because every handler + fixture in this service is async.
+    "pytest-asyncio==0.25.2",
+
+    # testcontainers[postgres] — spins up an ephemeral Postgres 17-alpine
+    # container per pytest session via Docker. tests/conftest.py uses it
+    # to run Alembic + the asyncpg pool against a real Postgres without
+    # polluting the dev's local DB.
+    "testcontainers[postgres]==4.10.0",
+]
+
+[tool.hatch.build.targets.wheel]
+# Only ship the `app/` folder. Tests + docs stay out of the production wheel.
+packages = ["app"]
+
+[tool.pytest.ini_options]
+# Auto mode so async fixtures + tests run as coroutines without per-test
+# @pytest.mark.asyncio decorators. Required for the testcontainers-backed
+# `database_pool` async fixture.
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+
+# ===========================================================================
+# RELATED FILES:
+#   Dockerfile             — stage 1 runs `pip install .` against this
+#   docker-compose.yml     — local dev runner with Postgres + pgbouncer
+#   .dockerignore          — controls what Dockerfile COPY sees
+#   project.config         — per-service runtime config values
+#   secrets.yaml           — per-service secret declarations (D8)
+# ===========================================================================
