@@ -100,8 +100,12 @@ who fixes:
            `.env.local` path (one typed YES covers the full
            rename + migration for that one service's fixture
            set; does NOT need a fresh YES per file).
-         - Include in the PR body either (a) the A1 deletion
-           safety report in the required format:
+         - Include in the PR body the FULL A1 deletion
+           safety report in the required format (no
+           alternative; A1 treats env/config/secrets-shaped
+           files as hard-stop items and the full report is
+           required for the old-path deletion that any
+           rename implies):
               Deletion performed:
               - Deleted:
               - Reason:
@@ -110,12 +114,13 @@ who fixes:
               - Why this was safe:
               - Tests/builds run:
               - Rollback plan:
-           OR (b) a clear `git mv` safety explanation if the
-           operation is purely a content-preserving rename
-           (path-preserving move, reversible via `git mv` in
-           the other direction). Either format is acceptable;
-           the choice is up to the session, but the PR body
-           must include one of them.
+           If the operation is purely a content-preserving
+           `git mv` (path-preserving move, reversible via
+           `git mv` in the other direction), the PR body
+           MAY additionally note that fact to clarify the
+           operation's nature — but the additional note
+           does NOT substitute for the A1 deletion report
+           above.
          - Verify post-merge that the literal `.env.local`
            path is gone from the tracked tree for that
            service (no leftover under `git ls-files`).
