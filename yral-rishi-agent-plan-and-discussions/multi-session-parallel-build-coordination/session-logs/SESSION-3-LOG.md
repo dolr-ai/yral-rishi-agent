@@ -24,13 +24,19 @@ Single-line value flip + 10-line role-comment block above it explaining the WHY:
 `.yml`-only change. No code paths altered. `python3 -c "import yaml; yaml.safe_load(open('yral-rishi-agent-public-api/docker-compose.swarm.yml'))"` parses cleanly. Compose syntax for `${VAR:-default}` interpolation unchanged; default-when-unset behavior verified mentally against the existing `LOG_LEVEL: ${LOG_LEVEL:-INFO}` precedent immediately below.
 
 ### Notes
-- I14 auto-merge eligible (single `.yml`-file + LOG/STATE only; under the 50-strict-line A2.1 cap).
+- **NOT I14 auto-merge eligible** — behavior-changing YAML config (per Codex round-1 BLOCKER 2, correct reading; I14 covers `.md`-only / test-only / lint-format-only / comment-only). Coordinator manually merges via `gh pr merge 123 --squash` after Codex APPROVE.
 - DRAFT discipline: open as ready-for-review (not DRAFT) per the directive — coordinator triggers ready + squash-merge.
-- PR-A (JWT issuer config) is **deferred** as a watch-item: v2's `jwt_expected_issuer=https://auth.yral.com` already matches chat-ai's canonical issuer (verified via rishi-1:/app/auth.py). No work until mobile login is repaired AND (a real rejection is observed OR round-trip is confirmed). A2.1 — no hypothetical-future-requirements build.
+- PR-A (JWT issuer config) is **deferred** as a watch-item: JWT issuer canonical confirmed at `https://auth.yral.com` per coordinator session (2026-05-22) reading chat-ai `auth.py` under standing rishi-1/2/3 read authorization (memory `feedback_rishi_1_2_3_ssh_read_always_ok.md` + `.claude/settings.json` SSH allow rule). Coordinator surfaced the finding; Session 3 received it. No rishi-1 read by Session 3 itself. v2's `jwt_expected_issuer=https://auth.yral.com` already matches; no work until mobile login is repaired AND (a real rejection is observed OR round-trip is confirmed). A2.1 — no hypothetical-future-requirements build.
 - PR-B (real `GET /api/v1/influencers` as a directory-RPC wrapper) is queued as DRAFT-blocked-on-Session-4-influencer-directory; will open after this lands.
 
 ### Constraints touched
-A2.1 (single concern; ≤50 strict lines), B7 (role-comment captures the WHY + parallel-Session-4 reference + production-override-still-works reasoning), C3 (no overlay changes), D3 (Sentry environment tag correctness), D4 (Langfuse environment tag correctness), I11 (same-commit LOG entry), I14 (auto-merge eligible).
+A2.1 (single concern; ≤50 strict lines), B7 (role-comment captures the WHY + parallel-Session-4 reference + production-override-still-works reasoning), C3 (no overlay changes), D3 (Sentry environment tag correctness), D4 (Langfuse environment tag correctness), I11 (same-commit LOG entry). **NOT I14 eligible** — behavior-changing YAML config; coordinator manual squash-merge after Codex APPROVE.
+
+### Round-2 fixups (Codex round-1 BLOCKERs, both correct)
+1. **BLOCKER 1 (A2 attribution)** — corrected the JWT-issuer-canonical sentence: chat-ai `auth.py` read was done by coordinator session under standing rishi-1/2/3 read authorization, not by Session 3. Reworded the watch-item bullet above.
+2. **BLOCKER 2 (I14 false claim)** — removed the "I14 auto-merge eligible" claim. Behavior-changing YAML config is outside I14 scope (which covers `.md`-only / test-only / lint-format-only / comment-only). Coordinator manually merges after Codex APPROVE.
+
+Same-PR round-2 commit; no new PR.
 
 ### Diff size
 Strict code: 1 value-character changed (`production` → `staging`). With role-comment block: 12 lines added in the `.yml`. LOG entry ~50 lines (this entry). STATE update ~2 lines. Well under 400-line cap.
