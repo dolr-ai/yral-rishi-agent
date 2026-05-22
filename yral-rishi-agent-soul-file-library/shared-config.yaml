@@ -139,11 +139,11 @@ redis:
   # The actual rishi-N IPs are resolved from the cluster's overlay
   # DNS (Session 1 sets this up).
   sentinel_hosts:
-    - host: "redis-sentinel-1.yral-v2-data-plane"
+    - host: "redis-sentinel-rishi-4.yral-v2-data-plane"
       port: 26379
-    - host: "redis-sentinel-2.yral-v2-data-plane"
+    - host: "redis-sentinel-rishi-5.yral-v2-data-plane"
       port: 26379
-    - host: "redis-sentinel-3.yral-v2-data-plane"
+    - host: "redis-sentinel-rishi-6.yral-v2-data-plane"
       port: 26379
 
   # Default DB index for ephemeral keys (idempotency + feature flags +
