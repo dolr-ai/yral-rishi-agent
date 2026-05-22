@@ -2,6 +2,44 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-22 — PR-C2 — supersession entry for PR-C (#123) per Codex round-1 BLOCKERs
+
+### Action
+PR #123 (PR-C) was auto-merged at the initial commit (`4056112`) by the Auto-Merge regime at 10:23:30Z based on 3-linter-green, racing Codex's BLOCKER review which surfaced at 10:24:25Z — 55 seconds too late to gate the merge. Same race-condition bug that bit PR #119 yesterday; tracked as `coordinator/fix-auto-merge-regime` follow-up, now critical-path.
+
+Two Codex BLOCKERs landed on main verbatim inside the PR-C LOG entry below. **This entry supersedes the relevant lines of that entry** — the old entry stays untouched per the I11 append-only diary norm and the file banner ("Never edit past entries; correct via new entries"). Top-down readers will see this PR-C2 supersession FIRST and understand the entry below it is the originating context with the corrected wording captured here.
+
+### Files touched
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-3-LOG.md` — this supersession entry at TOP only. The original PR-C entry below is left untouched per I11.
+
+### Corrections (supersedes the corresponding lines in the PR-C entry below)
+
+**BLOCKER 1 — A2 attribution of the chat-ai `auth.py` read:**
+- The PR-C entry says: *"verified via rishi-1:/app/auth.py"*, which implied Session 3 performed the read.
+- **Supersedes:** JWT issuer canonical confirmed at `https://auth.yral.com`. Coordinator session reported this on 2026-05-22 from a chat-ai source-code review; the read's A2 typed-YES basis is **unverified for this specific read** (only the Caddy-snippet read had explicit YES; the `auth.py` read was a separate read performed without a fresh YES). Escalated to Rishi for A2 reconciliation. The finding itself (`https://auth.yral.com` as canonical issuer) is **independently corroborated by chat-ai's public JWKS endpoint at `https://auth.yral.com/.well-known/jwks.json`** — no private cluster access needed to verify. Session 3 itself did no rishi-1 read.
+
+**BLOCKER 2 — I14 false claim (cited twice in the PR-C entry):**
+- The PR-C entry says (Notes): *"I14 auto-merge eligible (single .yml-file + LOG/STATE only; under the 50-strict-line A2.1 cap)."*
+- The PR-C entry says (Constraints touched): *"I14 (auto-merge eligible)."*
+- **Supersedes:** NOT I14 auto-merge eligible. I14 covers `.md`-only / test-only / lint-format-only / comment-only; a compose default flip is behavior-changing YAML config (changes the runtime tag of every replica spawned without an explicit `ENVIRONMENT` override). Coordinator manually merges via `gh pr merge --squash` after Codex APPROVE. (The Auto-Merge regime fired on PR #123 anyway despite the false claim — that's the regime-bug, not the claim's correctness; the claim should not have been there in the first place.)
+
+### Why
+Codex's BLOCKERs are correct on both points. Both wordings shipped to main verbatim because Auto-Merge raced Codex by 55 seconds. The .yml flip itself (intended outcome) landed cleanly — cluster impact zero since public-api was already running `ENVIRONMENT=staging` from coordinator's earlier env-add; the compose flip just brings the file default in sync with runtime. Only the LOG entry's wording is wrong on main, and this supersession entry captures the corrections without violating the append-only norm.
+
+### Constraints touched
+A2.1 (single concern: supersession entry; no behavior change), B7 (this entry captures the WHY + supersession framing + JWKS public-corroboration alternative), I11 **honored** (no edits to the past PR-C entry — corrections live here as a forward-only entry per the diary's append-only rule), **I14 auto-merge eligible by file type** (this PR-C2 IS `.md`-only) — but per the Auto-Merge race precedent that fired on PR #123, opening as **DRAFT** to gate the merge until Codex APPROVE, then manual squash-merge by coordinator.
+
+### Notes
+- DRAFT discipline on PR-C2 specifically to prevent the Auto-Merge race from firing on this fix-PR before Codex can review it. Lift from DRAFT after Codex APPROVE; coordinator manually merges.
+- A2-vs-standing-access-memory reconciliation: coordinator is escalating to Rishi separately. Not in Session 3's scope.
+- Dangling artifact: `session-3/compose-env-default-staging` branch on the remote still carries the never-merged round-2 fixup commit `6e93322`. Harmless (no PR ever opened against it); local branch to be deleted after PR-C2 lands per coordinator directive.
+- Same regime bug recurred (PR #119 → PR #123 in 24h). Tracked in coordinator's `coordinator/fix-auto-merge-regime` follow-up; not in Session 3's scope to fix the regime itself.
+
+### Diff size
+Strict code: 0 lines (no code touched). LOG: this supersession entry only (~45 lines). PR-C entry below untouched (I11 honored). STATE: untouched (the merged STATE never claimed the rishi-1 read; the Updated/LAST-THING wording stands). Well under 400-line cap.
+
+---
+
 ## 2026-05-22 — PR-C — docker-compose.swarm.yml ENVIRONMENT default flip production → staging
 
 ### Action
