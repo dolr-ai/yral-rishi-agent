@@ -3,17 +3,18 @@
 #
 # ⭐ START HERE: this file boots ONE ephemeral Postgres container per
 # pytest session via `testcontainers-postgres`, runs Alembic
-# `upgrade head` against it, exports the connection string as
-# POSTGRES_CONNECTION_STRING_USER_MEMORY_SERVICE so the app's pool and
-# Alembic can both find it, yields the connection details, then tears
-# the container down on session end.
+# `upgrade head` against it (both migrations 001 + 002), exports the
+# connection string as POSTGRES_CONNECTION_STRING_USER_MEMORY_SERVICE
+# so the app's pool and Alembic can both find it, yields the connection
+# details, then tears the container down on session end.
 #
 # FIXTURE HIERARCHY:
 #   postgres_container (scope=session)
 #     └── postgres_connection_string (scope=session)
 #           └── run_alembic_upgrade (scope=session, autouse=True)
-#                 └── database_pool (scope=function)
-#                       └── clean_app_settings_cache (scope=function)
+#                 ├── database_pool (scope=function)
+#                 │     └── clean_app_settings_cache (scope=function)
+#                 └── test_client (scope=function)   ← Deliverable 2 addition
 #
 # WHY testcontainers + NOT docker-compose?
 # The compose Postgres is for `uvicorn`-running development sessions.
@@ -30,6 +31,16 @@
 # slower for no extra coverage — the round-trip itself is covered by
 # `test_schema_migrations.py` once per session.
 #
+# WHY test_client INJECTS THE POOL BEFORE THE LIFESPAN RUNS?
+# When httpx's AsyncClient enters its context manager, FastAPI's lifespan
+# fires. The lifespan calls `init_pool()`, which is idempotent:
+#   `if _pool is not None: return`
+# By pre-setting `app.database._pool` to our test pool BEFORE creating
+# the client, we ensure `init_pool()` skips the real DB connect and uses
+# the testcontainers pool instead. On lifespan shutdown, `close_pool()`
+# closes the injected pool and sets `_pool = None`. The test_client
+# fixture resets `_pool = None` at cleanup for a clean slate.
+#
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
 
@@ -40,6 +51,7 @@ from pathlib import Path
 
 import asyncpg
 import pytest
+from httpx import ASGITransport, AsyncClient
 from testcontainers.postgres import PostgresContainer
 
 
@@ -201,12 +213,78 @@ async def database_pool(postgres_connection_string: str) -> AsyncIterator[asyncp
     await pool.close()
 
 
+@pytest.fixture()
+async def test_client(postgres_connection_string: str) -> AsyncIterator[AsyncClient]:
+    """Yield an httpx AsyncClient wired to the FastAPI app + testcontainers pool.
+
+    WHAT: creates a fresh asyncpg pool for this test, injects it into
+          app.database._pool BEFORE the FastAPI lifespan runs, then yields
+          an httpx.AsyncClient backed by the ASGI transport. The client can
+          make real HTTP-shaped requests to the app without a network socket.
+    WHEN: per test that explicitly requests `test_client` (opt-in).
+    WHY:  tests the full HTTP contract (path params, query params, status
+          codes, JSON response shapes) without spinning up a real uvicorn
+          server. The injection pattern avoids a second pool creation in
+          the lifespan — see the file-header "WHY test_client INJECTS"
+          explanation.
+
+    Pool lifecycle:
+      1. Fixture creates pool + sets `app.database._pool = pool`.
+      2. AsyncClient __aenter__ fires the FastAPI lifespan startup;
+         `init_pool()` sees `_pool is not None` and returns immediately
+         (no second connection to the DB).
+      3. TRUNCATE clears both tables so each test starts with an empty DB.
+      4. Tests run.
+      5. AsyncClient __aexit__ fires the lifespan shutdown; `close_pool()`
+         closes the pool and sets `_pool = None`.
+      6. Fixture cleanup confirms `_pool = None` for the next test.
+    """
+    import app.database as db_module
+    from app.main import app as fastapi_app
+
+    # Create a dedicated pool for this test (not shared with database_pool).
+    # statement_cache_size=0 is required for pgBouncer transaction-mode
+    # compatibility — same setting as the production pool in database.py.
+    pool = await asyncpg.create_pool(
+        dsn=postgres_connection_string,
+        min_size=1,
+        max_size=4,
+        statement_cache_size=0,
+    )
+
+    # Truncate all tables so this test starts with clean state.
+    # TRUNCATE CASCADE clears messages first (FK child), then conversations.
+    async with pool.acquire() as conn:
+        await conn.execute("TRUNCATE conversations CASCADE;")
+
+    # Inject the pool BEFORE the AsyncClient context enters (which triggers
+    # the lifespan). init_pool() checks `if _pool is not None: return`, so
+    # this injection prevents a second pool from being created.
+    original_pool = db_module._pool
+    db_module._pool = pool
+
+    # ASGITransport runs the ASGI app directly in-process — no socket, no
+    # network, no port binding. FastAPI lifespan fires on __aenter__/__aexit__
+    # of the AsyncClient context. raise_app_exceptions=True propagates
+    # unhandled app errors as Python exceptions (rather than 500 responses)
+    # so test failures are debuggable without reading the response body.
+    transport = ASGITransport(app=fastapi_app, raise_app_exceptions=True)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+
+    # After __aexit__, close_pool() has already closed the pool and set
+    # _pool = None. Reset to original value (None in normal flow) for a
+    # clean slate before the next test.
+    db_module._pool = original_pool
+
+
 # ===========================================================================
 # RELATED FILES:
-#   test_schema_migrations.py    — uses database_pool + runs alembic
-#                                  downgrade/upgrade round-trip
-#   ../app/database.py           — the module database_pool partially mirrors
+#   test_schema_migrations.py    — uses database_pool + alembic round-trip
+#   test_conversation_routes.py  — uses test_client (Deliverable 2)
+#   ../app/database.py           — _pool singleton that test_client injects
+#   ../app/main.py               — FastAPI app + lifespan imported by test_client
 #   ../app/migrations/env.py     — Alembic env reading the same connection string
 #   ../alembic.ini               — points Alembic at app/migrations/
-#   ../pyproject.toml            — declares testcontainers[postgres] dev dep
+#   ../pyproject.toml            — declares testcontainers[postgres] + httpx devdeps
 # ===========================================================================

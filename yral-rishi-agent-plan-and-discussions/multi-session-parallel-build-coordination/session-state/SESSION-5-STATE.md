@@ -16,7 +16,27 @@ Three Phase-1 deliverables:
 
 ## LAST THING I DID
 
-Deliverable 1: Created `yral-rishi-agent-user-memory-service/` from scratch:
+Deliverable 2 (in progress — D2 files written, not yet committed):
+- `app/migrations/versions/002_add_message_fields.py`: adds `client_message_id TEXT`
+  and `count_toward_paywall BOOLEAN NOT NULL DEFAULT TRUE` to messages
+- `app/api/__init__.py` + `app/api/models.py`: Pydantic request/response models
+  (ConversationCreateRequest, MessageCreateItem, AppendMessagesRequest,
+  ConversationResponse mirror, MessageResponse mirror)
+- `app/api/conversation_routes.py`: 4 FastAPI route handlers (POST /v1/conversations,
+  POST /v1/conversations/{id}/messages, GET /v1/conversations/by-user/{user_id},
+  GET /v1/conversations/{id}/messages with DESC-then-ASC pagination)
+- Updated `app/main.py`: wires conversation_router, upgrades /health/ready to
+  live Postgres ping (SELECT 1)
+- Updated `tests/conftest.py`: adds `test_client` fixture (pool injection +
+  httpx AsyncClient with ASGITransport)
+- Updated `tests/test_schema_migrations.py`: expects 9 messages columns
+  (adds client_message_id + count_toward_paywall to assertion)
+- New `tests/test_conversation_routes.py`: 13 tests covering full HTTP contract
+
+---
+
+Deliverable 1 (MERGED — PR #127 — a39e54c):
+Created `yral-rishi-agent-user-memory-service/` from scratch:
 - `app/` package: config.py, database.py, main.py, sentry_middleware.py,
   langfuse_middleware.py, logging.py, request_id_middleware.py
 - `app/migrations/`: alembic env.py + 001_initial_schema.py (conversations +
@@ -34,18 +54,16 @@ Deliverable 1: Created `yral-rishi-agent-user-memory-service/` from scratch:
 
 ## CURRENT TASK
 
-Deliverable 1 PR: push branch session-5/user-memory-schema-and-migration + open PR.
-After PR merges → Deliverable 2 (RPC endpoints).
+Deliverable 2: commit + push + PR for 4 RPC endpoints. (Files written; commit pending.)
 
 ## NEXT 3 PLANNED ACTIONS
 
-1. Push branch + open PR for Deliverable 1 (schema + migration)
-2. Start Deliverable 2 on branch session-5/user-memory-rpc-endpoints:
-   - POST /v1/conversations
-   - POST /v1/conversations/{id}/messages
-   - GET /v1/conversations/{id}/messages (offset/limit pagination)
-   - GET /v1/conversations/by-user/{user_id}
-3. Start Deliverable 3 (ETL migration plan draft) — column mapping chat-ai → v2
+1. Stage + commit D2 files; push branch session-5/user-memory-rpc-endpoints; open PR
+2. Start Deliverable 3 (ETL migration plan draft) on branch
+   session-5/etl-plan-day-9-draft — column mapping chat-ai → v2, row counts,
+   PII handling, verification queries
+3. Wire the orchestrator (Session 4) to call the D2 endpoints once D2 PR merges
+   (cross-session coordination via cross-session-dependencies.md)
 
 ## BLOCKERS
 
@@ -56,7 +74,8 @@ After PR merges → Deliverable 2 (RPC endpoints).
 
 ## PENDING PRs (mine)
 
-- PR for Deliverable 1: session-5/user-memory-schema-and-migration (opening now)
+- PR #127 (MERGED): Deliverable 1 — schema + Alembic migration
+- D2 PR (opening now): Deliverable 2 — 4 RPC endpoints
 
 ## CROSS-SESSION DEPS (mine)
 

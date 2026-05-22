@@ -3,6 +3,79 @@
 
 ---
 
+### 2026-05-22 — Deliverable 2: user-memory-service RPC endpoints
+
+**Branch**: session-5/user-memory-rpc-endpoints
+**Trigger**: PR #127 (D1) merged at 2026-05-22T12:21:22Z; coordinator green-lit D2.
+Codex returned FAILURE on D1 PR (truncation false-positive — coordinator override per
+documented escape hatch). DEP-012 confirmed canonical; Session 3's shadowed DEP-012
+rerouted to DEP-013 by coordinator before push.
+
+**What ships in this PR**:
+
+1. `app/migrations/versions/002_add_message_fields.py`: adds two columns to messages
+   that are required by the locked MessageResponse wire contract:
+   - `client_message_id TEXT` (nullable) — F10 dedup ID mobile sends with user messages
+   - `count_toward_paywall BOOLEAN NOT NULL DEFAULT TRUE` — E7 paywall counter
+
+2. `app/api/__init__.py` — package marker
+
+3. `app/api/models.py` — Pydantic models:
+   - Request: ConversationCreateRequest, MessageCreateItem, AppendMessagesRequest
+   - Response: MessageResponse + ConversationResponse — MIRROR public-api's
+     response_models.py exactly (per A8 + A16); kept in sync by design
+
+4. `app/api/conversation_routes.py` — 4 FastAPI RPC route handlers:
+   - POST /v1/conversations — upsert by natural key (user_id, conversation_type,
+     influencer_id, participant_b_id) WHERE soft_deleted_at IS NULL;
+     IS NOT DISTINCT FROM handles NULL equality correctly
+   - POST /v1/conversations/{id}/messages — atomic batch insert in a transaction;
+     updates last_message_at + message_count; filters system role from response
+   - GET /v1/conversations/by-user/{user_id} — LATERAL JOIN for last_message
+     inline; one round-trip for the full inbox payload
+   - GET /v1/conversations/{id}/messages — DESC-then-ASC subquery for "most
+     recent N" semantics with chronological page ordering; before= cursor
+     for load-older pagination
+
+5. Updated `app/main.py`:
+   - Mounts conversation_router via app.include_router(conversation_router)
+   - Upgrades /health/ready from static stub → live Postgres ping (SELECT 1)
+     so Swarm stops routing to replicas with a broken DB connection
+
+6. Updated `tests/conftest.py`:
+   - Adds `test_client` fixture: creates fresh asyncpg pool per test, injects into
+     `app.database._pool` before lifespan fires (idempotent `init_pool()` check
+     means no double-connect), yields httpx.AsyncClient with ASGITransport
+   - Updates FIXTURE HIERARCHY comment to include test_client
+
+7. Updated `tests/test_schema_migrations.py`:
+   - `test_messages_table_has_correct_columns` now expects 9 columns (adds
+     client_message_id + count_toward_paywall from migration 002)
+
+8. New `tests/test_conversation_routes.py` — 13 tests covering:
+   - POST /v1/conversations: response shape, upsert idempotency, H2H mode
+   - POST .../messages: user+assistant response, system filter, 404 for missing conv,
+     conversation stats update (last_message_at advances, last_message populated)
+   - GET /v1/conversations/by-user: empty list, last_message inline, limit param
+   - GET .../messages: chronological order, system filter, limit param (most-recent N),
+     before= cursor (older history), 404 for missing conv
+   - /health/ready: 200 with connected pool
+
+**Key technical decisions**:
+- DB `influencer_id` → wire `ai_influencer_id` mapping in `_row_to_conversation_response()`
+  (single mapping point per convention)
+- LATERAL JOIN in list_conversations_by_user: avoids N+1 reads for inbox load
+- DESC-then-ASC subquery in list_messages: "most recent N in chronological order"
+  semantic matches both orchestrator LLM context fetch and mobile scroll-up UX
+- No auth on RPC routes: C3 Swarm overlay trust + E6 X-User-Id trust; external
+  JWT validation lives in public-api
+- IS NOT DISTINCT FROM for upsert NULL equality: correct NULL=NULL comparison
+  without special-casing NULLable columns
+
+**Next**: Deliverable 3 (ETL migration plan draft on session-5/etl-plan-day-9-draft).
+
+---
+
 ### 2026-05-22 — Deliverable 1: user-memory-service schema + Alembic migration
 
 **Branch**: session-5/user-memory-schema-and-migration

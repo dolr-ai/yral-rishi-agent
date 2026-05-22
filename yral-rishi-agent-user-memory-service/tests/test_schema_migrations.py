@@ -196,13 +196,17 @@ async def test_conversations_table_has_correct_columns(
 async def test_messages_table_has_correct_columns(
     database_pool: asyncpg.Pool,
 ) -> None:
-    """WHAT: verify `messages` has the exact column set from the migration spec.
-    WHEN: after `alembic upgrade head` runs (conftest guarantees this).
+    """WHAT: verify `messages` has the exact column set from both migrations.
+    WHEN: after `alembic upgrade head` runs (conftest guarantees this) — which
+          applies 001 (7 base columns) then 002 (adds client_message_id +
+          count_toward_paywall for a total of 9).
     WHY:  catches column name typos or missing columns that would cause
-          the Deliverable 2 repository layer to 500 on every insert.
+          the Deliverable 2 route handlers to 500 on every insert or select.
     """
-    # Expected columns per 001_initial_schema.upgrade() — each name is
-    # the exact SQL identifier used in the CREATE TABLE statement.
+    # Expected columns per 001_initial_schema.upgrade() (7 base columns)
+    # + 002_add_message_fields.upgrade() (2 additional columns).
+    # Each name is the exact SQL identifier used in the CREATE TABLE /
+    # ALTER TABLE statement.
     expected_columns = {
         "id",
         "conversation_id",
@@ -211,6 +215,9 @@ async def test_messages_table_has_correct_columns(
         "media_urls",
         "created_at",
         "gemini_metadata",
+        # Added by 002_add_message_fields:
+        "client_message_id",
+        "count_toward_paywall",
     }
 
     async with database_pool.acquire() as conn:
