@@ -3,6 +3,295 @@
 
 ## OPEN
 
+### DEP-010 — Template fixture filename collides with D8/J5 hygiene (literal `.env.local` in test fixtures shouldn't exist); rename fixture + runtime-copy pattern across template + 3 spawned services
+
+Raised: 2026-05-21 by Session 1 (diagnosed while triaging Day-7 CI-red gate on soul-file-library post-PR-#118); rewritten 2026-05-22 by coordinator after Codex BLOCKERs on PR #121 round 1.
+
+What:    The repo-root `.gitignore:25` is the unscoped glob
+         `.env.local`. This is correct + intentional + must NOT
+         be weakened — per D8/J5, any file literally named
+         `.env.local` is forbidden from being committed (the
+         rule's whole purpose is preventing real local secrets
+         from accidentally landing in git history).
+
+         But the template ships test fixtures at
+         `<service>/scripts/tests/fixtures/valid/.env.local`
+         (and similar paths) — using the literal filename
+         `.env.local` for fixtures collides with the hygiene
+         rule by design. When `new-service.sh` spawns a service
+         from the template, the spawned `.env.local` fixture
+         is copied to disk but then silently dropped on `git
+         add` because of the gitignore rule. The spawned
+         `secrets.yaml` (sibling fixture) commits cleanly;
+         only the `.env.local`-named files are swallowed.
+
+         Per-service `scripts/tests/test_validate_secrets.sh`'s
+         happy-path test exercises `validate-secrets.sh` against
+         the fixture pair `{secrets.yaml + complete .env.local}`
+         and expects exit-0. With `.env.local` missing, the
+         validator correctly reports EXIT_MISSING_VALUE → exit 1 →
+         the happy-path case fails. The other 4 negative-path
+         cases still pass because the validator does the right
+         thing — only the happy path needs the present-and-
+         populated fixture pair.
+
+         Per-service repo-wide audit (`git ls-files --error-unmatch
+         <svc>/scripts/tests/fixtures/valid/.env.local`):
+
+         | Service                                                | valid/.env.local tracked? | CI on main           |
+         |---                                                     |---                        |---                   |
+         | yral-rishi-agent-new-service-template                  | YES (force-added)         | N/A — no CI          |
+         | yral-rishi-agent-conversation-turn-orchestrator        | YES (force-added)         | green                |
+         | yral-rishi-agent-soul-file-library                     | NO                        | red since ≥07:01Z    |
+         | yral-rishi-agent-public-api                            | NO                        | red since 2026-05-20 |
+         | yral-rishi-agent-influencer-and-profile-directory      | NO                        | red since ≥07:17Z    |
+
+         Template + orchestrator have force-added the fixture
+         (likely via `git add -f` when the author noticed the
+         miss). The other 3 spawned services don't — the bug
+         silently cascaded into them at spawn time. Note:
+         the force-added entries on template + orchestrator
+         are ALSO hygiene violations under D8/J5; they just
+         don't fail CI because the fixture is present. They
+         need to be migrated to the renamed-fixture pattern
+         too.
+
+Why:     Session 1 hit this on 2026-05-21 while diagnosing why
+         the post-PR-#118 ci-yral-rishi-agent-soul-file-library
+         workflow_dispatch run came back YELLOW (shell-tests job
+         FAILED while docker-build + docker-push-to-ghcr both
+         succeeded). We proceeded with the soul-file alembic
+         operator-action despite YELLOW CI because the failing
+         job was unrelated to the runtime artifact + the failure
+         was pre-existing (not caused by PR #118). See
+         SESSION-1-LOG.md PR #119 entry's Section 5 ("Pre-existing
+         CI-red disclaimer") for the precedent-setting paragraph
+         that documents this proceed-with-yellow decision.
+
+         The CI signal is real even if non-blocking: 3 of 4
+         spawned services have red CI on main, and that's
+         actively eroding the value of CI as a quality signal
+         across the v2 build. Every future PR to those 3
+         services lands against a red-on-main baseline, making
+         it harder to detect new failures.
+
+         Coordinator's first draft of this DEP (committed as
+         PR #121 round 1) proposed scoping the `.gitignore`
+         rule with a path-exempt negation pattern + force-
+         adding the fixtures. Codex BLOCKER-correctly flagged
+         both: (a) scoping the rule weakens D8/J5 hygiene
+         exactly where it matters; (b) routing Session 2 to
+         edit fixture files inside Session 3/4 service
+         folders is a scope violation. This rewrite addresses
+         both — no `.gitignore` edit + per-owner routing.
+
+Scope —  Per-owner fix routing. NO `.gitignore` edit.
+who fixes:
+
+         **A1 hard-stop applies to every fixture migration
+         in this DEP.** The literal filename `.env.local` is
+         in A1's env/config/secrets-shaped hard-stop class
+         (CONSTRAINTS.md A1) — even when the contents are
+         fixture data, not real secrets. EACH affected
+         session's rename/migration PR MUST:
+
+         - Obtain Rishi's typed YES BEFORE staging the
+           `git rm` / `git mv` step for any tracked
+           `.env.local` path (one typed YES covers the full
+           rename + migration for that one service's fixture
+           set; does NOT need a fresh YES per file).
+         - Include in the PR body the FULL A1 deletion
+           safety report in the required format (no
+           alternative; A1 treats env/config/secrets-shaped
+           files as hard-stop items and the full report is
+           required for the old-path deletion that any
+           rename implies):
+              Deletion performed:
+              - Deleted:
+              - Reason:
+              - Safety checks performed:
+              - References checked:
+              - Why this was safe:
+              - Tests/builds run:
+              - Rollback plan:
+           If the operation is purely a content-preserving
+           `git mv` (path-preserving move, reversible via
+           `git mv` in the other direction), the PR body
+           MAY additionally note that fact to clarify the
+           operation's nature — but the additional note
+           does NOT substitute for the A1 deletion report
+           above.
+         - Verify post-merge that the literal `.env.local`
+           path is gone from the tracked tree for that
+           service (no leftover under `git ls-files`).
+
+         **Session 2 (template — root of the fix tree)**:
+         - Rename the fixture file in the template from
+           `.env.local` to `env.local.fixture` (or another
+           name not matching the D8/J5 hygiene rule —
+           `env.local.fixture` is the suggested form; final
+           choice up to Session 2).
+         - Update `scripts/tests/test_validate_secrets.sh` in
+           the template to copy `env.local.fixture` → a temp
+           `.env.local` inside a temp directory at test
+           runtime (e.g. `mktemp -d`); run the validator
+           against that temp dir; cleanup at test end. The
+           literal `.env.local` filename never exists in the
+           checked-in tree but DOES exist transiently when
+           the validator runs.
+         - Update `new-service.sh` (or its post-spawn
+           verification step) to assert post-spawn that
+           `env.local.fixture` is PRESENT in the spawned
+           service folder AND would be added by `git add
+           --dry-run` (i.e., not ignored by `.gitignore`).
+           Fail the spawn loudly if either check fails —
+           catches future cases where the rename pattern
+           drifts. Note: this check does NOT require the
+           file to already be staged in git (the spawn
+           script doesn't stage files itself); it only
+           verifies the file exists on disk + would not be
+           silently swallowed by `.gitignore` if a caller
+           did `git add`.
+         - Migrate the template's currently-force-added
+           `.env.local` fixture file to the new
+           `env.local.fixture` filename; remove the literal
+           `.env.local` from the template's tracked tree.
+
+         **Session 3 (public-api)**:
+         - After Session 2's template change lands, backport
+           the rename + runtime-copy pattern into public-api
+           (move `env.local.fixture` to be tracked; update
+           public-api's `scripts/tests/test_validate_secrets.sh`
+           to match the template's new runtime-copy approach).
+         - This restores green CI for public-api.
+
+         **Session 4 (soul-file-library + influencer-and-
+         profile-directory)**:
+         - After Session 2's template change lands, backport
+           the rename + runtime-copy pattern into both
+           services Session 4 owns.
+         - Conversation-turn-orchestrator (also Session 4-
+           owned) needs its currently-force-added
+           `.env.local` migrated to `env.local.fixture` for
+           hygiene parity.
+         - This restores green CI for soul-file + influencer.
+
+         **Coordinator**:
+         - NO `.gitignore` edit. The rule stays as-is.
+         - Optionally: add a one-line comment above
+           `.gitignore:25` documenting that fixture files
+           must use `env.local.fixture` (or equivalent),
+           never the literal `.env.local`. Documentation only;
+           does NOT change the rule itself.
+
+Blocks:  BLOCKS PR merges + deploy promotions on the three
+         affected services (soul-file-library, public-api,
+         influencer-and-profile-directory) by default. The
+         shell-tests job is red-on-main for those services;
+         per I10 / I2 / J4, CI gates must be trusted and
+         green for routine work to proceed.
+
+         EXPLICIT EXCEPTION REQUIRED for any work that
+         proceeds while affected-service CI is red. Each
+         exception must be (a) documented in the proceeding
+         PR's body with the specific reason red CI does not
+         undermine that PR's claims, AND (b) recorded as a
+         one-off, NOT normalized as a recurring pattern. The
+         coordinator records each exception in the PR body
+         plus `decision-log.md` (or `daily-reports/`); if a
+         session log must mention it, the owning session
+         adds an append-only follow-up entry to its
+         SESSION-N-LOG.md rather than editing existing
+         entry bodies (per I11 append-only discipline).
+
+         One such exception was recorded on 2026-05-21 for
+         the soul-file Day-7 alembic operator-action (see
+         SESSION-1-LOG.md PR #119 entry's Section 5 — "Pre-
+         existing CI-red disclaimer"). That exception was
+         based on: (i) failing job unrelated to runtime
+         artifact, (ii) failure pre-existed the PR, (iii)
+         this DEP routed the fix in parallel. The same
+         three criteria are the bar for any future
+         exception; absent all three, the default block
+         applies.
+
+         IN SCOPE FOR THIS DEP'S MIGRATION ASK: every service
+         with a tracked literal `.env.local` fixture path —
+         that's all 5 (template + orchestrator + soul-file +
+         public-api + influencer). The 3 red-CI services
+         block first because their CI signal is broken; the
+         2 green-CI services (template + orchestrator) are
+         silent D8/J5 hygiene violations that ALSO need
+         migration, just on a less-urgent timeline.
+
+         Routine PRs that touch any tracked `.env.local` path
+         in any of those 5 must either (a) include the
+         fixture migration as part of the PR (with the A1
+         typed-YES gate above), (b) be the dedicated
+         migration PR for that service, or (c) carry the
+         same explicit one-off exception rationale (three-
+         criteria justification) as a red-CI exception.
+
+         Phase 1 work that does NOT touch any tracked
+         `.env.local` path is unaffected by THIS DEP's
+         fixture-migration requirement specifically. Normal
+         CI gates still apply to all PRs — any PR proceeding
+         while affected-service CI is red still needs the
+         explicit one-off exception (three-criteria
+         justification) defined above; this DEP does not
+         relax I10/I2/J4 for anything.
+
+ETA needed: No hard calendar date. Phase 1 close.
+
+Suggested
+resolution: Sequential per-owner ordering — Session 2 first
+         (template change is the root; nothing else can land
+         meaningfully without it), then Sessions 3 + 4
+         backport in parallel against the new template
+         pattern.
+
+         Sequence:
+         1. Session 2: template rename + runtime-copy + spawn-
+            time check. Single PR. Test by running the
+            template's `test_validate_secrets.sh` against the
+            new pattern locally before push. (Template has no
+            CI per the audit table; CI green/red doesn't apply
+            here.)
+         2. Session 3: public-api backport in a separate PR.
+            Restores public-api CI to green.
+         3. Session 4: soul-file backport + influencer
+            backport + orchestrator hygiene migration.
+            Coordinator recommends separate PRs by default
+            for clarity (one PR per service migration; makes
+            each fixture rename + test refactor + post-merge
+            CI restoration auditable independently). This
+            is a coordinator process recommendation, NOT an
+            A2.1 constraint — A2.1 itself only mandates
+            stopping for Rishi confirmation when a fix
+            exceeds 100 lines, becomes multi-step,
+            introduces abstractions/dependencies, or
+            otherwise becomes elaborate. If bundling the
+            three migrations together would cross any of
+            those A2.1 thresholds, Session 4 STOPs and gets
+            Rishi confirmation before bundling. The same
+            applies to Session 3's public-api backport if
+            it expands beyond the single fixture path.
+         4. Coordinator (optional): one-line comment on
+            `.gitignore:25` documenting the fixture-rename
+            requirement.
+
+How spotted:
+         Session 1 diagnosis 2026-05-21 morning while
+         triaging the soul-file Day-7 CI-red gate after PR
+         #118 (alembic.ini bundle) merged. Full diagnosis
+         pasted into the coordinator session + captured
+         verbatim in SESSION-1-LOG.md PR #119 entry's
+         Section 5 + this DEP entry's tables above. Codex
+         BLOCKER on PR #121 round 1 (2026-05-22) corrected
+         coordinator's first-draft fix proposal — credit to
+         Codex for catching both the D8/J5 hygiene collision
+         + the scope violation.
+
 ### DEP-009 — Session 3 needs to install H5 prompt-injection middleware in public-api (pre-orchestration placement) to satisfy CONSTRAINTS H5 verbatim
 
 Raised: 2026-05-20 by Session 4 (PR #112 — Day-6 safety stack restoration)
