@@ -3,19 +3,27 @@
 
 ## OPEN
 
-### DEP-010 — Session 2 must fix template fixture bug: repo-root `.gitignore:25` silently swallows `scripts/tests/fixtures/valid/.env.local` at spawn time, leaving 3 of 4 spawned services with a failing `test_validate_secrets.sh` happy-path
+### DEP-010 — Template fixture filename collides with D8/J5 hygiene (literal `.env.local` in test fixtures shouldn't exist); rename fixture + runtime-copy pattern across template + 3 spawned services
 
-Raised: 2026-05-21 by Session 1 (diagnosed while triaging Day-7 CI-red gate on soul-file-library post-PR-#118)
+Raised: 2026-05-21 by Session 1 (diagnosed while triaging Day-7 CI-red gate on soul-file-library post-PR-#118); rewritten 2026-05-22 by coordinator after Codex BLOCKERs on PR #121 round 1.
 
 What:    The repo-root `.gitignore:25` is the unscoped glob
-         `.env.local`. It matches at every nested level, including
-         the template's per-service test fixtures at
-         `<service>/scripts/tests/fixtures/valid/.env.local`. When
-         `new-service.sh` spawns a service from the template, the
-         spawned `.env.local` fixture is copied to disk but then
-         silently dropped on `git add` because of the unscoped
-         gitignore rule. The spawned `secrets.yaml` (sibling
-         fixture) commits cleanly; only `.env.local` is swallowed.
+         `.env.local`. This is correct + intentional + must NOT
+         be weakened — per D8/J5, any file literally named
+         `.env.local` is forbidden from being committed (the
+         rule's whole purpose is preventing real local secrets
+         from accidentally landing in git history).
+
+         But the template ships test fixtures at
+         `<service>/scripts/tests/fixtures/valid/.env.local`
+         (and similar paths) — using the literal filename
+         `.env.local` for fixtures collides with the hygiene
+         rule by design. When `new-service.sh` spawns a service
+         from the template, the spawned `.env.local` fixture
+         is copied to disk but then silently dropped on `git
+         add` because of the gitignore rule. The spawned
+         `secrets.yaml` (sibling fixture) commits cleanly;
+         only the `.env.local`-named files are swallowed.
 
          Per-service `scripts/tests/test_validate_secrets.sh`'s
          happy-path test exercises `validate-secrets.sh` against
@@ -23,10 +31,9 @@ What:    The repo-root `.gitignore:25` is the unscoped glob
          and expects exit-0. With `.env.local` missing, the
          validator correctly reports EXIT_MISSING_VALUE → exit 1 →
          the happy-path case fails. The other 4 negative-path
-         cases (missing/incomplete .env.local, malformed/missing
-         secrets.yaml) still pass because the validator is doing
-         the right thing — only the happy path needs the present-
-         and-populated fixture pair.
+         cases still pass because the validator does the right
+         thing — only the happy path needs the present-and-
+         populated fixture pair.
 
          Per-service repo-wide audit (`git ls-files --error-unmatch
          <svc>/scripts/tests/fixtures/valid/.env.local`):
@@ -42,7 +49,12 @@ What:    The repo-root `.gitignore:25` is the unscoped glob
          Template + orchestrator have force-added the fixture
          (likely via `git add -f` when the author noticed the
          miss). The other 3 spawned services don't — the bug
-         silently cascaded into them at spawn time.
+         silently cascaded into them at spawn time. Note:
+         the force-added entries on template + orchestrator
+         are ALSO hygiene violations under D8/J5; they just
+         don't fail CI because the fixture is present. They
+         need to be migrated to the renamed-fixture pattern
+         too.
 
 Why:     Session 1 hit this on 2026-05-21 while diagnosing why
          the post-PR-#118 ci-yral-rishi-agent-soul-file-library
@@ -63,38 +75,70 @@ Why:     Session 1 hit this on 2026-05-21 while diagnosing why
          services lands against a red-on-main baseline, making
          it harder to detect new failures.
 
-Scope —  Template (Session 2) owns the underlying bug shape
+         Coordinator's first draft of this DEP (committed as
+         PR #121 round 1) proposed scoping the `.gitignore`
+         rule with a path-exempt negation pattern + force-
+         adding the fixtures. Codex BLOCKER-correctly flagged
+         both: (a) scoping the rule weakens D8/J5 hygiene
+         exactly where it matters; (b) routing Session 2 to
+         edit fixture files inside Session 3/4 service
+         folders is a scope violation. This rewrite addresses
+         both — no `.gitignore` edit + per-owner routing.
+
+Scope —  Per-owner fix routing. NO `.gitignore` edit.
 who fixes:
-         (the `.gitignore` rule + the template's fixture
-         spawn-time handling). Per I9, repo-root `.gitignore`
-         is coordinator-territory (same logic as
-         `.github/workflows/`), so the actual `.gitignore` edit
-         is coordinator-owned; the per-service fixture force-
-         adds are Session 2 / per-session work.
 
-         Two-path fix:
-         - **Path A (coordinator)**: scope the `.gitignore:25`
-           rule. Replace unscoped `.env.local` with a path-
-           negation pattern that exempts the fixture directory,
-           e.g.:
-               .env.local
-               !*/scripts/tests/fixtures/valid/.env.local
-               !*/scripts/tests/fixtures/*/.env.local
-           Or equivalent. The aim: developer-local .env.local
-           files at service roots stay gitignored; fixture
-           .env.local files inside scripts/tests/fixtures/
-           DO get tracked.
+         **Session 2 (template — root of the fix tree)**:
+         - Rename the fixture file in the template from
+           `.env.local` to `env.local.fixture` (or another
+           name not matching the D8/J5 hygiene rule —
+           `env.local.fixture` is the suggested form; final
+           choice up to Session 2).
+         - Update `scripts/tests/test_validate_secrets.sh` in
+           the template to copy `env.local.fixture` → a temp
+           `.env.local` inside a temp directory at test
+           runtime (e.g. `mktemp -d`); run the validator
+           against that temp dir; cleanup at test end. The
+           literal `.env.local` filename never exists in the
+           checked-in tree but DOES exist transiently when
+           the validator runs.
+         - Update `new-service.sh` (or its post-spawn
+           verification step) to assert post-spawn that
+           `env.local.fixture` IS tracked in git for the
+           spawned service. Fail the spawn loudly if not —
+           that catches future cases where the rename pattern
+           drifts.
+         - Migrate the template's currently-force-added
+           `.env.local` fixture file to the new
+           `env.local.fixture` filename; remove the literal
+           `.env.local` from the template's tracked tree.
 
-         - **Path B (Session 2 backport)**: after Path A lands,
-           force-add the three currently-missing fixture
-           .env.local files (soul-file, public-api, influencer)
-           with `git add -f` and commit. ALSO update the
-           template's spawn-time logic in `new-service.sh` (or
-           its post-spawn step) to verify `.env.local` was
-           actually added — fail the spawn loudly if the fixture
-           file is on disk but not tracked, so future spawns
-           don't silently re-create this bug if the gitignore
-           ever drifts.
+         **Session 3 (public-api)**:
+         - After Session 2's template change lands, backport
+           the rename + runtime-copy pattern into public-api
+           (move `env.local.fixture` to be tracked; update
+           public-api's `scripts/tests/test_validate_secrets.sh`
+           to match the template's new runtime-copy approach).
+         - This restores green CI for public-api.
+
+         **Session 4 (soul-file-library + influencer-and-
+         profile-directory)**:
+         - After Session 2's template change lands, backport
+           the rename + runtime-copy pattern into both
+           services Session 4 owns.
+         - Conversation-turn-orchestrator (also Session 4-
+           owned) needs its currently-force-added
+           `.env.local` migrated to `env.local.fixture` for
+           hygiene parity.
+         - This restores green CI for soul-file + influencer.
+
+         **Coordinator**:
+         - NO `.gitignore` edit. The rule stays as-is.
+         - Optionally: add a one-line comment above
+           `.gitignore:25` documenting that fixture files
+           must use `env.local.fixture` (or equivalent),
+           never the literal `.env.local`. Documentation only;
+           does NOT change the rule itself.
 
 Blocks:  Does NOT block any active work. All v2 services that
          need to ship Phase 1 (public-api, orchestrator, soul-
@@ -112,14 +156,30 @@ Blocks:  Does NOT block any active work. All v2 services that
 ETA needed: No hard calendar date. Phase 1 close.
 
 Suggested
-resolution: Path A first (coordinator scopes the .gitignore),
-         then Path B (Session 2 force-adds the 3 missing
-         fixtures + adds spawn-time verification). Both paths
-         are small (.gitignore edit is 2-3 lines; the 3 force-
-         adds are sub-second commits; the spawn-time check is
-         one bash one-liner). Coordinator should land Path A
-         before Session 2 starts Path B so Session 2's commits
-         don't need `git add -f`.
+resolution: Sequential per-owner ordering — Session 2 first
+         (template change is the root; nothing else can land
+         meaningfully without it), then Sessions 3 + 4
+         backport in parallel against the new template
+         pattern.
+
+         Sequence:
+         1. Session 2: template rename + runtime-copy + spawn-
+            time check. Single PR. Test by running the
+            template's `test_validate_secrets.sh` against the
+            new pattern locally before push. (Template has no
+            CI per the audit table; CI green/red doesn't apply
+            here.)
+         2. Session 3: public-api backport in a separate PR.
+            Restores public-api CI to green.
+         3. Session 4: soul-file backport + influencer
+            backport + orchestrator hygiene migration in
+            separate PRs (one per service per A2.1 single-
+            concern; bundled bundle is also OK if all three
+            share identical mechanical shape per A2.1's
+            "bundled if shape-identical" carve-out).
+         4. Coordinator (optional): one-line comment on
+            `.gitignore:25` documenting the fixture-rename
+            requirement.
 
 How spotted:
          Session 1 diagnosis 2026-05-21 morning while
@@ -127,7 +187,11 @@ How spotted:
          #118 (alembic.ini bundle) merged. Full diagnosis
          pasted into the coordinator session + captured
          verbatim in SESSION-1-LOG.md PR #119 entry's
-         Section 5 + this DEP entry's tables above.
+         Section 5 + this DEP entry's tables above. Codex
+         BLOCKER on PR #121 round 1 (2026-05-22) corrected
+         coordinator's first-draft fix proposal — credit to
+         Codex for catching both the D8/J5 hygiene collision
+         + the scope violation.
 
 ### DEP-009 — Session 3 needs to install H5 prompt-injection middleware in public-api (pre-orchestration placement) to satisfy CONSTRAINTS H5 verbatim
 
