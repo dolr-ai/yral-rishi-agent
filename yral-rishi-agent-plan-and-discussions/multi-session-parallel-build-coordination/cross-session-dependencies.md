@@ -3,6 +3,81 @@
 
 ## OPEN
 
+### DEP-011 — Session 3 needs to flip ENVIRONMENT default from `production` to `staging` in public-api's `docker-compose.swarm.yml` to match v2 dev cluster reality
+
+Raised: 2026-05-22 by Session 4 (PR-A — Day-8 env-gate fix)
+
+What:    Today's PR-A flipped `ENVIRONMENT: ${ENVIRONMENT:-production}` →
+         `ENVIRONMENT: ${ENVIRONMENT:-staging}` in 3 Session-4 service
+         composes (conversation-turn-orchestrator + soul-file-library +
+         influencer-and-profile-directory) — see SESSION-4-LOG.md
+         2026-05-22 PR-A entry. The same one-line fix needs to land in
+         `yral-rishi-agent-public-api/docker-compose.swarm.yml:68` to
+         keep all 4 v2 services in lockstep on the dev cluster's
+         ENVIRONMENT label. Session 4 cannot edit Session 3's
+         public-api files per I9 + the agent-definition split.
+
+Why:     Coherent observability across the v2 services on rishi-4/5/6.
+         Sentry + Langfuse both key event tagging on `environment`;
+         the staging-vs-production split as it stands today means
+         orchestrator + soul-file + influencer events post-PR-A land
+         tagged `staging`, while public-api events stay tagged
+         `production`. Searching "all events on the dev cluster" in
+         Sentry / Langfuse becomes ambiguous (which tag query do you
+         run?) and the production-vs-dev signal is muddied across the
+         service surface.
+
+         Unlike orchestrator, public-api does NOT have a per-request
+         `environment == "production"` gate that would HARD-BREAK
+         traffic today; the public-api fix is observability hygiene,
+         not a runtime bug. But it IS still real — every chat request
+         that touches public-api logs Sentry/Langfuse events with the
+         wrong env label.
+
+Blocks:  No hard block. Mobile-test parity for run_turn was the
+         orchestrator-side problem and is closed by PR-A. Public-api
+         continues serving traffic with mis-labeled events until this
+         is fixed.
+
+ETA needed: Ideally same Day-8 cycle so all 4 services land staging-
+         labeled together. No hard calendar date.
+
+Suggested
+resolution: One-line change in `yral-rishi-agent-public-api/docker-
+         compose.swarm.yml:68`:
+
+             ENVIRONMENT: ${ENVIRONMENT:-production}
+                                          ↓
+             ENVIRONMENT: ${ENVIRONMENT:-staging}
+
+         Optional: add the same role-comment block PR-A added in the
+         other 3 services explaining why staging not production (A6
+         cutover, gate placement, Sentry/Langfuse tagging). Comment
+         can be copied verbatim from any of the 3 fixed composes;
+         the `app/run_turn.py:417` reference can stay as a cross-
+         service pointer to make the cluster-wide intent visible
+         (public-api doesn't host that gate, but the comment makes
+         the v2-dev-vs-prod label discipline legible to future
+         readers regardless of which service compose they open).
+
+         `.yml`-only diff, no Python touched. **NOT I14 auto-merge
+         eligible** — the YAML change is behavior-changing (flips
+         public-api's runtime ENVIRONMENT label), which falls outside
+         I14's narrow allowance for .md-only / test-only / lint-only
+         / comment-only changes. Coordinator manually merges Session
+         3's PR via `gh pr merge <N> --squash` after Codex APPROVE,
+         same shape as PR-A.
+
+How spotted:
+         Mobile testing 2026-05-22 surfaced the orchestrator-side
+         per-request gate firing. While triaging the gate's predicate
+         Session 4 grep'd `ENVIRONMENT` across all 4 service composes
+         + found the same default value template-wide. PR-A fixed the
+         3 services in Session 4's legitimate scope; this DEP is the
+         pointer for the public-api half.
+
+---
+
 ### DEP-010 — Template fixture filename collides with D8/J5 hygiene (literal `.env.local` in test fixtures shouldn't exist); rename fixture + runtime-copy pattern across template + 3 spawned services
 
 Raised: 2026-05-21 by Session 1 (diagnosed while triaging Day-7 CI-red gate on soul-file-library post-PR-#118); rewritten 2026-05-22 by coordinator after Codex BLOCKERs on PR #121 round 1.

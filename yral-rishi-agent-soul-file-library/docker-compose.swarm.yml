@@ -65,7 +65,15 @@ services:
     # Day 2). This keeps secrets out of `docker inspect` output and out
     # of process env vars (which can leak via /proc/<pid>/environ).
     environment:
-      ENVIRONMENT: ${ENVIRONMENT:-production}
+      # `staging` matches reality: rishi-4/5/6 is the v2 DEV cluster, NOT
+      # production — A6 cutover hasn't happened. Label flows into Sentry
+      # + Langfuse event tagging across all Session-4 services AND the
+      # orchestrator's per-request run_turn gate at `app/run_turn.py:417`
+      # in conversation-turn-orchestrator (which 503s every chat request
+      # when its own `environment` reads `production`). A6 typed-YES is
+      # the only path to flip these labels to production; keeping all 3
+      # services in lockstep avoids split Sentry/Langfuse tagging.
+      ENVIRONMENT: ${ENVIRONMENT:-staging}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
 
     # Entrypoint wrapper — Day-7 secret-file → env-var bridge per D8
