@@ -1077,6 +1077,11 @@ class _FakeSoulFileClient:
 
 _TEST_INFLUENCER_ID_FOR_DAY_5: str = "11111111-2222-3333-4444-555555555555"
 
+# Distinct from _TEST_INFLUENCER_ID_FOR_DAY_5 so the precedence test below
+# can definitively prove the per-request value wins (both are configured;
+# the soul-file mock receives the per-request value, not the env fallback).
+_TEST_INFLUENCER_ID_PER_REQUEST: str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
 
 def test_run_turn_real_llm_path_returns_llm_reply_content_in_message_response(
     monkeypatch: pytest.MonkeyPatch, client: TestClient,
@@ -1147,6 +1152,83 @@ def test_run_turn_real_llm_path_returns_llm_reply_content_in_message_response(
     assert fake_llm.calls[0]["user_message"] == "ping the real LLM path"
     assert fake_llm.calls[0]["temperature"] == 0.7
     assert fake_llm.calls[0]["max_tokens"] == 800
+
+
+def test_run_turn_real_llm_path_uses_per_request_influencer_id_when_provided(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient,
+) -> None:
+    """WHAT: when RunTurnRequest carries a non-None `influencer_id`,
+          the orchestrator uses that value for the soul-file Layer-3
+          lookup — NOT the env-var fallback. Confirmed by asserting
+          the mock soul-file client receives the per-request value
+          even when the env var is ALSO set (env fallback would
+          otherwise route there).
+    WHEN: PR-B2 lands (Session 3's public-api forwards per-request
+          influencer_id). This test is the regression gate that
+          ensures the precedence stays correct through PR-B2 + into
+          PR-B3 (which removes the fallback + makes the field
+          required — at which point this test continues passing
+          unchanged, since it doesn't depend on the fallback branch).
+    WHY:  PR-B1 keeps the env-var fallback for backwards-
+          compatibility so public-api can roll out PR-B2 without a
+          contract-break window. The per-request-wins precedence is
+          the load-bearing contract the 3-PR plan rides on; a
+          regression that inverted the precedence (env wins over
+          request) would silently route real chat-turn traffic
+          through the placeholder influencer instead of the user's
+          actual chosen AI Influencer, and Codex's review-flow
+          can't catch that semantically — only a precedence-asserting
+          test like this one catches it.
+
+          The companion env-fallback path is already covered by
+          `test_run_turn_real_llm_path_returns_llm_reply_content_in_
+          message_response` above (no `influencer_id` in request body
+          → fallback resolves to `_TEST_INFLUENCER_ID_FOR_DAY_5` →
+          soul-file client receives the env value).
+    """
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("ENABLE_RUN_TURN_REAL_LLM", "true")
+    # Env fallback IS populated — would resolve to this value if the
+    # per-request value were absent. Test proves per-request wins
+    # despite the env being set; without that proof, a regression
+    # could fall through to the env even when the request carried a
+    # real influencer_id + we'd never notice in observability.
+    monkeypatch.setenv(
+        "DAY_5_PLACEHOLDER_AI_INFLUENCER_ID", _TEST_INFLUENCER_ID_FOR_DAY_5,
+    )
+
+    fake_llm = _FakeLlmClient(reply_content="reply via per-request influencer_id")
+    fake_soul_file = _FakeSoulFileClient(
+        layered_prompt="composed prompt for the per-request influencer",
+    )
+    monkeypatch.setattr(
+        "app.run_turn.get_default_llm_client", lambda: fake_llm,
+    )
+    monkeypatch.setattr(
+        "app.run_turn.get_soul_file_client", lambda: fake_soul_file,
+    )
+
+    response = client.post(
+        "/v1/turn",
+        json={
+            "conversation_id": "per-request-influencer-test-conversation-001",
+            "user_message": "test that per-request influencer_id wins",
+            "influencer_id": _TEST_INFLUENCER_ID_PER_REQUEST,
+        },
+        headers=_required_headers(
+            idempotency_key="550e8400-e29b-41d4-a716-446655440060",
+        ),
+    )
+
+    assert response.status_code == 200, response.text
+
+    # Soul-file lookup ran with the per-request value, NOT the env fallback.
+    # Both assertions matter: equality verifies the per-request value was
+    # used; inequality with the env value rules out the case where they
+    # happened to coincide (which would mask a precedence regression).
+    assert len(fake_soul_file.calls) == 1
+    assert fake_soul_file.calls[0]["influencer_id"] == _TEST_INFLUENCER_ID_PER_REQUEST
+    assert fake_soul_file.calls[0]["influencer_id"] != _TEST_INFLUENCER_ID_FOR_DAY_5
 
 
 def test_run_turn_real_llm_path_returns_504_envelope_on_llm_timeout(

@@ -2,6 +2,73 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-22 — Day-8 PR-B1: widen RunTurnRequest with optional `influencer_id` + env-var fallback for backwards-compatibility (3-PR plan step 1 of 3)
+
+### Status
+**Step 1 of the 3-PR per-request influencer_id wiring plan ships.** PR-B1 widens `RunTurnRequest` with an OPTIONAL `influencer_id` field — when the public-api forwards it, the orchestrator uses it directly for the soul-file Layer-3 lookup; when absent, the orchestrator falls back to the `day_5_placeholder_ai_influencer_id` env-var setting (preserving the Day-5 single-influencer behavior). The optional shape is the backwards-compatibility hinge: PR-B1 ships first without breaking public-api's current calling pattern; PR-B2 (Session 3, coordinator-queued) starts forwarding per-request `influencer_id`; PR-B3 (Session 4, later) removes the env-var fallback + makes the field required.
+
+After PR-B2 lands the orchestrator will compose a real influencer's Soul File prompt per chat turn instead of always reading the placeholder env var. For Day-8 the first end-to-end smoke against a real influencer targets a NON-NSFW row per coordinator route — Tara routing through OpenRouter is Phase-2 follow-up needing OpenRouter API key on cluster (separate Session-1 secret-push job) + the LLM-routing matrix wired per memory `reference_yral_chat_v2_llm_routing_tara`.
+
+### What's changing
+
+**`app/models/turn.py`** — add optional field + update file-header to acknowledge the new body field:
+
+```python
+influencer_id: str | None = None
+```
+
+The role-comment above the field documents the 3-PR plan + the fallback semantics + the PR-B3 future-required-flip; the file-header gets a parallel paragraph so a reader landing on `RunTurnRequest` from elsewhere sees the new shape without re-deriving it.
+
+**`app/run_turn.py`** — `_generate_real_llm_reply` resolves influencer_id from request OR env fallback:
+
+```python
+resolved_influencer_id = (
+    request.influencer_id
+    or settings.day_5_placeholder_ai_influencer_id
+)
+if not resolved_influencer_id:
+    raise RuntimeError(...)  # updated message naming both paths
+```
+
+Empty-string-rejecting RuntimeError preserved + message updated to name both fail-through paths (no per-request value AND empty env var). RuntimeError shape unchanged → handler maps to same 500. The Python `or` short-circuit handles the `request.influencer_id is None` case + the (unlikely) `request.influencer_id == ""` case identically — both fall through to the env var, both raise the RuntimeError when env is also empty, both succeed when env is populated.
+
+Bonus observability field: `influencer_id_source` (`"request"` vs `"env_fallback"`) added to the `soul_file_compose_succeeded` log line. Operators grep Langfuse traces + structured logs to confirm public-api has started forwarding per-request `influencer_id` after PR-B2 lands — a sudden shift from `env_fallback` → `request` in production traces is the canonical signal that PR-B2 is wired correctly + PR-B3 is unblocked. The field disappears at PR-B3 when the env fallback is removed.
+
+**`tests/test_run_turn.py`** — 1 focused test for the precedence: `test_run_turn_real_llm_path_uses_per_request_influencer_id_when_provided`. Env-fallback path coverage stays in the existing `test_run_turn_real_llm_path_returns_llm_reply_content_in_message_response` (no request-body `influencer_id` → resolver picks env var → soul-file mock receives the env value `_TEST_INFLUENCER_ID_FOR_DAY_5`). New test sets BOTH the env var AND a per-request value (different UUIDs), asserts the soul-file mock receives the per-request UUID + does NOT receive the env UUID — the dual assertion rules out the case where the values happened to coincide + mask a precedence regression.
+
+### Why optional + fallback, not require + break
+
+Coordinator approved (i) from the prior CONFIRM-TO-RISHI: 3-PR backwards-compatible plan. No contract-break window between PR-B1 and PR-B2 landing — public-api keeps working without forwarding `influencer_id` during the gap, even if the gap stretches across days. This avoids the "every chat request 422s until both PRs land" failure mode that an atomic-flip PR would introduce, AND respects I9 scope-discipline (Session 4 can't write public-api/ to do an atomic flip even if we wanted to).
+
+PR-B3's job is to clean up: drop the env fallback + make `request.influencer_id` required once PR-B2 has been in prod long enough to prove the forward works end-to-end (observability marker `env_fallback` → `request` shift confirms it). Until PR-B3, the env fallback is a real safety net for a deploy ordering where PR-B1 lands but PR-B2 stalls.
+
+### Files touched
+- `yral-rishi-agent-conversation-turn-orchestrator/app/models/turn.py` — optional field + file-header doc update.
+- `yral-rishi-agent-conversation-turn-orchestrator/app/run_turn.py` — `_generate_real_llm_reply` resolver + observability marker.
+- `yral-rishi-agent-conversation-turn-orchestrator/tests/test_run_turn.py` — 1 new precedence test + a second test constant.
+- This LOG entry + STATE update.
+
+### Sanity check pre-push
+`python3 -m py_compile` against the 3 edited .py files: clean. Full pytest run executes in CI (no local venv set up; same pattern as PR #122 + PR #125).
+
+### Constraints touched
+- **A2.1** — single concern: widen `RunTurnRequest` with optional `influencer_id` + add resolver + add precedence test. No other surface touched; PR-B2 (public-api forwarding) is Session 3's, PR-B3 (drop fallback + flip to required) is a later Session-4 PR.
+- **B7** — file-header doc updated to acknowledge the new field; new code includes WHAT/WHEN/WHY role-comments + the `influencer_id_source` log key carries an operator-grep rationale in its surrounding comment.
+- **F10** — idempotency layer untouched; the F10 redis-key shape doesn't include influencer_id today + this PR doesn't change that.
+- **I9** — Session 4 scope only (orchestrator service); public-api forwarding stays as Session 3's PR-B2 per DEP discipline.
+- **I11** — same-commit code + tests + LOG + STATE pairing.
+- **I14** — **NOT auto-merge eligible.** PR adds Python code (`influencer_id` field on Pydantic model + resolver logic + 1 new test); falls outside I14's narrow `.md`-only / test-only / lint-only / comment-only allowance. Even though the production code delta is small, the model-shape change is behavior-changing — coordinator manually merges via `gh pr merge <N> --squash` after Codex APPROVE.
+
+### Diff size
+~3 lines on the model + ~25 lines on `run_turn.py` (resolver + log field + updated RuntimeError message + role-comments) + ~75 lines for the new test (well-commented per B7) + LOG + STATE. Total well under 400-line cap; precise cumulative count verified pre-push via `git diff --stat main...HEAD`.
+
+### Next
+- **PR-B2 (Session 3, coordinator-queued)** — public-api's `orchestrator_client` starts forwarding the per-chat `influencer_id` to the orchestrator's `POST /v1/turn`. After this lands the `influencer_id_source` log field flips `env_fallback` → `request` on real chat traffic; that's the signal PR-B3 is unblocked.
+- **Influencer-directory metadata schema + RPC endpoints (parallel)** — Postgres `influencer_metadata` table + ETL from chat-ai's 3,941 `ai_influencers` rows + 3 RPC endpoints (`/v1/influencers`, `/v1/influencers/{id}`, `/v1/influencers/trending`) per coordinator-direction. Branched separately from PR-B1's merged state; can run during PR-B1 review cycle on its own branch.
+- **PR-B3 (Session 4, after PR-B2 in prod)** — drop the env-var fallback + make `request.influencer_id` required. Removes the resolver branch + the `day_5_placeholder_ai_influencer_id` settings entry + the `influencer_id_source` log marker. Existing PR-B1 precedence test continues passing unchanged (doesn't depend on the fallback branch).
+
+---
+
 ## 2026-05-22 — Day-8 PR-A: env-gate fix — flip ENVIRONMENT default from `production` to `staging` across 3 Session-4 services
 
 ### Status
