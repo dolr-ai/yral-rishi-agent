@@ -223,20 +223,22 @@ resolution: Sequential per-owner ordering — Session 2 first
          2. Session 3: public-api backport in a separate PR.
             Restores public-api CI to green.
          3. Session 4: soul-file backport + influencer
-            backport + orchestrator hygiene migration in
-            separate PRs per A2.1 (use separate PRs by
-            default; if Session 4 is tempted to bundle
-            multiple service migrations into one PR because
-            the changes have identical mechanical shape,
-            Session 4 must STOP and obtain Rishi's explicit
-            confirmation before bundling — A2.1's actual
-            rule per CONSTRAINTS.md is "use separate PRs by
-            default, or stop and get Rishi confirmation
-            before bundling if the change is >100 lines,
-            multi-step, or otherwise elaborate"). The same
-            applies to Session 3 if their public-api
-            backport ever expands to touch more than the
-            single fixture path.
+            backport + orchestrator hygiene migration.
+            Coordinator recommends separate PRs by default
+            for clarity (one PR per service migration; makes
+            each fixture rename + test refactor + post-merge
+            CI restoration auditable independently). This
+            is a coordinator process recommendation, NOT an
+            A2.1 constraint — A2.1 itself only mandates
+            stopping for Rishi confirmation when a fix
+            exceeds 100 lines, becomes multi-step,
+            introduces abstractions/dependencies, or
+            otherwise becomes elaborate. If bundling the
+            three migrations together would cross any of
+            those A2.1 thresholds, Session 4 STOPs and gets
+            Rishi confirmation before bundling. The same
+            applies to Session 3's public-api backport if
+            it expands beyond the single fixture path.
          4. Coordinator (optional): one-line comment on
             `.gitignore:25` documenting the fixture-rename
             requirement.
