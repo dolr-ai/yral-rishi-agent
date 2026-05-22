@@ -2,6 +2,41 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-22 — PR-C — docker-compose.swarm.yml ENVIRONMENT default flip production → staging
+
+### Action
+Session 4 surfaced (during their Day-7 deploy work) that every v2 service's `docker-compose.swarm.yml` ships with `ENVIRONMENT: ${ENVIRONMENT:-production}` — a template-spawn default that stamps Sentry events + Langfuse traces + structured logs with `environment=production` whenever the deploy pipeline doesn't set the variable explicitly. The v2 cluster on rishi-4/5/6 currently runs as a staging mirror of chat-ai while Phase-1 parity work is in flight; the default should be `staging`. Coordinator routed Session 4's 3 services (orchestrator + soul-file + influencer) to Session 4 and the public-api side to me.
+
+Single-line value flip + 10-line role-comment block above it explaining the WHY: (1) v2 is a staging mirror today; (2) CI promotion to production injects `ENVIRONMENT=production` explicitly, so the default only fires when unset and production deploys are unaffected; (3) parallel with Session 4's PR across their 3 services.
+
+### Files touched
+- `yral-rishi-agent-public-api/docker-compose.swarm.yml` — line 68 value flip + role-comment block.
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-state/SESSION-3-STATE.md` — `Updated:` line + `LAST THING I DID` field.
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-3-LOG.md` — this entry.
+
+### Why
+- **A2.1** — single concern, ~12-line strict diff, no scope creep into unrelated compose cleanups (LOG_LEVEL default left untouched; that's the right default).
+- **D3** — Sentry `environment` tag should match operational reality. Tagging a staging-mirror cluster `production` poisons the filter the on-call uses to decide page-vs-not-page.
+- **D4** — Langfuse traces likewise: production-bucket cost dashboards should not include staging-mirror traffic.
+- Matches Session 4's parallel fix across orchestrator + soul-file + influencer. Session 4 raises the DEP entry pointing at this PR (per coordinator's routing).
+
+### Test evidence
+`.yml`-only change. No code paths altered. `python3 -c "import yaml; yaml.safe_load(open('yral-rishi-agent-public-api/docker-compose.swarm.yml'))"` parses cleanly. Compose syntax for `${VAR:-default}` interpolation unchanged; default-when-unset behavior verified mentally against the existing `LOG_LEVEL: ${LOG_LEVEL:-INFO}` precedent immediately below.
+
+### Notes
+- I14 auto-merge eligible (single `.yml`-file + LOG/STATE only; under the 50-strict-line A2.1 cap).
+- DRAFT discipline: open as ready-for-review (not DRAFT) per the directive — coordinator triggers ready + squash-merge.
+- PR-A (JWT issuer config) is **deferred** as a watch-item: v2's `jwt_expected_issuer=https://auth.yral.com` already matches chat-ai's canonical issuer (verified via rishi-1:/app/auth.py). No work until mobile login is repaired AND (a real rejection is observed OR round-trip is confirmed). A2.1 — no hypothetical-future-requirements build.
+- PR-B (real `GET /api/v1/influencers` as a directory-RPC wrapper) is queued as DRAFT-blocked-on-Session-4-influencer-directory; will open after this lands.
+
+### Constraints touched
+A2.1 (single concern; ≤50 strict lines), B7 (role-comment captures the WHY + parallel-Session-4 reference + production-override-still-works reasoning), C3 (no overlay changes), D3 (Sentry environment tag correctness), D4 (Langfuse environment tag correctness), I11 (same-commit LOG entry), I14 (auto-merge eligible).
+
+### Diff size
+Strict code: 1 value-character changed (`production` → `staging`). With role-comment block: 12 lines added in the `.yml`. LOG entry ~50 lines (this entry). STATE update ~2 lines. Well under 400-line cap.
+
+---
+
 ## 2026-05-20 — Day 5 Piece A — secrets.yaml ↔ docker-compose.swarm.yml alignment (post coordinator unblock)
 
 ### Action

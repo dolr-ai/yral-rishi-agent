@@ -1,6 +1,6 @@
 # Session 3 STATE — Public-API
 
-> Updated: 2026-05-20 (Day 5 Piece A — secrets.yaml ↔ docker-compose.swarm.yml aligned per D8 + trimmed per A2.1 to the 4-secret Phase-1 set; 77/77 contract tests green; pushed for CI + Codex + merge; cluster deploy retry awaits coordinator ping post-merge.)
+> Updated: 2026-05-22 (PR-C — `docker-compose.swarm.yml` `ENVIRONMENT` default flip production → staging; mirror of Session 4's parallel fix across their 3 services. PR-A JWT-issuer config DEFERRED as watch-item — v2 config already matches chat-ai canonical issuer. PR-B real `/api/v1/influencers` directory-RPC wrapper queued as DRAFT, blocked on Session 4's influencer-and-profile-directory metadata delivery.)
 
 ## ⭐ START-OF-SESSION SUMMARY (read first when resuming)
 
@@ -14,7 +14,7 @@ Full agent definition: `.claude/agents/session-3-public-api.md`.
 
 ## LAST THING I DID
 
-**2026-05-20 — Day 5 Piece A: secrets manifest aligned + trimmed.** Coordinator merged PR #107 installing per-service CI workflows at repo root (closes BLOCKER 1 of yesterday's Day-5 pushback). With CI unblocked, Session 3 took the Piece A directive: runtime-import-audited `app/` (zero asyncpg/psycopg/alembic imports — public-api has NO direct DB consumer; redis_client uses `from_url(redis_url)` not a separate password). Trimmed `secrets.yaml` from the template's 5-secret inheritance to the actual Phase-1 4-secret set: dropped `DATABASE_URL` (no consumer); renamed `REDIS_SENTINEL_PASSWORD` → `REDIS_URL`; kept `SENTRY_DSN` + `LANGFUSE_PUBLIC_KEY` + `LANGFUSE_SECRET_KEY`. Aligned `docker-compose.swarm.yml` `secrets:` block (both service + root) to the manifest names verbatim — UPPER_SNAKE_CASE per D8. Updated `.env.example`, `SECURITY.md` (3 sections + START HERE items #2 + #4), `RUNBOOK.md` (crash-loop troubleshooting list). 77/77 contract tests green. Pushed for CI re-fire + Codex re-review on this branch + Rishi YES.
+**2026-05-22 — PR-C: docker-compose.swarm.yml ENVIRONMENT default flip.** Session 4 surfaced during their Day-7 deploy work that every v2 service's compose ships with `ENVIRONMENT: ${ENVIRONMENT:-production}` — a template-spawn default that stamps Sentry/Langfuse/log records with `environment=production` whenever the deploy pipeline doesn't set the variable explicitly. v2 currently runs as a staging mirror of chat-ai during Phase-1 parity work; the default should be `staging`. Coordinator routed the 3 Session-4 services to Session 4 and public-api to me. One value flip + 10-line role-comment explaining the WHY (CI promotion still injects `ENVIRONMENT=production` explicitly, so production deploys are unaffected). Single-concern, .yml-only, I14 auto-merge eligible. PR-A (JWT issuer) deferred as watch-item (v2 config already matches chat-ai canonical). PR-B (real `/api/v1/influencers`) queued as DRAFT, blocked on Session 4 directory delivery.
 
 ## CURRENT TASK
 
