@@ -2,6 +2,65 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-22 — Day-8 PR-A: env-gate fix — flip ENVIRONMENT default from `production` to `staging` across 3 Session-4 services
+
+### Status
+**Mobile testing today exposed an orchestrator parity gap.** `ENVIRONMENT=production` was set across all 4 v2 service composes (orchestrator + soul-file + influencer + public-api), but rishi-4/5/6 is the v2 DEV cluster, not a production deployment — A6 cutover hasn't happened. The mis-label was an inherited template default (`${ENVIRONMENT:-production}`) that no one had flipped during the Day-7 cluster deploy.
+
+The blast pattern is asymmetric: only the orchestrator's per-request `run_turn` gate at `app/run_turn.py:417` actively HARD-REJECTS traffic when `environment == "production"` (503 on every chat request — that's what the mobile test surfaced). Soul-file + influencer + public-api don't have an equivalent per-request gate; their breakage is silent observability mis-tagging in Sentry + Langfuse (events fire as `environment=production` on a dev cluster).
+
+### Fix shape (β per coordinator route — 3 Session-4 services bundled, public-api routed to Session 3 via DEP-011)
+
+PR-A flips the default in the 3 service composes in Session 4's legitimate scope:
+
+```diff
+- ENVIRONMENT: ${ENVIRONMENT:-production}
++ ENVIRONMENT: ${ENVIRONMENT:-staging}
+```
+
+Plus a role-comment block above each `ENVIRONMENT:` line explaining the v2-dev-vs-production distinction, the gate-keying behavior in orchestrator, and A6 as the only path to flip to production. Comment shape is consistent across all 3 services (with a slight tweak for orchestrator since it hosts the gate — the orchestrator comment leads with the L417 gate's blast pattern; the soul-file + influencer comments reference the orchestrator-hosted gate cross-service for the cluster-wide intent to be legible from any of the three composes).
+
+Public-api half routed to Session 3 via **DEP-011** (raised in cross-session-dependencies.md in this PR) — Session 4 cannot write `yral-rishi-agent-public-api/**` per agent def L66-73. The 1-line public-api compose flip is queued for Session 3 to pick up on the same Day-8 cycle so all 4 v2 services land staging-labeled together.
+
+### Decision provenance
+Coordinator approved shape (β) — fix everything in legitimate scope, raise clean DEP for the Session 3 half. Considered + rejected:
+- **(α) Orchestrator-only:** leaves soul-file + influencer + public-api with the wrong Sentry/Langfuse env tag. Incoherent observability across services on the same dev cluster.
+- **(γ) All 4 services bundled:** would require a coordinator carve-out for Session 4 to write Session 3's compose, breaking the agent-def scope-discipline precedent. Same end-state as (β) but at a discipline cost.
+- **Shape-(b) alternative — refine the gate predicate to recognize v2-dev:** rejected because the v2 cluster genuinely isn't production and the label should reflect reality; the gate's intent is correct (block prod traffic when env IS prod), the label was wrong.
+
+### Why A6 protection is preserved
+The gate at `app/run_turn.py:417` is `if settings.environment == "production":`. By labeling the dev cluster `staging` (which it is), the gate fires ONLY when a real production cutover sets `ENVIRONMENT=production`. A6's typed-YES intent is intact; the gate just doesn't false-fire on the dev cluster anymore. The gate's `detail` message ("run_turn disabled in production — A6 cutover required.") remains the right escalation path when a real production cutover is attempted without A6's typed YES.
+
+### Files touched
+- `yral-rishi-agent-conversation-turn-orchestrator/docker-compose.swarm.yml` — `ENVIRONMENT` default flipped + role-comment block (includes specific reference to the L417 gate this service hosts).
+- `yral-rishi-agent-soul-file-library/docker-compose.swarm.yml` — `ENVIRONMENT` default flipped + role-comment block (cross-service gate reference).
+- `yral-rishi-agent-influencer-and-profile-directory/docker-compose.swarm.yml` — `ENVIRONMENT` default flipped + role-comment block (cross-service gate reference).
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/cross-session-dependencies.md` — DEP-011 raised pointing at the Session-3 half (public-api compose flip).
+- This LOG entry + STATE update.
+
+### Deploy + verification path (post-merge)
+1. Coordinator runs `workflow_dispatch` on `ci-yral-rishi-agent-conversation-turn-orchestrator.yml` + soul-file + influencer to re-build images (compose-default values are baked into nothing at image-build time; this step is only needed if other concurrent .py PRs changed code paths — not strictly required for this .yml-only PR).
+2. Coordinator drives the cluster-side re-deploy of each stack on rishi-4 — the new compose's `${ENVIRONMENT:-staging}` default takes effect when the stack is re-applied. (Existing running replicas continue to read the old `ENVIRONMENT=production` env var until restarted; rolling-update via the stack-apply picks up the new default per replica.)
+3. Smoke-test orchestrator's `run_turn` from public-api: now returns 503 only on the "no real LLM enabled" path (Gate 2 at `app/run_turn.py:428`), not on the production-gate path (Gate 1 at L417) — which is the expected post-fix behavior for the dev cluster until PR-B1 + Session 3's PR-B2 wire per-request influencer_id end-to-end.
+4. Sentry + Langfuse event tagging on next requests shifts to `environment=staging` for the 3 fixed services (still `production` for public-api until DEP-011 lands; observability searches for "all events on the dev cluster" should pin BOTH `environment in (staging, production)` until then to bridge the gap).
+
+### Constraints touched
+- **A2.1** — single concern: the v2 dev cluster's ENVIRONMENT label across Session-4 services. 3 mechanically-identical .yml edits + 1 DEP entry + LOG + STATE. Codex will judge the bundle; precedent is the same-shape-across-services bundling Session 1 did with the Patroni install scripts.
+- **A6** — typed-YES production-cutover constraint preserved at the gate's predicate level; this PR only corrects the label, not the gate logic.
+- **C7** — no `shared-config.yaml` touched; the `ENVIRONMENT` value isn't a shared C7 value (it's per-deployment-environment), so it stays in compose.
+- **D8** — no secrets touched; `ENVIRONMENT` is non-sensitive per the existing compose role-comment ("Values here are non-sensitive: feature flags, environment name, log level.").
+- **I9** — Session 4-scope edits only; public-api compose flip routed to Session 3 via DEP-011.
+- **I11** — same-commit LOG + STATE + code pairing.
+- **I14** — **NOT auto-merge eligible.** The YAML change is behavior-changing (flips the runtime `ENVIRONMENT` label across 3 services + alters how the orchestrator gate / Sentry tagging / Langfuse tagging behave on the dev cluster), which falls outside I14's narrow allowance for `.md`-only / test-only / lint-only / comment-only changes. PR is `.yml`-only + `.md`-only (no Python touched), single-concern per A2.1, under 200 cumulative lines — coordinator manually merges via `gh pr merge <N> --squash` after Codex APPROVE.
+
+### Diff size
+3 compose .yml files: ~9 lines added each = ~27 lines. DEP-011 entry: ~60 lines. LOG + STATE: comparable to yesterday's close-out PR. Well under 400-line cap; will verify pre-push via `git diff --stat main...HEAD`.
+
+### Next
+After PR-A lands + the cluster re-deploys pick up the new default, **PR-B1** (per-request `influencer_id` widen with optional field + env-var fallback for backwards-compatibility) opens. Once PR-B1 ships + Session 3's PR-B2 lands the public-api forwarding half, orchestrator's `run_turn` will exercise end-to-end against a real non-NSFW influencer for the first time. Tara routing through OpenRouter is Phase-2 follow-up — needs OpenRouter API key on cluster (separate Session-1 secret-push job) + LLM-routing matrix wired per memory `reference_yral_chat_v2_llm_routing_tara`. PR-B3 (drop env-var fallback + require `influencer_id`) is the last step in the 3-PR sequence.
+
+---
+
 ## 2026-05-22 — Day-7 deploy CLOSE-OUT: all 3 services GREEN; soul-file schema seeded; route negative-path smoke verified
 
 ### Status

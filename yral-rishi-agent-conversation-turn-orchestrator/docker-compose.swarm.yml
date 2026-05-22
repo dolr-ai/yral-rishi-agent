@@ -65,7 +65,15 @@ services:
     # Day 2). This keeps secrets out of `docker inspect` output and out
     # of process env vars (which can leak via /proc/<pid>/environ).
     environment:
-      ENVIRONMENT: ${ENVIRONMENT:-production}
+      # `staging` matches reality: rishi-4/5/6 is the v2 DEV cluster, NOT
+      # production — A6 cutover hasn't happened. Label flows into Sentry
+      # + Langfuse event tagging AND the per-request run_turn gate at
+      # `app/run_turn.py:417` (which 503s every chat request when this
+      # label is `production`). A6 typed-YES is the only path to flip to
+      # production; mis-labeling the dev cluster as production short-
+      # circuits the gate's defense-in-depth intent (gate fires every
+      # request → no actual exercise of run_turn until corrected).
+      ENVIRONMENT: ${ENVIRONMENT:-staging}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       # Day-7 deploy: flip to the C11-compliant Sentinel path. The
       # production C11 fail-closed gate in app/idempotency.py refuses
