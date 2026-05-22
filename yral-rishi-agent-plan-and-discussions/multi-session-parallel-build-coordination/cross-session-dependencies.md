@@ -141,10 +141,17 @@ who fixes:
            the validator runs.
          - Update `new-service.sh` (or its post-spawn
            verification step) to assert post-spawn that
-           `env.local.fixture` IS tracked in git for the
-           spawned service. Fail the spawn loudly if not —
-           that catches future cases where the rename pattern
-           drifts.
+           `env.local.fixture` is PRESENT in the spawned
+           service folder AND would be added by `git add
+           --dry-run` (i.e., not ignored by `.gitignore`).
+           Fail the spawn loudly if either check fails —
+           catches future cases where the rename pattern
+           drifts. Note: this check does NOT require the
+           file to already be staged in git (the spawn
+           script doesn't stage files itself); it only
+           verifies the file exists on disk + would not be
+           silently swallowed by `.gitignore` if a caller
+           did `git add`.
          - Migrate the template's currently-force-added
            `.env.local` fixture file to the new
            `env.local.fixture` filename; remove the literal
@@ -205,9 +212,26 @@ Blocks:  BLOCKS PR merges + deploy promotions on the three
          exception; absent all three, the default block
          applies.
 
-         Phase 1 work that does NOT touch the three affected
-         services (e.g., orchestrator changes — orchestrator
-         CI is green) is unaffected by this DEP.
+         IN SCOPE FOR THIS DEP'S MIGRATION ASK: every service
+         with a tracked literal `.env.local` fixture path —
+         that's all 5 (template + orchestrator + soul-file +
+         public-api + influencer). The 3 red-CI services
+         block first because their CI signal is broken; the
+         2 green-CI services (template + orchestrator) are
+         silent D8/J5 hygiene violations that ALSO need
+         migration, just on a less-urgent timeline.
+
+         Routine PRs that touch any tracked `.env.local` path
+         in any of those 5 must either (a) include the
+         fixture migration as part of the PR (with the A1
+         typed-YES gate above), (b) be the dedicated
+         migration PR for that service, or (c) carry the
+         same explicit one-off exception rationale (three-
+         criteria justification) as a red-CI exception.
+
+         Phase 1 work that does NOT touch any tracked
+         `.env.local` path (regardless of CI status) is
+         unaffected by this DEP.
 
 ETA needed: No hard calendar date. Phase 1 close.
 
