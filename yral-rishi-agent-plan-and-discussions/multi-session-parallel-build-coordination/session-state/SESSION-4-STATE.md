@@ -1,5 +1,6 @@
 # Session 4 STATE — Orchestrator + Soul File + Influencer Directory
 
+> Updated: 2026-05-22 (Day-7 deploy CLOSE-OUT — all 3 services GREEN on rishi-4/5/6; soul-file schema seeded via coordinator-driven operator-action per SESSION-1-LOG.md PRs #119 + #120; `/composed-prompt` route reachable + L3-miss path returns documented 404 envelope; happy-path deferred to A4 Day-9 chat-ai data port).
 > Updated: 2026-05-20 (Day-6 orchestrator-side H5 prompt-injection + H4 crisis-detection + adult-content output filter restored + wired in front of LLM — defense-in-depth; full H5 still needs Session 3 public-api ingress per DEP-009. PR-#112 has been through 9 Codex rounds — wire identifiers fully renamed away from "A10" since A10 is the LLM-routing rule, not an output filter. 63 tests + 1 skipped.).
 > Updated: 2026-05-20 (Day-5 real LLM enablement PR opened — "the AI actually responds" milestone; 39/39 tests green + 1 env-gated integration skipped).
 > Updated: 2026-05-18 (Day-4 Soul File Library PR opened — first stateful v2 service for Session 4; 20/20 tests green incl. byte-identity × 5 reps).
@@ -16,6 +17,8 @@ I am Session 4. I own **three services** that together implement the conversatio
 Full agent definition: `.claude/agents/session-4-orchestrator.md`.
 
 ## LAST THING I DID
+
+**2026-05-22 — Day-7 deploy CLOSE-OUT.** All 3 Session-4 services GREEN on the v2 dev cluster (orchestrator + soul-file + influencer, 3/3 replicas each across rishi-4/5/6, all `/health/{live,ready}` 200, `/docs` + `/redoc` 200). Soul-file schema seeded via coordinator-driven operator-action that ran `alembic upgrade head` against the per-service Postgres role (`soul_file_library_role` per F3) — see SESSION-1-LOG.md PRs #119 (operator-action evidence) + #120 (A1 / I14 fix-up) for the cluster-side details. Cluster-state probe captured against post-#120 main HEAD (aa1c55a): `alembic_version = 001_initial_schema_and_seed`; seed counts L1=1, L2=3, L4=3 (L3=0 by design per A4); both tables owned by `soul_file_library_role`. `/composed-prompt` route negative-path smoke with synthetic UUID `00000000-0000-0000-0000-000000000000` returned HTTP 404 + the documented `InfluencerSoulFileMissingError` detail string verbatim — route reachable, `user_segment=new` accepted, composer L3-miss path fires + propagates as designed. Happy-path (200 with full `layered_prompt` + `version_pin` + `cache_hit`) deferred to A4 Day-9 chat-ai data port per the composer + migration + route docstrings. Captured insight: `python:3.12-slim` runtime image doesn't ship `curl`; intra-cluster HTTP smokes use Python stdlib `urllib.request` instead (operators reaching for `docker exec <slim-image> curl` will hit exit 127). PR is `.md`-only, single-concern per A2.1, I14 auto-merge eligible.
 
 **2026-05-20 — Day 6 H5/H4/A10 safety stack restored PR opened.** PR #109 (Day-5 real LLM) merged to main at 10:46 UTC. Day-6 milestone: re-land the safety stack PR #100 had built but auto-closed when PR #96's base branch was cascade-deleted, and wire it in front of the LLM call so a jailbreak / crisis input is short-circuited BEFORE Gemini ever sees it. This closes Codex PR-#109 BLOCKER 2 ("safety stack must be active before real-LLM path"); regression gate is a new pair of tests asserting `app.run_turn.get_default_llm_client` is NEVER invoked when H5 / H4 fire — the spy's `generate(...)` raises AssertionError with a loud message if reached, so a regression that mis-orders middleware or drops a pattern fails the test immediately.
 
@@ -45,7 +48,7 @@ Empirical proof:
 
 ## CURRENT TASK
 
-Day-6 PR open + awaiting CI + Codex + Rishi-YES. NOT auto-merge eligible under I14 (adds Python middleware files + safety package + extends 2 existing test files; fails the ".md / test / lint / comment-only" gate). Base = `main` (PR #109 merged 2026-05-20 10:46 UTC).
+Day-7 deploy close-out PR open (this PR — .md-only; I14 eligibility verified pre-push via `git diff --stat main...HEAD`). Next action: Day 8 — coordinator-direction (provider-routing matrix vs Influencer Directory) pending.
 
 **H5 status note (post-Codex round-3 correction)**: PR #112 lands orchestrator-side H5 only — defence-in-depth + closes Codex PR-#109 BLOCKER 2. Full H5 compliance (per the row's "Middleware in public-api" Mitigation) waits on Session 3 implementing the public-api ingress per DEP-009. The orchestrator-side layer is necessary but not sufficient for the H5 sign-off.
 

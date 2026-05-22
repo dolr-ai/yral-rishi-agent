@@ -2,6 +2,86 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-22 — Day-7 deploy CLOSE-OUT: all 3 services GREEN; soul-file schema seeded; route negative-path smoke verified
+
+### Status
+**Day-7 deploy is complete on the v2 dev cluster.** After PR #117 (Session 1 provisioned the soul-file Postgres role + DB + Swarm secret) and PR #118 (Session 4 bundled `alembic.ini` in the soul-file image) merged, the coordinator drove the operator action to run `alembic upgrade head` against the `soul_file_library` Postgres database. Schema landed; L1+L2+L4 seeds present per migration `001_initial_schema_and_seed.py`; route reachable; L3-miss path returns the documented 404 envelope. L3 happy-path is explicitly deferred to A4 Day-9 chat-ai data port per the composer + migration docstrings.
+
+Upstream dependencies for this entry: SESSION-1-LOG.md PRs #119 (operator-action evidence — alembic run + verification) + #120 (retroactive A1 / I14 fix-up). Both merged before this LOG entry was drafted; cluster-state probe was captured against the post-#120 main HEAD (aa1c55a).
+
+### Final 3-service deploy table (replaces the partial table in the 2026-05-21 entry below)
+
+| Service                                              | Deployed | Replicas | /health/live | /health/ready | /docs | /redoc | Note                                                                                       |
+|---                                                   |---       |---       |---           |---            |---    |---     |---                                                                                         |
+| yral-rishi-agent-conversation-turn-orchestrator      | YES      | 3/3      | 200          | 200           | 200   | 200    | Sentinel-aware Redis init OK; soul-file RPC client init OK; safety stack live              |
+| yral-rishi-agent-influencer-and-profile-directory    | YES      | 3/3      | 200          | 200           | 200   | 200    | Day-1 spawn scaffold; no influencer routes yet (Day-8+)                                    |
+| yral-rishi-agent-soul-file-library                   | YES      | 3/3      | 200          | 200           | 200   | 200    | Schema seeded via coordinator-driven operator-action; see SESSION-1-LOG.md PRs #119 + #120 |
+
+Spread across rishi-4 + rishi-5 + rishi-6 (1 replica per node per service).
+
+### Cluster evidence (coordinator-driven intra-cluster probe via rishi-deploy@138.201.128.108)
+
+Read-only, no DSN exposure, no mutations. Probe-target node = rishi-4 (Patroni container `yral-v2-patroni_patroni-rishi-4.1.8mxn8d7mn17e6xc84tl9z4ao9`; soul-file replica `yral-rishi-agent-soul-file-library_service.2.6mbmltix2qcyt130s17zxybcg`).
+
+**Alembic revision = head:**
+
+```
+SELECT version_num FROM alembic_version;
+001_initial_schema_and_seed
+```
+
+**Seed-row count per layer (matches migration spec — L1=1, L2=3, L4=3; L3=0 by design per A4):**
+
+```
+SELECT layer, count(*) FROM soul_file_layers WHERE is_current = TRUE GROUP BY layer ORDER BY layer;
+ layer | count
+-------+-------
+     1 |     1
+     2 |     3
+     4 |     3
+(3 rows)
+```
+
+**Table ownership (both tables owned by the per-service role per F3):**
+
+```
+SELECT tablename, tableowner FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename;
+    tablename     |       tableowner
+------------------+------------------------
+ alembic_version  | soul_file_library_role
+ soul_file_layers | soul_file_library_role
+(2 rows)
+```
+
+**`/composed-prompt` route negative-path smoke** — synthetic UUID `00000000-0000-0000-0000-000000000000` chosen specifically to NOT match any real L3 row (of which there are zero by design today). Issued via `docker exec <soul-file-replica> python -c 'urllib.request.urlopen(...)'` from inside the replica (see captured insight below on why not `curl`):
+
+```
+HTTP 404
+{"detail":"No current Layer 3 row for influencer_id='00000000-0000-0000-0000-000000000000'; Day-4 ships with no Layer 3 seed — populate via the Day-4.5 data port from chat-ai (per A4 — ALL data MUST port) before this route returns 200."}
+```
+
+The 404 detail string matches `four_layer_composer.py:155-159`'s `InfluencerSoulFileMissingError` text verbatim — the typed composer exception propagates through `composed_prompt_routes.py:102-117`'s `except` handler as designed. This proves: (i) route reachable on intra-cluster localhost:8000, (ii) `user_segment=new` accepted (no Pydantic 422 ahead of the L3 check), (iii) composer L3-miss path fires, (iv) route's 404 envelope works end-to-end. Happy-path (200 with full `layered_prompt` + `version_pin` + `cache_hit`) is deferred to A4 Day-9 chat-ai data port per the composer + migration + route docstrings.
+
+### Captured insight — `curl` missing in `python:3.12-slim` runtime image
+
+`docker exec <soul-file-replica> curl ...` fails with `exec: "curl": executable file not found in $PATH`. The runtime image (`python:3.12-slim` per `Dockerfile:42`/`:86`) doesn't ship `curl` by default; the compose entrypoint wrapper only needed `sh`/`cat`/`export`/`uvicorn`, so curl was never added. Operators reaching for `docker exec <slim-image> curl` for ad-hoc intra-cluster HTTP smokes will hit exit 127. Documented here so the smoke recipe + future operator-action runbooks default to Python stdlib `urllib.request` instead. No image change recommended — adding `curl` just for ad-hoc smokes is operator-convenience at the cost of image-size discipline; stdlib covers the use case. Same finding will apply to orchestrator + influencer + any future v2 service spawned from the same template.
+
+### Constraints touched
+- **A2.1** — single-concern PR: Day-7 close-out reporting only. No code changes; no scope expansion into "should we seed L3 now" or "should we add curl to the base image" (both surfaced as captured insights, both deferred to their natural home — Session 5 ETL for L3, no PR for curl).
+- **I11** — same-commit LOG + STATE pairing.
+- **I14** — `.md`-only PR; auto-merge eligible.
+- **A4** — L3 happy-path explicitly deferred to Day-9 chat-ai data port; no in-line seed shortcuts.
+- **F3** — per-service Postgres role + table ownership verified at the source.
+
+### Diff size
+LOG + STATE entries only. Well under 400-line cap.
+
+### Next
+- **Day 8** — coordinator-direction pending; either provider-routing matrix (Tara → OpenRouter; crisis → Claude; default → Gemini; NSFW → OpenRouter) per agent-def + memory `reference_yral_chat_v2_llm_routing_tara`, or Influencer Directory service per the original STATE plan, or whatever Session 3 needs from orchestrator endpoints by then.
+- **Day 9** — A4 chat-ai data port (L3 per-influencer Soul File rows; landed by Session 5 ETL). After that, `/composed-prompt` returns 200 with the full layered_prompt for real influencer IDs and a happy-path smoke replaces today's negative-path evidence.
+
+---
+
 ## 2026-05-21 — Day-7 deploy fix #4: bundle alembic.ini in soul-file image so the one-off migration task can run
 
 Session 1 finished provisioning the soul-file Postgres role + database
