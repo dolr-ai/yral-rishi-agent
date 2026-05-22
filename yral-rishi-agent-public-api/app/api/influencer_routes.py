@@ -44,13 +44,26 @@
 
 # fastapi — APIRouter groups endpoints under a prefix; Depends wires
 # the per-handler feature-flag dependency; Header + Path map URL +
-# header components to handler parameters; Response is injected into
-# the list handler to set the BLOCKER-6 Cache-Control header.
-from fastapi import APIRouter, Depends, Header, Path, Response
+# header components to handler parameters; Query maps query-string
+# parameters (Day-8 pagination); Response is injected into the list
+# handler to set the BLOCKER-6 Cache-Control header.
+from fastapi import APIRouter, Depends, Header, Path, Query, Response
 
 # JSONResponse — BLOCKER-4 stubs return one of these directly so the
 # envelope shape + 503 status reach mobile without FastAPI re-wrapping.
 from fastapi.responses import JSONResponse
+
+# httpx — Day-8 directory-RPC wrappers catch httpx.TimeoutException +
+# httpx.ConnectError on the directory call to map them to the
+# public-api 503 envelope. Same pattern Day-4C's chat_routes uses for
+# the orchestrator call.
+import httpx
+
+# sentry_sdk — Day-8 directory failures tag every failure path with
+# `directory.call.failed=<timeout|connect|status|bad_response_shape>`
+# so the Sentry dashboard can pivot on the upstream failure mode.
+# Same pattern Day-4C's chat_routes uses for the orchestrator call.
+import sentry_sdk
 
 # Response model for the read endpoints (renamed from `*Dto` per
 # Codex PR #97 BLOCKER 1 + Rishi 2026-05-19 Option-A).
@@ -66,6 +79,7 @@ from app.api.feature_flag import require_day_2_placeholder_flag_enabled
 # Error helper + status map — used by the BLOCKER-4 stubs for write +
 # admin endpoints so the locked paths return envelope-shaped 503s
 # instead of accidental 404s that look like routing bugs to mobile.
+# Day-8 also uses these for directory-RPC failure-mapping paths.
 from app.api.errors import HTTP_STATUS_FOR_ERROR_CODE, error_response
 
 # Real auth dependency (Day 4B) — replaces the PR #97 round-5 placeholder
@@ -73,6 +87,14 @@ from app.api.errors import HTTP_STATUS_FOR_ERROR_CODE, error_response
 # influencer endpoint (read + BLOCKER-4 stubs + admin) receives an
 # `AuthenticatedUser` argument with the validated user_id + raw token.
 from app.api.dependencies import AuthenticatedUser, require_authenticated_user
+
+# Day-8 directory-RPC client — list + by-id read endpoints proxy
+# through this module to Session 4's influencer-and-profile-directory.
+from app import directory_client
+
+# Day-8 request_id forwarding — list + by-id forward X-Request-Id to
+# the directory so the cross-service trace stays correlated.
+from app.request_id_middleware import get_request_id
 
 # Router for the influencer read endpoints. Prefix means handlers
 # declare paths relative to `/api/v1/influencers/`. Day-4B replaced
@@ -135,29 +157,115 @@ def _stub_influencer(
 )
 async def list_influencers(
     response: Response,
+    limit: int = Query(
+        20,
+        ge=1,
+        le=100,
+        description="Page size; default 20, max 100. Plain offset/limit pagination matching mobile's ChatRemoteDataSource.kt:50-70.",
+    ),
+    offset: int = Query(
+        0,
+        ge=0,
+        description="0-indexed offset into the full catalog; default 0.",
+    ),
     user: AuthenticatedUser = Depends(require_authenticated_user),
     _: None = Depends(require_day_2_placeholder_flag_enabled),
-) -> ApiResponse[list[InfluencerResponse]]:
-    """List active influencers (Day-2 stub).
+) -> JSONResponse:
+    """List active influencers — proxies to Session 4's directory.
 
-    WHAT: returns a 1-element list with a stub influencer. The real
-          impl proxies to Session 4's influencer-directory at
-          GET http://yral-rishi-agent-influencer-and-profile-directory:8000/influencers
-          per interface-contracts/01-internal-rpc-contracts.md.
+    WHAT: forwards user_id + request_id + (limit, offset) to
+          directory_client.list_influencers(); maps the response to
+          the locked ApiResponse envelope. On directory failure
+          (timeout, connect-error, non-200) maps to a 503 envelope
+          tagged with `directory.call.failed=<mode>` for Sentry.
     WHEN: mobile loads the chat tab — this is the influencer catalog
           everyone sees first.
-    WHY:  highest-traffic influencer endpoint by far.
+    WHY:  highest-traffic influencer endpoint by far. Day-8 cuts
+          over from the Day-2 stub to the directory RPC per the
+          DEP-012 proposed contract.
     """
+    request_id = get_request_id() or ""
+    try:
+        upstream = await directory_client.list_influencers(
+            user_id=user.user_id,
+            request_id=request_id,
+            limit=limit,
+            offset=offset,
+        )
+    except (httpx.ConnectError, httpx.TimeoutException) as exc:
+        # Connection refused / DNS miss / timeout — directory unreachable.
+        # Same mapping shape as chat_routes' orchestrator failure path.
+        sentry_sdk.set_tag(
+            "directory.call.failed",
+            "connect" if isinstance(exc, httpx.ConnectError) else "timeout",
+        )
+        return _directory_unavailable_envelope("GET /api/v1/influencers")
+
+    if upstream.status_code != 200:
+        # Directory returned a non-200. Forward as envelope-shaped 503
+        # (directory is internal; mobile shouldn't see raw upstream
+        # codes for read endpoints).
+        sentry_sdk.set_tag("directory.call.failed", "status")
+        sentry_sdk.set_context(
+            "directory_response",
+            {"status_code": upstream.status_code, "path": "GET /v1/influencers"},
+        )
+        return _directory_unavailable_envelope("GET /api/v1/influencers")
+
+    try:
+        # Directory contract: list[InfluencerResponse]. Validate the
+        # shape so a directory-side schema drift surfaces as a 503 at
+        # public-api (Sentry-tagged) rather than crashing mobile's
+        # parser further down the chain.
+        items = [InfluencerResponse(**item) for item in upstream.json()]
+    except (ValueError, TypeError) as exc:
+        # JSON decode failure OR per-item Pydantic validation failure.
+        sentry_sdk.set_tag("directory.call.failed", "bad_response_shape")
+        sentry_sdk.set_context("directory_decode_error", {"error": str(exc)})
+        return _directory_unavailable_envelope("GET /api/v1/influencers")
+
     # Codex PR #97 BLOCKER 6 — the locked contract requires
     # Cache-Control max-age=300 on this list endpoint so mobile (+ any
     # CDN in front of it) can cache the catalog for 5 minutes. Set on
     # the injected Response so FastAPI sends it alongside the envelope.
     response.headers["Cache-Control"] = "max-age=300"
-    return ApiResponse[list[InfluencerResponse]](
+    envelope = ApiResponse[list[InfluencerResponse]](
         success=True,
         msg="OK",
         error=None,
-        data=[_stub_influencer()],
+        data=items,
+    )
+    return JSONResponse(
+        status_code=200,
+        content=envelope.model_dump(),
+        headers={"Cache-Control": "max-age=300"},
+    )
+
+
+def _directory_unavailable_envelope(handler_name: str) -> JSONResponse:
+    """Build the directory-unavailable envelope response.
+
+    WHAT: returns JSONResponse(status=503, content=ApiResponse-shaped
+          envelope with error="service_unavailable"). Mirrors the
+          BLOCKER-4 `_service_unavailable_stub` helper but stamps the
+          msg with the upstream-failure-mode framing.
+    WHEN: every Day-8 directory-RPC handler calls this on connect /
+          timeout / non-200 / bad-shape failure paths.
+    WHY:  centralized so the envelope shape stays uniform across
+          failure modes + future flip to retry / circuit-breaker is
+          a single-file edit.
+    """
+    body = error_response(
+        "service_unavailable",
+        (
+            f"{handler_name} could not reach the influencer-and-profile-"
+            "directory; retry shortly. (The upstream-failure mode is "
+            "tagged on the matching Sentry event for on-call diagnosis.)"
+        ),
+    ).model_dump()
+    return JSONResponse(
+        status_code=HTTP_STATUS_FOR_ERROR_CODE["service_unavailable"],
+        content=body,
     )
 
 
@@ -195,24 +303,80 @@ async def get_influencer(
     influencer_id: str = Path(..., description="Influencer UUID (preserved from chat-ai per A4)"),
     user: AuthenticatedUser = Depends(require_authenticated_user),
     _: None = Depends(require_day_2_placeholder_flag_enabled),
-) -> ApiResponse[InfluencerResponse]:
-    """Single-influencer detail (Day-2 stub).
+) -> JSONResponse:
+    """Single-influencer detail — proxies to Session 4's directory.
 
-    WHAT: returns an InfluencerResponse whose `id` field echoes the path
-          parameter (so mobile's "fetch the influencer I picked"
-          flow gets the right id back).
+    WHAT: forwards user_id + request_id + influencer_id to
+          directory_client.get_influencer(); maps the response to
+          the locked ApiResponse envelope. Directory 404 (no such
+          influencer) maps to public-api 404 + locked
+          `not_found` error code. Connect / timeout / non-200 /
+          bad-shape failures map to envelope-shaped 503.
     WHEN: mobile opens an influencer's detail screen.
     WHY:  the detail screen drives the "Chat with this influencer"
-          button → conversation create → message-send flow.
+          button → conversation create → message-send flow. Day-8
+          cuts over from the Day-2 stub to the directory RPC per
+          the contract declared on main.
     """
-    return ApiResponse[InfluencerResponse](
+    request_id = get_request_id() or ""
+    try:
+        upstream = await directory_client.get_influencer(
+            user_id=user.user_id,
+            request_id=request_id,
+            influencer_id=influencer_id,
+        )
+    except (httpx.ConnectError, httpx.TimeoutException) as exc:
+        sentry_sdk.set_tag(
+            "directory.call.failed",
+            "connect" if isinstance(exc, httpx.ConnectError) else "timeout",
+        )
+        return _directory_unavailable_envelope(
+            "GET /api/v1/influencers/{influencer_id}",
+        )
+
+    if upstream.status_code == 404:
+        # Directory says no such influencer — surface as the locked
+        # `not_found` code so mobile's per-id detail-screen knows to
+        # show the "influencer no longer exists" state.
+        body = error_response(
+            "not_found",
+            f"Influencer {influencer_id!r} not found.",
+        ).model_dump()
+        return JSONResponse(
+            status_code=HTTP_STATUS_FOR_ERROR_CODE["not_found"],
+            content=body,
+        )
+
+    if upstream.status_code != 200:
+        sentry_sdk.set_tag("directory.call.failed", "status")
+        sentry_sdk.set_context(
+            "directory_response",
+            {
+                "status_code": upstream.status_code,
+                "path": "GET /v1/influencers/{id}",
+                "influencer_id": influencer_id,
+            },
+        )
+        return _directory_unavailable_envelope(
+            "GET /api/v1/influencers/{influencer_id}",
+        )
+
+    try:
+        item = InfluencerResponse(**upstream.json())
+    except (ValueError, TypeError) as exc:
+        sentry_sdk.set_tag("directory.call.failed", "bad_response_shape")
+        sentry_sdk.set_context("directory_decode_error", {"error": str(exc)})
+        return _directory_unavailable_envelope(
+            "GET /api/v1/influencers/{influencer_id}",
+        )
+
+    envelope = ApiResponse[InfluencerResponse](
         success=True,
         msg="OK",
         error=None,
-        # Stub the influencer's id from the URL so mobile's local
-        # detail-vs-list join works even in stub mode.
-        data=_stub_influencer(influencer_id=influencer_id),
+        data=item,
     )
+    return JSONResponse(status_code=200, content=envelope.model_dump())
 
 
 # ===========================================================================

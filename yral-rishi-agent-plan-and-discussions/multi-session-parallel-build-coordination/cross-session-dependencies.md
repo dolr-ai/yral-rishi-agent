@@ -63,7 +63,129 @@ resolution: Coordinator / Session 1 operator runs the 4 SQL statements
          creates the Swarm secret. Marks DEP-012 RESOLVED with the
          secret-creation date. Session 5 then runs `alembic upgrade head`
          via a one-off container to create the tables (per RUNBOOK.md).
+---
 
+### DEP-013 — Session 4 to ratify (or push back on) Session 3's proposed `GET /v1/influencers?limit&offset → list[InfluencerResponse]` list-RPC contract on the influencer-and-profile-directory service
+
+Raised: 2026-05-22 by Session 3 (PR-B — Day-8 directory-RPC wrapper for `/api/v1/influencers`)
+
+What:    `interface-contracts/01-internal-rpc-contracts.md` declares
+         for `public-api → influencer-and-profile-directory` only the
+         by-id GET + the create/edit/delete shapes:
+
+             GET .../influencers/{id}         → InfluencerResponse
+             POST .../influencers (create)    → InfluencerResponse
+             PATCH .../influencers/{id}/...   → InfluencerResponse
+             DELETE .../influencers/{id}      → {}
+
+         There is **no list-RPC declared** for the directory. Session 3
+         needs the list endpoint to back the real
+         `GET /api/v1/influencers` (PR-B replaces the Day-2 stub catalog
+         with a directory-RPC wrapper). Rather than block on Session 4
+         declaring the contract first, Session 3 PROPOSES the list-RPC
+         shape inline in `01-internal-rpc-contracts.md` (same PR as
+         this DEP) + builds the wrapper against the proposed shape
+         with the directory mocked in J1-HOT tests. Session 4 either
+         ratifies when they build the real directory list endpoint, or
+         pushes back with a different shape and Session 3 adjusts.
+
+         Proposed shape (now declared in
+         `01-internal-rpc-contracts.md` § public-api → influencer-and-
+         profile-directory):
+
+             GET http://yral-rishi-agent-influencer-and-profile-directory_service:8000/v1/influencers
+               ?limit=<int 1..100>
+               &offset=<int >=0>
+             → list[InfluencerResponse]
+
+             Headers: X-User-Id + X-Internal-Caller +
+                      X-Request-Id + X-Trace-Id (4 internal-call
+                      headers; no X-Idempotency-Key on stateless GETs)
+
+             Pagination: plain offset/limit ints to match yral-mobile's
+                      ChatRemoteDataSource.kt:50-70 listInfluencers
+                      contract (NOT cursor — chat_routes.py:626's
+                      `before`/cursor pattern fits temporal streams,
+                      not a catalog). limit default 20 max 100;
+                      offset default 0 min 0.
+
+             Response: flat `list[InfluencerResponse]` — no
+                      total_count / next_offset wrapper today; mobile
+                      derives "more pages" client-side from
+                      `len(items) == limit`. Future PR can add a
+                      `count` header if/when the catalog needs it.
+
+Why:     Session 3's PR-B implements the public-api half of the
+         contract (mobile-facing `/api/v1/influencers?limit&offset` →
+         envelope-wrapped list[InfluencerResponse]). Without the
+         directory's list endpoint, the wrapper has no upstream to
+         call in production. Mocking covers J1-HOT test coverage but
+         the real cluster deploy requires Session 4 to ship the
+         endpoint to back the proposed contract.
+
+         The pagination-shape question (offset/limit vs cursor) is
+         not arbitrary: mobile uses offset/limit today (per
+         `ChatRemoteDataSource.kt:50-70`) and the catalog is a
+         non-temporal stream so cursor pagination would force the
+         contract to define an ordering key (recency? alphabetical?
+         popularity?) that isn't in scope. Plain offset/limit is the
+         minimal sufficient pagination shape per A2.1.
+
+Blocks:  PR-B opens as DRAFT — the wrapper code + tests are
+         complete + all-mocked but the merge gate is Session 4
+         ratifying (or counter-proposing) this contract. PR-B
+         lifts from DRAFT after Session 4 ACKs (or after the
+         contract counter-proposal is incorporated).
+
+         No hard runtime block on production traffic — the Day-2
+         stub `_stub_influencer()` continues serving the catalog
+         until PR-B merges. The Day-8 cut-over is a deploy choice
+         not a deadline.
+
+ETA needed:
+         Ideally same Day-8 cycle so the catalog reads stop returning
+         the stub `tara-stub-influencer-id` and start returning real
+         directory data. No hard calendar date.
+
+Suggested
+resolution:
+         Two paths, Session 4 picks:
+
+         (a) **Ratify as-is.** Session 4 builds the list endpoint at
+             `yral-rishi-agent-influencer-and-profile-directory/app/api/`
+             matching the proposed contract verbatim (route, params,
+             headers, response shape). Comments via PR-B review.
+             Session 3 lifts PR-B from DRAFT + coordinator
+             manual-merges (PR-B is behavior-changing — not I14
+             eligible).
+
+         (b) **Counter-propose.** Session 4 has a different shape in
+             mind (e.g., wants `?page=&page_size=` instead of
+             `?limit&offset`, OR wants the response wrapped with a
+             `count` field, OR wants different header set, etc.).
+             Reply on PR-B review or the contract file with the
+             counter-proposed shape; Session 3 adjusts public-api's
+             wrapper + DEP-012 stays open until both sides agree.
+
+         The pagination defaults (limit=20 max=100; offset=0 min=0)
+         specifically need Session 4 sign-off because they bound the
+         per-call load on the directory's underlying query.
+
+         **Resolution path:** Session 4 either (a) ratifies this
+         contract shape when implementing the directory service's
+         list-RPC, OR (b) leaves PR review comments on PR-B proposing
+         a different shape — either way, no fresh DEP needed. PR
+         review comments are the natural cross-session-coordination
+         mechanism per I9; DEP entries track cross-session asks, the
+         actual back-and-forth happens via PR review.
+
+How spotted:
+         PR-B drafting on 2026-05-22 — Session 3 went to write
+         `directory_client.list_influencers` + needed the wire-shape
+         to call against. Grep'd `01-internal-rpc-contracts.md` § the
+         directory section + found only the by-id shape declared. The
+         contract-gap-as-DEP-with-PROPOSED-shape pattern is the I9
+         cross-session-coordination flow.
 ---
 
 ### DEP-011 — Session 3 needs to flip ENVIRONMENT default from `production` to `staging` in public-api's `docker-compose.swarm.yml` to match v2 dev cluster reality

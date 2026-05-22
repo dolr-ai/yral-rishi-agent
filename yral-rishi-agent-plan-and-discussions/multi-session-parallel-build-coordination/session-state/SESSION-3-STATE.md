@@ -1,6 +1,6 @@
 # Session 3 STATE — Public-API
 
-> Updated: 2026-05-22 (PR-C — `docker-compose.swarm.yml` `ENVIRONMENT` default flip production → staging; mirror of Session 4's parallel fix across their 3 services. PR-A JWT-issuer config DEFERRED as watch-item — v2 config already matches chat-ai canonical issuer. PR-B real `/api/v1/influencers` directory-RPC wrapper queued as DRAFT, blocked on Session 4's influencer-and-profile-directory metadata delivery.)
+> Updated: 2026-05-22 (PR-B opened as DRAFT — `/api/v1/influencers` list + by-id replaced with directory-RPC wrapper via new `app/directory_client.py` mirroring `orchestrator_client.py` verbatim. 7 new J1-HOT tests + contract proposal at `01-internal-rpc-contracts.md` + DEP-012 opened against Session 4 for ratification. PR-C (env flip) merged this morning at #123 + PR-C2 (LOG corrections) merged at #124. PR-A (JWT issuer) stays watch-item.)
 
 ## ⭐ START-OF-SESSION SUMMARY (read first when resuming)
 
@@ -14,7 +14,7 @@ Full agent definition: `.claude/agents/session-3-public-api.md`.
 
 ## LAST THING I DID
 
-**2026-05-22 — PR-C: docker-compose.swarm.yml ENVIRONMENT default flip.** Session 4 surfaced during their Day-7 deploy work that every v2 service's compose ships with `ENVIRONMENT: ${ENVIRONMENT:-production}` — a template-spawn default that stamps Sentry/Langfuse/log records with `environment=production` whenever the deploy pipeline doesn't set the variable explicitly. v2 currently runs as a staging mirror of chat-ai during Phase-1 parity work; the default should be `staging`. Coordinator routed the 3 Session-4 services to Session 4 and public-api to me. One value flip + 10-line role-comment explaining the WHY (CI promotion still injects `ENVIRONMENT=production` explicitly, so production deploys are unaffected). Single-concern, .yml-only, I14 auto-merge eligible. PR-A (JWT issuer) deferred as watch-item (v2 config already matches chat-ai canonical). PR-B (real `/api/v1/influencers`) queued as DRAFT, blocked on Session 4 directory delivery.
+**2026-05-22 — PR-B (DRAFT): Day-8 directory-RPC wrapper for `/api/v1/influencers` list + by-id.** Mobile testing surfaced two parity gaps; PR-B closes the bigger one (real influencer list + by-id reads). New `app/directory_client.py` mirrors `orchestrator_client.py` verbatim — lifespan-managed httpx.AsyncClient singleton + 4 internal-call headers (X-User-Id + X-Internal-Caller + X-Request-Id + X-Trace-Id; no X-Idempotency-Key on stateless GETs). Pagination is plain offset/limit ints per yral-mobile's `ChatRemoteDataSource.kt:50-70` (Rishi overrode my initial cursor-pagination pick — chat_routes.py's `before` cursor fits temporal streams, catalogs don't). Connect/timeout/non-200/bad-shape → envelope-shaped 503 with `directory.call.failed=<mode>` Sentry tag; directory 404 on by-id → public-api envelope-shaped 404 with locked `not_found` error code. /trending stays as Day-2 stub. 13 contract tests rewritten/added (mock pattern mirrors `test_orchestrator_proxy.py`). Same PR also opens **DEP-012** — Session 4 ratifies (or counter-proposes) the proposed list-RPC contract `GET /v1/influencers?limit&offset → list[InfluencerResponse]` declared inline in `01-internal-rpc-contracts.md`. PR-B held as DRAFT pending Session 4 ratification + Codex APPROVE; coordinator manual squash-merge after.
 
 ## CURRENT TASK
 

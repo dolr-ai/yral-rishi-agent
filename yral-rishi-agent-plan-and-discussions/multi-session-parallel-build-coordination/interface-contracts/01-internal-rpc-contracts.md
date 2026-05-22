@@ -124,20 +124,62 @@ Source of truth: `yral-rishi-agent-conversation-turn-orchestrator/app/models/tur
 ## public-api → influencer-and-profile-directory
 
 ```
-GET http://yral-rishi-agent-influencer-and-profile-directory:8000/influencers/{id}
+GET http://yral-rishi-agent-influencer-and-profile-directory_service:8000/v1/influencers
+  ?limit=<int 1..100>
+  &offset=<int >=0>
+→ list[InfluencerResponse]    [PROPOSED — see DEP-012]
+
+GET http://yral-rishi-agent-influencer-and-profile-directory_service:8000/v1/influencers/{id}
 → InfluencerResponse
 
-POST .../influencers (create flow)
+POST .../v1/influencers (create flow)
 → InfluencerResponse
 
-PATCH .../influencers/{id}/system-prompt
+PATCH .../v1/influencers/{id}/system-prompt
 → InfluencerResponse
 
-DELETE .../influencers/{id}
+DELETE .../v1/influencers/{id}
 → {}
 ```
 
 Mostly thin proxy — public-api forwards to influencer-directory.
+
+**Headers on every request** (4 internal-call headers per public-api's
+`directory_client._internal_headers()`): `X-User-Id` (forwarded from
+the public-api JWT-validated user); `X-Internal-Caller`
+(`yral-rishi-agent-public-api`); `X-Request-Id` + `X-Trace-Id` (both
+carry the same value from public-api's `request_id_middleware`). No
+`X-Idempotency-Key` on GETs (stateless reads; F10's per-endpoint
+opt-out applies). The directory MAY mTLS-verify the caller by SAN
+when the Day-N internal-mesh-mTLS lands; current shape relies on
+the same-overlay-mesh trust model that orchestrator → soul-file
+already uses.
+
+**The list endpoint (`GET /v1/influencers?limit&offset`) is the
+PROPOSED contract from DEP-012 (Session 3, 2026-05-22).** Session 4
+ratifies when they build the real endpoint at
+`yral-rishi-agent-influencer-and-profile-directory/app/api/`, or
+pushes back with a different shape and Session 3 adjusts public-api's
+wrapper accordingly. The by-id + create + edit + delete shapes are
+the previously-declared contract on main.
+
+**Pagination semantics:**
+- `limit`: 1..100 plain int (matches yral-mobile
+  `ChatRemoteDataSource.kt:50-70` listInfluencers contract — plain
+  offset/limit, no cursor). Default `20`.
+- `offset`: 0-indexed non-negative int. Default `0`.
+- Response is a flat `list[InfluencerResponse]` — no `total_count`
+  or `next_offset` wrapper today; mobile derives "more pages
+  available" client-side from `len(items) == limit`. Future PR can
+  add a `count` header or wrap the body if the catalog grows beyond
+  the natural one-shot read.
+
+**Note: stack-service DNS naming.** The Swarm DNS name for the
+directory service is `<stack>_<service>` →
+`yral-rishi-agent-influencer-and-profile-directory_service` (per
+project.config + the compose service name `service`). Previous
+version of this section dropped the `_service` suffix; updated here
+to match the actual Swarm DNS resolution.
 
 ## orchestrator → soul-file-library
 
