@@ -2,6 +2,204 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-23 — PR #136 round-4 fixup: regenerate `.env.example` from `secrets.yaml` per D8 drift discipline (Codex BLOCKER on round-3)
+
+### Status
+**Round-4 fixup pushed to PR #136 — DRAFT stays on.** Codex round-3 returned a 🛑 BLOCKER: per D8, each service's `.env.example` is auto-generated from `secrets.yaml` and committed; CI fails if drift exists. PR #136 added REDIS_PASSWORD to `secrets.yaml` but did NOT regenerate the committed `.env.example`. Same blocker hit Session 3's PR #137 today — coordinator flagged for a Session-2 follow-up to wire `gen-env-example.sh` into a pre-commit hook OR per-service CI step that fails on drift.
+
+### What's changing
+Ran `bash scripts/gen-env-example.sh` from the orchestrator service folder. Output: `OK: regenerated .env.example from secrets.yaml.` Generated file now includes REDIS_PASSWORD as L40-53 alongside the other 4 secrets + the 3 non-secret runtime env vars (ENVIRONMENT, LOG_LEVEL, LANGFUSE_TRACING_ENABLED).
+
+The diff is larger than just "add REDIS_PASSWORD block" — the regenerator replaced the verbose hand-written file header (Day-1 leftover from before the generator existed) with the auto-generated header that warns "DO NOT EDIT BY HAND — your changes will be overwritten on the next run." 127 lines diff: 67 insertions / 60 deletions; net +7. This is the FIRST run of the generator against this file post-its-hand-written-Day-1-state, so the header replacement is one-time noise; future runs will be additive-only diffs.
+
+### Files touched (round-4)
+- `yral-rishi-agent-conversation-turn-orchestrator/.env.example` — regenerated from secrets.yaml.
+- This LOG addendum + STATE refresh.
+
+### Constraints touched (round-4)
+- **A2.1** — same single concern (PR #136 scope unchanged); round-4 closes a D8 drift gap that round-1/2/3 implicitly carried.
+- **D8** — `.env.example` ↔ `secrets.yaml` drift constraint now satisfied.
+- **I11** — same-commit doc + LOG + STATE pairing.
+- **I14** — still **NOT auto-merge eligible** (carries through from round-1's Python + compose framing).
+
+### Next
+- Codex re-review on the round-4 push.
+- If APPROVE → coordinator marks Ready + merges via `gh pr merge 136 --squash`.
+- **Session-2 follow-up flagged**: wire `gen-env-example.sh --check` into a per-service CI step OR pre-commit hook so the D8 drift gate fires before merge, not in Codex round-N. Coordinator owns the flag-to-Session-2 hand-off.
+
+---
+
+## 2026-05-23 — PR #136 round-3 fixup: correct misleading "ALTER ROLE on Patroni" rotation note in `secrets.yaml` (Codex CONCERN on round-2)
+
+### Status
+**Round-3 fixup pushed to PR #136 — DRAFT stays on.** Codex round-2 returned a CONCERN (not BLOCKER) at `secrets.yaml:129` flagging that the REDIS_PASSWORD rotation `notes:` block read "ALTER ROLE on Patroni (if password-aware)" — that's a **Postgres** operation, not a **Redis** operation. The note would mislead an operator during incident response (think they need to ALTER a Postgres role when actually they need to roll the 5 Redis-stack services). Coordinator confirmed the misleading text came from the paste-ready spec they sent in the original PR-#136 brief (carried over from a generic rotation-notes template); corrected on coordinator-side in PR #138 + same correction applied here.
+
+### What's changing (text-only correction in `secrets.yaml`)
+
+The REDIS_PASSWORD entry's `notes:` block now describes the actual Redis-stack rotation sequence (create new versioned secret → rolling-update ALL 5 Redis-stack services simultaneously: primary + replica + 3 sentinels → verify cluster healthy: sentinel quorum + `master_link_status:up` + no FAILOVER events → roll consumers → drop old secret last). Notes also point operators at the cluster-level secrets-manifest's `rotation_runbook` as the source of truth so consumer manifests reference rather than duplicate.
+
+An explicit corrigendum sentence at the end of the `notes:` block makes the correction visible to a future git-history reader so the change isn't mysterious.
+
+### Why a fixup on the same PR vs a separate PR
+
+Same PR per I11 + the cumulative "Codex CONCERN iterations land as fixup commits on the originating PR's branch" pattern (PR #119 round-2 / PR-B1 round-2 / PR #136 round-2 precedents). A2.1 scope unchanged (still "wire REDIS_PASSWORD AUTH credential"); round-3 closes a documentation accuracy issue. No code change, no behavior change.
+
+### Files touched (round-3)
+- `yral-rishi-agent-conversation-turn-orchestrator/secrets.yaml` — 6-line block replaced with 18-line block (Redis-specific rotation steps + reference to coordinator-level secrets-manifest + corrigendum sentence).
+- This LOG addendum + STATE refresh.
+
+### Constraints touched (round-3)
+- **A2.1** — same single concern (PR #136 scope unchanged); round-3 fixes a doc accuracy issue, not scope creep.
+- **B7** — corrigendum sentence makes the git-history-reader's path clear.
+- **D8** — REDIS_PASSWORD manifest now correctly describes its rotation procedure; references the cluster-level secrets-manifest as source of truth.
+- **I11** — same-commit doc + LOG + STATE pairing.
+- **I14** — still **NOT auto-merge eligible** (carries through from round-1's Python + compose framing).
+
+### Next
+- Codex re-review on the round-3 push.
+- If APPROVE → coordinator marks Ready + merges via `gh pr merge 136 --squash`.
+- **PR-D1 Chunk A** continues in parallel — already-cut branch `session-4/day-8-pr-d1-influencer-directory-service-build` resumes after this round-3 push.
+
+---
+
+## 2026-05-23 — PR #136 round-2 fixup: rename `kwarg` / `kwargs` shorthand → "keyword argument(s)" per B2 allowlist (Codex CONCERN on round-1)
+
+### Status
+**Round-2 fixup pushed to PR #136 — DRAFT stays on.** Codex round-1 returned a CONCERN (not BLOCKER) at `tests/test_run_turn.py:719` flagging that the new test names + variable names used the programmer-shorthand `kwarg` / `kwargs`, which is not on the B1/B2 allowed-abbreviation list. Per memory `feedback_explicit_naming.md`, B1/B2 is "non-negotiable + CI-enforced." Round-2 spells out the abbreviation everywhere it appears in Session-4-coined identifiers.
+
+### What's changing (test-code-only rename, zero functional change)
+
+**Test function names:**
+- `test_init_redis_passes_password_kwarg_to_master_for` → `test_init_redis_passes_password_to_sentinel_primary_connection`
+- `test_init_redis_empty_password_resolves_to_none_in_master_for` → `test_init_redis_empty_password_resolves_to_none_for_sentinel_primary_connection`
+
+Coordinator's example shape (focuses on observable behavior — "password to sentinel primary connection" — not implementation mechanism). Test 2 didn't strictly have `kwarg`/`kwargs` in its name but renamed for paired-shape consistency.
+
+**Helper variable:**
+- `master_for_kwargs` → `master_for_keyword_arguments` (literal expansion, no shorthand)
+
+**Docstring references:**
+- "drops the `password=` kwarg from the `master_for(...)` call" → "drops the `password=` keyword argument from the `master_for(...)` call"
+- "this test pins the kwarg-passthrough explicitly" → "this test pins the password-keyword-argument passthrough explicitly"
+- "catch a kwarg-reorder refactor" → "catch a keyword-argument-reorder refactor"
+- PAIRED-WITH cross-references updated to the new test names
+
+**Functional code (`app/idempotency.py`, `app/config.py`, `secrets.yaml`, `docker-compose.swarm.yml`) unchanged.** Python's `password=...` keyword syntax is a language keyword, not an identifier we coined — not subject to B1/B2 per Codex's own clarification in the CONCERN message.
+
+### Pre-empting Codex-round-3 nitpick on external-library API attributes
+
+The diff retains two literal `.kwargs` references — both are `sentinel_instance_mock.master_for.call_args.kwargs`. The `.kwargs` attribute here is from the **unittest.mock library** (`_Call.kwargs` — the standard way to introspect a mock call's keyword arguments). External-library published API names aren't subject to B1/B2 (which governs identifiers WE coin) — same logic as the function name `master_for` itself, which is redis-py's published method name. If a future B2-strictness pass disagrees, the workaround is `getattr(sentinel_instance_mock.master_for.call_args, 'kwargs')` or destructuring `(positional_arguments, keyword_arguments) = sentinel_instance_mock.master_for.call_args` — but that adds boilerplate without semantic value, so leaving as-is.
+
+### Why a fixup on the same PR vs a separate PR
+
+Same PR per I11 + per Session 1's PR #119 round-2 precedent + per yesterday's PR-B1 round-2 precedent — Codex CONCERN-level iterations land as fixup commits on the originating PR's branch. A2.1 scope is unchanged (still "wire REDIS_PASSWORD AUTH credential"); round-2 closes a B2 nitpick that round-1 implicitly should have honored.
+
+DRAFT stays on through Codex re-review.
+
+### Files touched (round-2)
+- `yral-rishi-agent-conversation-turn-orchestrator/tests/test_run_turn.py` — rename 2 test functions + 1 helper variable + docstring references.
+- This LOG addendum + STATE refresh.
+
+### Sanity check pre-push
+`python3 -m py_compile` clean on the edited test file. Grep against the diff confirms zero remaining `\bkwarg\b` or `\bkwargs\b` matches in Session-4-coined identifiers (only the 2 `unittest.mock`-API `.kwargs` references remain, documented above).
+
+### Constraints touched (round-2)
+- **A2.1** — same single concern as round-1 (PR #136 scope unchanged); round-2 closes a B2 identifier nitpick.
+- **B1 + B2** — round-2's direct purpose: rename programmer-shorthand to plain-English identifiers.
+- **B7** — docstring text updated to "keyword argument(s)" alongside the identifier renames.
+- **I11** — same-commit code + LOG + STATE pairing (same as round-1's discipline).
+- **I14** — still **NOT auto-merge eligible** (PR #136's round-1 framing — Python + behavior-changing compose — carries through).
+
+### Next
+- Codex re-review on the round-2 push.
+- If APPROVE → coordinator marks Ready + merges via `gh pr merge 136 --squash`.
+- Coordinator confirms `yral_v2_redis_primary_password_ceeb8b19` Swarm secret in place + force-image-pulls orchestrator on cluster post-merge.
+- **PR-D1 (influencer-directory service-build)** starts immediately after round-2 push (coordinator green-lit parallel work — different service folder, no conflict with PR #136).
+
+---
+
+## 2026-05-23 — Redis client-side AUTH wiring on orchestrator's Sentinel-discovered primary connection (closed cross-session PR #134 → re-scoped to Session 4)
+
+### Status
+**Blocks the cluster smoke test (`POST /v1/turn` against orchestrator with shmeena12).** v2 cluster's Redis primary runs with `--requirepass` enabled (per H3 + 2026-05-22 incident-response rotation). Orchestrator's Sentinel client at `app/idempotency.py:343-355` currently does NOT send the AUTH frame after master discovery → first command after Sentinel resolves the primary raises `redis.exceptions.AuthenticationError: Authentication required.` Every `run_turn` 500s at the F10 dedup layer before reaching the soul-file → LLM path.
+
+Session 1 diagnosed the issue 2026-05-23. Coordinator's original cross-session fix landed as PR #134; Codex closed it per I9 pushback (PR touched too many session boundaries). Coordinator re-scoped: the orchestrator-side half is THIS PR; the cluster-side secrets-manifest update + DEP-015 (template-rot follow-up) are coordinator-owned, in parallel.
+
+### What's changing (5 files, scoped paste-ready spec from coordinator brief)
+
+**`app/config.py`** — add `redis_password` Settings field:
+
+```python
+redis_password: str = ""
+```
+
+Full B7 role-comment block documenting the AUTH challenge mechanics, the `REDIS_PASSWORD` secret source (mounted via `/run/secrets/REDIS_PASSWORD` + bridged to env per PR #116 wrapper), the versioned-Swarm-secret naming pattern (`yral_v2_redis_primary_password_<sha>`), and the empty-default rationale (local docker-compose Redis runs unauthenticated).
+
+**`app/idempotency.py`** — extend `master_for(...)` with the password kwarg:
+
+```python
+_redis = sentinel_client.master_for(
+    master_name,
+    decode_responses=True,
+    password=settings.redis_password or None,
+)
+```
+
+The `or None` guard normalises empty-string → `None` so redis-py skips the AUTH frame entirely on the local path. Some redis-py versions treat `password=""` differently from `password=None` (the empty-string path still sends an AUTH frame with empty credentials, which fails). Role-comment documents the AuthenticationError class + the rotation pattern reference.
+
+**`secrets.yaml`** — add REDIS_PASSWORD manifest entry. Declares `required_in: [ci, production]` (NOT local — docker-compose Redis is unauthenticated), `source: production: "Swarm secret yral_v2_redis_primary_password_<sha> mapped to logical name REDIS_PASSWORD via compose external:name"`, `rotation_policy: "Every 180 days, or on incident response (e.g. 2026-05-22 leak rotation)"`. Captures the rotation pattern in the `notes:` block.
+
+**`docker-compose.swarm.yml`** — two edits:
+- Per-service `secrets:` block — adds `REDIS_PASSWORD` mount with `uid:1001 gid:1001 mode:0400` (same shape as the other 4 secrets in this service); role-comment cites H3 + the without-this-mount failure mode.
+- Top-level `secrets:` block — adds `REDIS_PASSWORD: external: name: yral_v2_redis_primary_password_ceeb8b19` using the external-name pattern that lets the logical secret name stay stable while the versioned Swarm secret rotates underneath; role-comment documents the rotation = bump-the-name workflow.
+
+**`tests/test_run_turn.py`** — add 2 mocked tests closing the Codex CONCERN on closed PR #134 (which had asked for a regression test on the AUTH frame). Tests live in `test_run_turn.py` (not a separate `test_idempotency.py` — coordinator's spec was approximate; this file already hosts the existing C11 `init_redis` tests at L648 + L696, so the 2 new tests live alongside them):
+- `test_init_redis_passes_password_kwarg_to_master_for` — REDIS_SENTINEL_ENABLED=true + REDIS_PASSWORD=testpass; mock `Sentinel` class; assert `master_for(password="testpass-secret-1234")`.
+- `test_init_redis_empty_password_resolves_to_none_in_master_for` — REDIS_SENTINEL_ENABLED=true + REDIS_PASSWORD=""; assert `master_for(password=None)` (NOT `password=""`). Locks in the `or None` guard.
+
+Both tests reuse the C11 fail-closed test's `monkeypatch.setattr(app_idempotency, "_redis", None)` bypass trick so init_redis runs the fresh-startup Sentinel branch instead of short-circuiting on the fakeredis singleton the auto-use fixture pre-injects. Both also stub `_load_redis_section_from_shared_config` so the Sentinel branch finds valid master_name + hosts (different RuntimeError code path otherwise). The `from unittest.mock import MagicMock` lives inside each test (matching the existing test-file style of inline imports per-test).
+
+### Decision provenance
+Coordinator brief in this turn's instruction provided the paste-ready spec for all 5 files; this LOG entry captures the spec verbatim + the closed PR #134 context. I9 pushback on PR #134's cross-session scope is the reason the original got closed + re-scoped to Session 4-only (orchestrator-side half here; cluster-side secrets-manifest + DEP-015 template-rot stay coordinator-owned).
+
+### Trust-handoff notes
+- **Coordinator drives cluster-side secret provisioning** — the Swarm secret `yral_v2_redis_primary_password_ceeb8b19` MUST exist before this stack re-applies, or deploy fails with `secret not found: yral_v2_redis_primary_password_ceeb8b19`. Coordinator confirms the secret is in place pre-merge (or rolls back the merge if not).
+- **DEP-015 (template-rot follow-up)** — separately tracked + assigned to Session 2. Not bundled here per I9.
+- **Per-service Postgres role aware?** — the `notes:` block in `secrets.yaml` mentions "ALTER ROLE on Patroni (if password-aware)" — orchestrator doesn't have a per-service Postgres role today (DATABASE_URL was trimmed at Day-7 per PR #108), so the ALTER ROLE step is N/A for THIS service but kept in the doc as the canonical pattern for future Redis-auth-using services.
+
+### Files touched
+- `yral-rishi-agent-conversation-turn-orchestrator/app/config.py` — `redis_password` Settings field + B7 comment block.
+- `yral-rishi-agent-conversation-turn-orchestrator/app/idempotency.py` — `password=` kwarg on `master_for(...)` + extended role-comment.
+- `yral-rishi-agent-conversation-turn-orchestrator/secrets.yaml` — REDIS_PASSWORD manifest entry.
+- `yral-rishi-agent-conversation-turn-orchestrator/docker-compose.swarm.yml` — per-service mount + top-level external-name mapping.
+- `yral-rishi-agent-conversation-turn-orchestrator/tests/test_run_turn.py` — 2 mocked tests (password-kwarg-flow + empty-default-to-None).
+- This LOG entry + STATE update.
+
+### Sanity check pre-push
+`python3 -m py_compile` clean against all 3 edited `.py` files. Full pytest in CI.
+
+### Constraints touched
+- **A2.1** — single concern: server-side AUTH wiring for orchestrator's Sentinel-discovered Redis primary. No other surface touched.
+- **B7** — full role-comment blocks on the new field + the master_for kwarg + the secrets.yaml entry + the compose role-comments + the 2 tests' WHAT/WHEN/WHY/PAIRED-WITH docstrings.
+- **C11** — Sentinel-aware client semantics preserved + extended with AUTH; the existing C11 production-fail-closed gate at idempotency.py:302 is unchanged.
+- **D8** — REDIS_PASSWORD declared in `secrets.yaml` per the per-service secrets-manifest discipline; new external-name mapping in compose carries the rotation discipline forward.
+- **H3** — incident-response rotation discipline cited in the new role-comments (the 2026-05-22 leak rotation).
+- **I9** — orchestrator service files only; public-api / soul-file / influencer untouched; cluster-side secret provisioning + DEP-015 template-rot stay with coordinator.
+- **I11** — same-commit code + tests + LOG + STATE pairing.
+- **I14** — **NOT auto-merge eligible.** Adds Python code (Settings field + master_for kwarg) + behavior-changing compose (new secret mount + new external-name declaration). Coordinator manually merges via `gh pr merge <N> --squash` after Codex APPROVE.
+
+### Diff size
+~25 lines on config.py + ~15 lines on idempotency.py + ~38 lines on secrets.yaml + ~13 lines on docker-compose.swarm.yml + ~125 lines on the 2 tests (heavily commented per B7) + LOG + STATE. Cumulative cap well under 400 lines; precise count verified pre-push via `git diff --stat origin/main...HEAD`.
+
+### Next
+- Codex round-1 review on push.
+- If APPROVE → coordinator marks Ready + merges via `gh pr merge <N> --squash`.
+- Coordinator confirms the `yral_v2_redis_primary_password_ceeb8b19` Swarm secret exists on the cluster + re-deploys the orchestrator stack on rishi-4 — the cluster smoke (POST /v1/turn with shmeena12) unblocks.
+- **PR-D1 influencer-directory metadata + endpoints** stays parked (the Q1–Q5 CONFIRM-TO-RISHI from earlier today on schema names / `is_active` shape / `/trending` data source / pagination / PR scoping is still on hold for coordinator routing). Will reopen the CONFIRM when coordinator routes back.
+- **PR-B3** (drop env-var fallback + flip `request.influencer_id` to required) still waits on Session 3's PR-B2 forwarding from public-api per the 3-PR plan; trust-boundary CONCERN captured for that PR per yesterday's note.
+
+---
+
 ## 2026-05-23 — Day-8 PR-B1 round-2 fixup: empty-string `influencer_id` validation defense (Codex CONCERN on PR #131 round-1)
 
 ### Status
