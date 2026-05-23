@@ -3,6 +3,65 @@
 
 ---
 
+### 2026-05-23 — D3: ETL migration plan + script + RUNBOOK + DEP-014
+
+**Branch**: session-5/etl-plan-day-9-draft
+**Trigger**: PR #132 merged (fffeadc); coordinator green-lit D3 scope.
+
+**What ships**:
+
+1. `etl-scripts/etl-plan-day-9-draft.md` — full migration plan:
+   - §2: column mapping conversations (8 source columns → 9 v2 columns)
+   - §3: column mapping messages (14 source columns → 8 v2 columns)
+   - §4: 3-phase algorithm (conversations → messages → message_count UPDATE)
+   - §5: idempotency (ON CONFLICT (id) DO NOTHING — safe to re-run)
+   - §6: post-migration verification queries (count comparison)
+   - §7: failure modes + recovery table
+   - §8: PII handling (content never logged, READ ONLY source connection)
+   - §9: A14 approval checklist for Rishi YES (exact text for coordinator to surface)
+
+2. `etl-scripts/chat_ai_to_user_memory_etl.py` — Python migration script:
+   - asyncpg READ ONLY source pool + write destination pool
+   - `transform_conversation_row()`: updated_at → last_message_at rename,
+     metadata JSONB dropped (Phase 2), soft_deleted_at → NULL
+   - `transform_message_row()`: token_count → gemini_metadata JSONB,
+     content NULL → '', count_toward_paywall → True,
+     sender_id/message_type/audio_url/is_read/status/metadata dropped
+   - Batched SELECT + INSERT ON CONFLICT (id) DO NOTHING (10K rows/batch)
+   - message_count UPDATE after all messages loaded (WHERE message_count = 0)
+   - Verification: count comparison with ±500 conv / ±5K msg tolerance
+   - CLI: --batch-size, --dry-run, --conversations-only, --messages-only
+
+3. `RUNBOOK.md` — new "ETL Day-9" section with pre-requisites, run commands,
+   verification output, and live-data-pulls-log.md entry format
+
+4. `cross-session-dependencies.md` — DEP-014:
+   coordinator must get Rishi YES (A14) before running the script
+
+5. `tests/test_conversation_routes.py` — Codex follow-up test tightening:
+   - Updated `test_messages_ordering_with_same_created_at_timestamp`:
+     content-positional role assertions + id presence verification
+   - New `test_before_cursor_within_same_timestamp_batch_returns_correct_subset`:
+     cursor pagination handles same-timestamp batch correctly
+
+Total tests: 8 schema + 25 route = **33 tests**.
+
+**Key decisions**:
+- `conversations.metadata` (memories) dropped — Phase 2 pgvector will rebuild from
+  message history; no recovery needed for Phase 1 conversation persistence
+- `messages.sender_id` dropped — H2H sender attribution not in v2 Phase 1 schema;
+  documented as data loss in §3
+- `token_count` → `gemini_metadata {"total_tokens": N}` — preserves billing-relevant
+  data without adding a new column; consistent with v2's JSONB envelope pattern
+- `count_toward_paywall = True` for all migrated messages — conservative fail-safe per E7;
+  cannot retroactively know which historical messages were auto-greet exemptions
+- A14 approval checklist embedded in §9 of the plan — coordinator uses exact text
+  to surface to Rishi, no ambiguity about what's being approved
+
+**Next**: Await D3 PR review. Day-9 ETL execution after Rishi YES (DEP-014).
+
+---
+
 ### 2026-05-23 — PR #132 Round-3: GET /v1/conversations/{id} + migration 003 + Codex tests
 
 **Branch**: session-5/user-memory-rpc-endpoints

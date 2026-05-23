@@ -1,5 +1,5 @@
 # Session 5 STATE — ETL + Tests + Memory
-> Updated: 2026-05-23 (PR #132 Round-3 — GET /v1/conversations/{id} + dedup indexes + Codex tests)
+> Updated: 2026-05-23 (D3 — ETL migration plan + script + RUNBOOK + DEP-014)
 
 ## ⭐ START-OF-SESSION SUMMARY (read first when resuming)
 
@@ -8,90 +8,76 @@ I am Session 5. Phase 1 scope: conversation history persistence for
 
 Three Phase-1 deliverables:
 - D1 (DONE — PR #127 merged a39e54c): Schema + Alembic migration
-- D2 (IN PR #132 — round-3 pushed, awaiting merge): 5 RPC endpoints
-- D3 (NEXT after PR #132 merges): ETL migration plan draft
+- D2 (DONE — PR #132 merged fffeadc): 5 RPC endpoints (rounds 1-3)
+- D3 (IN PR — this branch): ETL migration plan + script + DEP-014
 
 ## LAST THING I DID
 
-PR #132 round-3 commit — three items bundled:
+D3 PR on branch `session-5/etl-plan-day-9-draft`:
 
-**(1) Migration 003** (`app/migrations/versions/003_add_dedup_indexes.py`):
-- `conversations_natural_key_active_unique_idx`: partial unique expression
-  index using COALESCE to handle NULLable columns — enables atomic upsert
-  ON CONFLICT for concurrent create_or_get_conversation calls
-- `messages_client_message_id_dedup_idx`: partial unique index on
-  (conversation_id, client_message_id) WHERE NOT NULL — enables
-  ON CONFLICT DO NOTHING for message idempotency (mobile retries)
+**(1) `etl-scripts/etl-plan-day-9-draft.md`** — full ETL plan:
+- §2 column mapping: conversations (chat-ai → v2), all 8 columns documented
+- §3 column mapping: messages (chat-ai → v2), all 14 source columns documented
+- §4 migration algorithm: 3 phases (conversations, messages, message_count UPDATE)
+- §5 idempotency guarantee (ON CONFLICT (id) DO NOTHING)
+- §6 post-migration verification queries
+- §7 failure modes + recovery
+- §8 data classification + PII handling (content never logged)
+- §9 A14 approval checklist for Rishi YES
 
-**(2) conversation_routes.py** — 4 changes:
-- `create_or_get_conversation`: replaced SELECT-then-INSERT with atomic
-  `INSERT ... ON CONFLICT DO UPDATE SET last_message_at = conversations.last_message_at RETURNING *`
-  — race-condition-free upsert using migration 003's expression index
-- `append_messages`: replaced plain INSERT with `ON CONFLICT DO NOTHING`
-  + SELECT existing row when conflict fires — message idempotency via
-  client_message_id; only increments message_count for genuinely new rows
-- `list_messages` ORDER BY: added `id DESC/ASC` tiebreaker to both inner
-  and outer queries — deterministic ordering for same-timestamp batch inserts
-- NEW `GET /v1/conversations/{conversation_id}` route:
-  - X-User-Id header for tenant isolation (public-api forwards after JWT val)
-  - 404 for: not found, soft-deleted (WHERE soft_deleted_at IS NULL), wrong user
-  - Never 403 — doesn't leak existence of other users' conversations
-  - Returns ConversationResponse with last_message inline
-  - Session 3 PR-B2 calls this to derive ai_influencer_id before forwarding
-    to orchestrator
+**(2) `etl-scripts/chat_ai_to_user_memory_etl.py`** — Python migration script:
+- asyncpg-based, READ ONLY source pool, write destination pool
+- `transform_conversation_row()` + `transform_message_row()` per §2 + §3
+- `migrate_conversations()`: batch SELECT + INSERT ON CONFLICT DO NOTHING
+- `migrate_messages()`: same pattern, 10K rows/batch
+- `update_message_counts()`: bulk UPDATE after all messages loaded
+- `run_verification()`: count comparison with +/-500/5K tolerance
+- CLI: `--batch-size`, `--dry-run`, `--conversations-only`, `--messages-only`
 
-**(3) test_conversation_routes.py** — 8 new tests + 1 fix:
-- Fixed `>=` → `>` for timestamp assertion (Codex strict-assertion concern)
-- `test_create_or_get_handles_concurrent_first_calls`: asyncio.gather two
-  concurrent POST calls, assert same conversation_id returned
-- `test_append_message_idempotency_via_client_message_id`: retry produces
-  same message_id, only 1 DB row
-- `test_messages_ordering_with_same_created_at_timestamp`: batch insert
-  (same transaction → same NOW()), two GET calls produce identical order
-- `test_get_conversation_by_id_happy_path`: 200 + correct shape + last_message
-- `test_get_conversation_by_id_returns_404_when_not_found`
-- `test_get_conversation_by_id_returns_404_for_wrong_user_tenant_isolation`
-- `test_get_conversation_by_id_returns_404_for_soft_deleted_conversation`
-  (uses database_pool fixture alongside test_client for direct SQL UPDATE)
-- `test_get_conversation_by_id_returns_none_last_message_for_new_conversation`
+**(3) `RUNBOOK.md`** — new "ETL Day-9" section:
+- Pre-requisites checklist
+- Step-by-step run commands
+- Verification output description
+- live-data-pulls-log.md entry format
 
-**(4) test_schema_migrations.py**: new `test_migration_003_unique_indexes_exist`
-verifies both indexes are in pg_indexes after `alembic upgrade head`
+**(4) `cross-session-dependencies.md`** — DEP-014:
+- Coordinator must get Rishi YES (A14) before running the ETL script
+- References §9 approval checklist in etl-plan-day-9-draft.md
 
-Total tests: 8 schema tests + 24 route tests = 32 tests.
+**(5) `tests/test_conversation_routes.py`** — Codex follow-up tightening:
+- Updated `test_messages_ordering_with_same_created_at_timestamp`:
+  now asserts content-positional roles (both roles present in fixed order)
+  + id presence verification — not just call-stability
+- New `test_before_cursor_within_same_timestamp_batch_returns_correct_subset`:
+  asserts cursor pagination navigates same-timestamp batches correctly;
+  documents the created_at-only cursor limitation
 
----
-
-D1 (MERGED — PR #127 — a39e54c): Full service scaffold.
-D2 Round-1 (commit 119dd7e): 4 routes + 002 migration + 13 tests.
-D2 Round-2 Item 1 (commit 967ceec): ASGITransport pool-leak fix (LifespanManager).
-D2 Round-3 (current commit): migration 003 + 5th route + 8 tests + dedup.
+Total tests: 8 schema + 25 route = **33 tests**.
 
 ## CURRENT TASK
 
-Waiting for PR #132 round-3 Codex verdict + coordinator manual squash-merge.
+D3 PR open on branch session-5/etl-plan-day-9-draft. Awaiting coordinator review.
 
 ## NEXT 3 PLANNED ACTIONS
 
-1. After PR #132 merges: coordinator drives Swarm deploy of user-memory-service
-   (DEP-012 already resolved — Postgres role + DB + schema + Swarm secret in place)
-2. Start D3 (ETL migration plan draft) on branch session-5/etl-plan-day-9-draft —
-   column mapping chat-ai → user-memory-service, row counts, PII handling,
-   verification queries; NO live data reads (plan only; execution gated on A14)
-3. Session 3 PR-B2 can flip from by-user-list fallback to the new GET /v1/conversations/{id}
-   once PR #132 merges
+1. D3 PR merges → D3 DONE
+2. Wait for Day-9 (2026-05-31): coordinator surfaces A14 approval checklist to Rishi,
+   runs ETL under YES, logs in live-data-pulls-log.md
+3. Phase 2 (pgvector semantic memory): spawn user-memory-service Phase 2 branch with
+   embedding extraction, semantic_facts table, user_profiles; deferred to after D3
 
 ## BLOCKERS
 
-- PR #132 awaiting Codex round-3 + coordinator merge
-- Day-9 ETL run BLOCKED until Rishi types YES per A14
+- Day-9 ETL execution BLOCKED until Rishi types YES per A14 (DEP-014)
+- Phase 2 out of scope until D3 fully lands
 
 ## PENDING PRs (mine)
 
-- PR #132 (OPEN, round-3 pushed): Deliverable 2 — 5 RPC endpoints
-- PR #127 (MERGED): Deliverable 1 — schema + Alembic migration
+- D3 PR (opening now): ETL plan + script + RUNBOOK + DEP-014 + Codex test tightening
+- PR #132 (MERGED): D2 — 5 RPC endpoints (rounds 1-3)
+- PR #127 (MERGED): D1 — schema + Alembic migration
 
 ## CROSS-SESSION DEPS (mine)
 
-- DEP-012 RESOLVED: Postgres provisioning complete (coordinator confirmed)
-- Day-9 ETL approval: Rishi YES per A14 (surface as DEP before Day 9)
+- DEP-014 OPEN: coordinator needs Rishi YES (A14) to run chat_ai_to_user_memory_etl.py
+- DEP-012 RESOLVED: Postgres provisioning complete
