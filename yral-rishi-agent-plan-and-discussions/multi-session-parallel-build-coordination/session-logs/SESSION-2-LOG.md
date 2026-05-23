@@ -3,6 +3,53 @@
 
 ---
 
+## 2026-05-23 — PR #135 round-2 fixup: scope-split (revert .github/workflows/** edits) + dir→directory renames + B7 WHAT/WHEN/WHY function headers
+
+Same PR (#135), stays DRAFT. Round-1 Codex returned 4 BLOCKERs; 2 of them were **I9 scope-crossover violations** — my round-1 commit edited the coordinator-owned `.github/workflows/**` based on the coordinator's task-spec authorization, but **the template's CLAUDE.md says `.github/workflows/` is coordinator-only by I9, which only Rishi can override**. The task-spec authorization didn't have that override; Codex correctly enforced. Symmetric resolution to PR #134's same-day split: revert the workflow edits, scope back to template-only, coordinator opens a sibling PR for the workflow files.
+
+**Coordinator's own quote acknowledging the spec overreach:**
+> "Apology for the spec overreach. My earlier task spec said 'Add the workflow to the auto-merge required-checks set' + 'A new GitHub Actions workflow: .github/workflows/template-spawn-smoke.yml' — both implicitly authorized you to edit coordinator scope. Per the CLAUDE.md at the template's root, .github/workflows/ is coordinator-only — Codex correctly enforced. Same lesson I learned on PR #134 today. The discipline matters."
+
+**Files touched (round-2):**
+
+1. **`git rm .github/workflows/template-spawn-smoke.yml`** — moved to coordinator's sibling PR. Round-1 added it; round-2 deletes it from this PR.
+2. **`git checkout origin/main -- .github/workflows/auto-merge-small-session-fix-prs.yml`** — restored to the unmodified main state. Round-1 added 2 edits (workflow_run entry + new PATH_SCOPED_REQUIRED_CHECK_NAMES loop); round-2 reverts both. Coordinator's sibling PR re-applies both with a stricter shape per Codex's item-2 feedback (default-block when template paths touched + spawn-smoke check absent).
+3. **`yral-rishi-agent-new-service-template/scripts/new-service.sh`** — B1/B2/B5 renames per Codex's list (examples, not exhaustive; coordinator told me to find ALL `dir`/`DIR` occurrences I introduced):
+   - `--target-dir` → `--target-directory` (flag CLI surface; 7 occurrences in args, comments, help text, dry-run preview)
+   - `TARGET_DIR_OVERRIDE` → `TARGET_DIRECTORY_OVERRIDE` (variable; 5 occurrences)
+   - usage placeholder `DIR` → `<directory>` (help text)
+   - "tempdir destination" prose → "temp-directory destination" (comment)
+4. **`yral-rishi-agent-new-service-template/scripts/tests/test_spawn_smoke.sh`** — B1/B2/B5 renames + B7 WHAT/WHEN/WHY function headers:
+   - Renames: `TESTS_DIR` → `TESTS_DIRECTORY`, `SCRIPTS_DIR` → `SCRIPTS_DIRECTORY`, `--target-dir` → `--target-directory` in invocation + comments, "temp dir" / "tempdir" prose → "temp directory" throughout (header, step 1 banner, step_pass output, cleanup function's comment, step 4 comment). `$TMPDIR` is kept as-is (OS-provided env-var name, not an identifier we control); comment now explicitly notes this distinction.
+   - B7 headers: 3-5-line `WHAT / WHEN / WHY` blocks immediately above each of `cleanup`, `step_banner`, `step_pass`, `step_fail`. WHAT = one sentence on what the function does; WHEN = when it's invoked; WHY = what regression class it guards against / why it exists at all. Existing line-level role comments INSIDE the function bodies are preserved.
+
+**Why `dir` is a real B1/B2/B5 violation and not borderline:** B2's allowlist requires unambiguous English. `dir` is shorthand for "directory"; expanding it is the same lesson as PR #133 round-2's `tmp` → `temporary_fixture_directory` + `rel` → `relative_fixture_path` from yesterday. Codex's call was correct.
+
+**Why Codex's item-2 logic-gap fix moves to the sibling PR:** the fix Codex suggested ("default-block when template paths touched + spawn-smoke check absent") lives in `.github/workflows/auto-merge-small-session-fix-prs.yml` — coordinator-owned. The round-1 commit's path-scoped-array shape was a softer enforcement; coordinator chose the stricter shape (default-block) for the sibling PR. Either shape requires a coordinator-scope edit, so it's out of this PR's reach.
+
+**Local re-validation (post-renames + post-B7-headers):**
+
+- `bash yral-rishi-agent-new-service-template/scripts/new-service.sh -h` → help text reflects renamed flag + placeholder + multi-line wrap for the long `--target-directory <directory>` description.
+- `bash yral-rishi-agent-new-service-template/scripts/tests/test_spawn_smoke.sh` → **ALL 9 STEPS PASSED** end-to-end. Cache-warm build this time (~30s for step 4 vs ~3 min cold yesterday). Step-1 banner now reads "Per-run temp directory + cleanup trap"; step-2 banner reads "Spawn fresh service via new-service.sh --target-directory" — all renamed surfaces visible in the operator output.
+- Pure rename + doc-density work — no behavior change in either script.
+
+**Diff size (round-2 fixup alone, on top of round-1 commit `2441657`):**
+- `git rm` of new workflow file: -120 lines (file deletion)
+- revert of auto-merge YAML: -61 lines (round-1's PATH_SCOPED_REQUIRED_CHECK_NAMES block + workflow_run entry undone)
+- new-service.sh renames: ~0 net (variable name swaps + help-text rewrites; line count comparable)
+- test_spawn_smoke.sh renames: ~0 net (same)
+- test_spawn_smoke.sh B7 function headers: ~45 lines added (4 WHAT/WHEN/WHY blocks)
+- this LOG entry: ~60 lines (doc, not strict-code)
+- **Round-2 net effect**: PR's total diff drops from +865/-34 to roughly +685/-15 (smaller PR, tighter scope).
+
+**Constraints touched:** A2.1 (round-2 IS the single-concern split + var-rename + B7 fixup; nothing else folded in), B1/B2/B5 (`dir` → `directory` violations closed), B7 (WHAT/WHEN/WHY function headers added; existing line-level role comments preserved), I9 (scope-crossover violation closed via `.github/workflows/**` revert), I11 (this append-only entry; round-1 entry above untouched).
+
+**Cross-session handoff:** coordinator's sibling PR (their next-task; not mine). After both PRs land — this one (template-only) and coordinator's (workflow files) — the spawn-smoke gate becomes live with the stricter default-block semantic per Codex's feedback.
+
+**Next:** DEP-014 — template skeleton expansion (asyncpg + redis.asyncio + `/health/ready` probing both). Same plan as round-1; gates on this PR + coordinator's sibling PR both landing.
+
+---
+
 ## 2026-05-23 — Template spawn-smoke CI gate (D1 from 2026-05-23 architectural audit) + DEP-014 filed
 
 **Branch:** `session-2/template-spawn-smoke-ci-gate` (off `origin/main` `322b24a` — the freshly-merged DEP-010 PR-A squash commit)

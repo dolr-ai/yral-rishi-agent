@@ -74,18 +74,21 @@ SWARM_NAME_LIMIT=63
 
 # Print usage + exit non-zero.
 print_usage_and_exit() {
-    echo "Usage: $0 <new-service-name> [--dry-run] [--target-dir <path>]"
+    echo "Usage: $0 <new-service-name> [--dry-run] [--target-directory <directory>]"
     echo ""
     echo "Examples:"
     echo "  $0 yral-rishi-agent-hello-world"
     echo "  $0 yral-rishi-agent-payments-and-creator-earnings --dry-run"
-    echo "  $0 yral-rishi-agent-template-spawn-smoke-victim --target-dir /tmp/smoke-test"
+    echo "  $0 yral-rishi-agent-template-spawn-smoke-victim \\"
+    echo "      --target-directory /tmp/smoke-test"
     echo ""
     echo "Flags:"
     echo "  --dry-run         Print what would happen; write nothing."
-    echo "  --target-dir DIR  Spawn into DIR/<service-name> instead of <repo-root>/<service-name>."
-    echo "                    Used by scripts/tests/test_spawn_smoke.sh so the CI gate can"
-    echo "                    spawn outside the repo (temp dir) without polluting git status."
+    echo "  --target-directory <directory>"
+    echo "                    Spawn into <directory>/<service-name> instead of"
+    echo "                    <repo-root>/<service-name>. Used by scripts/tests/"
+    echo "                    test_spawn_smoke.sh so the CI gate can spawn outside"
+    echo "                    the repo (temp directory) without polluting git status."
     echo ""
     echo "Name rules (B3 + Swarm):"
     echo "  - must match pattern: $NAME_PATTERN"
@@ -103,24 +106,24 @@ TARGET_NAME=""
 # When non-empty, overrides the destination's parent directory. Default
 # behavior (empty value) keeps the historical $REPO_ROOT/<service-name>
 # layout — Phase-0 + Phase-1 spawns + the hello-world integration test
-# all use the default. `--target-dir` is the ONE caller (the spawn-smoke
+# all use the default. `--target-directory` is the ONE caller (the spawn-smoke
 # CI gate, added 2026-05-23) that needs out-of-repo destinations so the
 # spawned victim doesn't pollute `git status` on the runner.
-TARGET_DIR_OVERRIDE=""
+TARGET_DIRECTORY_OVERRIDE=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run) DRY_RUN=1; shift ;;
-        --target-dir)
+        --target-directory)
             # Consume both the flag AND its required argument. Empty or
             # missing path is a usage error — better to fail fast than
             # spawn into "/" or the cwd by accident.
             shift
             if [ $# -eq 0 ] || [ -z "$1" ]; then
-                echo "Error: --target-dir requires a path argument"
+                echo "Error: --target-directory requires a path argument"
                 print_usage_and_exit
             fi
-            TARGET_DIR_OVERRIDE="$1"
+            TARGET_DIRECTORY_OVERRIDE="$1"
             shift
             ;;
         -h|--help) print_usage_and_exit ;;
@@ -172,20 +175,20 @@ TARGET_SUFFIX_UNDERSCORED="${TARGET_SUFFIX_HYPHENATED//-/_}"
 # Use the repo root so the script works from any cwd inside the repo.
 # $REPO_ROOT is ALWAYS the source-template's repo (where the script is
 # checked in). $TARGET_PATH is the destination — may be inside the same
-# repo (default) or outside (when --target-dir is set; the spawn-smoke
-# CI gate uses a tempdir destination).
+# repo (default) or outside (when --target-directory is set; the spawn-
+# smoke CI gate uses a temp-directory destination).
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEMPLATE_PATH="$REPO_ROOT/$TEMPLATE_FOLDER"
-# Pick the destination's parent: --target-dir override if set, else
+# Pick the destination's parent: --target-directory override if set, else
 # $REPO_ROOT (the historical default). Resolving the override to an
 # absolute path (`cd … && pwd`) guarantees the rsync target is
 # unambiguous even when the caller passed a relative path.
-if [ -n "$TARGET_DIR_OVERRIDE" ]; then
-    if [ ! -d "$TARGET_DIR_OVERRIDE" ]; then
-        echo "Error: --target-dir path does not exist or is not a directory: $TARGET_DIR_OVERRIDE"
+if [ -n "$TARGET_DIRECTORY_OVERRIDE" ]; then
+    if [ ! -d "$TARGET_DIRECTORY_OVERRIDE" ]; then
+        echo "Error: --target-directory path does not exist or is not a directory: $TARGET_DIRECTORY_OVERRIDE"
         exit 1
     fi
-    TARGET_PARENT="$(cd "$TARGET_DIR_OVERRIDE" && pwd)"
+    TARGET_PARENT="$(cd "$TARGET_DIRECTORY_OVERRIDE" && pwd)"
 else
     TARGET_PARENT="$REPO_ROOT"
 fi
@@ -299,7 +302,7 @@ mv "$TARGET_PATH/secrets.yaml.template" "$TARGET_PATH/secrets.yaml"
 # output or "ignored by .gitignore" error)? Anything other than
 # an "add '...'" line is a failure.
 # Iterate the SOURCE template's fixtures (always under $REPO_ROOT),
-# not the spawned destination's. Reason: when --target-dir places the
+# not the spawned destination's. Reason: when --target-directory places the
 # destination OUTSIDE the repo (the spawn-smoke CI gate's case), a
 # `git -C $REPO_ROOT` invocation against an absolute path outside the
 # worktree is meaningless. The actual invariant DEP-010 guards is
@@ -308,7 +311,7 @@ mv "$TARGET_PATH/secrets.yaml.template" "$TARGET_PATH/secrets.yaml"
 # copies the file into the destination, so the destination inherits
 # whichever gitignore rules apply at the destination's own repo (the
 # same one when target stays in-repo; a separate gitignore when
-# --target-dir crosses repos, in which case the check semantic is
+# --target-directory crosses repos, in which case the check semantic is
 # the source repo's, which IS the one DEP-010 cares about).
 #
 # CHECK PROBE: `git check-ignore -q` (NOT `git add --dry-run`).

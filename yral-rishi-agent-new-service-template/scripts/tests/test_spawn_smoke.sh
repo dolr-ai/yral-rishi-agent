@@ -9,8 +9,8 @@
 # ⭐ START HERE: 9 ordered steps below. Each step exits non-zero on
 # failure with a clear error message + the failing-step diagnostic dump
 # (compose ps + last 50 service log lines + last 20 postgres log lines).
-# A single EXIT trap guarantees `compose down -v` + tempdir removal even
-# on signal / abort.
+# A single EXIT trap guarantees `compose down -v` + temp-directory
+# removal even on signal / abort.
 #
 # WHAT THIS GATE CATCHES
 #   - Spawn-tree layout drift (DEP-010-class fixture renames, missing
@@ -65,10 +65,10 @@ set -euo pipefail
 
 # Resolve script-relative paths so the gate works regardless of cwd
 # (CI does `bash <full-path>`; operator may run from any folder).
-TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
-SCRIPTS_DIR="$(cd "$TESTS_DIR/.." && pwd)"
-TEMPLATE_ROOT="$(cd "$SCRIPTS_DIR/.." && pwd)"
-NEW_SERVICE_SH="$SCRIPTS_DIR/new-service.sh"
+TESTS_DIRECTORY="$(cd "$(dirname "$0")" && pwd)"
+SCRIPTS_DIRECTORY="$(cd "$TESTS_DIRECTORY/.." && pwd)"
+TEMPLATE_ROOT="$(cd "$SCRIPTS_DIRECTORY/.." && pwd)"
+NEW_SERVICE_SH="$SCRIPTS_DIRECTORY/new-service.sh"
 
 
 # ===========================================================================
@@ -86,12 +86,31 @@ VICTIM_SERVICE_NAME="yral-rishi-agent-template-spawn-smoke-victim"
 # Working directory + cleanup
 # ===========================================================================
 
-# Per-run temp dir under the system tempdir (RUNNER_TEMP on GH Actions,
-# $TMPDIR on macOS, /tmp on Linux). `mktemp -d -t` provides a unique
-# prefix-tagged dir; the X-suffix is filled in by mktemp.
+# Per-run temp directory under the system temp directory (RUNNER_TEMP
+# on GH Actions, $TMPDIR on macOS, /tmp on Linux — $TMPDIR is the
+# OS-provided env var name, not an identifier we control). `mktemp -d
+# -t` provides a unique prefix-tagged directory; the X-suffix is
+# filled in by mktemp.
 working_directory="$(mktemp -d -t spawn-smoke.XXXXXX)"
 spawned_service_path="$working_directory/$VICTIM_SERVICE_NAME"
 
+# cleanup — WHAT/WHEN/WHY
+#
+# WHAT: dumps a failure-diagnostic block (compose ps + service + postgres
+#       logs) when the script is exiting non-zero, then unconditionally
+#       tears down the docker-compose stack + removes the per-run temp
+#       directory. Preserves the original exit code so the trap doesn't
+#       accidentally convert a failure to a success.
+# WHEN: registered via `trap cleanup EXIT` immediately after the temp
+#       directory is provisioned. Fires on every exit path — success
+#       (step 9's `exit 0`), failure (any `step_fail`), or signal
+#       (SIGINT / SIGTERM mid-run).
+# WHY:  the gate's value is "always tear down + always leave breadcrumbs."
+#       Leaked containers across CI runs would burn the runner's memory
+#       budget; leaked temp directories would slow back-to-back local
+#       runs; lost diagnostic output on failure would force the operator
+#       to re-run the gate manually to triage. The trap closes all three
+#       holes without the per-step code having to remember.
 cleanup() {
     # Capture the script's actual exit code BEFORE we run cleanup
     # commands — `docker compose down` would otherwise overwrite `$?`
@@ -124,8 +143,9 @@ cleanup() {
         ( cd "$spawned_service_path" && docker compose down -v --remove-orphans 2>&1 || true ) >/dev/null
     fi
 
-    # Remove the temp dir. A1 spirit: we created this dir; deleting
-    # it on the way out is creator-cleans-up, not gratuitous deletion.
+    # Remove the temp directory. A1 spirit: we created this directory;
+    # deleting it on the way out is creator-cleans-up, not gratuitous
+    # deletion.
     rm -rf "$working_directory"
 
     # Preserve the original exit code so the trap doesn't accidentally
@@ -139,15 +159,47 @@ trap cleanup EXIT
 # Step helpers
 # ===========================================================================
 
-# Banner for each step — makes CI logs scannable.
+# step_banner — WHAT/WHEN/WHY
+#
+# WHAT: prints a blank line + a single-line section header of the form
+#       `── STEP $1 ── $2` to stdout. Argument 1 is the step number;
+#       argument 2 is the step's English description.
+# WHEN: called at the top of each of the 9 ordered steps below, before
+#       any of that step's actual work runs.
+# WHY:  CI logs are wall-of-text; the operator triaging a failure needs
+#       to skim to the step that broke. Consistent banners make
+#       `grep '── STEP' run.log` a one-liner that lists which steps
+#       executed + which one didn't reach completion.
 step_banner() {
     echo ""
     echo "── STEP $1 ── $2"
 }
 
-# Step-result helpers. PASS prints + continues; FAIL prints + exits 1
-# which trips the EXIT trap's diagnostic dump.
+# step_pass — WHAT/WHEN/WHY
+#
+# WHAT: prints `  PASS  $1` to stdout (2-space indent matches the step
+#       banner's visual hierarchy). Does NOT exit; control flow
+#       continues to the next step.
+# WHEN: called at the end of each step's logic when the step's
+#       assertion(s) all hold.
+# WHY:  paired with step_fail as a binary outcome signal per step.
+#       Having BOTH a success line AND a fail line keeps the log
+#       symmetric — an operator can audit "every step printed exactly
+#       one PASS or FAIL line" without having to infer from absence.
 step_pass() { echo "  PASS  $1"; }
+
+# step_fail — WHAT/WHEN/WHY
+#
+# WHAT: prints `  FAIL  $1` to stdout, then `exit 1`. The `exit` is
+#       what trips the `trap cleanup EXIT` registered above, which
+#       dumps the failure-diagnostic block + tears down.
+# WHEN: called the moment any step's assertion fails.
+# WHY:  fail-fast — `set -e` would also propagate the failure but
+#       wouldn't print a step-scoped explanation. Calling step_fail
+#       with an explicit message gives the operator the EXACT failing
+#       condition (e.g. "openapi.json does not contain X") rather than
+#       a generic "command exited non-zero" trace. Pairs with step_pass
+#       so every step prints exactly one outcome line.
 step_fail() { echo "  FAIL  $1"; exit 1; }
 
 
@@ -171,25 +223,25 @@ step_pass "Docker daemon + compose v2 detected"
 
 
 # ===========================================================================
-# Step 1: per-run temp dir (already created above)
+# Step 1: per-run temp directory (already created above)
 # ===========================================================================
 
-step_banner 1 "Per-run temp dir + cleanup trap"
+step_banner 1 "Per-run temp directory + cleanup trap"
 echo "  working_directory=$working_directory"
 echo "  spawned_service_path=$spawned_service_path"
-step_pass "tempdir provisioned; cleanup trap armed"
+step_pass "temp directory provisioned; cleanup trap armed"
 
 
 # ===========================================================================
-# Step 2: spawn a fresh victim via new-service.sh --target-dir
+# Step 2: spawn a fresh victim via new-service.sh --target-directory
 # ===========================================================================
 
-step_banner 2 "Spawn fresh service via new-service.sh --target-dir"
+step_banner 2 "Spawn fresh service via new-service.sh --target-directory"
 # Real (non-dry-run) spawn so the post-spawn DEP-010 step-6 check
 # exercises end-to-end. This satisfies PR #133's Codex CONCERN: the
 # new-service.sh post-spawn block now runs under CI on every template
 # PR, not just at the developer's discretion.
-if ! bash "$NEW_SERVICE_SH" "$VICTIM_SERVICE_NAME" --target-dir "$working_directory"; then
+if ! bash "$NEW_SERVICE_SH" "$VICTIM_SERVICE_NAME" --target-directory "$working_directory"; then
     step_fail "new-service.sh exited non-zero (post-spawn DEP-010 check tripped, or earlier failure)"
 fi
 [ -d "$spawned_service_path" ] || step_fail "spawned tree missing at $spawned_service_path"
@@ -262,7 +314,7 @@ step_pass "all ${#expected_paths[@]} expected paths present; no literal .env.loc
 # ===========================================================================
 
 step_banner 4 "Build + start the spawned service's docker-compose stack"
-# `cd` into the spawned dir so docker compose finds docker-compose.yml
+# `cd` into the spawned directory so docker compose finds docker-compose.yml
 # at cwd. Relative `./app` volume mount + build context `.` both
 # resolve against the compose-file's directory, which is now cwd.
 cd "$spawned_service_path"
@@ -383,7 +435,7 @@ exit 0
 # ===========================================================================
 # RELATED FILES:
 #   ../new-service.sh                  — the spawner this gate exercises;
-#                                        --target-dir flag added in the same
+#                                        --target-directory flag added in the same
 #                                        PR as this script so out-of-repo
 #                                        destinations work cleanly.
 #   ../tests/test_validate_secrets.sh  — sibling test for D8 secrets bridge
