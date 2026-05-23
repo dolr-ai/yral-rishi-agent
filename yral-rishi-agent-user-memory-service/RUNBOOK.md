@@ -128,6 +128,83 @@ See DEP-011 in `cross-session-dependencies.md`.
 
 ---
 
+## ETL Day-9 — migrate chat-ai conversations + messages to v2
+
+🚨 **A14 GATE**: This operation reads live chat-ai data. Coordinator MUST obtain
+explicit Rishi YES before running ANY of the steps below.
+
+### Pre-requisites
+
+1. `alembic upgrade head` has been run on the v2 user-memory DB (all 3 migrations: 001, 002, 003).
+2. A **read-only** Postgres connection string for chat-ai's DB is available.
+3. `POSTGRES_CONNECTION_STRING_USER_MEMORY_SERVICE` Swarm secret is live.
+4. Row count snapshot taken on chat-ai BEFORE the run:
+
+   ```bash
+   # Run on chat-ai Postgres as a pre-ETL baseline:
+   psql "$CHAT_AI_POSTGRES_URL" -c "SELECT count(*) FROM conversations;"
+   psql "$CHAT_AI_POSTGRES_URL" -c "SELECT count(*) FROM messages;"
+   # Record both numbers for post-ETL verification.
+   ```
+
+### Run the ETL script
+
+```bash
+# Install asyncpg on the runner machine:
+pip install asyncpg
+
+# Set env vars (NOT passed as CLI args — avoid appearing in ps aux):
+export CHAT_AI_POSTGRES_URL="postgresql://..."
+export POSTGRES_CONNECTION_STRING_USER_MEMORY_SERVICE="postgresql://..."
+
+# Dry run first — prints counts, no writes:
+python3 etl-scripts/chat_ai_to_user_memory_etl.py --dry-run
+
+# Full run (coordinator executes after Rishi YES):
+python3 etl-scripts/chat_ai_to_user_memory_etl.py
+
+# If the run is interrupted, it's safe to re-run (ON CONFLICT DO NOTHING is idempotent):
+python3 etl-scripts/chat_ai_to_user_memory_etl.py
+```
+
+### Verify after the run
+
+The script prints a VERIFICATION REPORT at the end. Expected output:
+
+```
+ETL VERIFICATION REPORT
+  conversations:
+    chat-ai (source) :    284,XXX
+    v2 user-memory   :    284,XXX  [OK]
+  messages:
+    chat-ai (source) :  3,300,XXX
+    v2 user-memory   :  3,300,XXX  [OK]
+```
+
+Acceptable delta: ≤ 500 conversations, ≤ 5,000 messages (live traffic during ETL window).
+If the delta is larger, re-run the script (idempotent) and verify again.
+
+### Log the pull
+
+After successful verification, record the pull in:
+`yral-rishi-agent-plan-and-discussions/running-coordination-asks-plus-mobile-team-memo-and-change-log/live-data-pulls-log.md`
+
+Entry format:
+```
+## YYYY-MM-DD — chat-ai conversations + messages ETL
+
+- Source: chat-ai Postgres (READ ONLY)
+- Destination: v2 user-memory-service Postgres
+- Rows: ~284K conversations + ~3.3M messages
+- Verification: counts matched within tolerance
+- Approved: Rishi YES at [timestamp]
+- Run by: [coordinator name]
+```
+
+See `etl-scripts/etl-plan-day-9-draft.md` for the full column mapping and plan.
+
+---
+
 ## Known failure modes
 
 | Symptom | Likely cause | Fix |

@@ -3,6 +3,60 @@
 
 ## OPEN
 
+### DEP-014 — Session 5 ETL Day-9: coordinator needs Rishi YES (A14) to execute chat-ai → user-memory data migration
+
+Raised: 2026-05-23 by Session 5 (D3 — ETL plan draft)
+
+What:    The ETL script `etl-scripts/chat_ai_to_user_memory_etl.py` is
+         ready to execute but MUST NOT run without explicit Rishi YES per
+         A14 (live chat-ai DB read). The script:
+
+         - Reads ~284K conversations + ~3.3M messages from chat-ai's
+           Postgres over a READ ONLY connection
+         - Transforms column shapes per the mapping in
+           `etl-scripts/etl-plan-day-9-draft.md`
+         - Inserts into v2 user-memory-service Postgres with
+           ON CONFLICT (id) DO NOTHING (idempotent — safe to re-run)
+
+         Data dropped intentionally (not recoverable without Phase 2):
+           - conversations.metadata (memories) — Phase 2 pgvector rebuild
+           - messages.sender_id (H2H sender attribution)
+           - messages.message_type, audio_url, audio_duration_seconds,
+             is_read, status, metadata
+
+         The full column mapping + approval checklist is in:
+             etl-scripts/etl-plan-day-9-draft.md §2, §3, and §9.
+
+         Coordinator surfaces the §9 checklist to Rishi, waits for
+         "YES", then runs:
+
+             export CHAT_AI_POSTGRES_URL="postgresql://..."
+             export POSTGRES_CONNECTION_STRING_USER_MEMORY_SERVICE="..."
+             python3 etl-scripts/chat_ai_to_user_memory_etl.py
+
+         After the run, log the pull in:
+             running-coordination-asks-plus-mobile-team-memo-and-change-log/
+             live-data-pulls-log.md
+
+Why:     284K conversations + 3.3M messages from chat-ai are NOT yet in
+         v2. Mobile users who switch to the v2 app surface will see an
+         empty conversation history until this ETL runs. Feature parity
+         (A4 — ALL data must port) is blocked.
+
+Blocks:  A4 conversation-history parity. Mobile-visible feature gap.
+
+ETA:     Day-9 (2026-05-31 per TIMELINE.md). Gated on:
+           1. Rishi YES
+           2. user-memory-service deployed to Swarm (DEP-012 resolved ✓)
+           3. Alembic upgrade head run on staging cluster (all 3 migrations)
+
+Suggested
+resolution: Coordinator presents §9 approval checklist to Rishi →
+         receives YES → runs the ETL script → posts verification report
+         → logs in live-data-pulls-log.md → marks DEP-014 RESOLVED.
+
+---
+
 ### DEP-012 — Coordinator / Session 1 must provision `user_memory_role` + `user_memory` database on the Patroni cluster before user-memory-service can deploy
 
 Raised: 2026-05-22 by Session 5 (Deliverable 1 — schema + Alembic migration)
