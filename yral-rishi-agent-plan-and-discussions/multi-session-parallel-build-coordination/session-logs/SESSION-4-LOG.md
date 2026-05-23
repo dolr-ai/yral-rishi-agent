@@ -2,6 +2,41 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-23 — PR-D1 Chunk A: pause-for-fresh-session marker (workflow-401 retrigger + Chunk B context-budget pause)
+
+### Status
+**Two-purpose commit on the PR #142 branch:** (1) retriggers Codex's workflow after the initial Chunk A push hit a 401 Unauthorized at the comment-post step (workflow-token-permission bug; actual verdict was `request_changes` per the workflow log but the comment never posted to the PR); (2) makes the "Chunk B paused-for-fresh-session" pointer explicit in STATE so a fresh-session coordinator-launch can resume without re-deriving where we left off.
+
+### Why pause before Chunk B (Option 2 chosen per my own honest check-in + coordinator approval)
+
+- Chunk A alone shipped 1092 insertions (mostly heavily-commented B7 + LOG documentation of the Q1–Q5 lock-in).
+- Chunk B is another ~300-400 lines (main.py lifespan wiring + 3 FastAPI endpoints + endpoint role-comments documenting the DEP-013 contract ratification).
+- Chunk C is ~150 lines (test suite).
+- Context-budget pressure on endpoint-design is the real quality risk; fresh session preserves the discipline that landed Chunk A's Q1–Q5 rationale cleanly.
+
+If Codex's actual verdict (post-retrigger) is APPROVE on Chunk A → fresh-session coordinator-launch for Chunk B. If verdict is BLOCKER → Chunk A round-2 in a fresh session FIRST, then Chunk B.
+
+### What's changing (this fixup commit)
+- `session-state/SESSION-4-STATE.md` — pause-for-fresh-session pointer in the top `Updated:` line + the `LAST THING I DID` block + the `## CURRENT TASK` section. Chunk B scope spelled out explicitly so the fresh-session-resume agent has the canonical pointer.
+- This LOG entry — round-trip narrative + Chunk B scope captured per I11 (LOG + STATE same-commit pairing).
+
+### Parallel PR status snapshot (for the fresh-session resume)
+- **PR #131** (PR-B1): round-2 fixup pushed; awaiting Codex re-review.
+- **PR #136** (REDIS_PASSWORD): 4 commits — round-1 + round-2 + round-3 + round-4. Round-4 just pushed (regenerates `.env.example` per D8 to close Codex's round-3 BLOCKER). Awaiting Codex re-review.
+- **PR #142** (PR-D1 Chunk A): this commit retriggers the workflow. Coordinator will surface the actual verdict.
+
+### Constraints touched (this fixup)
+- **A2.1** — same single concern (PR-D1 service-build); this commit is procedural (retrigger + explicit pause-pointer), not scope creep.
+- **B7** — STATE + LOG entry capture the round-trip + Chunk B scope.
+- **I11** — same-commit STATE + LOG pairing.
+- **I14** — still **NOT auto-merge eligible** (carries through from Chunk A's Python + new-SQL framing).
+
+### Next (after Codex's actual verdict surfaces post-retrigger)
+- Coordinator launches fresh session for **Chunk B** (main.py lifespan + 3 endpoints + bounds validation) OR **Chunk A round-2** (if Codex verdict is BLOCKER).
+- PR-D2 (chat-ai → v2 ETL script + column mapping doc) remains queued after PR-D1 lands.
+
+---
+
 ## 2026-05-23 — Day-8 PR-D1 Chunk A: influencer-directory data layer (schema + Alembic + asyncpg pool + Pydantic model + repository)
 
 ### Status
