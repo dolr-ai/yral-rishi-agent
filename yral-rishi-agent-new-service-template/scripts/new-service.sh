@@ -328,11 +328,25 @@ mv "$TARGET_PATH/secrets.yaml.template" "$TARGET_PATH/secrets.yaml"
 # nothing — which falsely matches the "ignored" branch above. So
 # `add --dry-run` is the WRONG probe for source-side iteration.
 #
-# `git check-ignore -q -- <path>` measures the actual invariant
-# directly: exit 0 means "this path IS gitignored", exit 1 means
-# "this path is NOT gitignored". For DEP-010 we want exit 1; inverting
-# with `if ... then fail` reads cleanly. Tracking state is irrelevant
-# to the check — exactly what we need on the source side.
+# `git check-ignore --no-index -q -- <path>` measures the actual
+# invariant directly: exit 0 means "this path WOULD be gitignored",
+# exit 1 means "this path would NOT be gitignored". For DEP-010 we
+# want exit 1; inverting with `if ... then fail` reads cleanly.
+#
+# WHY `--no-index` IS LOAD-BEARING (caught by Codex on PR #135 round-3):
+# By default, `git check-ignore` consults the INDEX before the
+# gitignore rules. If a path is already TRACKED (which env.local.
+# fixture is, in the template's source tree), git treats it as
+# "tracked, not ignored" regardless of whether a gitignore rule
+# would match — git never auto-removes tracked files for new
+# gitignore rules. So a future .gitignore rule like `*.fixture`
+# that catches env.local.fixture would slip past a default
+# check-ignore probe: tracked → "not ignored" → green check →
+# silently broken spawns when downstream services rsync the
+# fixture out of the index. `--no-index` tells check-ignore to
+# evaluate gitignore semantics independent of the index state —
+# answering "would this path be ignored if it weren't tracked",
+# which IS the regression class DEP-010 was filed to prevent.
 #
 # `find ... -print0` + `while IFS= read -r -d ''` is the standard
 # null-delimited iteration pattern. It handles paths with spaces or
@@ -344,21 +358,21 @@ while IFS= read -r -d '' fixture_file; do
     # but the relative form is what an operator would copy-paste into
     # their own `git check-ignore` reproduction.
     relative_fixture_path="${fixture_file#$REPO_ROOT/}"
-    # `check-ignore -q` is silent + sets exit code only. `--no-index`
-    # is intentionally NOT used — we want the real .gitignore behavior
-    # the spawn-time caller would experience. `git -C "$REPO_ROOT"`
+    # `--no-index` makes the probe answer the regression-class
+    # question (would-be-ignored-if-untracked); see comment block
+    # above. `-q` is silent + sets exit code only. `git -C "$REPO_ROOT"`
     # anchors the check in the source repo (the one whose gitignore
     # DEP-010 cares about).
-    if git -C "$REPO_ROOT" check-ignore -q -- "$relative_fixture_path"; then
-        # Exit 0 from check-ignore means the path IS ignored → DEP-010
-        # bug regressed. Tell the operator EXACTLY which fixture
-        # tripped the check + the two most likely root causes so
-        # they can land the fix without re-reading the DEP. `exit 1`
+    if git -C "$REPO_ROOT" check-ignore --no-index -q -- "$relative_fixture_path"; then
+        # Exit 0 from check-ignore means the path WOULD be ignored →
+        # DEP-010 bug regressed. Tell the operator EXACTLY which
+        # fixture tripped the check + the two most likely root causes
+        # so they can land the fix without re-reading the DEP. `exit 1`
         # aborts the spawn loudly — better a noisy failure now than
         # a silently-broken spawned service.
         echo "Error: post-spawn DEP-010 check failed for $relative_fixture_path"
-        echo "  git check-ignore -q -- '$relative_fixture_path' returned exit 0"
-        echo "  (file IS gitignored — would be silently swallowed by git add)."
+        echo "  git check-ignore --no-index -q -- '$relative_fixture_path' returned exit 0"
+        echo "  (file WOULD be gitignored — silently swallowed by git add on next caller)."
         echo "  Likely cause: rename back to .env.local OR new .gitignore"
         echo "  rule catching env.local.fixture. See DEP-010."
         exit 1

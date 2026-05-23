@@ -88,6 +88,32 @@ NEW_SERVICE_SH="$SCRIPTS_DIRECTORY/new-service.sh"
 
 
 # ===========================================================================
+# Pre-flight: DEP-010 no-index probe regression-class guard
+# ===========================================================================
+#
+# Run BEFORE step 0 (Docker pre-flight) so the gate fails fast if the
+# new-service.sh DEP-010 probe has regressed. Sub-second; no Docker
+# needed; entirely sandbox-internal. If this test fails, the spawn
+# below would still "pass" superficially while the probe was silently
+# broken — so we gate the whole smoke on it.
+#
+# See yral-rishi-agent-new-service-template/scripts/tests/
+# test_dep010_no_index_guard.sh for the 3-assertion shape (the fix
+# works + the bug it closes + a static-grep regression-guard on
+# new-service.sh's `check-ignore --no-index` usage).
+echo "── PRE-FLIGHT ── DEP-010 no-index probe regression-class guard"
+if ! bash "$TESTS_DIRECTORY/test_dep010_no_index_guard.sh"; then
+    echo ""
+    echo "FAIL  DEP-010 no-index probe guard failed — aborting spawn-smoke."
+    echo "      The DEP-010 post-spawn probe in new-service.sh is in a"
+    echo "      state that would miss the regression class Codex flagged"
+    echo "      on PR #135 round-3. Fix new-service.sh's step-6 probe"
+    echo "      before re-running the smoke."
+    exit 1
+fi
+
+
+# ===========================================================================
 # Victim-service identity
 # ===========================================================================
 

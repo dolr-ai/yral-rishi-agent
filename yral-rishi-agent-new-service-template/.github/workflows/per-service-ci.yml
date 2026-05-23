@@ -123,6 +123,17 @@ jobs:
       - name: Run gen-env-example.sh test suite
         run: bash scripts/tests/test_gen_env_example.sh
 
+      # DEP-010 no-index probe regression-class guard. Added 2026-05-23
+      # after Codex caught (PR #135 round-3) that the default
+      # `git check-ignore -q` probe in new-service.sh step 6 doesn't
+      # report TRACKED files as ignored — so a future .gitignore rule
+      # that matches env.local.fixture would slip past the probe.
+      # The probe now uses `check-ignore --no-index`; this test
+      # proves the regression class is caught + grep-asserts the
+      # spawner still uses --no-index. Sub-second; no Docker needed.
+      - name: Run DEP-010 no-index probe regression-class guard
+        run: bash scripts/tests/test_dep010_no_index_guard.sh
+
 
 # ===========================================================================
 # RELATED FILES:

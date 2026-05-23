@@ -3,6 +3,71 @@
 
 ---
 
+## 2026-05-23 — PR #135 round-4 fixup: BLOCKER — `git check-ignore` probe needs `--no-index` (Codex caught tracking-state semantic gotcha) + regression-class test
+
+Same PR (#135), stays DRAFT. Round-3 Codex returned 🛑 BLOCKER on the DEP-010 probe semantics — a real correctness bug in the round-2 source-side refactor that round-3's cwd-independence change exposed for review.
+
+**Codex's BLOCKER (verbatim):**
+> "The source-side DEP-010 check uses `git check-ignore -q` on tracked template fixture files. Git does not report tracked files as ignored unless `--no-index` is used, so a future `.gitignore` rule that catches `env.local.fixture` would still pass this check and the smoke test would miss the exact regression class it is meant to guard."
+
+**The semantic gotcha (Codex's catch):** By default, `git check-ignore` consults the INDEX before the gitignore rules. If a path is already TRACKED (which `env.local.fixture` is in the template's source tree), git treats it as "tracked, not ignored" regardless of whether a gitignore rule would match — git never auto-removes tracked files for new gitignore rules. So a future `.gitignore` rule like `*.fixture` that catches `env.local.fixture` would slip past a default `check-ignore` probe: tracked → "not ignored" → green check → silently broken spawns when downstream services rsync the fixture out of the index. **`--no-index` tells `check-ignore` to evaluate gitignore semantics independent of the index state** — answering "would this path be ignored if it weren't tracked", which IS the regression class DEP-010 was filed to prevent.
+
+My round-2 comment block had explicitly said "Tracking state is irrelevant to the check" — exactly the wrong claim. The probe LOOKED correct because the live `.gitignore` doesn't currently match `env.local.fixture` (DEP-010 closed that on PR #133), but the probe wouldn't have caught the REGRESSION class it was named for. Codex earned this one.
+
+**Files touched (round-4):**
+
+1. **`yral-rishi-agent-new-service-template/scripts/new-service.sh`** — the actual probe fix at step 6:
+   - Changed `git -C "$REPO_ROOT" check-ignore -q -- "$relative_fixture_path"` → `git -C "$REPO_ROOT" check-ignore --no-index -q -- "$relative_fixture_path"`. The flag tells `check-ignore` to evaluate gitignore semantics independent of the index state.
+   - Rewrote the comment block above the probe to explain WHY `--no-index` is load-bearing (the tracking-state gotcha Codex caught + the regression-class question we actually want to answer). My round-2 comment that claimed "`--no-index` is intentionally NOT used" was inverted — the new comment block calls out the inversion explicitly so future readers don't repeat the mistake.
+   - Updated the operator-facing error message to include `--no-index` in the reproducer command (so an operator hitting the failure can copy-paste the exact command into their own terminal).
+
+2. **`yral-rishi-agent-new-service-template/scripts/tests/test_dep010_no_index_guard.sh` (new file)** — focused regression-class test with 3 assertions:
+   - **Assertion 1**: in a sandbox repo with a tracked `env.local.fixture` + a matching `*.fixture` gitignore rule, `git check-ignore --no-index -q -- env.local.fixture` returns exit 0 (= caught). Proves the round-4 fix's correctness.
+   - **Assertion 2**: same sandbox, `git check-ignore -q -- env.local.fixture` (without `--no-index`) returns exit 1 (= missed). Documents exactly the bug Codex flagged so a future reader understands why `--no-index` is required. If git's default semantics ever change, this assertion catches it.
+   - **Assertion 3**: static grep on `new-service.sh` proves the spawner still uses `check-ignore --no-index`. Fires the moment a future refactor drops the flag — which is the most likely way this regression class would re-appear. Tight pattern (`check-ignore --no-index` adjacent tokens) so unrelated `check-ignore` invocations don't false-pass.
+
+   The test uses a per-run sandbox (`mktemp -d` + `git init -q`) so the live repo's `.gitignore` isn't mutated. EXIT trap cleans up unconditionally. Sub-second; no Docker needed.
+
+3. **`yral-rishi-agent-new-service-template/scripts/tests/test_spawn_smoke.sh`** — added a **PRE-FLIGHT** block (above step 0) that invokes the new test. If it fails, the gate aborts before any Docker work — fail-fast on probe-correctness regression. Inline call (not a numbered step) because it's a precondition check, not a smoke-test step.
+
+4. **`yral-rishi-agent-new-service-template/.github/workflows/per-service-ci.yml`** — added a third `shell-tests` job step that invokes the new test, alongside the existing `test_validate_secrets.sh` + `test_gen_env_example.sh` steps. **This file lives INSIDE the template folder** (Session-2-scoped per the existing per-service-ci.yml header — it's the template's per-spawned-service CI workflow template, not the coordinator-owned root-level workflow). Every spawned service gets the regression-class guard in its own CI on every PR.
+
+**Local validation evidence:**
+
+- `bash yral-rishi-agent-new-service-template/scripts/tests/test_dep010_no_index_guard.sh` → **3/3 PASS**:
+  ```
+  PASS  --no-index probe catches tracked-but-would-be-ignored case (exit 0)
+  PASS  default probe (no --no-index) misses tracked case (exit 1, as expected) — this is why --no-index is load-bearing
+  PASS  new-service.sh DEP-010 probe still uses 'check-ignore --no-index'
+  ```
+- `bash yral-rishi-agent-new-service-template/scripts/tests/test_spawn_smoke.sh` → **PRE-FLIGHT 3/3 PASS + ALL 9 SPAWN-SMOKE STEPS PASSED** end-to-end on warm cache.
+- `bash yral-rishi-agent-new-service-template/scripts/tests/test_validate_secrets.sh` → still **5/5 PASS** (unaffected).
+
+**No A1 hard-stop in this fixup** — pure probe-correctness fix + regression-class test + 2 wire-up sites (`per-service-ci.yml` is INSIDE the template folder; both CI surfaces here are Session-2-scoped).
+
+**Append-only SESSION-2-LOG entry** above the round-3 entry per I11 (round-1, round-2, round-3 entry bodies untouched).
+
+**Diff size (round-4 fixup alone, on top of round-3 commit `2e26f0c`):**
+
+| File | Lines |
+|---|---|
+| `scripts/new-service.sh` (probe fix + comment rewrite) | ~+25/-15 |
+| `scripts/tests/test_dep010_no_index_guard.sh` (new file) | ~115 lines incl. dense B7 comments |
+| `scripts/tests/test_spawn_smoke.sh` (pre-flight wire-up) | ~+18 |
+| `.github/workflows/per-service-ci.yml` (shell-tests step) | ~+12 |
+| this LOG entry | ~75 (doc) |
+| **Round-4 net effect** | ~+170 (mostly new test + supporting docs) |
+
+**Constraints touched:** A2.1 (single concern: probe-correctness fix + the regression-class test that proves it), B1/B2/B5 (explicit-English names throughout — `sandbox_directory`, `new_service_script`, etc.; no `dir`/`tmp`/`cfg`), B7 (line-level role comments on every operational line in the new test + the rewritten probe comment block + per-service-ci.yml step + spawn-smoke pre-flight block), I9 (`per-service-ci.yml` lives INSIDE the template folder, Session-2-scoped per its existing header; no coordinator-workflow edits in this round), I11 (this append-only entry; rounds 1-3 entries untouched).
+
+**Why my round-2 comment got it wrong:** I treated `git check-ignore` as if it were a pure gitignore-rule probe, but git's actual default behavior consults the index first as an optimization. The index-consultation is documented in `git check-ignore --help` under the `--no-index` flag's description, but the default behavior is the surprising one for someone reasoning about "does this gitignore rule match this path." Codex caught this because Codex doesn't reason from a hand-wave; it reasons from the man page. Capturing in the LOG so future-me doesn't make the same hand-wave on a similar gotcha.
+
+**Cross-session handoff:** unchanged from rounds 1-3. Coordinator's sibling PR for the workflow files (PR #139 per their note) is still queued; flips to ready-for-review after PR #135 merges.
+
+**Next:** Codex round-4 re-review. On APPROVE → coordinator manually merges PR #135 → coordinator's sibling PR flips ready → DEP-014 (template skeleton expansion) becomes my next-task.
+
+---
+
 ## 2026-05-23 — PR #135 round-3 fixup: cwd-independence (Codex CONCERN at line 246) — Option (a) — header claim now true verbatim
 
 Same PR (#135), stays DRAFT. Round-2 Codex returned ⚠️  CONCERN (not BLOCKER) — small but real doc-vs-behavior drift.
