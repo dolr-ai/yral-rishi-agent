@@ -162,6 +162,16 @@ services:
       - source: REDIS_URL
         target: REDIS_URL
         mode: 0400
+      # REDIS_PASSWORD — AUTH credential the Sentinel-discovered Redis
+      # primary demands on first command (--requirepass enabled per
+      # H3). Without this mount, both Redis paths in this service
+      # (from_url singleton in app/redis_client.py AND the Sentinel
+      # probe in app/api/health_routes.py) raise
+      # `redis.exceptions.AuthenticationError`. Top-level `secrets:`
+      # below maps the logical name to the versioned Swarm secret.
+      - source: REDIS_PASSWORD
+        target: REDIS_PASSWORD
+        mode: 0400
       - source: SENTRY_DSN
         target: SENTRY_DSN
         mode: 0400
@@ -206,6 +216,14 @@ networks:
 secrets:
   REDIS_URL:
     external: true
+  # REDIS_PASSWORD maps the logical name (consumed by Settings +
+  # app/redis_client.py + app/api/health_routes.py) to the versioned
+  # Swarm secret created via the 2026-05-22 rotation pattern. Rotation
+  # = bump the `name:` below to the next versioned secret + roll the
+  # service.
+  REDIS_PASSWORD:
+    external:
+      name: yral_v2_redis_primary_password_ceeb8b19
   SENTRY_DSN:
     external: true
   LANGFUSE_PUBLIC_KEY:

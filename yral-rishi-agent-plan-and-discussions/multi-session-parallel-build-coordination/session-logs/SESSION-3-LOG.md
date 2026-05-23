@@ -2,6 +2,66 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-23 — Redis client-side AUTH wiring on public-api's 2 Redis paths (DRAFT, sequence interruption ahead of PR-B2)
+
+### Action
+Wires `REDIS_PASSWORD` on both of public-api's Redis paths. v2 cluster's Redis primary runs with `--requirepass` enabled (per H3 + 2026-05-22 incident-response rotation); both code paths in this service were missing the `password=` kwarg and would raise `redis.exceptions.AuthenticationError` on first command.
+
+The two paths:
+1. `app/redis_client.py` — singleton `redis.Redis.from_url()` used by the JWKS cache + idempotency-dedup writes (single-URL path).
+2. `app/api/health_routes.py` — Sentinel-aware `Sentinel.master_for()` probe used by `/health/ready` (C11 path).
+
+Coordinator's original cross-session PR #134 closed per Codex I9 pushback ("the wiring is per-service code, not a cross-session edit"); the public-api half routed to Session 3 with a fully-spec'd 6-file change. This PR ships that half verbatim.
+
+### Files touched
+- `yral-rishi-agent-public-api/app/config.py` — NEW `redis_password: str = ""` Settings field with B7 comment block explaining the AUTH-challenge mechanism, both consumer paths, the empty-default rationale for local dev, and the Swarm-secret rotation pattern.
+- `yral-rishi-agent-public-api/app/redis_client.py` — `from_url()` call now passes `password=settings.redis_password or None`. Extended role-comment explains the AUTH frame + empty-string-to-None normalization.
+- `yral-rishi-agent-public-api/app/api/health_routes.py` — `Sentinel.master_for()` call now passes `password=settings.redis_password or None`. Extended role-comment explains the failure mode if missing (the post-discovery ping raises AuthenticationError + the health probe falsely reports Redis unreachable + Swarm's healthcheck-based rolling-update kicks in).
+- `yral-rishi-agent-public-api/secrets.yaml` — NEW `REDIS_PASSWORD` manifest entry below the existing `REDIS_URL` entry. `required_in: [ci, production]` only (local docker-compose Redis is unauthenticated). Documents the rotation pattern (versioned Swarm secret + per-consumer compose `external: name:` bump + roll services + drop old secret last).
+- `yral-rishi-agent-public-api/docker-compose.swarm.yml` — Two edits: (a) per-service `secrets:` block adds `REDIS_PASSWORD` between `REDIS_URL` and `SENTRY_DSN` with B7 role-comment explaining the both-paths consumption; (b) top-level `secrets:` block adds `REDIS_PASSWORD` with `external: name: yral_v2_redis_primary_password_ceeb8b19` (versioned-secret mapping per the 2026-05-22 rotation pattern).
+- `yral-rishi-agent-public-api/tests/contract/test_health_routes.py` — NEW section at the end of the file: 3 mocked tests with B7/J3 WHAT/WHEN/WHY docstrings:
+  1. `test_get_redis_passes_password_kwarg_to_from_url` — asserts `redis.Redis.from_url(password=settings.redis_password)` for the single-URL path.
+  2. `test_empty_redis_password_resolves_to_none_in_from_url` — asserts the `or None` empty-default normalization (regression guard for the local-dev unauthenticated path).
+  3. `test_health_ready_sentinel_path_passes_password_kwarg` — asserts `Sentinel.master_for(password=settings.redis_password)` for the C11 health-probe path; secondary signal that the wiring works end-to-end via 200 response code.
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-state/SESSION-3-STATE.md` — `Updated:` + `LAST THING I DID` bumped.
+- This entry.
+
+### Why
+The v2 cluster's Redis primary requires AUTH on every connection (per H3 + the 2026-05-22 incident-response rotation that bumped the password). Without `password=` kwargs, public-api's first Redis command — whether from the JWKS cache, the F10 idempotency-dedup writes, or the /health/ready Sentinel probe — raises `redis.exceptions.AuthenticationError: Authentication required.` That:
+- Breaks the JWKS cache (every strict-path JWT validation falls through to the upstream fetch, no caching).
+- Breaks F10 idempotency dedup (mobile retries hit the orchestrator twice; LLM-call double-charge risk per F10 + E1 latency budget).
+- Breaks /health/ready (probe reports Redis unreachable → Swarm marks replicas unhealthy → rolling-update fires → cluster lands in a worse state than the missing AUTH alone).
+
+Both paths share the same `settings.redis_password` source — single source of truth, both consume via `password=settings.redis_password or None`, both `or None`-normalize to keep local dev (unauthenticated docker-compose Redis) working.
+
+### Test evidence
+- `python3 -c "import ast; ast.parse(open(f).read())"` on all 4 modified Python files → OK.
+- Mock patterns mirror the existing `test_health_routes.test_health_ready_returns_200_when_redis_pingable` (monkeypatch `health_routes.<symbol>`) and the broader test-mock conventions in this file.
+- Local docker daemon not running (Day-5-Piece-A `python:3.12-slim` smoke pattern unavailable). CI is the source of truth for `pytest tests/contract/` green.
+- The 3 new tests collectively assert: (a) password kwarg reaches from_url() in single-URL path; (b) empty string normalizes to None on from_url(); (c) password kwarg reaches master_for() in Sentinel path + handler returns 200.
+
+### Constraints touched
+- **A2.1** — single concern (Redis AUTH wiring on the 2 public-api paths). No scope creep into orchestrator / soul-file / influencer-directory Redis paths (those are Session 4's parallel PR).
+- **B7** — file headers + WHAT/WHEN/WHY function docstrings + role-not-syntax comments on every new + edited line. Each comment explains the AUTH-challenge mechanism, the empty-default rationale, or the rotation pattern.
+- **C7** — no shared-config.yaml changes; the password is a per-service Swarm secret, not a cross-service shared value.
+- **D1 + D8** — new `REDIS_PASSWORD` secret declared in `secrets.yaml` with full source/rotation/consumed_by/classification schema. Compose `secrets:` block declares it `external: name: yral_v2_redis_primary_password_ceeb8b19` (versioned mapping per the 2026-05-22 rotation pattern).
+- **H3** — `--requirepass` is the cluster-side enforcement; this PR is the client-side compliance.
+- **I11** — same-commit LOG entry (this one).
+- **NOT I14** — adds Python code (new Settings field + 2 client kwargs + 3 tests) + behavior-changing compose (mounts new secret + declares new external). I14 covers `.md`-only / test-only / lint-format-only / comment-only; this is none of those. Coordinator manually merges via `gh pr merge <N> --squash` after Codex APPROVE.
+
+### Cross-references
+- Closed coordinator PR #134 — original cross-session edit that bundled public-api + Session 4 wiring; closed per Codex I9 pushback (per-service code belongs in per-service PRs).
+- Session 1's diagnostic investigation that surfaced the missing AUTH path — captured in the PR #134 conversation thread.
+- Session 4's parallel PR — orchestrator + soul-file + influencer-directory client-side wiring (their half of the closed PR #134 split).
+- DEP-015 — template-rot follow-up tracked separately (the secrets-yaml manifest in `yral-rishi-agent-new-service-template/` doesn't yet have a `REDIS_PASSWORD` entry; that's Session 2's scope).
+- Coordinator handles the cluster-level secrets-manifest update (separate non-Session-3 scope).
+
+### Notes
+- DRAFT discipline: opens as DRAFT to gate Auto-Merge until Codex round-1 review lands (Codex-gated auto-merge per PR #126 already means the workflow waits for Codex APPROVE — DRAFT is belt-and-suspenders).
+- After this PR lands: pick up PR-B2 (per-request `influencer_id` forwarding from public-api → orchestrator) per the queued plan; coordinator approved the (α) list+filter fallback approach yesterday with the trust-boundary contract test as the merge gate.
+
+---
+
 ## 2026-05-22 — PR-B — Day-8 directory-RPC wrapper for `/api/v1/influencers` list + by-id (DRAFT, blocked on Session 4 directory ratification)
 
 ### Action

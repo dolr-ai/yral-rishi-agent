@@ -245,6 +245,166 @@ def test_health_deep_returns_503_envelope_with_explanation(client_flag_off):
 
 
 # ===========================================================================
+# Redis-AUTH wiring tests — both Redis paths MUST forward the
+# settings.redis_password kwarg so the v2 cluster's `--requirepass`-
+# enabled primary accepts the connection. Tests asserts the kwarg
+# reaches `redis.Redis.from_url()` (single-URL path) AND
+# `Sentinel.master_for()` (C11 Sentinel-aware path). Third test guards
+# the empty-default → None normalization that keeps local dev working.
+# Closes the Codex CONCERN on closed coordinator PR #134 by proving
+# the public-api half of the wiring on both Redis paths.
+# ===========================================================================
+
+
+def test_get_redis_passes_password_kwarg_to_from_url(monkeypatch):
+    """WHAT: assert get_redis() forwards settings.redis_password into
+            redis.Redis.from_url(password=...).
+    WHEN: when settings.redis_password is non-empty, the redis-py
+          from_url() call MUST include the password kwarg so the
+          AUTH frame is sent on connection.
+    WHY:  v2 cluster's Redis primary runs --requirepass; without the
+          AUTH frame the first command raises AuthenticationError +
+          breaks JWKS cache + idempotency-dedup. Defends against
+          refactor that drops the password kwarg silently.
+    """
+    from app import redis_client
+    from app.config import Settings
+
+    # Build a fresh Settings instance with a known password so the
+    # assertion below has a unique sentinel to look for.
+    fake_settings = Settings(redis_password="test-pwd-from-fixture")
+    monkeypatch.setattr(redis_client, "get_settings", lambda: fake_settings)
+
+    # Clear the lru_cache on get_redis so the next call re-runs the
+    # body against the patched settings.
+    redis_client.reset_for_testing()
+
+    # Capture the kwargs from_url receives. Return value is ignored —
+    # the test only cares that the AUTH kwarg reached the redis-py
+    # boundary.
+    captured: dict = {}
+
+    def fake_from_url(*args, **kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(redis_client.redis.Redis, "from_url", fake_from_url)
+
+    redis_client.get_redis()
+
+    assert captured.get("password") == "test-pwd-from-fixture", (
+        f"Expected `password=test-pwd-from-fixture` kwarg on from_url(); "
+        f"got: {captured!r}"
+    )
+
+
+def test_empty_redis_password_resolves_to_none_in_from_url(monkeypatch):
+    """WHY: the `or None` guard normalizes empty string to None so
+           redis-py skips the AUTH frame in local dev. Defends
+           against the regression where someone removes `or None`
+           + breaks local-dev unauthenticated Redis.
+
+    WHAT: assert that when settings.redis_password=="" (the empty
+          default kept for local dev), get_redis() forwards
+          password=None (NOT password="") to redis.Redis.from_url().
+    WHEN: laptop dev / docker-compose / CI — environments where the
+          local Redis container runs unauthenticated.
+    """
+    from app import redis_client
+    from app.config import Settings
+
+    fake_settings = Settings(redis_password="")
+    monkeypatch.setattr(redis_client, "get_settings", lambda: fake_settings)
+    redis_client.reset_for_testing()
+
+    captured: dict = {}
+
+    def fake_from_url(*args, **kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(redis_client.redis.Redis, "from_url", fake_from_url)
+
+    redis_client.get_redis()
+
+    # The contract is the literal `None`, not just "falsy" — redis-py
+    # treats password="" differently than password=None (the former
+    # may send an empty AUTH frame which the primary rejects).
+    assert captured.get("password") is None, (
+        f"Expected `password=None` (empty-default normalized); got: {captured!r}"
+    )
+
+
+def test_health_ready_sentinel_path_passes_password_kwarg(
+    client_flag_off, monkeypatch,
+):
+    """WHAT: assert /health/ready's Sentinel-aware probe forwards
+            settings.redis_password into master_for(password=...).
+    WHEN: when settings.redis_sentinel_enabled=True AND
+          settings.redis_password is non-empty.
+    WHY:  without the AUTH frame, the post-discovery ping() raises
+          AuthenticationError + /health/ready falsely reports Redis
+          unreachable, breaking Swarm's healthcheck-based
+          rolling-update decision.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.api import health_routes
+    from app.config import Settings
+
+    # Force the Sentinel-aware code path with a known password. The
+    # default Settings() has redis_sentinel_enabled=False which would
+    # take the single-primary fallback branch (test_get_redis_*
+    # above already covers that path).
+    fake_settings = Settings(
+        redis_sentinel_enabled=True,
+        redis_password="test-pwd-from-fixture",
+    )
+    monkeypatch.setattr(health_routes, "get_settings", lambda: fake_settings)
+
+    # Stub the shared-config loader so the probe doesn't try to read
+    # the real YAML file (which has the production rishi-4/5/6 hosts).
+    monkeypatch.setattr(
+        health_routes,
+        "_load_redis_section_from_shared_config",
+        lambda: {
+            "sentinel_master_name": "yral-v2-redis-primary",
+            "sentinel_hosts": [{"host": "127.0.0.1", "port": 26379}],
+        },
+    )
+
+    # Mock the Sentinel class so master_for() is observable. The
+    # primary client mock returns True from ping() so the handler
+    # takes the 200 branch + the test can assert the response code
+    # as a secondary signal that the wiring works end-to-end.
+    captured: dict = {}
+    mock_primary = MagicMock()
+    mock_primary.ping = AsyncMock(return_value=True)
+    mock_sentinel = MagicMock()
+
+    def fake_master_for(master_name, **kwargs):
+        captured["master_name"] = master_name
+        captured.update(kwargs)
+        return mock_primary
+
+    mock_sentinel.master_for = fake_master_for
+    monkeypatch.setattr(health_routes, "Sentinel", lambda *a, **kw: mock_sentinel)
+
+    response = client_flag_off.get("/health/ready")
+
+    # Primary assertion: the AUTH kwarg reached master_for.
+    assert captured.get("password") == "test-pwd-from-fixture", (
+        f"Expected `password=test-pwd-from-fixture` kwarg on master_for(); "
+        f"got: {captured!r}"
+    )
+    # Secondary signal: the handler took the 200 branch (the mock
+    # ping returned True), confirming the wiring works end-to-end
+    # not just at the kwarg-forward boundary.
+    assert response.status_code == 200
+    assert response.json()["dependencies"]["redis"] == "ok"
+
+
+# ===========================================================================
 # RELATED FILES:
 #   conftest.py                          — provides `client_flag_off`
 #   ../../app/api/health_routes.py       — handlers under test +

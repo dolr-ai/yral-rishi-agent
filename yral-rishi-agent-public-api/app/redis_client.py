@@ -71,11 +71,22 @@ def get_redis() -> redis.Redis:
     # `from_url` parses the URL + applies the kwargs. The connection
     # pool is created lazily on first command, not at construction
     # time — so this call is cheap even when Redis is unreachable.
+    #
+    # `password=` carries the AUTH credential sent in response to the
+    # primary's `--requirepass` AUTH challenge. The v2 cluster's
+    # Redis primary requires AUTH on every connection (per H3 +
+    # 2026-05-22 incident-response rotation); without this kwarg the
+    # first command raises
+    # `redis.exceptions.AuthenticationError: Authentication required.`
+    # Empty default keeps local dev working — redis-py treats
+    # password=None as "no AUTH frame", matching the unauthenticated
+    # docker-compose Redis.
     return redis.Redis.from_url(
         settings.redis_url,
         decode_responses=False,
         socket_connect_timeout=2.0,
         socket_timeout=2.0,
+        password=settings.redis_password or None,
     )
 
 
