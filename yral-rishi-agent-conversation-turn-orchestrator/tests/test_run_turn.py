@@ -1185,6 +1185,18 @@ def test_run_turn_real_llm_path_uses_per_request_influencer_id_when_provided(
           message_response` above (no `influencer_id` in request body
           → fallback resolves to `_TEST_INFLUENCER_ID_FOR_DAY_5` →
           soul-file client receives the env value).
+    PAIRED-WITH:
+          `test_run_turn_real_llm_path_rejects_empty_string_
+          influencer_id_request` below covers the field-constraint
+          defense (round-2 fixup per Codex CONCERN on PR #131): an
+          EXPLICITLY-BLANK `influencer_id=""` in the request body
+          is rejected at Pydantic validation time (422), NOT
+          silently fall through to the env placeholder. Together
+          the two tests pin the field's three caller-facing
+          states: (1) field omitted → env fallback (existing
+          happy-path test), (2) field set to a real UUID → per-
+          request wins (this test), (3) field set to "" → 422
+          loud rejection (paired test).
     """
     monkeypatch.setenv("ENVIRONMENT", "local")
     monkeypatch.setenv("ENABLE_RUN_TURN_REAL_LLM", "true")
@@ -1229,6 +1241,104 @@ def test_run_turn_real_llm_path_uses_per_request_influencer_id_when_provided(
     assert len(fake_soul_file.calls) == 1
     assert fake_soul_file.calls[0]["influencer_id"] == _TEST_INFLUENCER_ID_PER_REQUEST
     assert fake_soul_file.calls[0]["influencer_id"] != _TEST_INFLUENCER_ID_FOR_DAY_5
+
+
+def test_run_turn_real_llm_path_rejects_empty_string_influencer_id_request(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient,
+) -> None:
+    """WHAT: assert that an EXPLICITLY-BLANK `influencer_id=""` in
+          the request body returns 422 (Pydantic validation error)
+          at request-parse time, BEFORE the resolver fires —
+          NOT a silent fallback to the env placeholder.
+    WHEN: Pydantic rejects the `min_length=1` constraint on
+          `RunTurnRequest.influencer_id` during request parsing,
+          before the route handler runs + before
+          `_generate_real_llm_reply`'s resolver sees the body.
+    WHY:  round-2 fixup per Codex CONCERN on PR #131. Without the
+          `min_length=1` constraint a request that explicitly set
+          `influencer_id=""` would short-circuit the Python `or`
+          in `resolved_influencer_id = (request.influencer_id or
+          settings.day_5_placeholder_ai_influencer_id)` + land on
+          the env placeholder. A wiring bug in Session 3's
+          public-api forwarding logic (e.g. sending "" when a
+          field is unset, mis-serialising an unauthenticated
+          user's request) would silently route all the affected
+          chat traffic to the single placeholder influencer
+          instead of the user's actual chosen AI Influencer.
+          422 is the loud signal we want.
+
+          The env fallback IS set in this test (same
+          `_TEST_INFLUENCER_ID_FOR_DAY_5`) — the assertion is
+          NOT "no fallback available" but "explicit blank is
+          rejected even when a fallback exists". That distinction
+          is the bug a single `min_length` constraint defends
+          against; without this test someone could remove the
+          constraint + the resolver would silently fall through
+          to the env value, and the existing happy-path /
+          precedence tests would all still pass.
+    PAIRED-WITH:
+          `test_run_turn_real_llm_path_uses_per_request_influencer_
+          id_when_provided` above (the precedence test). Together
+          the two tests pin the field's three caller-facing
+          states; see that test's PAIRED-WITH section for the
+          full state matrix.
+    """
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("ENABLE_RUN_TURN_REAL_LLM", "true")
+    # Env fallback IS populated — this test proves the explicit-
+    # blank rejection fires EVEN WHEN a fallback exists. If we
+    # left the env empty, a 422 could be produced by some other
+    # downstream check + we'd never know whether the field-
+    # constraint actually engaged.
+    monkeypatch.setenv(
+        "DAY_5_PLACEHOLDER_AI_INFLUENCER_ID", _TEST_INFLUENCER_ID_FOR_DAY_5,
+    )
+
+    fake_llm = _FakeLlmClient(reply_content="should never fire")
+    fake_soul_file = _FakeSoulFileClient(layered_prompt="should never compose")
+    monkeypatch.setattr(
+        "app.run_turn.get_default_llm_client", lambda: fake_llm,
+    )
+    monkeypatch.setattr(
+        "app.run_turn.get_soul_file_client", lambda: fake_soul_file,
+    )
+
+    response = client.post(
+        "/v1/turn",
+        json={
+            "conversation_id": "empty-string-influencer-test-conversation-001",
+            "user_message": "test that empty influencer_id is rejected",
+            "influencer_id": "",
+        },
+        headers=_required_headers(
+            idempotency_key="550e8400-e29b-41d4-a716-446655440061",
+        ),
+    )
+
+    # FastAPI maps Pydantic ValidationError → HTTP 422 with the
+    # standard `{"detail": [...]}` envelope. Codex pushback prevention:
+    # the assertion is on 422 specifically (NOT 400 or 4xx-generic),
+    # locking in the validation-layer rejection vs a downstream
+    # handler-level rejection.
+    assert response.status_code == 422, response.text
+
+    # The validation error mentions `influencer_id` + the
+    # `min_length=1` (or "at least 1 character" / "string_too_short"
+    # depending on Pydantic version's phrasing). Locks in that the
+    # 422 was about THIS field, not some other validation that
+    # happened to trip first.
+    body = response.json()
+    detail_text = str(body.get("detail", body))
+    assert "influencer_id" in detail_text
+
+    # Soul-file lookup never fired — the resolver short-circuit
+    # path (or the env fallback path) cannot run because Pydantic
+    # rejected the request at parse time. This is the load-bearing
+    # assertion that distinguishes "loud 422" from "silent env
+    # fallback" — without it, a regression that removed the
+    # min_length constraint would still pass the 422-status
+    # assertion if any OTHER field validation tripped.
+    assert fake_soul_file.calls == []
 
 
 def test_run_turn_real_llm_path_returns_504_envelope_on_llm_timeout(

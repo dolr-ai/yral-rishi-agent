@@ -2,6 +2,73 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-23 — Day-8 PR-B1 round-2 fixup: empty-string `influencer_id` validation defense (Codex CONCERN on PR #131 round-1)
+
+### Status
+**Round-2 fixup pushed to the same PR #131 branch — DRAFT stays on.** Codex round-1 returned a CONCERN (not BLOCKER) at `tests/test_run_turn.py:1156` flagging that the precedence test covered the happy path but NOT the dangerous explicit-blank request path. The resolver's Python `or` short-circuit (`request.influencer_id or settings.day_5_placeholder_ai_influencer_id`) would silently fall through to the env placeholder when a request explicitly set `influencer_id=""`, masking wiring bugs in Session 3's PR-B2 forwarding logic. Real concern; round-2 closes it with a Pydantic `min_length=1` field constraint + a focused regression test.
+
+### What's changing in round-2
+
+**`app/models/turn.py`** — tighten the field constraint:
+
+```python
+influencer_id: str | None = Field(default=None, min_length=1)
+```
+
+Three caller-facing states now pinned by the constraint + tests:
+- **(1) field omitted from body** → `None` default → resolver picks env fallback (existing happy-path test).
+- **(2) field set to a real UUID** → per-request wins over env fallback (PR-B1 round-1 precedence test).
+- **(3) field set to explicit `""`** → Pydantic 422 BEFORE the resolver fires (this round-2 test).
+
+The `default=None` preserves the PR-B1 backwards-compatibility intent (omitted → env fallback); `min_length=1` only fires when the caller serialised a present-but-empty string. PR-B3 will tighten this further to required (the field becomes `str` with `min_length=1`, default removed entirely).
+
+Role-comment density matched against the existing `Field(min_length=1)` fields (`conversation_id`, `user_message`) — Codex's typical "magic number without WHY" reading is preempted by the inline explanation of the silent-fallthrough bug class + the public-api wiring-bug scenario the constraint defends against.
+
+**`tests/test_run_turn.py`** — add the regression test:
+
+```python
+def test_run_turn_real_llm_path_rejects_empty_string_influencer_id_request(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient,
+) -> None:
+```
+
+Three load-bearing assertions:
+- `response.status_code == 422` (Pydantic validation rejection, not 400/4xx-generic).
+- `"influencer_id"` in the response detail (locks in WHICH field tripped validation).
+- `fake_soul_file.calls == []` (the route handler / resolver never ran — load-bearing distinction between "loud 422" and "silent env fallback").
+
+Test setup intentionally populates the env fallback so the assertion proves "explicit blank is rejected EVEN WHEN a fallback exists" — without the populated env, a 422 could be produced by some downstream check + we'd never confirm the field constraint actually engaged. Same dual-defense logic as PR-B1 round-1's precedence test's `!=` assertion.
+
+**Existing precedence test docstring** — appended a `PAIRED-WITH:` section pointing at the new round-2 test + listing the three caller-facing states matrix. Future readers see the pair as one cohesive defense rather than two unrelated tests.
+
+### Why a fixup on the same PR vs a separate PR
+
+Same PR per I11 + per Session 1's prior PR #119 round-2 precedent — Codex CONCERN-level iterations land as fixup commits on the originating PR's branch, not as separate follow-up PRs. The single-concern A2.1 scope is unchanged (still "widen `RunTurnRequest` with optional `influencer_id` + env-var fallback"); the round-2 fixup tightens the field constraint that PR-B1 implicitly should have had from round-1. Codex re-reviews on the next push.
+
+DRAFT stays on through round-2 — PR #126's auto-merge Codex-gate provides one layer of protection; DRAFT discipline provides the second. Coordinator manually merges after Codex APPROVE.
+
+### Files touched (round-2)
+- `yral-rishi-agent-conversation-turn-orchestrator/app/models/turn.py` — `Field(default=None, min_length=1)` + extended role-comment block.
+- `yral-rishi-agent-conversation-turn-orchestrator/tests/test_run_turn.py` — new regression test + updated PAIRED-WITH docstring on the round-1 precedence test.
+- This LOG addendum + STATE refresh.
+
+### Sanity check pre-push
+`python3 -m py_compile` clean against both edited `.py` files. Full pytest in CI.
+
+### Constraints touched (round-2)
+- **A2.1** — same single concern as round-1 (PR-B1 scope unchanged); round-2 tightens what was implicit in round-1's contract.
+- **B7** — extended role-comment on the field + WHAT/WHEN/WHY/PAIRED-WITH docstrings on both tests.
+- **I11** — same-commit code + tests + LOG + STATE pairing (same as round-1's discipline).
+- **I14** — still **NOT auto-merge eligible** (model-shape change + test addition; same Python-touching framing as round-1).
+
+### Next
+- Codex re-review on the round-2 push.
+- If APPROVE → coordinator marks Ready + merges via `gh pr merge 131 --squash`.
+- After PR-B1 merges, **influencer-directory metadata schema + RPC endpoints** is the next Session-4 task per coordinator route (no green-light yet; still pending PR-B sequence cleanup per yesterday's parking note).
+- **PR-B3** (drop env fallback + flip `request.influencer_id` to required) waits on Session 3's PR-B2 forwarding from public-api per the 3-PR plan; the `influencer_id_source` log marker shift `env_fallback` → `request` in prod traces is the canonical PR-B3 unblocked signal.
+
+---
+
 ## 2026-05-22 — Day-8 PR-B1: widen RunTurnRequest with optional `influencer_id` + env-var fallback for backwards-compatibility (3-PR plan step 1 of 3)
 
 ### Status

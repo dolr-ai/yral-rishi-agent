@@ -98,15 +98,32 @@ class RunTurnRequest(BaseModel):
 
     # Optional per-request AI Influencer UUID — overrides the
     # `day_5_placeholder_ai_influencer_id` env-var fallback in
-    # `app/run_turn.py` for the Soul File Layer-3 lookup. When None,
-    # the orchestrator falls back to the env var (the Day-5
-    # single-influencer behaviour PR-B1 preserves for backwards-
-    # compatibility). PR-B1 of the 3-PR per-request wiring plan adds
-    # this optional field; PR-B2 (Session 3) starts forwarding the
-    # per-chat influencer_id from public-api; PR-B3 (Session 4)
-    # removes the env fallback + makes this field required. Optional
-    # for now so PR-B1 ships without a contract break.
-    influencer_id: str | None = None
+    # `app/run_turn.py` for the Soul File Layer-3 lookup. When None
+    # (field absent from request body entirely), the orchestrator
+    # falls back to the env var (the Day-5 single-influencer
+    # behaviour PR-B1 preserves for backwards-compatibility). PR-B1
+    # of the 3-PR per-request wiring plan adds this optional field;
+    # PR-B2 (Session 3) starts forwarding the per-chat influencer_id
+    # from public-api; PR-B3 (Session 4) removes the env fallback +
+    # makes this field required. Optional for now so PR-B1 ships
+    # without a contract break.
+    #
+    # `min_length=1` rejects the present-but-explicit-blank case
+    # (round-2 fixup per Codex CONCERN on PR #131). Without it, a
+    # request body that explicitly sets `influencer_id=""` would
+    # silently fall through the Python `or` short-circuit in the
+    # resolver + route to the env placeholder. A wiring bug in
+    # Session 3's public-api forwarding logic (e.g. forwarding the
+    # wrong header, sending an empty string when a field was unset,
+    # mis-serialising an unauthenticated user's request) would
+    # never surface — all the affected chat traffic would silently
+    # land on the single placeholder influencer instead of 422-ing
+    # with a loud validation error. `default=None` still represents
+    # "field omitted entirely" + routes to the env fallback (the
+    # PR-B1 backwards-compatibility intent); `min_length=1` only
+    # fires when the caller serialised a present-but-empty string
+    # into the body. PR-B3 will tighten this further to required.
+    influencer_id: str | None = Field(default=None, min_length=1)
 
     # Optional client-side dedup id the mobile app may attach to the
     # user message. The orchestrator echoes it onto persisted-user-msg
