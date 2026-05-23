@@ -718,7 +718,7 @@ async def test_init_redis_does_not_raise_in_local_without_sentinel(
     await _REAL_INIT_REDIS_FOR_TESTS()
 
 
-async def test_init_redis_passes_password_kwarg_to_master_for(
+async def test_init_redis_passes_password_to_sentinel_primary_connection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """WHAT: assert init_redis() forwards `settings.redis_password` into
@@ -734,22 +734,23 @@ async def test_init_redis_passes_password_kwarg_to_master_for(
           required.` and every run_turn 500s at the F10 dedup
           layer.
     WHY:  defends against the regression class where a refactor
-          drops the `password=` kwarg from the `master_for(...)`
-          call. Codex's review-flow can't catch that semantically
-          (the silent-AUTH-skip would compile + the tests against
-          fakeredis would still pass since fakeredis doesn't
-          require AUTH), so this test pins the kwarg-passthrough
-          explicitly with a mocked Sentinel.
+          drops the `password=` keyword argument from the
+          `master_for(...)` call. Codex's review-flow can't catch
+          that semantically (the silent-AUTH-skip would compile +
+          the tests against fakeredis would still pass since
+          fakeredis doesn't require AUTH), so this test pins the
+          password-keyword-argument passthrough explicitly with a
+          mocked Sentinel.
 
           PAIRED-WITH:
-          `test_init_redis_empty_password_resolves_to_none_in_
-          master_for` below covers the empty-default path. Two
-          tests pin the two operationally-distinct cases: AUTH
-          credential present (production), and AUTH skipped
-          (local dev). Reuses the C11 production-fail-closed
-          test's `_redis = None` bypass trick so init_redis
-          runs the fresh-startup Sentinel branch instead of
-          short-circuiting on the fakeredis singleton.
+          `test_init_redis_empty_password_resolves_to_none_for_
+          sentinel_primary_connection` below covers the empty-
+          default path. Two tests pin the two operationally-
+          distinct cases: AUTH credential present (production),
+          and AUTH skipped (local dev). Reuses the C11 production-
+          fail-closed test's `_redis = None` bypass trick so
+          init_redis runs the fresh-startup Sentinel branch
+          instead of short-circuiting on the fakeredis singleton.
     """
     from unittest.mock import MagicMock
 
@@ -780,7 +781,8 @@ async def test_init_redis_passes_password_kwarg_to_master_for(
     )
 
     # Mock the Sentinel class so we can introspect the `master_for(...)`
-    # call's kwargs without actually opening a network connection.
+    # call's keyword arguments without actually opening a network
+    # connection.
     sentinel_instance_mock = MagicMock()
     master_client_mock = MagicMock()
     sentinel_instance_mock.master_for.return_value = master_client_mock
@@ -793,20 +795,21 @@ async def test_init_redis_passes_password_kwarg_to_master_for(
     assert sentinel_class_mock.call_count == 1
 
     # master_for was called once with `password="testpass-secret-1234"`
-    # — the load-bearing assertion. If a refactor drops the kwarg,
-    # this assertion fails loudly with the actual kwargs printed.
+    # — the load-bearing assertion. If a refactor drops the keyword
+    # argument, this assertion fails loudly with the actual
+    # keyword-argument dict printed.
     assert sentinel_instance_mock.master_for.call_count == 1
-    master_for_kwargs = sentinel_instance_mock.master_for.call_args.kwargs
-    assert master_for_kwargs.get("password") == "testpass-secret-1234", (
+    master_for_keyword_arguments = sentinel_instance_mock.master_for.call_args.kwargs
+    assert master_for_keyword_arguments.get("password") == "testpass-secret-1234", (
         f"expected master_for(password='testpass-secret-1234'); "
-        f"got kwargs={master_for_kwargs!r}"
+        f"got keyword arguments={master_for_keyword_arguments!r}"
     )
     # decode_responses is also passed; lock it in to catch a
-    # kwarg-reorder refactor that accidentally drops it.
-    assert master_for_kwargs.get("decode_responses") is True
+    # keyword-argument-reorder refactor that accidentally drops it.
+    assert master_for_keyword_arguments.get("decode_responses") is True
 
 
-async def test_init_redis_empty_password_resolves_to_none_in_master_for(
+async def test_init_redis_empty_password_resolves_to_none_for_sentinel_primary_connection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """WHAT: assert that an EMPTY `redis_password` setting resolves to
@@ -828,9 +831,9 @@ async def test_init_redis_empty_password_resolves_to_none_in_master_for(
           fail the assertion loudly.
 
           PAIRED-WITH:
-          `test_init_redis_passes_password_kwarg_to_master_for`
-          above covers the production AUTH'd path. Together they
-          pin both operational states.
+          `test_init_redis_passes_password_to_sentinel_primary_
+          connection` above covers the production AUTH'd path.
+          Together they pin both operational states.
     """
     from unittest.mock import MagicMock
 
@@ -860,12 +863,13 @@ async def test_init_redis_empty_password_resolves_to_none_in_master_for(
 
     # The load-bearing assertion: password=None, NOT password="".
     # Without the `or None` guard, this would fail with
-    # `master_for_kwargs['password'] == ''` and surface the regression.
+    # `master_for_keyword_arguments['password'] == ''` and surface
+    # the regression.
     assert sentinel_instance_mock.master_for.call_count == 1
-    master_for_kwargs = sentinel_instance_mock.master_for.call_args.kwargs
-    assert master_for_kwargs.get("password") is None, (
+    master_for_keyword_arguments = sentinel_instance_mock.master_for.call_args.kwargs
+    assert master_for_keyword_arguments.get("password") is None, (
         f"expected master_for(password=None) on empty setting; "
-        f"got kwargs={master_for_kwargs!r}"
+        f"got keyword arguments={master_for_keyword_arguments!r}"
     )
 
 

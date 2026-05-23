@@ -2,6 +2,62 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-23 — PR #136 round-2 fixup: rename `kwarg` / `kwargs` shorthand → "keyword argument(s)" per B2 allowlist (Codex CONCERN on round-1)
+
+### Status
+**Round-2 fixup pushed to PR #136 — DRAFT stays on.** Codex round-1 returned a CONCERN (not BLOCKER) at `tests/test_run_turn.py:719` flagging that the new test names + variable names used the programmer-shorthand `kwarg` / `kwargs`, which is not on the B1/B2 allowed-abbreviation list. Per memory `feedback_explicit_naming.md`, B1/B2 is "non-negotiable + CI-enforced." Round-2 spells out the abbreviation everywhere it appears in Session-4-coined identifiers.
+
+### What's changing (test-code-only rename, zero functional change)
+
+**Test function names:**
+- `test_init_redis_passes_password_kwarg_to_master_for` → `test_init_redis_passes_password_to_sentinel_primary_connection`
+- `test_init_redis_empty_password_resolves_to_none_in_master_for` → `test_init_redis_empty_password_resolves_to_none_for_sentinel_primary_connection`
+
+Coordinator's example shape (focuses on observable behavior — "password to sentinel primary connection" — not implementation mechanism). Test 2 didn't strictly have `kwarg`/`kwargs` in its name but renamed for paired-shape consistency.
+
+**Helper variable:**
+- `master_for_kwargs` → `master_for_keyword_arguments` (literal expansion, no shorthand)
+
+**Docstring references:**
+- "drops the `password=` kwarg from the `master_for(...)` call" → "drops the `password=` keyword argument from the `master_for(...)` call"
+- "this test pins the kwarg-passthrough explicitly" → "this test pins the password-keyword-argument passthrough explicitly"
+- "catch a kwarg-reorder refactor" → "catch a keyword-argument-reorder refactor"
+- PAIRED-WITH cross-references updated to the new test names
+
+**Functional code (`app/idempotency.py`, `app/config.py`, `secrets.yaml`, `docker-compose.swarm.yml`) unchanged.** Python's `password=...` keyword syntax is a language keyword, not an identifier we coined — not subject to B1/B2 per Codex's own clarification in the CONCERN message.
+
+### Pre-empting Codex-round-3 nitpick on external-library API attributes
+
+The diff retains two literal `.kwargs` references — both are `sentinel_instance_mock.master_for.call_args.kwargs`. The `.kwargs` attribute here is from the **unittest.mock library** (`_Call.kwargs` — the standard way to introspect a mock call's keyword arguments). External-library published API names aren't subject to B1/B2 (which governs identifiers WE coin) — same logic as the function name `master_for` itself, which is redis-py's published method name. If a future B2-strictness pass disagrees, the workaround is `getattr(sentinel_instance_mock.master_for.call_args, 'kwargs')` or destructuring `(positional_arguments, keyword_arguments) = sentinel_instance_mock.master_for.call_args` — but that adds boilerplate without semantic value, so leaving as-is.
+
+### Why a fixup on the same PR vs a separate PR
+
+Same PR per I11 + per Session 1's PR #119 round-2 precedent + per yesterday's PR-B1 round-2 precedent — Codex CONCERN-level iterations land as fixup commits on the originating PR's branch. A2.1 scope is unchanged (still "wire REDIS_PASSWORD AUTH credential"); round-2 closes a B2 nitpick that round-1 implicitly should have honored.
+
+DRAFT stays on through Codex re-review.
+
+### Files touched (round-2)
+- `yral-rishi-agent-conversation-turn-orchestrator/tests/test_run_turn.py` — rename 2 test functions + 1 helper variable + docstring references.
+- This LOG addendum + STATE refresh.
+
+### Sanity check pre-push
+`python3 -m py_compile` clean on the edited test file. Grep against the diff confirms zero remaining `\bkwarg\b` or `\bkwargs\b` matches in Session-4-coined identifiers (only the 2 `unittest.mock`-API `.kwargs` references remain, documented above).
+
+### Constraints touched (round-2)
+- **A2.1** — same single concern as round-1 (PR #136 scope unchanged); round-2 closes a B2 identifier nitpick.
+- **B1 + B2** — round-2's direct purpose: rename programmer-shorthand to plain-English identifiers.
+- **B7** — docstring text updated to "keyword argument(s)" alongside the identifier renames.
+- **I11** — same-commit code + LOG + STATE pairing (same as round-1's discipline).
+- **I14** — still **NOT auto-merge eligible** (PR #136's round-1 framing — Python + behavior-changing compose — carries through).
+
+### Next
+- Codex re-review on the round-2 push.
+- If APPROVE → coordinator marks Ready + merges via `gh pr merge 136 --squash`.
+- Coordinator confirms `yral_v2_redis_primary_password_ceeb8b19` Swarm secret in place + force-image-pulls orchestrator on cluster post-merge.
+- **PR-D1 (influencer-directory service-build)** starts immediately after round-2 push (coordinator green-lit parallel work — different service folder, no conflict with PR #136).
+
+---
+
 ## 2026-05-23 — Redis client-side AUTH wiring on orchestrator's Sentinel-discovered primary connection (closed cross-session PR #134 → re-scoped to Session 4)
 
 ### Status
