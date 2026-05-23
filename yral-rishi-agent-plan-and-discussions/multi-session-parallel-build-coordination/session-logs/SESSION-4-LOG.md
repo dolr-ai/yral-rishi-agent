@@ -2,6 +2,33 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-23 — PR #136 round-4 fixup: regenerate `.env.example` from `secrets.yaml` per D8 drift discipline (Codex BLOCKER on round-3)
+
+### Status
+**Round-4 fixup pushed to PR #136 — DRAFT stays on.** Codex round-3 returned a 🛑 BLOCKER: per D8, each service's `.env.example` is auto-generated from `secrets.yaml` and committed; CI fails if drift exists. PR #136 added REDIS_PASSWORD to `secrets.yaml` but did NOT regenerate the committed `.env.example`. Same blocker hit Session 3's PR #137 today — coordinator flagged for a Session-2 follow-up to wire `gen-env-example.sh` into a pre-commit hook OR per-service CI step that fails on drift.
+
+### What's changing
+Ran `bash scripts/gen-env-example.sh` from the orchestrator service folder. Output: `OK: regenerated .env.example from secrets.yaml.` Generated file now includes REDIS_PASSWORD as L40-53 alongside the other 4 secrets + the 3 non-secret runtime env vars (ENVIRONMENT, LOG_LEVEL, LANGFUSE_TRACING_ENABLED).
+
+The diff is larger than just "add REDIS_PASSWORD block" — the regenerator replaced the verbose hand-written file header (Day-1 leftover from before the generator existed) with the auto-generated header that warns "DO NOT EDIT BY HAND — your changes will be overwritten on the next run." 127 lines diff: 67 insertions / 60 deletions; net +7. This is the FIRST run of the generator against this file post-its-hand-written-Day-1-state, so the header replacement is one-time noise; future runs will be additive-only diffs.
+
+### Files touched (round-4)
+- `yral-rishi-agent-conversation-turn-orchestrator/.env.example` — regenerated from secrets.yaml.
+- This LOG addendum + STATE refresh.
+
+### Constraints touched (round-4)
+- **A2.1** — same single concern (PR #136 scope unchanged); round-4 closes a D8 drift gap that round-1/2/3 implicitly carried.
+- **D8** — `.env.example` ↔ `secrets.yaml` drift constraint now satisfied.
+- **I11** — same-commit doc + LOG + STATE pairing.
+- **I14** — still **NOT auto-merge eligible** (carries through from round-1's Python + compose framing).
+
+### Next
+- Codex re-review on the round-4 push.
+- If APPROVE → coordinator marks Ready + merges via `gh pr merge 136 --squash`.
+- **Session-2 follow-up flagged**: wire `gen-env-example.sh --check` into a per-service CI step OR pre-commit hook so the D8 drift gate fires before merge, not in Codex round-N. Coordinator owns the flag-to-Session-2 hand-off.
+
+---
+
 ## 2026-05-23 — PR #136 round-3 fixup: correct misleading "ALTER ROLE on Patroni" rotation note in `secrets.yaml` (Codex CONCERN on round-2)
 
 ### Status
