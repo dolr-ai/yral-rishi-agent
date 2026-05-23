@@ -718,6 +718,157 @@ async def test_init_redis_does_not_raise_in_local_without_sentinel(
     await _REAL_INIT_REDIS_FOR_TESTS()
 
 
+async def test_init_redis_passes_password_kwarg_to_master_for(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WHAT: assert init_redis() forwards `settings.redis_password` into
+          the `sentinel_client.master_for(password=...)` call so the
+          Sentinel-discovered Redis primary's AUTH challenge is
+          answered with the configured credential.
+    WHEN: REDIS_SENTINEL_ENABLED=true AND REDIS_PASSWORD is non-empty —
+          the production v2-cluster shape. The primary runs with
+          `--requirepass` enabled per H3 + the 2026-05-22 incident-
+          response rotation; without the AUTH frame the first
+          command after master discovery raises
+          `redis.exceptions.AuthenticationError: Authentication
+          required.` and every run_turn 500s at the F10 dedup
+          layer.
+    WHY:  defends against the regression class where a refactor
+          drops the `password=` kwarg from the `master_for(...)`
+          call. Codex's review-flow can't catch that semantically
+          (the silent-AUTH-skip would compile + the tests against
+          fakeredis would still pass since fakeredis doesn't
+          require AUTH), so this test pins the kwarg-passthrough
+          explicitly with a mocked Sentinel.
+
+          PAIRED-WITH:
+          `test_init_redis_empty_password_resolves_to_none_in_
+          master_for` below covers the empty-default path. Two
+          tests pin the two operationally-distinct cases: AUTH
+          credential present (production), and AUTH skipped
+          (local dev). Reuses the C11 production-fail-closed
+          test's `_redis = None` bypass trick so init_redis
+          runs the fresh-startup Sentinel branch instead of
+          short-circuiting on the fakeredis singleton.
+    """
+    from unittest.mock import MagicMock
+
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("REDIS_SENTINEL_ENABLED", "true")
+    monkeypatch.setenv("REDIS_PASSWORD", "testpass-secret-1234")
+
+    # Bypass the `if _redis is not None: return` short-circuit so the
+    # Sentinel branch actually runs (same trick as the C11 fail-
+    # closed test above).
+    monkeypatch.setattr(app_idempotency, "_redis", None)
+
+    # Stub the shared-config loader so init_redis doesn't bail on a
+    # missing `redis.sentinel_master_name` / `sentinel_hosts` section
+    # (which would be a different RuntimeError code path than what
+    # this test exercises).
+    monkeypatch.setattr(
+        app_idempotency,
+        "_load_redis_section_from_shared_config",
+        lambda: {
+            "sentinel_master_name": "mymaster",
+            "sentinel_hosts": [
+                {"host": "rishi-4", "port": 26379},
+                {"host": "rishi-5", "port": 26379},
+                {"host": "rishi-6", "port": 26379},
+            ],
+        },
+    )
+
+    # Mock the Sentinel class so we can introspect the `master_for(...)`
+    # call's kwargs without actually opening a network connection.
+    sentinel_instance_mock = MagicMock()
+    master_client_mock = MagicMock()
+    sentinel_instance_mock.master_for.return_value = master_client_mock
+    sentinel_class_mock = MagicMock(return_value=sentinel_instance_mock)
+    monkeypatch.setattr(app_idempotency, "Sentinel", sentinel_class_mock)
+
+    await _REAL_INIT_REDIS_FOR_TESTS()
+
+    # Sentinel was constructed once with the expected target list.
+    assert sentinel_class_mock.call_count == 1
+
+    # master_for was called once with `password="testpass-secret-1234"`
+    # — the load-bearing assertion. If a refactor drops the kwarg,
+    # this assertion fails loudly with the actual kwargs printed.
+    assert sentinel_instance_mock.master_for.call_count == 1
+    master_for_kwargs = sentinel_instance_mock.master_for.call_args.kwargs
+    assert master_for_kwargs.get("password") == "testpass-secret-1234", (
+        f"expected master_for(password='testpass-secret-1234'); "
+        f"got kwargs={master_for_kwargs!r}"
+    )
+    # decode_responses is also passed; lock it in to catch a
+    # kwarg-reorder refactor that accidentally drops it.
+    assert master_for_kwargs.get("decode_responses") is True
+
+
+async def test_init_redis_empty_password_resolves_to_none_in_master_for(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WHAT: assert that an EMPTY `redis_password` setting resolves to
+          `password=None` in the `master_for(...)` call — NOT
+          `password=""`.
+    WHEN: laptop dev / docker-compose default — REDIS_PASSWORD is
+          unset (or explicitly empty) and the local Redis runs
+          without `--requirepass`. The `or None` guard in
+          `app/idempotency.py:_redis = sentinel_client.master_for(
+          password=settings.redis_password or None)` normalises
+          empty-string → None so redis-py skips the AUTH frame
+          entirely.
+    WHY:  redis-py historically treats `password=''` differently
+          from `password=None` (some versions still send an AUTH
+          frame with an empty credential, which fails). The `or None`
+          guard prevents that footgun. This test pins the
+          normalisation explicitly so a refactor that drops the
+          `or None` (e.g. `password=settings.redis_password`) would
+          fail the assertion loudly.
+
+          PAIRED-WITH:
+          `test_init_redis_passes_password_kwarg_to_master_for`
+          above covers the production AUTH'd path. Together they
+          pin both operational states.
+    """
+    from unittest.mock import MagicMock
+
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("REDIS_SENTINEL_ENABLED", "true")
+    monkeypatch.setenv("REDIS_PASSWORD", "")  # explicit empty
+
+    monkeypatch.setattr(app_idempotency, "_redis", None)
+    monkeypatch.setattr(
+        app_idempotency,
+        "_load_redis_section_from_shared_config",
+        lambda: {
+            "sentinel_master_name": "mymaster",
+            "sentinel_hosts": [{"host": "rishi-4", "port": 26379}],
+        },
+    )
+
+    sentinel_instance_mock = MagicMock()
+    sentinel_instance_mock.master_for.return_value = MagicMock()
+    monkeypatch.setattr(
+        app_idempotency,
+        "Sentinel",
+        MagicMock(return_value=sentinel_instance_mock),
+    )
+
+    await _REAL_INIT_REDIS_FOR_TESTS()
+
+    # The load-bearing assertion: password=None, NOT password="".
+    # Without the `or None` guard, this would fail with
+    # `master_for_kwargs['password'] == ''` and surface the regression.
+    assert sentinel_instance_mock.master_for.call_count == 1
+    master_for_kwargs = sentinel_instance_mock.master_for.call_args.kwargs
+    assert master_for_kwargs.get("password") is None, (
+        f"expected master_for(password=None) on empty setting; "
+        f"got kwargs={master_for_kwargs!r}"
+    )
+
+
 def test_run_turn_returns_503_when_flag_unset_default(
     monkeypatch: pytest.MonkeyPatch, client: TestClient
 ) -> None:

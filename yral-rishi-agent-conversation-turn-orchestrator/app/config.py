@@ -134,6 +134,27 @@ class Settings(BaseSettings):
     # — no need to expose it as a setting.
     redis_url: str = "redis://localhost:6379/0"
 
+    # `redis_password`: the password sent in response to Redis's AUTH
+    # challenge after the Sentinel client discovers the primary. The
+    # v2 cluster's Redis primary runs with `--requirepass` enabled
+    # (per H3 + the 2026-05-22 incident-response rotation), so every
+    # connection to the primary MUST AUTH or the client fails with
+    # `redis.exceptions.AuthenticationError: Authentication required.`
+    # at first command.
+    #
+    # Sourced from the `REDIS_PASSWORD` secret declared in
+    # `secrets.yaml` (mounted as `/run/secrets/REDIS_PASSWORD` and
+    # auto-exported as the env var of the same name via the
+    # compose secret-bridge wrapper, per PR #116). The Swarm secret
+    # this maps to is named `yral_v2_redis_primary_password_<sha>`
+    # (versioned via the 2026-05-22 rotation pattern).
+    #
+    # Empty default for local dev: the docker-compose-bundled Redis
+    # is unauthenticated, so the local from_url client works without
+    # a password. Production injection of REDIS_PASSWORD switches to
+    # the AUTH'd path.
+    redis_password: str = ""
+
     # -- Day-5 real LLM enablement (per agent-def Day-5 plan) -----------
     # Three-flag pattern mirrors the Day-2 stub gate:
     #   * `enable_run_turn_real_llm` — explicit opt-in for the Day-5
