@@ -2,6 +2,80 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-23 — Day-8 PR-D1 Chunk A: influencer-directory data layer (schema + Alembic + asyncpg pool + Pydantic model + repository)
+
+### Status
+**Chunk A of the 3-chunk PR-D1 plan pushed.** Builds the data layer for `yral-rishi-agent-influencer-and-profile-directory`: schema + Alembic migration + asyncpg pool + Pydantic model + repository (3 read methods). No endpoints, no main.py wiring, no tests in this chunk — Chunk B adds the 3 endpoints + main.py lifespan wiring, Chunk C adds the test suite. Same branch (`session-4/day-8-pr-d1-influencer-directory-service-build`); coordinator eyeballs the schema BEFORE Chunk B builds endpoints on top.
+
+### Q1–Q5 lock-in decisions implemented (per coordinator routing 2026-05-23)
+
+| Q | Decision | Implementation |
+|---|---|---|
+| Q1 | chat-ai contract names verbatim per A8+D2 | Schema columns match `InfluencerDto` (`id` / `display_name` / `bio` / `avatar_url` / `archetype` / `is_nsfw` / `follower_count` / `creator_user_id` / `is_active`) + 3 v2-only fields (`source` TEXT NULL, `created_at` / `updated_at` TIMESTAMPTZ NOT NULL default `now()`) |
+| Q2 | `is_active` = TEXT + CHECK | `is_active TEXT NOT NULL DEFAULT 'active' CHECK (is_active IN ('active', 'discontinued'))` — named constraint `influencer_metadata_is_active_in_active_or_discontinued` for future ALTER-by-name |
+| Q3 | `/trending` = follower_count DESC | Partial index `CREATE INDEX influencer_metadata_active_follower_count ON influencer_metadata (follower_count DESC) WHERE is_active = 'active'` for index-only scan |
+| Q4 | offset/limit plain ints | Repository signatures take `limit: int, offset: int`; endpoint bounds (default 20, min 1, max 100; offset default 0 min 0) land in Chunk B's route handler |
+| Q5 | Option C two PRs | PR-D1 (this PR, 3 chunks: data layer / endpoints / tests); PR-D2 (ETL script + chat-ai → v2 column mapping doc, coordinator-driven execution under typed Rishi YES) |
+
+**Archetype (γ) committed** — `archetype TEXT NOT NULL` with NO FK / NO CHECK. Migration's file-header documents the (α)/(β)/(γ) consideration + the runtime-safety-net reference (`SoulFileDataIntegrityError` in soul-file-library's composer catches L2-mismatches with a clear operator message). Revisit if a future creator-studio flow lets non-team users add archetypes programmatically.
+
+### Files added (Chunk A)
+- `yral-rishi-agent-influencer-and-profile-directory/alembic.ini` — Alembic config; reads connection string from `POSTGRES_CONNECTION_STRING_INFLUENCER_AND_PROFILE_DIRECTORY` env var at runtime per D1+D8.
+- `yral-rishi-agent-influencer-and-profile-directory/app/migrations/__init__.py` — package marker.
+- `yral-rishi-agent-influencer-and-profile-directory/app/migrations/env.py` — Alembic environment script; mirrors soul-file-library's shape with the per-service env var name. Uses `async_engine_from_config` + `asyncio.run` per F12.
+- `yral-rishi-agent-influencer-and-profile-directory/app/migrations/versions/__init__.py` — package marker.
+- `yral-rishi-agent-influencer-and-profile-directory/app/migrations/versions/001_initial_schema.py` — initial schema. ONE table `influencer_metadata` + 2 indexes (partial trending + archetype B-tree). Reversible (downgrade drops the table per A1 carve-out precedent set by soul-file's 001 migration).
+- `yral-rishi-agent-influencer-and-profile-directory/app/database.py` — asyncpg pool init/close + `get_pool()` accessor. Mirrors soul-file-library's shape; diff is the per-service env var name + the empty-connection-string RuntimeError message text.
+- `yral-rishi-agent-influencer-and-profile-directory/app/models/__init__.py` — package marker.
+- `yral-rishi-agent-influencer-and-profile-directory/app/models/influencer_metadata.py` — `InfluencerMetadata` Pydantic model mirroring the `InfluencerDto` contract shape verbatim. `is_active: Literal["active", "discontinued"]` pins the vocabulary at the Pydantic boundary alongside the DB CHECK constraint.
+- `yral-rishi-agent-influencer-and-profile-directory/app/repository/__init__.py` — package marker.
+- `yral-rishi-agent-influencer-and-profile-directory/app/repository/influencer_metadata_repository.py` — 3 read methods: `get_by_id`, `list_paginated`, `list_trending`. Each SELECT projects only the 9 contract-shape columns (the v2-only `source` / `created_at` / `updated_at` columns exist in the DB but aren't exposed via the model today; future endpoints that want them extend the model + the SELECT list together).
+
+### Files updated (Chunk A)
+- `yral-rishi-agent-influencer-and-profile-directory/app/config.py` — adds `postgres_connection_string: str = Field(default="", validation_alias="POSTGRES_CONNECTION_STRING_INFLUENCER_AND_PROFILE_DIRECTORY")`. `validation_alias=` lets the Python field stay B1-clean while the env var keeps the D8-declared per-service name.
+
+### What's NOT in Chunk A (deferred to Chunk B / C)
+- `app/main.py` lifespan wiring (`init_pool` / `close_pool`) — Chunk B
+- 3 FastAPI route handlers (`/v1/influencers`, `/v1/influencers/{id}`, `/v1/influencers/trending`) — Chunk B
+- Endpoint test suite — Chunk C
+- Repository test suite (against testcontainers-Postgres) — Chunk C
+- Alembic round-trip test — Chunk C
+
+### Defensive naming sweep (per coordinator's pre-flight warning)
+Grep'd all new files for `kwarg` / `kwargs` / `tmpdir` / `rel_path` / `dir`-style abbreviations + other Session-4-coined shorthand outside the B2 allowlist. Only finds are external-API names: asyncpg's `dsn=` parameter + alembic's `script_location` / `prefix=` / `paramstyle` strings + `_DATABASE_CONNECTION_STRING_ENV_VAR` (literal env var name, not a shorthand). All Session-4-coined identifiers spell out fully (e.g. `_DEFAULT_MIN_POOL_SIZE`, `_CONTRACT_COLUMNS_FOR_SELECT`, `influencer_metadata_is_active_in_active_or_discontinued`).
+
+### Sanity check pre-push
+`python3 -m py_compile` clean against all 6 new + 1 modified Python files. Alembic env.py imports OK (verified via py_compile of the module). Full pytest runs in Chunk C; no tests in Chunk A.
+
+### Constraints touched (Chunk A)
+- **A2.1** — single concern is the data layer; endpoints + tests separate per the 3-chunk plan (recoverability + mid-stream eyeball gate discipline per the coordinator's 2026-05-23 routing).
+- **A4** — data-preservation deferred to PR-D2 (ETL script); Chunk A creates the schema that PR-D2 ports into.
+- **A8 + D2** — chat-ai-parity field names verbatim; v2-only fields explicitly carved out (source + audit pair).
+- **B1 + B2** — all identifiers spell out shorthand-free (defensive sweep above).
+- **B7** — file headers + WHAT/WHEN/WHY function docstrings + role-comments on non-obvious code (CHECK constraint name, partial-index rationale, the (α)/(β)/(γ) archetype-shape decision tree, the audit-column-not-in-model carve-out).
+- **C7** — no shared-config.yaml touched; per-service connection string lives in per-service env var per D8.
+- **D1 + D8** — secrets never in committed files (alembic.ini `sqlalchemy.url` empty; env.py reads env var at runtime).
+- **F10** — N/A (no idempotency on read endpoints; F10 applies to non-GET only).
+- **F12** — Python 3.12 + asyncio + asyncpg uniformly.
+- **H11** — migration is reversible (downgrade drops table cleanly).
+- **I9** — Session-4-owned service folder only; no public-api / orchestrator / soul-file touches.
+- **I11** — same-commit code + LOG + STATE pairing.
+- **I14** — **NOT auto-merge eligible.** Adds Python code + new SQL migration + new YAML (alembic.ini); behavior-changing on every axis. Coordinator manually merges via `gh pr merge <N> --squash` after Codex APPROVE on the final chunk.
+
+### Diff size
+Chunk A only: ~600 lines additions (mostly heavily-commented per B7 — strict code is ~250 lines). Cumulative PR-D1 line count verified pre-push via `git diff --stat origin/main...HEAD`.
+
+### Next
+- Push Chunk A → open DRAFT PR-D1 → ping coordinator for eyeball.
+- Coordinator confirms schema + repository surface looks right + green-lights Chunk B.
+- **Chunk B** (`app/main.py` lifespan wiring + 3 FastAPI route handlers + endpoint role-comments) fixup commit on same branch.
+- **Chunk C** (testcontainers-Postgres repository tests + endpoint tests + Alembic round-trip test) final fixup commit; ready-for-Codex-final-review.
+- **PR-D2** (chat-ai → v2 ETL script + column mapping doc + operator-action LOG once coordinator drives cross-cluster execution) after PR-D1 merges.
+
+**Parallel PR #136 status**: round-3 fixup pushed earlier this turn (correcting the misleading "ALTER ROLE on Patroni" note in `secrets.yaml`); awaiting Codex re-review. PR-D1 + PR #136 are in different service folders so they iterate independently.
+
+---
+
 ## 2026-05-23 — Day-8 PR-B1 round-2 fixup: empty-string `influencer_id` validation defense (Codex CONCERN on PR #131 round-1)
 
 ### Status
