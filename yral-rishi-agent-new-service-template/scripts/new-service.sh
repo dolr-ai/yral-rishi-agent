@@ -171,6 +171,8 @@ if [ "$DRY_RUN" -eq 1 ]; then
     echo "  3. Substitute '$PLACEHOLDER_UNDERSCORED' → '$TARGET_SUFFIX_UNDERSCORED' in every file"
     echo "  4. Substitute '$PLACEHOLDER_VARIABLE' → '$TARGET_NAME' in every file"
     echo "  5. Rename $TARGET_PATH/secrets.yaml.template → secrets.yaml"
+    echo "  6. DEP-010 post-spawn check: every env.local.fixture is add-able"
+    echo "     (git add --dry-run shows 'add ...' line, not silently ignored)"
     echo ""
     echo "No changes written. Re-run without --dry-run to actually create."
     echo "(A1 spirit — this script never 'rm's anything; rsync --exclude keeps"
@@ -232,6 +234,69 @@ done
 # spawned-service form. `mv` is fine — it RENAMES a tracked file, it
 # does NOT delete anything (A1 spirit preserved).
 mv "$TARGET_PATH/secrets.yaml.template" "$TARGET_PATH/secrets.yaml"
+
+
+# ===========================================================================
+# Step 6: DEP-010 post-spawn verification
+# ===========================================================================
+#
+# Every `env.local.fixture` in the spawned tree MUST be visible to
+# `git add` — i.e. NOT silently swallowed by .gitignore. The
+# DEP-010 bug was that fixtures shipped as literal `.env.local`,
+# which collides with .gitignore:25 and got dropped at spawn time
+# (3 of 4 spawned services hit red CI before the rename to
+# `env.local.fixture`). This check guards against future drift:
+# someone renaming back to a gitignored filename, or a new
+# .gitignore rule that catches `env.local.fixture`.
+#
+# Codex PR #121 round-7 chose `git add --dry-run` (over
+# `git check-ignore`) because it surfaces the exact tracking
+# outcome the spawn cares about: would `git add` add the file
+# (success → "add 'path'" line), or silently ignore it (empty
+# output or "ignored by .gitignore" error)? Anything other than
+# an "add '...'" line is a failure.
+# `find ... -print0` + `while IFS= read -r -d ''` is the standard
+# null-delimited iteration pattern. It handles paths with spaces or
+# newlines correctly — `$TARGET_PATH` lives under "/Users/.../Claude
+# Projects/..." on dev macs so the space-in-path case is real.
+while IFS= read -r -d '' fixture_file; do
+    # Convert the absolute path to a repo-relative path so the
+    # `git add --dry-run` invocation below resolves the same way a
+    # caller running `git add <path>` from $REPO_ROOT would. Without
+    # the strip, git would still work (git tolerates absolute paths
+    # under the worktree) but the error output below reads cleaner
+    # with repo-relative paths.
+    relative_fixture_path="${fixture_file#$REPO_ROOT/}"
+    # Probe what `git add` would actually do for this path. `--dry-run`
+    # never mutates the index; `2>&1` captures the "ignored by …"
+    # message git writes to stderr when a path is gitignored; `|| true`
+    # prevents `set -e` from aborting the spawn on a non-zero git exit
+    # (gitignored paths produce non-zero — we want to keep iterating
+    # so the error message below can surface all violations, not just
+    # the first).
+    dry_run_output="$(git -C "$REPO_ROOT" add --dry-run -- "$relative_fixture_path" 2>&1)" || true
+    # The exact tracking outcome the spawn cares about: would `git
+    # add` actually add the file? A success produces an `add '…'` line
+    # on stdout. Gitignored paths produce an "ignored by .gitignore"
+    # message (or empty output on some git versions); anything that
+    # isn't an `add '…'` line means the fixture would be silently
+    # swallowed at the next real `git add`. Codex PR #121 round-7
+    # chose this over `git check-ignore` because it surfaces the
+    # observable spawn outcome, not just whether a rule matches.
+    if ! echo "$dry_run_output" | grep -q "^add '"; then
+        # Failure path: tell the operator EXACTLY which fixture
+        # tripped the check + what git said + the two most likely
+        # root causes so they can land the fix without re-reading
+        # the DEP. `exit 1` aborts the spawn loudly — better a
+        # noisy failure now than a silently-broken spawned service.
+        echo "Error: post-spawn DEP-010 check failed for $relative_fixture_path"
+        echo "  git add --dry-run output: $dry_run_output"
+        echo "  Fixture would be silently ignored by .gitignore."
+        echo "  Likely cause: rename back to .env.local OR new .gitignore"
+        echo "  rule catching env.local.fixture. See DEP-010."
+        exit 1
+    fi
+done < <(find "$TARGET_PATH" -name 'env.local.fixture' -type f -print0)
 
 
 # ===========================================================================
