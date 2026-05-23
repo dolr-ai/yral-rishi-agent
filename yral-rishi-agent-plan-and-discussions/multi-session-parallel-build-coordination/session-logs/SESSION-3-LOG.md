@@ -100,6 +100,23 @@ Verified no `kwarg`/`kwargs` mentions in the regenerated `.env.example` (round-3
 
 Single-file change (`.env.example`) + this LOG-entry-subsection update. Same PR + branch. No new files. No code-behavior change.
 
+### Round-5 fixups (Codex round-4 CONCERN — `REDIS_URL` local-dev regression)
+Codex round-4 CONCERN at `.env.example:42`: the round-4 regeneration changed `REDIS_URL` from the safe local default (`redis://localhost:6379/0`) to blank. Devs running `cp .env.example .env.local` after this PR lands would override the Settings field's safe local default with an empty string, breaking local Redis connection parsing.
+
+Root cause: `gen-env-example.sh` emits blank `NAME=` lines for every secret entry. That's correct for true-secret credentials (SENTRY_DSN, LANGFUSE_*, REDIS_PASSWORD) but wrong for entries whose local-dev value is a safe public URL — namely `REDIS_URL` per the `source.local` field in `secrets.yaml`.
+
+Two fix options considered:
+- **(α)** Make the generator field-aware — read `secrets.yaml`'s `source.local` per-entry + emit concrete URLs as defaults. Cleaner long-term but bigger scope.
+- **(β)** Manually restore the local-dev default on `REDIS_URL` post-regeneration + add a generator-script header comment documenting the workaround + flag (α) as a follow-up.
+
+Round-5 ships **(β)** to close the CONCERN fast. (α) lives in template territory (Session 2's `yral-rishi-agent-new-service-template/scripts/gen-env-example.sh` is the canonical source the per-service spawns are derived from); per-service patches would diverge from the template. Flagged for coordinator queue as a separate DEP.
+
+Changes:
+- `.env.example` line 42: `REDIS_URL=` → `REDIS_URL=redis://localhost:6379/0` + inline comment explaining the manual override + pointing at the script header for the follow-up plan.
+- `scripts/gen-env-example.sh` header "WHAT THIS SCRIPT DOES NOT DO" section: paragraph documenting the field-aware-emission gap + naming `REDIS_URL` as the one entry that currently needs manual post-script restoration.
+
+Same PR + branch. 2 files touched + this LOG subsection. No new files. No code-behavior change (the manual restoration just preserves the pre-round-4 local-dev value).
+
 ---
 
 ## 2026-05-22 — PR-B — Day-8 directory-RPC wrapper for `/api/v1/influencers` list + by-id (DRAFT, blocked on Session 4 directory ratification)

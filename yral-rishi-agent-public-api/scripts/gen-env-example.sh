@@ -23,6 +23,17 @@
 #   - It does NOT delete `.env.example`. The script overwrites the file
 #     with new content (a file modification, not a deletion — A1-clean).
 #   - It does NOT touch `.env.local` (which is gitignored).
+#   - It does NOT yet read a per-secret `source.local` field from
+#     `secrets.yaml` to emit safe local-dev defaults. Today every
+#     entry writes blank `NAME=`, which is correct for true-secret
+#     credentials (SENTRY_DSN, LANGFUSE_*, REDIS_PASSWORD) but
+#     INCORRECT for entries whose local-dev value is a safe public
+#     URL (notably `REDIS_URL=redis://localhost:6379/0`). Codex PR
+#     #137 round-4 CONCERN flagged this. Today's workaround: after
+#     running this script, manually restore the local-dev default
+#     on `REDIS_URL` (the only entry that currently needs it). A
+#     coordinator-queued follow-up adds the field-aware emission
+#     so the post-script manual step goes away.
 #
 # FLAGS:
 #   (no flags)    write `.env.example` and exit 0.
