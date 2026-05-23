@@ -83,6 +83,14 @@ on:
       # required-check set below — re-evaluation must fire when its
       # workflow completes so we don't admin-merge before its verdict.
       - "Codex Review on PR"
+      # Added 2026-05-23 (DEP-014 template spawn-smoke CI gate). This
+      # workflow only RUNS on PRs that touch the template folder (per
+      # its own paths-filter), but we register it as a trigger here so
+      # that on PRs where the spawn-smoke fires, the auto-merge
+      # workflow re-evaluates after the smoke completes — needed
+      # because the conditional-required logic below checks the
+      # spawn-smoke status when template paths are touched.
+      - "Template Spawn Smoke"
     types: [completed]
 
   # Also fire on PR events for the initial evaluation + label changes.
@@ -239,6 +247,46 @@ jobs:
             "Verify SESSION-N-LOG was updated"
             "Codex independent review"
           )
+
+          # Gate 5.5: CONDITIONAL spawn-smoke requirement (DEP-014 follow-up).
+          #
+          # The template-spawn-smoke workflow only runs on PRs that touch
+          # the template folder OR the spawn-smoke workflow file itself
+          # (per its own paths-filter). For PRs that DON'T touch those
+          # paths, the spawn-smoke check is absent from statusCheckRollup
+          # — and that absence is correct + expected.
+          #
+          # The risk Codex flagged on PR #135 round-1: if we treated
+          # "spawn-smoke absent" as "safe to skip" without first checking
+          # whether the PR touched template paths, a template-touching
+          # PR could auto-merge while the spawn-smoke workflow was still
+          # queueing (or had a path-filter YAML bug that prevented it
+          # from running). Default-skip on absence = unsafe for the
+          # paths it's MEANT to gate.
+          #
+          # FIX: query the PR's changed files; if any file matches
+          # template paths OR the spawn-smoke workflow file, REQUIRE
+          # spawn-smoke to be SUCCESS. If no template paths are
+          # touched, spawn-smoke is genuinely optional + its absence
+          # is fine.
+          CHANGED_FILES="$(gh pr diff "$PR_NUMBER" --repo "$GH_REPO" --name-only)"
+          TEMPLATE_TOUCHED=false
+          while IFS= read -r changed_path; do
+            case "$changed_path" in
+              yral-rishi-agent-new-service-template/* | \
+              .github/workflows/template-spawn-smoke.yml)
+                TEMPLATE_TOUCHED=true
+                break
+                ;;
+            esac
+          done <<< "$CHANGED_FILES"
+
+          if [ "$TEMPLATE_TOUCHED" = "true" ]; then
+            echo "  Template paths touched — adding spawn-smoke to required-checks set"
+            REQUIRED_CHECK_NAMES+=("Verify template spawn smoke (build + boot + openapi)")
+          else
+            echo "  Template paths NOT touched — spawn-smoke check is optional for this PR"
+          fi
 
           ALL_REQUIRED_PASS=true
           for required in "${REQUIRED_CHECK_NAMES[@]}"; do
