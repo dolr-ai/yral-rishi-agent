@@ -3,6 +3,102 @@
 
 ## OPEN
 
+### DEP-015 — Template's `docker-compose.swarm.yml` + `secrets.yaml.template` Redis-password naming drifted from spawned-service convention
+
+Raised: 2026-05-23 by Coordinator (spotted during PR #134 — Redis client-side AUTH wiring fix)
+
+What:    Three drift items found while wiring REDIS_PASSWORD into
+         orchestrator + public-api:
+
+         1. Template's `docker-compose.swarm.yml:152` declares
+            `redis_password` (lowercase) in the per-service `secrets:`
+            block. Spawned services (orchestrator + public-api) use
+            `REDIS_PASSWORD` (UPPER_SNAKE_CASE per B1). The lowercase
+            doesn't match the manifest's UPPER convention.
+
+         2. Template's `secrets.yaml.template` declares
+            `REDIS_SENTINEL_PASSWORD` (UPPER) — different concept
+            from spawned-service `REDIS_PASSWORD`. The "SENTINEL_"
+            prefix implies sentinel-AUTH (sentinels themselves
+            password-protected) but the actual v2 cluster config has
+            sentinels NOT password-protected; only the primary is.
+            So the template's manifest entry is misnamed for what
+            consumers actually need.
+
+         3. Template's `app/config.py` has no `redis_password` field
+            at all — placeholder skeleton scaffolded before the Redis
+            client wiring landed. Future spawned services would
+            inherit the gap unless the manifest + compose + Settings
+            land together.
+
+Why:     Template is supposed to be the canonical source that
+         spawned services backport from. Today the template is
+         BEHIND the spawned services on the Redis-AUTH wiring +
+         the naming convention. Any new service spawned from the
+         current template would inherit a broken Redis-AUTH path.
+
+         The fix in PR #134 (Redis client-side wiring) is scoped
+         to orchestrator + public-api ONLY — coordinator
+         deliberately skipped template per A2.1 single-concern,
+         since the template-rot is a separate concern with its
+         own design questions (rename to REDIS_PASSWORD? Drop the
+         SENTINEL_ prefix? Add the Settings field as part of the
+         skeleton-expansion work Session 2 has queued via
+         DEP-014?).
+
+Blocks:  No hard runtime block on production (the spawned services
+         have correct wiring as of PR #134). Soft block on future
+         service spawns: any new service spawned today inherits
+         the gap.
+
+ETA needed: Before any 5th-service spawn from the template. Most
+         naturally combined with Session 2's DEP-014 (skeleton
+         expansion to add Redis + Postgres client + /health/ready
+         probes) — adding the client wiring is the right time to
+         also fix the naming + manifest alignment.
+
+Suggested
+resolution:
+         Session 2 picks this up as part of DEP-014's skeleton-
+         expansion PR (or as a small sibling PR before that).
+         Specifically:
+
+         (a) Rename template's lowercase `redis_password` →
+             `REDIS_PASSWORD` in `docker-compose.swarm.yml:152` (the
+             `secrets:` source + target lines)
+
+         (b) Update template's `secrets.yaml.template`:
+             - Either drop the misnamed `REDIS_SENTINEL_PASSWORD`
+               entry + add a properly-named `REDIS_PASSWORD` entry
+               matching the spawned-services pattern
+             - Or rename in place (less audit-trail-clean)
+
+         (c) When the skeleton expansion adds a Redis client to
+             template's `app/`, ALSO add the `redis_password: str
+             = ""` Settings field + the `password=settings
+             .redis_password or None` kwarg on the Sentinel client
+             constructor + master_for() call (mirror orchestrator's
+             post-PR-#134 shape).
+
+         (d) Top-level `secrets:` block in compose maps logical
+             `REDIS_PASSWORD` → versioned Swarm secret:
+                 REDIS_PASSWORD:
+                   external:
+                     name: yral_v2_redis_primary_password_<sha>
+             Same rotation-discipline pattern PR #134 used for
+             spawned services.
+
+How spotted:
+         PR #134 drafting on 2026-05-23 — coordinator grep'd
+         template's compose for the REDIS_URL pattern (the
+         spawned-service shape) and found lowercase
+         `redis_password` instead; cross-grep'd
+         `secrets.yaml.template` and found `REDIS_SENTINEL_PASSWORD`
+         (different name again). Three-way naming inconsistency.
+         Surfacing as DEP rather than expanding PR #134's scope.
+
+---
+
 ### DEP-012 — Coordinator / Session 1 must provision `user_memory_role` + `user_memory` database on the Patroni cluster before user-memory-service can deploy
 
 Raised: 2026-05-22 by Session 5 (Deliverable 1 — schema + Alembic migration)

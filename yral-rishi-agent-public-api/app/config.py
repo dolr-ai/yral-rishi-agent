@@ -116,6 +116,32 @@ class Settings(BaseSettings):
     # branches.
     redis_url: str = "redis://localhost:6379/0"
 
+    # `redis_password`: AUTH credential sent in response to Redis's
+    # AUTH challenge. The v2 cluster's Redis primary runs with
+    # `--requirepass` enabled (per H3 + 2026-05-22 incident-response
+    # rotation), so every connection to the primary MUST AUTH or first
+    # command raises
+    # `redis.exceptions.AuthenticationError: Authentication required.`
+    #
+    # Consumed by BOTH Redis paths in this service:
+    #   - app/redis_client.py — passed as `password=` kwarg to
+    #     redis.Redis.from_url() (the JWKS-cache + idempotency-dedup
+    #     singleton; uses single-URL connect)
+    #   - app/api/health_routes.py — passed as `password=` kwarg to
+    #     Sentinel.master_for() (the /health/ready C11 probe)
+    #
+    # Sourced from the `REDIS_PASSWORD` secret declared in
+    # `secrets.yaml` (mounted at `/run/secrets/REDIS_PASSWORD`; env
+    # var auto-exported via the compose secret-bridge wrapper).
+    # Swarm secret name: `yral_v2_redis_primary_password_<sha>`
+    # (versioned via 2026-05-22 rotation pattern; compose maps the
+    # logical name → versioned secret via `external: name:`).
+    #
+    # Empty default keeps local dev working: the docker-compose-
+    # bundled Redis is unauthenticated, both code paths skip AUTH
+    # when this is empty.
+    redis_password: str = ""
+
     # -- C11 Sentinel feature flag (Codex PR #97 round-4 BLOCKER 2) --------
     # Default-OFF so laptop dev + docker-compose + CI run on the
     # single-primary `redis_url` fallback above. Production MUST flip

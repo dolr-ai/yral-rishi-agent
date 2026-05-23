@@ -349,9 +349,20 @@ async def init_redis() -> None:
         # `master_for` returns a Redis client that re-resolves the
         # current primary on every command (no stale-primary bug after
         # failover).
+        #
+        # `password=` carries the AUTH credential sent in response to
+        # the primary's `--requirepass` AUTH challenge. Without it the
+        # first command after master discovery raises
+        # `redis.exceptions.AuthenticationError: Authentication
+        # required.` The password is sourced from the REDIS_PASSWORD
+        # secret declared in secrets.yaml (mapped to Swarm secret
+        # `yral_v2_redis_primary_password_<sha>` via compose). Empty
+        # default means local dev (no AUTH) keeps working; production
+        # injection of REDIS_PASSWORD switches to the AUTH'd path.
         _redis = sentinel_client.master_for(
             master_name,
             decode_responses=True,
+            password=settings.redis_password or None,
         )
         _log.info(
             "redis_client_initialised_via_sentinel",

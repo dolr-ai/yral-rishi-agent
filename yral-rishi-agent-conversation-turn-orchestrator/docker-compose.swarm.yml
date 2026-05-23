@@ -202,6 +202,17 @@ services:
         uid: "1001"
         gid: "1001"
         mode: 0400
+      # REDIS_PASSWORD — AUTH credential the Sentinel-discovered Redis
+      # primary demands on first command (--requirepass enabled per
+      # H3). Without this mount, the idempotency-dedup layer raises
+      # `redis.exceptions.AuthenticationError: Authentication
+      # required.` on first run_turn. Top-level `secrets:` declaration
+      # below maps the logical name to the versioned Swarm secret.
+      - source: REDIS_PASSWORD
+        target: REDIS_PASSWORD
+        uid: "1001"
+        gid: "1001"
+        mode: 0400
       - source: SENTRY_DSN
         target: SENTRY_DSN
         uid: "1001"
@@ -257,6 +268,13 @@ networks:
 secrets:
   REDIS_URL:
     external: true
+  # REDIS_PASSWORD maps the logical name (consumed by Settings +
+  # app/idempotency.py) to the versioned Swarm secret created via
+  # the 2026-05-22 rotation pattern. Rotation = bump the `name:`
+  # below to the next versioned secret + roll the service.
+  REDIS_PASSWORD:
+    external:
+      name: yral_v2_redis_primary_password_ceeb8b19
   SENTRY_DSN:
     external: true
   LANGFUSE_PUBLIC_KEY:
