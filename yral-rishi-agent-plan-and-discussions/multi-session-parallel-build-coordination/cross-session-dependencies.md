@@ -3,7 +3,7 @@
 
 ## OPEN
 
-### DEP-014 — Session 5 ETL Day-9: coordinator needs Rishi YES (A14) to execute chat-ai → user-memory data migration
+### DEP-015 — Session 5 ETL Day-9: coordinator needs Rishi YES (A14) to execute chat-ai → user-memory data migration
 
 Raised: 2026-05-23 by Session 5 (D3 — ETL plan draft)
 
@@ -53,7 +53,7 @@ ETA:     Day-9 (2026-05-31 per TIMELINE.md). Gated on:
 Suggested
 resolution: Coordinator presents §9 approval checklist to Rishi →
          receives YES → runs the ETL script → posts verification report
-         → logs in live-data-pulls-log.md → marks DEP-014 RESOLVED.
+         → logs in live-data-pulls-log.md → marks DEP-015 RESOLVED.
 
 ---
 

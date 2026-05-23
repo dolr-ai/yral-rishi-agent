@@ -3,7 +3,7 @@
 
 ---
 
-### 2026-05-23 — D3: ETL migration plan + script + RUNBOOK + DEP-014
+### 2026-05-23 — D3: ETL migration plan + script + RUNBOOK + DEP-015
 
 **Branch**: session-5/etl-plan-day-9-draft
 **Trigger**: PR #132 merged (fffeadc); coordinator green-lit D3 scope.
@@ -35,7 +35,7 @@
 3. `RUNBOOK.md` — new "ETL Day-9" section with pre-requisites, run commands,
    verification output, and live-data-pulls-log.md entry format
 
-4. `cross-session-dependencies.md` — DEP-014:
+4. `cross-session-dependencies.md` — DEP-015:
    coordinator must get Rishi YES (A14) before running the script
 
 5. `tests/test_conversation_routes.py` — Codex follow-up test tightening:
@@ -58,7 +58,7 @@ Total tests: 8 schema + 25 route = **33 tests**.
 - A14 approval checklist embedded in §9 of the plan — coordinator uses exact text
   to surface to Rishi, no ambiguity about what's being approved
 
-**Next**: Await D3 PR review. Day-9 ETL execution after Rishi YES (DEP-014).
+**Next**: Await D3 PR review. Day-9 ETL execution after Rishi YES (DEP-015).
 
 ---
 

@@ -249,7 +249,7 @@ Post-ETL verification: count match within +/- 500 conversations / 5K messages
 Type YES to approve execution:
 ```
 
-See DEP-014 in `cross-session-dependencies.md` for the formal DEP tracking this approval.
+See DEP-015 in `cross-session-dependencies.md` for the formal DEP tracking this approval.
 
 ---
 

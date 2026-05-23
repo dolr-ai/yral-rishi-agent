@@ -663,7 +663,7 @@ if __name__ == "__main__":
 #   ../yral-rishi-agent-user-memory-service/RUNBOOK.md
 #                                        — ETL runbook section (§ ETL Day-9)
 #   ../yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/
-#     cross-session-dependencies.md     — DEP-014: coordinator runs this under YES
+#     cross-session-dependencies.md     — DEP-015: coordinator runs this under YES
 #   ../yral-rishi-agent-plan-and-discussions/
 #     running-coordination-asks-plus-mobile-team-memo-and-change-log/
 #     live-data-pulls-log.md             — log the pull here after execution

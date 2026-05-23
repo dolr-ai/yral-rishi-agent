@@ -1,5 +1,5 @@
 # Session 5 STATE — ETL + Tests + Memory
-> Updated: 2026-05-23 (D3 — ETL migration plan + script + RUNBOOK + DEP-014)
+> Updated: 2026-05-23 (D3 — ETL migration plan + script + RUNBOOK + DEP-015)
 
 ## ⭐ START-OF-SESSION SUMMARY (read first when resuming)
 
@@ -9,7 +9,7 @@ I am Session 5. Phase 1 scope: conversation history persistence for
 Three Phase-1 deliverables:
 - D1 (DONE — PR #127 merged a39e54c): Schema + Alembic migration
 - D2 (DONE — PR #132 merged fffeadc): 5 RPC endpoints (rounds 1-3)
-- D3 (IN PR — this branch): ETL migration plan + script + DEP-014
+- D3 (IN PR — this branch): ETL migration plan + script + DEP-015
 
 ## LAST THING I DID
 
@@ -40,7 +40,7 @@ D3 PR on branch `session-5/etl-plan-day-9-draft`:
 - Verification output description
 - live-data-pulls-log.md entry format
 
-**(4) `cross-session-dependencies.md`** — DEP-014:
+**(4) `cross-session-dependencies.md`** — DEP-015:
 - Coordinator must get Rishi YES (A14) before running the ETL script
 - References §9 approval checklist in etl-plan-day-9-draft.md
 
@@ -68,16 +68,16 @@ D3 PR open on branch session-5/etl-plan-day-9-draft. Awaiting coordinator review
 
 ## BLOCKERS
 
-- Day-9 ETL execution BLOCKED until Rishi types YES per A14 (DEP-014)
+- Day-9 ETL execution BLOCKED until Rishi types YES per A14 (DEP-015)
 - Phase 2 out of scope until D3 fully lands
 
 ## PENDING PRs (mine)
 
-- D3 PR (opening now): ETL plan + script + RUNBOOK + DEP-014 + Codex test tightening
+- D3 PR (opening now): ETL plan + script + RUNBOOK + DEP-015 + Codex test tightening
 - PR #132 (MERGED): D2 — 5 RPC endpoints (rounds 1-3)
 - PR #127 (MERGED): D1 — schema + Alembic migration
 
 ## CROSS-SESSION DEPS (mine)
 
-- DEP-014 OPEN: coordinator needs Rishi YES (A14) to run chat_ai_to_user_memory_etl.py
+- DEP-015 OPEN: coordinator needs Rishi YES (A14) to run chat_ai_to_user_memory_etl.py
 - DEP-012 RESOLVED: Postgres provisioning complete
