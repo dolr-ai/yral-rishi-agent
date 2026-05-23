@@ -83,6 +83,15 @@ on:
       # required-check set below — re-evaluation must fire when its
       # workflow completes so we don't admin-merge before its verdict.
       - "Codex Review on PR"
+      # Added 2026-05-23 (D1 from the architectural audit; the
+      # spawn-smoke gate guards against template-rooted bug cascades
+      # like DEP-010, which surfaced 2026-05-22 after 3 of 4 spawned
+      # services hit red CI). Template-spawn-smoke is path-scoped on
+      # `yral-rishi-agent-new-service-template/**` so the workflow_run
+      # trigger here fires only on PRs that actually touch the
+      # template — but every such PR must wait for its verdict before
+      # auto-merge can consider eligibility.
+      - "Template Spawn Smoke"
     types: [completed]
 
   # Also fire on PR events for the initial evaluation + label changes.
@@ -240,6 +249,25 @@ jobs:
             "Codex independent review"
           )
 
+          # Path-scoped required checks: required when present in the
+          # rollup, OK to skip when absent. Added 2026-05-23 for
+          # template-spawn-smoke (D1 from architectural audit). Unlike
+          # the always-required checks above (linters + Codex run on
+          # every PR), spawn-smoke is path-scoped in template-spawn-
+          # smoke.yml to `yral-rishi-agent-new-service-template/**`,
+          # so it doesn't queue at all on PRs that don't touch the
+          # template. Treating "absent" as "blocked" would freeze all
+          # non-template PRs out of auto-merge — wrong. Instead:
+          # - present + SUCCESS  → pass (template PR with green gate)
+          # - present + queued   → wait (template PR with gate still
+          #                        running; next trigger re-evaluates)
+          # - present + non-SUCCESS → block (template PR with red gate)
+          # - absent             → skip (PR didn't touch template;
+          #                        gate doesn't apply)
+          PATH_SCOPED_REQUIRED_CHECK_NAMES=(
+            "Verify template spawn smoke (build + boot + openapi)"
+          )
+
           ALL_REQUIRED_PASS=true
           for required in "${REQUIRED_CHECK_NAMES[@]}"; do
             conclusion="$(echo "$PR_JSON" | jq -r --arg name "$required" \
@@ -255,6 +283,39 @@ jobs:
               break
             fi
             echo "  ✓ $required → $conclusion"
+          done
+
+          if [ "$ALL_REQUIRED_PASS" != "true" ]; then
+            echo "eligible=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Path-scoped checks: same SUCCESS requirement when present,
+          # but absent-from-rollup is acceptable (path filter didn't
+          # match for this PR — the check legitimately did not run).
+          for path_scoped_required in "${PATH_SCOPED_REQUIRED_CHECK_NAMES[@]}"; do
+            # Count rollup entries with this name. 0 = absent (path
+            # didn't match); >=1 = present (path matched, queued, may
+            # be running OR done).
+            path_scoped_present_count="$(echo "$PR_JSON" | jq -r --arg name "$path_scoped_required" \
+              '[.statusCheckRollup[] | select(.name == $name)] | length')"
+            if [ "$path_scoped_present_count" = "0" ]; then
+              echo "  (path-scoped check '$path_scoped_required' did not queue for this PR — OK to skip)"
+              continue
+            fi
+            path_scoped_conclusion="$(echo "$PR_JSON" | jq -r --arg name "$path_scoped_required" \
+              '.statusCheckRollup[] | select(.name == $name) | .conclusion')"
+            if [ -z "$path_scoped_conclusion" ] || [ "$path_scoped_conclusion" = "null" ]; then
+              echo "GATE: Path-scoped check '$path_scoped_required' present but not yet completed (in-progress). Skipping for now; next trigger will re-evaluate."
+              ALL_REQUIRED_PASS=false
+              break
+            fi
+            if [ "$path_scoped_conclusion" != "SUCCESS" ]; then
+              echo "GATE: Path-scoped check '$path_scoped_required' conclusion='$path_scoped_conclusion' (need SUCCESS). Skipping."
+              ALL_REQUIRED_PASS=false
+              break
+            fi
+            echo "  ✓ $path_scoped_required → $path_scoped_conclusion (path-scoped)"
           done
 
           if [ "$ALL_REQUIRED_PASS" != "true" ]; then

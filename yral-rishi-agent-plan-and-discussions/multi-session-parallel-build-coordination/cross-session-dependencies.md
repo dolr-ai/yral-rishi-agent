@@ -3,6 +3,117 @@
 
 ## OPEN
 
+### DEP-014 — Template skeleton lacks Postgres/Redis client wiring + a Redis/Postgres-touching /health/ready; spawn-smoke CI gate cannot catch shared-config / Redis-AUTH / connection-string drift at template time until that wiring lands
+
+Raised: 2026-05-23 by Session 2 (filed in the same PR that lands the spawn-smoke CI gate)
+
+What:    The template's `yral-rishi-agent-new-service-template/app/main.py`
+         today imports + initialises Sentry, Langfuse, structured
+         logging, and RequestIdMiddleware. It does NOT import or
+         connect to Postgres or Redis. Its lifespan `startup` block
+         is an empty placeholder (the header comment explicitly
+         reserves it for "Day-2 PRs — database pool, redis client,
+         langfuse worker"). No `/health/ready` route exists on the
+         FastAPI app at all.
+
+         The 2026-05-22 cascade had 3 root causes:
+           1. DEP-010 — fixture-filename gitignore collision
+              (closed by PR #133; spawn-smoke gate now guards this)
+           2. shared-config.yaml Redis sentinel hostnames wrong
+              (closed by PR #129; NOT guarded by spawn-smoke)
+           3. Redis AUTH client-wiring gap
+              (closed in Session 3+4 territory; NOT guarded)
+
+         Bug class 1 is structural (file-layout drift); the
+         spawn-smoke gate catches that via `new-service.sh`'s
+         post-spawn step 6 + the script's layout assertions.
+
+         Bug classes 2 and 3 are RUNTIME drift — they only manifest
+         when a service actually tries to connect to Redis or Postgres
+         using values from shared-config / secrets. The template
+         skeleton doesn't perform those connections, so the spawn-
+         smoke gate's `docker compose up` + `/openapi.json` probe
+         never exercises the code paths where those bugs surface.
+
+Why:     Catching bug classes 2 and 3 at TEMPLATE-CI time is the
+         load-bearing benefit that would turn the spawn-smoke gate
+         from "catches DEP-010-style drift" to "catches the whole
+         class of v2-startup-config drift". Today they're caught
+         only at per-service deploy time (Session 1's cluster
+         smoke runs OR a real deploy failing) — slow + expensive.
+
+Scope —  Session 2 (template) owns the skeleton expansion. Three
+who fixes: pieces, sized to land as ONE bundled PR (~150-200 lines of
+         strict-code) after the spawn-smoke gate PR merges:
+
+         1. asyncpg pool init in `app/main.py` lifespan startup +
+            graceful close on shutdown. Reads `DATABASE_URL` from
+            env (already in docker-compose.yml's `service.environment`
+            block). Pool sized via project.config's
+            POSTGRES_CONNECTION_LIMIT.
+         2. redis.asyncio Sentinel-aware client init in the same
+            lifespan. Reads `REDIS_URL` + `REDIS_SENTINEL_HOSTS`
+            from shared-config.yaml + env. Falls back to direct
+            connection when SENTINEL_HOSTS is empty (matches the
+            existing docker-compose.yml comment: "the same code
+            path works locally because the Sentinel-aware client
+            falls back to a direct connection when SENTINEL_NODES
+            is empty").
+         3. New `/health/ready` route in `app/main.py` (or a new
+            `app/health_routes.py` per A2.1 separation) that
+            (a) `await conn.execute("SELECT 1")` against the
+            asyncpg pool, (b) `await redis.ping()` against the
+            Redis client, and returns 200 only when both succeed
+            with status JSON `{"postgres": "ok", "redis": "ok"}`.
+            Returns 503 on any failure with structured detail.
+
+         Once this lands, the spawn-smoke gate's existing
+         `/openapi.json` probe step (or a new `/health/ready`
+         probe step added in a same-PR follow-up) automatically
+         exercises the Redis + Postgres connection paths, so
+         shared-config drift / Redis-AUTH drift / connection-
+         string drift all surface at template-CI time.
+
+         **A1 hard-stop applies** for the secrets.yaml updates
+         (any `REDIS_AUTH_PASSWORD` or DB-credential addition to
+         the template's secrets manifest is A1-class). Each piece
+         of the skeleton-expansion PR that touches secrets must
+         carry Rishi typed-YES per DEP-010's precedent.
+
+Blocks:  Nothing CRITICAL today — the v2 build is past the 2026-
+         05-22 cascade and back on its feet. This DEP is a
+         capability-completion ask, not an incident-recovery ask.
+         Strategic value: would have caught BOTH ancillary
+         cascade bugs at template-CI time on 2026-05-22 if it
+         had been in place.
+
+ETA needed: No hard calendar date. Suggested ordering: take this on
+         immediately after the spawn-smoke gate PR merges
+         (natural sequel — the gate's test_spawn_smoke.sh
+         doesn't need to change to benefit; the skeleton
+         expansion makes the existing compose-up step's
+         coverage strictly broader).
+
+Suggested
+resolution: Single bundled PR (~150-200 lines) per A2.1 with explicit
+         Rishi confirmation. Three pieces below are ONE concern
+         ("expand template runtime surface to its v2-target shape
+         so the spawn-smoke gate's coverage matches what the
+         services actually do at runtime") with no independent
+         value — splitting forces 3 round trips without safety
+         gain (the same pattern as the spawn-smoke gate PR's
+         own bundling rationale).
+
+How spotted:
+         Session 2 design analysis for the spawn-smoke gate
+         (2026-05-23). The gate's value proposition was checked
+         against the 3 cascade bug classes; bug classes 2 + 3
+         were determined uncatchable without skeleton expansion.
+         Surfaced as push-back during the design-eyeball phase;
+         coordinator approved the spawn-smoke PR landing without
+         this coverage and queued DEP-014 as the immediate
+         next-task post-merge.
+
 ### DEP-012 — Coordinator / Session 1 must provision `user_memory_role` + `user_memory` database on the Patroni cluster before user-memory-service can deploy
 
 Raised: 2026-05-22 by Session 5 (Deliverable 1 — schema + Alembic migration)
