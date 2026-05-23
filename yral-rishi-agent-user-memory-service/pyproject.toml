@@ -90,6 +90,14 @@ dev = [
     # to run Alembic + the asyncpg pool against a real Postgres without
     # polluting the dev's local DB.
     "testcontainers[postgres]==4.10.0",
+
+    # asgi-lifespan — drives ASGI lifespan startup + shutdown events
+    # (lifespan.startup / lifespan.shutdown) around httpx.AsyncClient in
+    # tests. httpx.ASGITransport alone does NOT fire lifespan events; this
+    # package is the canonical fix (Codex PR #132 CONCERN). Wraps the
+    # FastAPI app in tests/conftest.py's test_client fixture so init_pool()
+    # + close_pool() both run correctly per test.
+    "asgi-lifespan==2.1.0",
 ]
 
 [tool.hatch.build.targets.wheel]
