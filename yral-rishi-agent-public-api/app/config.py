@@ -209,6 +209,43 @@ class Settings(BaseSettings):
     # that bounded storage holds across normal traffic patterns.
     idempotency_dedup_ttl_seconds: int = 86400
 
+    # -- Influencer-and-profile-directory RPC (per
+    # interface-contracts/01-internal-rpc-contracts.md + DEP-013) ---------
+    # The Session-4 influencer-directory base URL public-api proxies
+    # /api/v1/influencers reads to. Local dev default routes to the
+    # same compose host; in the cluster the Swarm DNS name resolves on
+    # the yral-v2-internal overlay (note the `_service` suffix — Swarm's
+    # DNS name for a stack service is `<stack>_<service>`). The
+    # list-RPC path shape is the DEP-013 proposed contract; the by-id
+    # path is the declared contract on main.
+    directory_base_url: str = (
+        "http://yral-rishi-agent-influencer-and-profile-directory_service:8000"
+    )
+
+    # The path under directory_base_url for the list endpoint. DEP-013
+    # proposes `/v1/influencers` with `limit` + `offset` query params.
+    # Session 4 ratifies when they build the real endpoint.
+    directory_list_path: str = "/v1/influencers"
+
+    # The path template under directory_base_url for the by-id endpoint
+    # per the contract on main: `GET .../influencers/{id}`. `.format()`
+    # is applied with the influencer_id at call site so the path stays
+    # configurable without string concatenation in the client.
+    directory_by_id_path_template: str = "/v1/influencers/{influencer_id}"
+
+    # End-to-end timeout for one directory call. 5 s — directory is a
+    # simple DB-backed lookup with no LLM compute on the path; faster
+    # timeout than orchestrator's 30 s so mobile's catalog-fetch
+    # doesn't hang on a slow directory + the public-api 503 path
+    # surfaces quickly.
+    directory_request_timeout_seconds: float = 5.0
+
+    # Connect-only timeout. 2 s — fails fast on "directory container
+    # missing" so the public-api 503 error path differentiates "directory
+    # gone" from "directory slow." Tighter than orchestrator's 5 s
+    # because catalog-fetch is non-LLM-bound.
+    directory_connect_timeout_seconds: float = 2.0
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

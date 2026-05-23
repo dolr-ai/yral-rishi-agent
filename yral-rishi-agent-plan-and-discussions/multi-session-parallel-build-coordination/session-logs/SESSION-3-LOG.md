@@ -2,6 +2,92 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-22 — PR-B — Day-8 directory-RPC wrapper for `/api/v1/influencers` list + by-id (DRAFT, blocked on Session 4 directory ratification)
+
+### Action
+Replaced the Day-2 `_stub_influencer()` canned-data path in
+`/api/v1/influencers` (list) + `/api/v1/influencers/{id}` (by-id) with
+a thin httpx wrapper that proxies to Session 4's
+`yral-rishi-agent-influencer-and-profile-directory_service`. Same
+lifespan-managed-singleton + per-handler-error-mapping shape as
+Day-4C's `orchestrator_client` (PR #116-area). Pagination params
+(`limit: int = 20, max 100`, `offset: int = 0, min 0`) flow 1:1 from
+the public-api surface through to the proposed directory list-RPC
+contract — plain offset/limit ints matching yral-mobile's
+`ChatRemoteDataSource.kt:50-70` listInfluencers contract (NOT
+cursor pagination — chat_routes.py:626's `before` cursor fits
+temporal streams; catalogs aren't temporal).
+
+The `/api/v1/influencers/trending` endpoint stays on the Day-2 stub
+in this PR — no trending-RPC declared in
+`01-internal-rpc-contracts.md` yet. The 6 BLOCKER-4 service_unavailable
+write/admin stubs are untouched (they hold the wire surface per A8 +
+A16; real bodies land in the Day-6-7 parity sprint).
+
+**This PR also opens DEP-013** — Session 3 PROPOSES the list-RPC
+shape (`GET /v1/influencers?limit&offset → list[InfluencerResponse]`)
+inline in `01-internal-rpc-contracts.md`. Session 4 ratifies (or
+counter-proposes) when they build the real directory list endpoint.
+PR-B opens as DRAFT — merge-gate is Session 4 ratification (or
+counter-proposal incorporated) per the I9 cross-session-coordination
+flow.
+
+### Files touched
+- `yral-rishi-agent-public-api/app/directory_client.py` — NEW. Mirror of `orchestrator_client.py` verbatim: lifespan-managed httpx.AsyncClient singleton + `list_influencers(*, user_id, request_id, limit, offset)` + `get_influencer(*, user_id, request_id, influencer_id)`. 4 internal-call headers (X-User-Id + X-Internal-Caller + X-Request-Id + X-Trace-Id; no X-Idempotency-Key on stateless GETs).
+- `yral-rishi-agent-public-api/app/config.py` — 5 new pydantic-settings fields after the orchestrator block: `directory_base_url`, `directory_list_path`, `directory_by_id_path_template`, `directory_request_timeout_seconds=5.0`, `directory_connect_timeout_seconds=2.0`. Matches the orchestrator-block precedent verbatim (env-vars, not shared-config.yaml — see design-surfacing #3 below).
+- `yral-rishi-agent-public-api/app/main.py` — lifespan startup calls `init_directory_client()`; shutdown awaits `close_directory_client()` before the orchestrator close.
+- `yral-rishi-agent-public-api/app/api/influencer_routes.py` — `list_influencers` + `get_influencer` handlers replaced. Connect / timeout / non-200 / bad-shape failures map to envelope-shaped 503 with `directory.call.failed=<connect|timeout|status|bad_response_shape>` Sentry tag (same precedent as Day-4C orchestrator failure mapping). Directory 404 on by-id maps to public-api envelope-shaped 404 with locked `not_found` error code (one failure mode that doesn't collapse to 503 — mobile renders a distinct "no such influencer" screen on 404).
+- `yral-rishi-agent-public-api/tests/contract/test_influencer_routes.py` — list + by-id sections rewritten to mock `directory_client.list_influencers` / `_.get_influencer` (mirroring `test_orchestrator_proxy.py`). 7 new J1-HOT tests added: limit/offset propagation, default-pagination assertion, limit upper-bound 400, offset non-negative 400, connect/timeout/5xx/bad-shape 503 mapping (list), 404/connect/timeout/5xx/bad-shape (by-id). /trending tests + BLOCKER-4 stub tests untouched.
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/interface-contracts/01-internal-rpc-contracts.md` — added the list-RPC shape under `## public-api → influencer-and-profile-directory` (marked `[PROPOSED — see DEP-013]`); fixed the stack-service DNS suffix (`_service`) on the by-id line which previously dropped it.
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/cross-session-dependencies.md` — added DEP-013 with the contract-gap framing + the proposed shape + the (a) ratify / (b) counter-propose paths for Session 4.
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-state/SESSION-3-STATE.md` — Updated + LAST-THING bumped.
+- This entry.
+
+### Design surfacing — Rishi pre-eyeball settled all 4 questions
+
+Before writing code, 4 design questions surfaced (see Bash + Read history this session). Coordinator confirmed 3 tentative picks + overrode 1:
+
+1. **Pagination shape (OVERRIDE → offset/limit ints).** Tentative pick was cursor pagination matching `chat_routes.py:626` canonical. Rishi overrode: chat_routes' cursor fits a temporal stream (message history); the influencer list is a catalog with no natural temporal ordering, so cursor pagination would require defining an ordering key the contract doesn't define. Plain offset/limit ints match mobile's `ChatRemoteDataSource.kt:50-70` exactly + matches catalog semantics. Locked: `limit: int = Query(20, ge=1, le=100)` + `offset: int = Query(0, ge=0)`.
+
+2. **Internal-RPC contract gap (DRAFT-as-contract-proposal).** No list-RPC declared in `01-internal-rpc-contracts.md` for the directory. Don't block on Session 4 declaring first; propose the shape inline + open DEP-013 pointing Session 4 at this DRAFT PR. The DRAFT-PR-as-contract-proposal pattern is consistent with the I9 cross-session-coordination flow.
+
+3. **Config location (env-vars, NOT shared-config.yaml).** Earlier FYI to put `influencer_directory_base_url` in shared-config.yaml was reversed — the existing `config.py` header (lines 22-29) explicitly says the YAML loader hasn't been added yet to avoid A2.1 over-engineering. `orchestrator_base_url` + friends live as pydantic-settings env-vars; matching that precedent for `directory_*` is the right call.
+
+4. **`InfluencerResponse` field names (keep canonical).** Earlier brief listed `description, category`; the actual canonical shape (renamed from `*Dto` per Codex PR #97 BLOCKER 1 + Rishi 2026-05-19 Option-A) is `id, display_name, bio, avatar_url, archetype, is_nsfw, follower_count, creator_user_id, is_active`. Keep canonical; if Session 4's migrated chat-ai data has sparse fields, flag via DEP — don't unilaterally invent.
+
+### Why
+The Day-2 stub catalog (`_stub_influencer("tara-stub-influencer-id")`) was always intended as a placeholder until Session 4 shipped a real directory + a real list-RPC could replace it. Day-8 mobile testing surfaced this as one of two parity gaps from yral-mobile's chat-tab landing. PR-B closes the gap on public-api's side, blocked-on-Session-4 for the upstream directory list endpoint.
+
+The `directory_client.py` shape is a verbatim mirror of `orchestrator_client.py` (Day-4C, PR #116-area) so the two clients evolve in lockstep — same lifespan-managed-singleton, same internal-call-headers pattern (4 here vs 5 there: no X-Idempotency-Key on stateless GETs), same failure-mapping shape. One mental model for both clients; a future refactor that pulls these into a shared `internal_rpc_client` helper has two identical-shape call sites to merge.
+
+### Test evidence
+Local docker daemon not running, so the in-container `python:3.12-slim` smoke (the Day-5-Piece-A precedent) couldn't fire. Verified instead:
+- `python3 -c "import ast; ast.parse(open(f).read())"` on all 5 modified Python files → OK.
+- Mock pattern in `tests/contract/test_influencer_routes.py` follows `tests/contract/test_orchestrator_proxy.py` verbatim (monkeypatched module-level function with `AsyncMock(return_value=_make_mock_response(...))`).
+- CI will be the source of truth for `pytest tests/contract/` green.
+
+### Constraints touched
+- **A2.1** — single concern (list + by-id wrapper + the contract-proposal + DEP-013 sit naturally together; the wrapper physically needs the contract to call against). /trending stays as stub; BLOCKER-4 stubs untouched.
+- **A8 + A16** — every failure mode maps to the locked ApiResponse envelope; the directory's raw upstream codes NEVER leak to mobile.
+- **B7** — file headers + function WHAT/WHEN/WHY docstrings + role-not-syntax comments + RELATED FILES footer on `directory_client.py`. The route-handler edits in `influencer_routes.py` preserve the existing B7 shape verbatim.
+- **C7** — directory URL via `app/config.py` pydantic-settings (NOT hardcoded). Future shared-config.yaml migration via a single-file edit when the YAML loader lands.
+- **D1 + D8** — no new secrets introduced (directory base URL is non-sensitive); `secrets.yaml` untouched.
+- **D3 + D4** — Sentry + Langfuse correlation preserved via X-Request-Id + X-Trace-Id forwarding on every directory call.
+- **F10** — per-endpoint opt-out applies (stateless GET; no idempotency layer needed). Documented in `directory_client.py` header.
+- **H6** — no PII added to log lines; the `directory.call.failed` Sentry tag + `directory_response` context carry status code + path only.
+- **I6** — push-back on pagination shape happened correctly via the design-surfacing → Rishi-override loop; no silent agreement.
+- **I9** — cross-session coordination handled via DEP-013 + the inline `[PROPOSED]` marker in `01-internal-rpc-contracts.md`.
+- **I11** — same-commit LOG entry (this one).
+- **I14** — **NOT auto-merge eligible** (behavior-changing Python — new HTTP client, new route bodies; first state-mutating-shape change in the influencer surface). DRAFT until Session 4 ratifies (or counter-proposes) DEP-013; coordinator manually merges after Codex APPROVE + Session 4 ACK.
+- **J1-HOT** — `/api/v1/influencers` + `/api/v1/influencers/{id}` are public mobile-facing endpoints; full contract test coverage on every handler in this PR (happy path + 4 failure modes per endpoint + 2 param-validation modes for list).
+
+### Notes
+- DRAFT discipline strictly enforced — opening as DRAFT to (a) prevent the Auto-Merge race that fired on PR #123 + PR #124, (b) hold the merge gate until Session 4 ratifies DEP-013.
+- The pagination shape settles a question the locked external contract (`00-api-contract.md:47` "List all (Cache-Control 300s)") left implicit. If `00-api-contract.md` needs an `?limit&offset` update for completeness, that's a coordinator-owned follow-up — flagged here but not bundled.
+- Cache-Control max-age=300 preserved on the list endpoint per the Codex PR #97 BLOCKER 6 fix. The wrapper sets the header AFTER the upstream call succeeds (so failure paths return 503 without a stale Cache-Control directive).
+
+---
+
 ## 2026-05-22 — PR-C2 — supersession entry for PR-C (#123) per Codex round-1 BLOCKERs
 
 ### Action

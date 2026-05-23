@@ -87,6 +87,12 @@ from app.api.errors import HTTP_STATUS_FOR_ERROR_CODE, error_response
 # allocated once per worker + drained gracefully on SIGTERM.
 from app.orchestrator_client import close_orchestrator_client, init_orchestrator_client
 
+# Day-8 directory client — same lifespan-managed singleton pattern as
+# orchestrator_client. Powers the /api/v1/influencers list + by-id
+# reads which now proxy to Session 4's influencer-and-profile-directory
+# instead of returning canned stubs.
+from app.directory_client import close_directory_client, init_directory_client
+
 
 # Run Sentry init now, at module import time. After this line, every
 # unhandled exception below is shipped to sentry.rishi.yral.com (per A7).
@@ -118,8 +124,16 @@ async def lifespan(_app: FastAPI):
     # Day-4C: allocate the orchestrator httpx.AsyncClient singleton.
     # One pool per worker, reused across requests, drained on shutdown.
     init_orchestrator_client()
+    # Day-8: allocate the directory httpx.AsyncClient singleton (mirror
+    # of orchestrator_client's pattern). Powers /api/v1/influencers
+    # list + by-id reads.
+    init_directory_client()
     yield
     # --- shutdown -------------------------------------------------------
+    # Day-8: drain pending directory-bound connections (run BEFORE
+    # orchestrator close — order doesn't matter for correctness but the
+    # symmetric stack-unwinding shape reads cleanly).
+    await close_directory_client()
     # Day-4C: drain pending orchestrator-bound connections gracefully
     # before SIGTERM ends the process.
     await close_orchestrator_client()
