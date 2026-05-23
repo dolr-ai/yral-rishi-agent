@@ -246,26 +246,35 @@ def test_health_deep_returns_503_envelope_with_explanation(client_flag_off):
 
 # ===========================================================================
 # Redis-AUTH wiring tests — both Redis paths MUST forward the
-# settings.redis_password kwarg so the v2 cluster's `--requirepass`-
-# enabled primary accepts the connection. Tests asserts the kwarg
-# reaches `redis.Redis.from_url()` (single-URL path) AND
+# settings.redis_password value so the v2 cluster's `--requirepass`-
+# enabled primary accepts the connection. Tests assert the password
+# argument reaches `redis.Redis.from_url()` (single-URL path) AND
 # `Sentinel.master_for()` (C11 Sentinel-aware path). Third test guards
 # the empty-default → None normalization that keeps local dev working.
 # Closes the Codex CONCERN on closed coordinator PR #134 by proving
 # the public-api half of the wiring on both Redis paths.
+#
+# Test-isolation discipline (round-2 fix per Codex CONCERN on PR #137):
+# the get_redis() tests below MUST clear the `redis_client.get_redis`
+# lru_cache in a `finally` block so a fake Redis object captured by
+# the monkey-patched from_url() doesn't leak into later tests that
+# call get_redis() expecting either the real client or a different
+# fake. Without the finally-clear, test-order-dependent failures
+# surface when an unrelated downstream test happens to call
+# get_redis() AFTER one of these tests runs.
 # ===========================================================================
 
 
-def test_get_redis_passes_password_kwarg_to_from_url(monkeypatch):
+def test_get_redis_forwards_password_to_from_url(monkeypatch):
     """WHAT: assert get_redis() forwards settings.redis_password into
             redis.Redis.from_url(password=...).
     WHEN: when settings.redis_password is non-empty, the redis-py
-          from_url() call MUST include the password kwarg so the
+          from_url() call MUST include the password argument so the
           AUTH frame is sent on connection.
     WHY:  v2 cluster's Redis primary runs --requirepass; without the
           AUTH frame the first command raises AuthenticationError +
-          breaks JWKS cache + idempotency-dedup. Defends against
-          refactor that drops the password kwarg silently.
+          breaks JWKS cache + idempotency-dedup. Defends against a
+          refactor that drops the password argument silently.
     """
     from app import redis_client
     from app.config import Settings
@@ -278,24 +287,33 @@ def test_get_redis_passes_password_kwarg_to_from_url(monkeypatch):
     # Clear the lru_cache on get_redis so the next call re-runs the
     # body against the patched settings.
     redis_client.reset_for_testing()
+    try:
+        # Capture the keyword arguments from_url receives. Return value
+        # is ignored — the test only cares that the AUTH credential
+        # reached the redis-py boundary.
+        captured: dict = {}
 
-    # Capture the kwargs from_url receives. Return value is ignored —
-    # the test only cares that the AUTH kwarg reached the redis-py
-    # boundary.
-    captured: dict = {}
+        def fake_from_url(*positional_args, **keyword_arguments):
+            captured.update(keyword_arguments)
+            return object()
 
-    def fake_from_url(*args, **kwargs):
-        captured.update(kwargs)
-        return object()
+        monkeypatch.setattr(
+            redis_client.redis.Redis, "from_url", fake_from_url,
+        )
 
-    monkeypatch.setattr(redis_client.redis.Redis, "from_url", fake_from_url)
+        redis_client.get_redis()
 
-    redis_client.get_redis()
-
-    assert captured.get("password") == "test-pwd-from-fixture", (
-        f"Expected `password=test-pwd-from-fixture` kwarg on from_url(); "
-        f"got: {captured!r}"
-    )
+        assert captured.get("password") == "test-pwd-from-fixture", (
+            f"Expected `password=test-pwd-from-fixture` argument on from_url(); "
+            f"got: {captured!r}"
+        )
+    finally:
+        # Clear the lru_cache AGAIN after the test — without this, the
+        # fake-Redis object captured above would leak into any later
+        # test that calls get_redis() and expects a fresh client.
+        # Test-order-dependent failures otherwise (per Codex CONCERN
+        # on PR #137 round 1).
+        redis_client.reset_for_testing()
 
 
 def test_empty_redis_password_resolves_to_none_in_from_url(monkeypatch):
@@ -316,26 +334,34 @@ def test_empty_redis_password_resolves_to_none_in_from_url(monkeypatch):
     fake_settings = Settings(redis_password="")
     monkeypatch.setattr(redis_client, "get_settings", lambda: fake_settings)
     redis_client.reset_for_testing()
+    try:
+        captured: dict = {}
 
-    captured: dict = {}
+        def fake_from_url(*positional_args, **keyword_arguments):
+            captured.update(keyword_arguments)
+            return object()
 
-    def fake_from_url(*args, **kwargs):
-        captured.update(kwargs)
-        return object()
+        monkeypatch.setattr(
+            redis_client.redis.Redis, "from_url", fake_from_url,
+        )
 
-    monkeypatch.setattr(redis_client.redis.Redis, "from_url", fake_from_url)
+        redis_client.get_redis()
 
-    redis_client.get_redis()
+        # The contract is the literal `None`, not just "falsy" —
+        # redis-py treats password="" differently than password=None
+        # (the former may send an empty AUTH frame which the primary
+        # rejects).
+        assert captured.get("password") is None, (
+            f"Expected `password=None` (empty-default normalized); "
+            f"got: {captured!r}"
+        )
+    finally:
+        # Same cache-leak guard as the test above. Per Codex CONCERN
+        # on PR #137 round 1.
+        redis_client.reset_for_testing()
 
-    # The contract is the literal `None`, not just "falsy" — redis-py
-    # treats password="" differently than password=None (the former
-    # may send an empty AUTH frame which the primary rejects).
-    assert captured.get("password") is None, (
-        f"Expected `password=None` (empty-default normalized); got: {captured!r}"
-    )
 
-
-def test_health_ready_sentinel_path_passes_password_kwarg(
+def test_health_ready_sentinel_path_forwards_password(
     client_flag_off, monkeypatch,
 ):
     """WHAT: assert /health/ready's Sentinel-aware probe forwards
@@ -354,8 +380,8 @@ def test_health_ready_sentinel_path_passes_password_kwarg(
 
     # Force the Sentinel-aware code path with a known password. The
     # default Settings() has redis_sentinel_enabled=False which would
-    # take the single-primary fallback branch (test_get_redis_*
-    # above already covers that path).
+    # take the single-primary fallback branch (the test_get_redis_*
+    # tests above already cover that path).
     fake_settings = Settings(
         redis_sentinel_enabled=True,
         redis_password="test-pwd-from-fixture",
@@ -382,24 +408,27 @@ def test_health_ready_sentinel_path_passes_password_kwarg(
     mock_primary.ping = AsyncMock(return_value=True)
     mock_sentinel = MagicMock()
 
-    def fake_master_for(master_name, **kwargs):
+    def fake_master_for(master_name, **keyword_arguments):
         captured["master_name"] = master_name
-        captured.update(kwargs)
+        captured.update(keyword_arguments)
         return mock_primary
 
     mock_sentinel.master_for = fake_master_for
-    monkeypatch.setattr(health_routes, "Sentinel", lambda *a, **kw: mock_sentinel)
+    monkeypatch.setattr(
+        health_routes, "Sentinel",
+        lambda *positional_args, **keyword_arguments: mock_sentinel,
+    )
 
     response = client_flag_off.get("/health/ready")
 
-    # Primary assertion: the AUTH kwarg reached master_for.
+    # Primary assertion: the AUTH credential reached master_for.
     assert captured.get("password") == "test-pwd-from-fixture", (
-        f"Expected `password=test-pwd-from-fixture` kwarg on master_for(); "
+        f"Expected `password=test-pwd-from-fixture` argument on master_for(); "
         f"got: {captured!r}"
     )
     # Secondary signal: the handler took the 200 branch (the mock
     # ping returned True), confirming the wiring works end-to-end
-    # not just at the kwarg-forward boundary.
+    # not just at the password-forward boundary.
     assert response.status_code == 200
     assert response.json()["dependencies"]["redis"] == "ok"
 

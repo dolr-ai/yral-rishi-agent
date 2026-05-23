@@ -60,6 +60,17 @@ Both paths share the same `settings.redis_password` source — single source of 
 - DRAFT discipline: opens as DRAFT to gate Auto-Merge until Codex round-1 review lands (Codex-gated auto-merge per PR #126 already means the workflow waits for Codex APPROVE — DRAFT is belt-and-suspenders).
 - After this PR lands: pick up PR-B2 (per-request `influencer_id` forwarding from public-api → orchestrator) per the queued plan; coordinator approved the (α) list+filter fallback approach yesterday with the trust-boundary contract test as the merge gate.
 
+### Round-2 fixups (Codex round-1 CONCERN + defensive B2 naming check)
+1. **Test-isolation leak (CONCERN at `tests/contract/test_health_routes.py:289`)** — Codex flagged that the `test_get_redis_*` tests cleared the `redis_client.get_redis` lru_cache BEFORE the monkey-patched call but didn't re-clear AFTER, leaking a captured fake-Redis object into later tests. Round-2 wraps tests 1 + 3 (the two that touch the get_redis cache) in `try/finally` with `redis_client.reset_for_testing()` in the finally block. Test 2 (`test_health_ready_sentinel_path_forwards_password`) doesn't touch the get_redis cache; no wrap needed there.
+2. **B2 naming check (defensive, no Codex feedback yet on #137 specifically)** — Session 4's PR #136 picked up a `kwarg`/`kwargs` B2 CONCERN; preemptively scrubbed my new tests for the same pattern. Renamed:
+   - `test_get_redis_passes_password_kwarg_to_from_url` → `test_get_redis_forwards_password_to_from_url`
+   - `test_health_ready_sentinel_path_passes_password_kwarg` → `test_health_ready_sentinel_path_forwards_password`
+   - Local helper-function parameter names: `*args, **kwargs` → `*positional_args, **keyword_arguments`
+   - Docstring/comment mentions of "kwarg" → "argument" / "keyword argument" / "parameter" as fits.
+   - Test name `test_empty_redis_password_resolves_to_none_in_from_url` unchanged (no `kwarg` term).
+
+Single-file change (`tests/contract/test_health_routes.py`) plus this LOG-entry-subsection update. Same PR + branch + no new commit message scope.
+
 ---
 
 ## 2026-05-22 — PR-B — Day-8 directory-RPC wrapper for `/api/v1/influencers` list + by-id (DRAFT, blocked on Session 4 directory ratification)
