@@ -32,8 +32,14 @@
 #   - GitHub Actions: .github/workflows/template-spawn-smoke.yml
 #     triggers on pull_request paths
 #     `yral-rishi-agent-new-service-template/**` (+ the workflow itself).
-#   - Local mac: `bash yral-rishi-agent-new-service-template/scripts/
-#     tests/test_spawn_smoke.sh` (Docker Desktop must be running).
+#   - Local mac: `bash <full-path>/test_spawn_smoke.sh` (Docker Desktop
+#     must be running). Works from ANY cwd — including folders outside
+#     the source repo (e.g. `cd /tmp && bash …/test_spawn_smoke.sh`)
+#     — because path resolution below derives both TEMPLATE_ROOT and
+#     REPO_ROOT from `dirname "$0"`, and the spawn invocation cd's
+#     into REPO_ROOT in a subshell before calling new-service.sh
+#     (so the spawner's own `git rev-parse --show-toplevel` resolves
+#     correctly).
 #
 # WHY PORT 8000?
 # The template's docker-compose.yml binds host 8000 → container 8000.
@@ -64,10 +70,20 @@ set -euo pipefail
 # ===========================================================================
 
 # Resolve script-relative paths so the gate works regardless of cwd
-# (CI does `bash <full-path>`; operator may run from any folder).
+# (CI does `bash <full-path>`; operator may run from any folder,
+# INCLUDING folders outside the repo entirely — e.g. `cd /tmp && bash
+# <full-path>/test_spawn_smoke.sh`).
 TESTS_DIRECTORY="$(cd "$(dirname "$0")" && pwd)"
 SCRIPTS_DIRECTORY="$(cd "$TESTS_DIRECTORY/.." && pwd)"
 TEMPLATE_ROOT="$(cd "$SCRIPTS_DIRECTORY/.." && pwd)"
+# Repo root is one level above the template folder. We resolve it
+# here (not via `git rev-parse --show-toplevel` from cwd) because
+# the script may be invoked from OUTSIDE the repo — in that case
+# `git rev-parse` would fail or resolve to a different repo
+# entirely. The new-service.sh invocation below uses this REPO_ROOT
+# to `cd` into the repo before spawning, so new-service.sh's own
+# `git rev-parse --show-toplevel` resolves the right tree.
+REPO_ROOT="$(cd "$TEMPLATE_ROOT/.." && pwd)"
 NEW_SERVICE_SH="$SCRIPTS_DIRECTORY/new-service.sh"
 
 
@@ -241,7 +257,16 @@ step_banner 2 "Spawn fresh service via new-service.sh --target-directory"
 # exercises end-to-end. This satisfies PR #133's Codex CONCERN: the
 # new-service.sh post-spawn block now runs under CI on every template
 # PR, not just at the developer's discretion.
-if ! bash "$NEW_SERVICE_SH" "$VICTIM_SERVICE_NAME" --target-directory "$working_directory"; then
+#
+# Wrap the invocation in a `cd "$REPO_ROOT"` subshell so the spawner's
+# own `git rev-parse --show-toplevel` resolves the correct repo even
+# when test_spawn_smoke.sh is invoked from OUTSIDE the source repo
+# (e.g. `cd /tmp && bash /path/to/test_spawn_smoke.sh`). Without the
+# `cd`, new-service.sh's `git rev-parse` would either fail (cwd not
+# in any repo) or resolve to a DIFFERENT repo (cwd happens to sit in
+# one) — both wrong. Subshell scope means the outer script's cwd is
+# untouched after the spawn.
+if ! ( cd "$REPO_ROOT" && bash "$NEW_SERVICE_SH" "$VICTIM_SERVICE_NAME" --target-directory "$working_directory" ); then
     step_fail "new-service.sh exited non-zero (post-spawn DEP-010 check tripped, or earlier failure)"
 fi
 [ -d "$spawned_service_path" ] || step_fail "spawned tree missing at $spawned_service_path"

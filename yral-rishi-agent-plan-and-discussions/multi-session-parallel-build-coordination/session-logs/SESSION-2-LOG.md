@@ -3,6 +3,62 @@
 
 ---
 
+## 2026-05-23 — PR #135 round-3 fixup: cwd-independence (Codex CONCERN at line 246) — Option (a) — header claim now true verbatim
+
+Same PR (#135), stays DRAFT. Round-2 Codex returned ⚠️  CONCERN (not BLOCKER) — small but real doc-vs-behavior drift.
+
+**Codex's CONCERN (verbatim):**
+> "The file header says the smoke test works from any folder, but Step 2 invokes `new-service.sh` without first changing into the repo. `new-service.sh` uses `git rev-parse --show-toplevel`, so running this smoke script from outside the repo will fail."
+
+**Codex's fix options:** (a) resolve REPO_ROOT explicitly + `cd "$REPO_ROOT"` in a subshell around the spawn invocation, OR (b) narrow the header claim from "any folder" to "any cwd inside the repo".
+
+**Picked (a)** per coordinator's lean + 1000X discipline: the script now genuinely works from ANY cwd (including outside the repo); the header claim is true verbatim. (b) was the minimum-viable doc-fix; (a) is the structurally-correct fix.
+
+**Files touched (round-3):**
+
+1. **`yral-rishi-agent-new-service-template/scripts/tests/test_spawn_smoke.sh`** — 3 surgical edits:
+   - **Path-resolution block** (lines 66–82): added `REPO_ROOT="$(cd "$TEMPLATE_ROOT/.." && pwd)"` derived from the already-resolved TEMPLATE_ROOT chain (which itself derives from `dirname "$0"`, an absolute path). Comment above the line explains why we use this path-walk instead of `git rev-parse --show-toplevel` from cwd: the latter would fail or resolve to a different repo when invoked from outside the source repo.
+   - **Step 2 invocation** (the actual fix): wrapped `bash "$NEW_SERVICE_SH" ... --target-directory "$working_directory"` in a `( cd "$REPO_ROOT" && bash ... )` subshell. Comment explains that the subshell scope means the outer script's cwd is untouched (still wherever the operator invoked from), but new-service.sh's own `git rev-parse --show-toplevel` now resolves the right tree.
+   - **Header docblock — "WHERE THIS RUNS" section**: expanded the "Local mac" bullet to make the cwd-independence claim explicit (`Works from ANY cwd — including folders outside the source repo (e.g. cd /tmp && bash …/test_spawn_smoke.sh) — because path resolution below derives both TEMPLATE_ROOT and REPO_ROOT from "dirname "$0"", and the spawn invocation cd's into REPO_ROOT in a subshell before calling new-service.sh`). Header now matches runtime.
+
+**No A1 hard-stop in this fixup** — pure cwd-resolution hardening + doc precision. Behavior change is strictly broader (works from MORE cwd locations); no narrowing.
+
+**Local validation evidence:**
+
+Ran the script from `/tmp` (a directory NOT inside any git repo at all) to prove the fix:
+
+```
+$ cd /tmp && bash ~/Claude\ Projects/yral-rishi-agent-worktrees/session-2/yral-rishi-agent-new-service-template/scripts/tests/test_spawn_smoke.sh
+── STEP 0 ── PASS Docker daemon + compose v2 detected
+── STEP 1 ── PASS temp directory provisioned; cleanup trap armed
+── STEP 2 ── PASS spawn produced /var/folders/.../yral-rishi-agent-template-spawn-smoke-victim
+── STEP 3 ── PASS all 19 expected paths present; no literal .env.local; substitution ran
+── STEP 4 ── PASS compose stack up (service + postgres + pgbouncer + redis), detached
+── STEP 5 ── PASS /openapi.json returned 200 after 2s; response is a valid OpenAPI document
+── STEP 6 ── PASS service logs clean of unexpected errors
+── STEP 7 ── PASS teardown will run when this script exits
+════════════════════════════════════════════════════════
+  test_spawn_smoke.sh — ALL STEPS PASSED
+════════════════════════════════════════════════════════
+```
+
+**9/9 PASS from /tmp** confirms the Codex CONCERN is closed end-to-end. The pre-existing repo-cwd case (the round-2 validation) was retested by virtue of the same script working from /tmp — if the round-3 change had broken repo-cwd, it would have failed here too because both paths run the same subshell-cd code.
+
+**Diff size (round-3 fixup alone, on top of round-2 commit `bd538b5`):**
+- `test_spawn_smoke.sh`: +20 lines net (REPO_ROOT computation + comment + subshell wrap + header rewrite)
+- this LOG entry: ~50 lines (doc)
+- **Round-3 net effect**: extremely surgical — single-line behavior change wrapped in a subshell + supporting documentation.
+
+**Constraints touched:** A2.1 (round-3 IS a single-concern doc-vs-behavior reconciliation; nothing else folded in), B7 (the new comment block above REPO_ROOT computation + the new comment block above the subshell-wrap both carry WHY rationale), I11 (this append-only entry; round-1 + round-2 entries below untouched).
+
+**Why I picked (a) over (b):** (b) is a doc retreat; the script narrows its claim to match its limitation. (a) is the structural fix; the script genuinely gains the capability it claimed. Per 1000X-greenfield discipline, capability-gain beats capability-narrow when the gain is ~20 lines of code. Cost is negligible; runtime guarantee is meaningfully stronger.
+
+**Cross-session handoff:** none changed from round-1/round-2. Coordinator's sibling PR for the workflow files is still queued.
+
+**Next:** Codex round-3 re-review. On APPROVE → coordinator manually merges PR #135 → coordinator drives the sibling workflow PR → DEP-014 (template skeleton expansion) becomes my next-task.
+
+---
+
 ## 2026-05-23 — PR #135 round-2 fixup: scope-split (revert .github/workflows/** edits) + dir→directory renames + B7 WHAT/WHEN/WHY function headers
 
 Same PR (#135), stays DRAFT. Round-1 Codex returned 4 BLOCKERs; 2 of them were **I9 scope-crossover violations** — my round-1 commit edited the coordinator-owned `.github/workflows/**` based on the coordinator's task-spec authorization, but **the template's CLAUDE.md says `.github/workflows/` is coordinator-only by I9, which only Rishi can override**. The task-spec authorization didn't have that override; Codex correctly enforced. Symmetric resolution to PR #134's same-day split: revert the workflow edits, scope back to template-only, coordinator opens a sibling PR for the workflow files.
