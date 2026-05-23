@@ -5,7 +5,7 @@
 ## 2026-05-23 — Redis client-side AUTH wiring on public-api's 2 Redis paths (DRAFT, sequence interruption ahead of PR-B2)
 
 ### Action
-Wires `REDIS_PASSWORD` on both of public-api's Redis paths. v2 cluster's Redis primary runs with `--requirepass` enabled (per H3 + 2026-05-22 incident-response rotation); both code paths in this service were missing the `password=` kwarg and would raise `redis.exceptions.AuthenticationError` on first command.
+Wires `REDIS_PASSWORD` on both of public-api's Redis paths. v2 cluster's Redis primary runs with `--requirepass` enabled (per H3 + 2026-05-22 incident-response rotation); both code paths in this service were missing the `password=` keyword argument and would raise `redis.exceptions.AuthenticationError` on first command.
 
 The two paths:
 1. `app/redis_client.py` — singleton `redis.Redis.from_url()` used by the JWKS cache + idempotency-dedup writes (single-URL path).
@@ -27,7 +27,7 @@ Coordinator's original cross-session PR #134 closed per Codex I9 pushback ("the 
 - This entry.
 
 ### Why
-The v2 cluster's Redis primary requires AUTH on every connection (per H3 + the 2026-05-22 incident-response rotation that bumped the password). Without `password=` kwargs, public-api's first Redis command — whether from the JWKS cache, the F10 idempotency-dedup writes, or the /health/ready Sentinel probe — raises `redis.exceptions.AuthenticationError: Authentication required.` That:
+The v2 cluster's Redis primary requires AUTH on every connection (per H3 + the 2026-05-22 incident-response rotation that bumped the password). Without `password=` keyword arguments, public-api's first Redis command — whether from the JWKS cache, the F10 idempotency-dedup writes, or the /health/ready Sentinel probe — raises `redis.exceptions.AuthenticationError: Authentication required.` That:
 - Breaks the JWKS cache (every strict-path JWT validation falls through to the upstream fetch, no caching).
 - Breaks F10 idempotency dedup (mobile retries hit the orchestrator twice; LLM-call double-charge risk per F10 + E1 latency budget).
 - Breaks /health/ready (probe reports Redis unreachable → Swarm marks replicas unhealthy → rolling-update fires → cluster lands in a worse state than the missing AUTH alone).
@@ -38,7 +38,7 @@ Both paths share the same `settings.redis_password` source — single source of 
 - `python3 -c "import ast; ast.parse(open(f).read())"` on all 4 modified Python files → OK.
 - Mock patterns mirror the existing `test_health_routes.test_health_ready_returns_200_when_redis_pingable` (monkeypatch `health_routes.<symbol>`) and the broader test-mock conventions in this file.
 - Local docker daemon not running (Day-5-Piece-A `python:3.12-slim` smoke pattern unavailable). CI is the source of truth for `pytest tests/contract/` green.
-- The 3 new tests collectively assert: (a) password kwarg reaches from_url() in single-URL path; (b) empty string normalizes to None on from_url(); (c) password kwarg reaches master_for() in Sentinel path + handler returns 200.
+- The 3 new tests collectively assert: (a) password keyword argument reaches from_url() in single-URL path; (b) empty string normalizes to None on from_url(); (c) password keyword argument reaches master_for() in Sentinel path + handler returns 200.
 
 ### Constraints touched
 - **A2.1** — single concern (Redis AUTH wiring on the 2 public-api paths). No scope creep into orchestrator / soul-file / influencer-directory Redis paths (those are Session 4's parallel PR).
@@ -47,7 +47,7 @@ Both paths share the same `settings.redis_password` source — single source of 
 - **D1 + D8** — new `REDIS_PASSWORD` secret declared in `secrets.yaml` with full source/rotation/consumed_by/classification schema. Compose `secrets:` block declares it `external: name: yral_v2_redis_primary_password_ceeb8b19` (versioned mapping per the 2026-05-22 rotation pattern).
 - **H3** — `--requirepass` is the cluster-side enforcement; this PR is the client-side compliance.
 - **I11** — same-commit LOG entry (this one).
-- **NOT I14** — adds Python code (new Settings field + 2 client kwargs + 3 tests) + behavior-changing compose (mounts new secret + declares new external). I14 covers `.md`-only / test-only / lint-format-only / comment-only; this is none of those. Coordinator manually merges via `gh pr merge <N> --squash` after Codex APPROVE.
+- **NOT I14** — adds Python code (new Settings field + 2 client keyword arguments + 3 tests) + behavior-changing compose (mounts new secret + declares new external). I14 covers `.md`-only / test-only / lint-format-only / comment-only; this is none of those. Coordinator manually merges via `gh pr merge <N> --squash` after Codex APPROVE.
 
 ### Cross-references
 - Closed coordinator PR #134 — original cross-session edit that bundled public-api + Session 4 wiring; closed per Codex I9 pushback (per-service code belongs in per-service PRs).
@@ -62,14 +62,23 @@ Both paths share the same `settings.redis_password` source — single source of 
 
 ### Round-2 fixups (Codex round-1 CONCERN + defensive B2 naming check)
 1. **Test-isolation leak (CONCERN at `tests/contract/test_health_routes.py:289`)** — Codex flagged that the `test_get_redis_*` tests cleared the `redis_client.get_redis` lru_cache BEFORE the monkey-patched call but didn't re-clear AFTER, leaking a captured fake-Redis object into later tests. Round-2 wraps tests 1 + 3 (the two that touch the get_redis cache) in `try/finally` with `redis_client.reset_for_testing()` in the finally block. Test 2 (`test_health_ready_sentinel_path_forwards_password`) doesn't touch the get_redis cache; no wrap needed there.
-2. **B2 naming check (defensive, no Codex feedback yet on #137 specifically)** — Session 4's PR #136 picked up a `kwarg`/`kwargs` B2 CONCERN; preemptively scrubbed my new tests for the same pattern. Renamed:
-   - `test_get_redis_passes_password_kwarg_to_from_url` → `test_get_redis_forwards_password_to_from_url`
-   - `test_health_ready_sentinel_path_passes_password_kwarg` → `test_health_ready_sentinel_path_forwards_password`
-   - Local helper-function parameter names: `*args, **kwargs` → `*positional_args, **keyword_arguments`
-   - Docstring/comment mentions of "kwarg" → "argument" / "keyword argument" / "parameter" as fits.
-   - Test name `test_empty_redis_password_resolves_to_none_in_from_url` unchanged (no `kwarg` term).
+2. **B2 naming check (defensive, no Codex feedback yet on #137 specifically)** — Session 4's PR #136 picked up a B2 CONCERN on the abbreviated form of "keyword argument(s)"; preemptively scrubbed my new tests for the same pattern. Renamed test names + helper parameter names to spell out "keyword argument(s)" / "positional args" in full; rewrote docstring/comment mentions to use "argument" / "keyword argument" / "parameter" as fits.
 
 Single-file change (`tests/contract/test_health_routes.py`) plus this LOG-entry-subsection update. Same PR + branch + no new commit message scope.
+
+### Round-3 fixups (Codex round-2 BLOCKER — B2 abbreviation in production code + manifest)
+Codex round-2 returned a BLOCKER at `app/config.py:127`: the abbreviated form of "keyword argument(s)" is not on the B2 allowed-abbreviation list, and the new comments + manifest description used the abbreviation. The same wording appeared in the `redis_client.py` role-comment + `secrets.yaml` description. Codex flagged this as BLOCKER (vs round-2's CONCERN on round-1) because the occurrences are now in production-code comments + manifest descriptions, not just tests.
+
+Round-3 scrubs every occurrence of the abbreviated form I introduced across the 5 files in this PR:
+- `app/config.py` — 2 role-comment lines describing the `password=` keyword argument on the consumer paths.
+- `app/redis_client.py` — 1 role-comment line on the `from_url` call ("without this keyword argument the first command raises..."). Note: one pre-existing line in the same file (line 71's role-comment about `from_url` argument parsing) uses the same abbreviated form but is NOT in this PR's diff; left untouched per the "fix what you ship" norm so a future cleanup PR can scope that.
+- `app/api/health_routes.py` — 1 role-comment line on the `master_for` call.
+- `secrets.yaml` — 2 description lines for the `REDIS_PASSWORD` manifest entry.
+- LOG + STATE narrative mentions in THIS PR's entries — scrubbed defensively to avoid any future-PR re-flagging of the same diff context. The round-2 fixup section above keeps its meta-references to the abbreviated form rephrased as "the abbreviated form of 'keyword argument(s)'" so the narrative stays accurate without restating the abbreviation literally.
+
+All replacements: abbreviated form → "keyword argument" / "keyword arguments" spelled out fully; no further abbreviation variants used. Functional `password=settings.redis_password or None` syntax untouched (Python language keyword `password=` isn't subject to B1/B2 — only identifiers, comments, and descriptions are).
+
+Same PR + branch. No new files. No code-behavior change.
 
 ---
 

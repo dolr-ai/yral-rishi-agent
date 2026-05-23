@@ -75,8 +75,8 @@ def get_redis() -> redis.Redis:
     # `password=` carries the AUTH credential sent in response to the
     # primary's `--requirepass` AUTH challenge. The v2 cluster's
     # Redis primary requires AUTH on every connection (per H3 +
-    # 2026-05-22 incident-response rotation); without this kwarg the
-    # first command raises
+    # 2026-05-22 incident-response rotation); without this keyword
+    # argument the first command raises
     # `redis.exceptions.AuthenticationError: Authentication required.`
     # Empty default keeps local dev working — redis-py treats
     # password=None as "no AUTH frame", matching the unauthenticated

@@ -124,11 +124,12 @@ class Settings(BaseSettings):
     # `redis.exceptions.AuthenticationError: Authentication required.`
     #
     # Consumed by BOTH Redis paths in this service:
-    #   - app/redis_client.py — passed as `password=` kwarg to
-    #     redis.Redis.from_url() (the JWKS-cache + idempotency-dedup
-    #     singleton; uses single-URL connect)
-    #   - app/api/health_routes.py — passed as `password=` kwarg to
-    #     Sentinel.master_for() (the /health/ready C11 probe)
+    #   - app/redis_client.py — passed as the `password=` keyword
+    #     argument to redis.Redis.from_url() (the JWKS-cache +
+    #     idempotency-dedup singleton; uses single-URL connect)
+    #   - app/api/health_routes.py — passed as the `password=`
+    #     keyword argument to Sentinel.master_for() (the
+    #     /health/ready C11 probe)
     #
     # Sourced from the `REDIS_PASSWORD` secret declared in
     # `secrets.yaml` (mounted at `/run/secrets/REDIS_PASSWORD`; env
