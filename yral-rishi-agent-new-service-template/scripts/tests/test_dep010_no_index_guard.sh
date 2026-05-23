@@ -137,16 +137,44 @@ fi
 # This is the regression-class guard that actually fires when someone
 # edits new-service.sh and drops --no-index in a future refactor.
 # Assertions 1 + 2 prove git's semantics; this assertion proves
-# new-service.sh USES those semantics correctly. Grep for the exact
-# token `check-ignore --no-index` (with the flag IMMEDIATELY after
-# the subcommand) — accepts other intermediate flags would be a false
-# pass, so we keep the pattern tight.
-if grep -q 'check-ignore --no-index' "$new_service_script"; then
+# new-service.sh USES those semantics correctly.
+#
+# WHY THE FILTER PIPELINE BELOW (not just a naive grep):
+# Codex round-4 on PR #135 caught that a naive `grep 'check-ignore
+# --no-index'` would false-pass if that exact phrase appeared only
+# in COMMENTS or in ECHO/PRINTF STRINGS. new-service.sh's own DEP-010
+# comment block + the operator-facing error message both contain
+# the literal phrase `check-ignore --no-index` — so the naive grep
+# would silently miss a regression where someone removes the flag
+# from the actual `if git -C "$REPO_ROOT" check-ignore --no-index`
+# line while leaving the comments + echo in place.
+#
+# Fix: strip lines that BEGIN with `#`, `echo`, or `printf` (allowing
+# leading whitespace) BEFORE the fixed-string grep. What remains is
+# real executable shell — if the phrase appears there, the probe is
+# correctly invoking `--no-index`; if it doesn't, the probe regressed.
+#
+# WHY NOT JUST PATTERN-MATCH THE EXACT IF-LINE
+# A literal `grep -F 'if git -C "$REPO_ROOT" check-ignore --no-index'`
+# would be even tighter, but breaks under legitimate refactors
+# (variable rename like REPO_ROOT → repo_root, restructuring the
+# git invocation, etc.). The filter-then-fixed-grep approach is
+# robust to refactors while still catching the regression class.
+#
+# The filter EXCLUDES:
+#   - lines that start with optional whitespace + `#` (any comment)
+#   - lines that start with optional whitespace + `echo ` or `echo"`
+#   - lines that start with optional whitespace + `printf `
+# Word-boundary on `echo`/`printf` (the trailing space-or-quote check)
+# prevents false-strips of identifiers like `echotemp_var=foo`.
+filtered_lines="$(grep -vE '^[[:space:]]*(#|echo[[:space:]"'"'"']|printf[[:space:]])' "$new_service_script" || true)"
+if echo "$filtered_lines" | grep -qF 'check-ignore --no-index'; then
     PASS=$((PASS + 1))
-    echo "PASS  new-service.sh DEP-010 probe still uses 'check-ignore --no-index'"
+    echo "PASS  new-service.sh DEP-010 probe still uses 'check-ignore --no-index' on an executable line"
 else
     FAIL=$((FAIL + 1))
-    echo "FAIL  new-service.sh DEP-010 probe is MISSING --no-index — regression-class guard would re-open"
+    echo "FAIL  new-service.sh DEP-010 probe is MISSING --no-index on any executable line — regression-class guard would re-open"
+    echo "      (Comment-only or echo-string mentions of 'check-ignore --no-index' are intentionally ignored here.)"
     echo "      Path: $new_service_script"
 fi
 

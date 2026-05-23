@@ -3,6 +3,89 @@
 
 ---
 
+## 2026-05-23 — PR #135 round-5 fixup: tighten assertion-3 grep (Codex caught comment/echo false-positive in round-4 test)
+
+Same PR (#135), stays DRAFT. Round-4 Codex returned ⚠️  CONCERN (not BLOCKER) on the round-4 regression-class test's static-grep assertion.
+
+**Codex's CONCERN (verbatim):**
+> "The static grep for 'check-ignore --no-index' will pass if that text remains only in comments or echo strings. Because new-service.sh now contains several comment mentions of that exact phrase, the test would not catch the actual command regressing."
+
+**Real gap:** `new-service.sh`'s round-4 edit added the literal phrase `check-ignore --no-index` to (a) the rewritten comment block above the probe, AND (b) the operator-facing error `echo "  git check-ignore --no-index -q -- ..."` line. The naive `grep -q 'check-ignore --no-index'` from round-4 would false-pass even if someone removed `--no-index` from the actual `if git -C "$REPO_ROOT" check-ignore --no-index` line — defeating the entire point of assertion 3 (the regression-class guard).
+
+**Picked Codex's (α) shape over (β):** (β) was the fixed-string `if git -C "$REPO_ROOT" check-ignore --no-index` anchor — strict, but brittle under legitimate refactors (variable rename like `REPO_ROOT` → `repo_root`, restructuring the git invocation). (α) was the comment-stripping shape. I went with a slight variant of (α) that ALSO strips `echo`/`printf` lines — because `new-service.sh`'s operator-facing error echo also contains the phrase. Resulting filter:
+
+```bash
+filtered_lines="$(grep -vE '^[[:space:]]*(#|echo[[:space:]"'"'"']|printf[[:space:]])' "$new_service_script" || true)"
+if echo "$filtered_lines" | grep -qF 'check-ignore --no-index'; then ...
+```
+
+The filter excludes:
+- lines starting with optional whitespace + `#` (any comment)
+- lines starting with optional whitespace + `echo ` / `echo"` / `echo'` (the trailing space/quote check word-boundaries `echo` so identifiers like `echotemp_var=foo` don't false-strip)
+- lines starting with optional whitespace + `printf ` (same word-boundary logic)
+
+What remains is real executable shell — if the phrase appears there, the probe is correctly invoking `--no-index`; if it doesn't, the probe regressed. Robust against future refactors (variable renames, restructuring) AND against the specific false-positive Codex named.
+
+**Files touched (round-5):**
+
+1. **`yral-rishi-agent-new-service-template/scripts/tests/test_dep010_no_index_guard.sh`** — rewrote assertion 3 to use the filter pipeline. Comment block above the assertion explains:
+   - Why a naive grep is broken (Codex's catch)
+   - Why we strip `#` / `echo` / `printf` lines specifically
+   - Why we don't use Codex's stricter option (β) — too brittle under refactors
+   - The exact regression class this assertion fires on
+
+No other files needed editing — the probe in `new-service.sh` is correct; only the TEST needed tightening.
+
+**Local validation evidence:**
+
+Positive case (current `new-service.sh`, with `--no-index` on the if-line):
+
+```
+$ bash test_dep010_no_index_guard.sh
+PASS  --no-index probe catches tracked-but-would-be-ignored case (exit 0)
+PASS  default probe (no --no-index) misses tracked case (exit 1, as expected)
+PASS  new-service.sh DEP-010 probe still uses 'check-ignore --no-index' on an executable line
+DEP-010 --no-index probe regression-class guard: 3 passed, 0 failed
+```
+
+**Negative-case verification** (the real proof of round-5's value): made a `mktemp -d` copy of `new-service.sh`, stripped `--no-index` from the actual `if` line via `sed` BUT LEFT THE COMMENT BLOCK + THE OPERATOR-FACING ECHO LINE BOTH UNCHANGED, ran the test against the patched copy:
+
+```
+$ sed '/^[[:space:]]*if git -C "\$REPO_ROOT" check-ignore --no-index/s/--no-index //' …
+$ bash test_dep010_no_index_guard.sh   # against the patched copy
+PASS  --no-index probe catches tracked-but-would-be-ignored case (exit 0)
+PASS  default probe (no --no-index) misses tracked case (exit 1, as expected)
+FAIL  new-service.sh DEP-010 probe is MISSING --no-index on any executable line — regression-class guard would re-open
+DEP-010 --no-index probe regression-class guard: 2 passed, 1 failed
+exit=1
+```
+
+Test correctly **FAILED** with the comment block + echo line both still containing the literal phrase `check-ignore --no-index`. Round-4's naive grep would have PASSED this case — round-5 closes the gap.
+
+Plus full spawn-smoke (`bash test_spawn_smoke.sh`) → **PRE-FLIGHT 3/3 + ALL 9 STEPS PASSED**.
+
+**No A1 hard-stop in this fixup** — pure test-tightening, no behavior change in production code (`new-service.sh` probe untouched). Test file is the only edit.
+
+**Append-only SESSION-2-LOG entry** above the round-4 entry per I11 (rounds 1-4 entry bodies untouched).
+
+**Diff size (round-5 fixup alone, on top of round-4 commit `2e31fbf`):**
+
+| File | Lines |
+|---|---|
+| `scripts/tests/test_dep010_no_index_guard.sh` (assertion 3 + comment rewrite) | ~+30/-10 |
+| this LOG entry | ~70 (doc) |
+| **Round-5 net effect** | extremely surgical |
+
+**Constraints touched:** A2.1 (single concern: test-tightening to close the comment/echo false-positive), B1/B2/B5 (`filtered_lines` is the only new identifier — explicit English), B7 (the new comment block above the assertion is dense — explains WHY, WHY NOT (β), and WHAT the filter excludes), I11 (this append-only entry; rounds 1-4 entries untouched).
+
+**Why round-4's grep didn't catch this myself:** I named the assertion "static-grep on new-service.sh proves the spawner still uses `check-ignore --no-index`" but treated the grep as a black-box pattern match rather than asking "what's IN new-service.sh that contains this phrase besides the executable line?" The dense B7 comments I added in round-4 (which deliberately contained the phrase to explain it) became the very thing that broke the assertion. Captured: a regression-class TEST has to consider all the places its target string might appear in the file under test — including the test's own surrounding documentation.
+
+**Cross-session handoff:** unchanged. Coordinator's PR #139 (sibling workflow PR) still queued; flips to ready after PR #135 merges.
+
+**Next:** Codex round-5 re-review. On APPROVE → coordinator manually merges PR #135 → PR #139 flips ready + merges → DEP-014 (template skeleton expansion) becomes my next-task.
+
+---
+
 ## 2026-05-23 — PR #135 round-4 fixup: BLOCKER — `git check-ignore` probe needs `--no-index` (Codex caught tracking-state semantic gotcha) + regression-class test
 
 Same PR (#135), stays DRAFT. Round-3 Codex returned 🛑 BLOCKER on the DEP-010 probe semantics — a real correctness bug in the round-2 source-side refactor that round-3's cwd-independence change exposed for review.
