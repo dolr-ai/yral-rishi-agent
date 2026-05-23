@@ -264,22 +264,45 @@ async def _generate_real_llm_reply(
     # always reads the Layer-4 "new" row.
     user_segment_for_day_5: Final = "new"
 
-    placeholder_influencer_id = settings.day_5_placeholder_ai_influencer_id
-    if not placeholder_influencer_id:
+    # Resolve the AI Influencer UUID per the 3-PR backwards-compatible
+    # plan (PR-B1 → PR-B2 → PR-B3): prefer the per-request value when
+    # public-api forwards it (PR-B2 onwards), fall back to the
+    # `day_5_placeholder_ai_influencer_id` env-var setting when absent
+    # (the PR-B1 interim shape). The empty-string-rejecting validation
+    # stays against the RESOLVED value so a fall-through configuration
+    # mistake (no per-request value AND empty env var) still raises
+    # with the same operator-facing message + the same RuntimeError
+    # shape the handler maps to a 500. PR-B3 will remove the fallback
+    # branch + flip request.influencer_id from optional to required.
+    resolved_influencer_id = (
+        request.influencer_id
+        or settings.day_5_placeholder_ai_influencer_id
+    )
+    if not resolved_influencer_id:
         raise RuntimeError(
-            "enable_run_turn_real_llm=True but "
-            "day_5_placeholder_ai_influencer_id is empty. Set "
+            "enable_run_turn_real_llm=True but no influencer_id is "
+            "available — request.influencer_id is None AND "
+            "day_5_placeholder_ai_influencer_id is empty. Either "
+            "forward influencer_id from public-api (PR-B2) or set "
             "DAY_5_PLACEHOLDER_AI_INFLUENCER_ID to a seeded soul-file "
             "Layer-3 row's influencer_id (see soul-file-library's "
             "RUNBOOK for the seeded ids)."
         )
+
+    # `influencer_id_source` log field — observability marker for the
+    # PR-B1→PR-B2 transition. Operators can grep Langfuse traces +
+    # structured logs to confirm public-api has started forwarding
+    # per-request influencer_id after PR-B2 lands; a sudden shift
+    # from `env_fallback` → `request` is the canonical signal. The
+    # field disappears at PR-B3 when the env fallback is removed.
+    influencer_id_source = "request" if request.influencer_id else "env_fallback"
 
     # Soul-file lookup. Returns ComposedPrompt with layered_prompt +
     # version_pin + cache_hit. Errors propagate as typed exceptions
     # the handler catches.
     soul_file_client = get_soul_file_client()
     composed = await soul_file_client.compose(
-        influencer_id=placeholder_influencer_id,
+        influencer_id=resolved_influencer_id,
         user_segment=user_segment_for_day_5,
     )
 
@@ -287,7 +310,8 @@ async def _generate_real_llm_reply(
         "soul_file_compose_succeeded",
         extra={
             "conversation_id": request.conversation_id,
-            "influencer_id": placeholder_influencer_id,
+            "influencer_id": resolved_influencer_id,
+            "influencer_id_source": influencer_id_source,
             "user_segment": user_segment_for_day_5,
             "version_pin": composed.version_pin,
             "cache_hit": composed.cache_hit,
