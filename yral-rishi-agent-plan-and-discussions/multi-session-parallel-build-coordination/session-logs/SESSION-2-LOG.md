@@ -3,6 +3,32 @@
 
 ---
 
+## 2026-05-23 — DEP-010 PR-A round-2 fixup: 2 var renames + B7 line-level role comments on both DEP-010 blocks
+
+Same PR (#133), stays DRAFT. Round-1 Codex returned 3 BLOCKERs — all real B1/B2/B7 violations, mechanical fixes:
+
+1. **`rel_path` → `relative_fixture_path`** in `yral-rishi-agent-new-service-template/scripts/new-service.sh` (B1/B2 — `rel` not on the explicit-English allowlist). 3 occurrences in the post-spawn DEP-010 block updated: the variable definition, the `git add --dry-run` invocation, and the error-output `echo` line.
+2. **`tmpdir` → `temporary_fixture_directory`** in `yral-rishi-agent-new-service-template/scripts/tests/test_validate_secrets.sh` (B1/B2 — `tmp` not on the allowlist). 5 occurrences in the runtime-copy subshell updated: definition, EXIT trap, two `cp -R` + `mv` references, and the `cd` line.
+3. **B7 line-level role comments** added above each operational line in both DEP-010 blocks, matching the density Session 3 landed on `orchestrator_client.py` after its post-PR-#130-round-2 rewrite. Per-line coverage:
+   - `test_validate_secrets.sh` runtime-copy subshell: subshell-scope reason, `set -e` reason, `mktemp -d` purpose, `trap` cleanup reason, `cp -R` semantics + trailing-`/.` rationale, conditional rename rationale (incl. why fixtures without env files skip), `cd`-into-temp purpose.
+   - `new-service.sh` step-6 loop: `find -print0` + null-delimited read pattern reason, abs-to-relative path conversion + reason, `git add --dry-run` invocation reason incl. `2>&1` + `|| true`, the `^add '` grep contract reasoning (incl. why this is chosen over `git check-ignore`), and the failure-path operator-message rationale.
+
+**Why both renames are real B1/B2 violations and not borderline:** `rel` is short for "relative" but B1/B2's allowlist requires unambiguous English. `tmpdir` is short for "temporary directory" with the same issue. Codex was right; the round-1 review caught both before any reader had to grep for them.
+
+**Local re-validation (same env as round 1):**
+- `PATH=/opt/homebrew/bin:$PATH /opt/homebrew/bin/bash yral-rishi-agent-new-service-template/scripts/tests/test_validate_secrets.sh` → **5/5 PASS** (renames don't break behavior; subshell semantics unchanged).
+- `bash yral-rishi-agent-new-service-template/scripts/new-service.sh yral-rishi-agent-spawn-smoke-test --dry-run` → **exit 0**.
+
+**No A1 hard-stop in this fixup:** round-2 touches only test-helper internals + spawn-script post-spawn block. The two `.env.local` → `env.local.fixture` renames + the typed-YES from round 1 still cover the A1 surface; nothing here adds a new deletion / rename of an A1-class path.
+
+**Diff size:** ~25 strict-code lines net (variable renames are 0-net; B7 comments are documentation, not behavior changes). Well under A2.1 thresholds.
+
+**Constraints touched:** B1/B2 (explicit-English var names — the round-1 violation closed), B7 (line-level role-comment density — the round-1 violation closed), I11 (this append-only entry; round-1 entry above untouched).
+
+**Next:** push fixup commit on the same PR #133 branch, stay DRAFT, Codex re-reviews. Coordinator manually merges on APPROVE per the PR #126 Codex-gate workflow.
+
+---
+
 ## 2026-05-22 — DEP-010 PR-A: rename template `.env.local` fixtures → `env.local.fixture` + runtime-copy + post-spawn check (Phase 1, Session 2 resumes)
 
 **Branch:** `session-2/dep-010-template-fixture-rename` (off `origin/main` `b507e0c`)

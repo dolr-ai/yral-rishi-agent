@@ -255,11 +255,41 @@ mv "$TARGET_PATH/secrets.yaml.template" "$TARGET_PATH/secrets.yaml"
 # (success → "add 'path'" line), or silently ignore it (empty
 # output or "ignored by .gitignore" error)? Anything other than
 # an "add '...'" line is a failure.
+# `find ... -print0` + `while IFS= read -r -d ''` is the standard
+# null-delimited iteration pattern. It handles paths with spaces or
+# newlines correctly — `$TARGET_PATH` lives under "/Users/.../Claude
+# Projects/..." on dev macs so the space-in-path case is real.
 while IFS= read -r -d '' fixture_file; do
-    rel_path="${fixture_file#$REPO_ROOT/}"
-    dry_run_output="$(git -C "$REPO_ROOT" add --dry-run -- "$rel_path" 2>&1)" || true
+    # Convert the absolute path to a repo-relative path so the
+    # `git add --dry-run` invocation below resolves the same way a
+    # caller running `git add <path>` from $REPO_ROOT would. Without
+    # the strip, git would still work (git tolerates absolute paths
+    # under the worktree) but the error output below reads cleaner
+    # with repo-relative paths.
+    relative_fixture_path="${fixture_file#$REPO_ROOT/}"
+    # Probe what `git add` would actually do for this path. `--dry-run`
+    # never mutates the index; `2>&1` captures the "ignored by …"
+    # message git writes to stderr when a path is gitignored; `|| true`
+    # prevents `set -e` from aborting the spawn on a non-zero git exit
+    # (gitignored paths produce non-zero — we want to keep iterating
+    # so the error message below can surface all violations, not just
+    # the first).
+    dry_run_output="$(git -C "$REPO_ROOT" add --dry-run -- "$relative_fixture_path" 2>&1)" || true
+    # The exact tracking outcome the spawn cares about: would `git
+    # add` actually add the file? A success produces an `add '…'` line
+    # on stdout. Gitignored paths produce an "ignored by .gitignore"
+    # message (or empty output on some git versions); anything that
+    # isn't an `add '…'` line means the fixture would be silently
+    # swallowed at the next real `git add`. Codex PR #121 round-7
+    # chose this over `git check-ignore` because it surfaces the
+    # observable spawn outcome, not just whether a rule matches.
     if ! echo "$dry_run_output" | grep -q "^add '"; then
-        echo "Error: post-spawn DEP-010 check failed for $rel_path"
+        # Failure path: tell the operator EXACTLY which fixture
+        # tripped the check + what git said + the two most likely
+        # root causes so they can land the fix without re-reading
+        # the DEP. `exit 1` aborts the spawn loudly — better a
+        # noisy failure now than a silently-broken spawned service.
+        echo "Error: post-spawn DEP-010 check failed for $relative_fixture_path"
         echo "  git add --dry-run output: $dry_run_output"
         echo "  Fixture would be silently ignored by .gitignore."
         echo "  Likely cause: rename back to .env.local OR new .gitignore"
