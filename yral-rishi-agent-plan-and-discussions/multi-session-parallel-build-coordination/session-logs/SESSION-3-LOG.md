@@ -80,6 +80,26 @@ All replacements: abbreviated form → "keyword argument" / "keyword arguments" 
 
 Same PR + branch. No new files. No code-behavior change.
 
+### Round-4 fixups (Codex round-3 BLOCKER — D8 `.env.example` regeneration)
+Codex round-3 returned BLOCKER: the PR adds a new `REDIS_PASSWORD` service secret to `secrets.yaml` but the D8-generated `.env.example` companion wasn't regenerated alongside, so the file drifted away from the manifest. The `lint-secrets-hygiene` CI gate fails on that drift by design — manifest is the source of truth per D8; `.env.example` is a generated artifact a dev `cp`s into `.env.local` to bootstrap their local env vars.
+
+Round-4 runs the existing bridge generator:
+
+```
+cd yral-rishi-agent-public-api
+bash scripts/gen-env-example.sh
+```
+
+The script reads `secrets.yaml` + emits a comment-block-per-secret (name + description + source-per-env line) followed by `NAME=`. Output also includes the 3 non-secret env vars (ENVIRONMENT, LOG_LEVEL, LANGFUSE_TRACING_ENABLED) appended at the bottom.
+
+Net diff: `.env.example` regenerated with the new `REDIS_PASSWORD` entry (description from `secrets.yaml` inherited verbatim, post-round-3 keyword-argument scrub already applied). 64 insertions / 59 deletions — most of the delta is because the file's pre-existing hand-written sections now match the generator's canonical output shape verbatim.
+
+D7 cluster-level secrets-manifest update is **coordinator's PR #138** (separate, in-flight) — not in this PR's scope.
+
+Verified no `kwarg`/`kwargs` mentions in the regenerated `.env.example` (round-3's `secrets.yaml` scrub propagated through cleanly).
+
+Single-file change (`.env.example`) + this LOG-entry-subsection update. Same PR + branch. No new files. No code-behavior change.
+
 ---
 
 ## 2026-05-22 — PR-B — Day-8 directory-RPC wrapper for `/api/v1/influencers` list + by-id (DRAFT, blocked on Session 4 directory ratification)
