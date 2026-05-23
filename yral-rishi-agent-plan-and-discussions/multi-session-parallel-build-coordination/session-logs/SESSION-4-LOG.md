@@ -2,6 +2,39 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-23 — PR #136 round-3 fixup: correct misleading "ALTER ROLE on Patroni" rotation note in `secrets.yaml` (Codex CONCERN on round-2)
+
+### Status
+**Round-3 fixup pushed to PR #136 — DRAFT stays on.** Codex round-2 returned a CONCERN (not BLOCKER) at `secrets.yaml:129` flagging that the REDIS_PASSWORD rotation `notes:` block read "ALTER ROLE on Patroni (if password-aware)" — that's a **Postgres** operation, not a **Redis** operation. The note would mislead an operator during incident response (think they need to ALTER a Postgres role when actually they need to roll the 5 Redis-stack services). Coordinator confirmed the misleading text came from the paste-ready spec they sent in the original PR-#136 brief (carried over from a generic rotation-notes template); corrected on coordinator-side in PR #138 + same correction applied here.
+
+### What's changing (text-only correction in `secrets.yaml`)
+
+The REDIS_PASSWORD entry's `notes:` block now describes the actual Redis-stack rotation sequence (create new versioned secret → rolling-update ALL 5 Redis-stack services simultaneously: primary + replica + 3 sentinels → verify cluster healthy: sentinel quorum + `master_link_status:up` + no FAILOVER events → roll consumers → drop old secret last). Notes also point operators at the cluster-level secrets-manifest's `rotation_runbook` as the source of truth so consumer manifests reference rather than duplicate.
+
+An explicit corrigendum sentence at the end of the `notes:` block makes the correction visible to a future git-history reader so the change isn't mysterious.
+
+### Why a fixup on the same PR vs a separate PR
+
+Same PR per I11 + the cumulative "Codex CONCERN iterations land as fixup commits on the originating PR's branch" pattern (PR #119 round-2 / PR-B1 round-2 / PR #136 round-2 precedents). A2.1 scope unchanged (still "wire REDIS_PASSWORD AUTH credential"); round-3 closes a documentation accuracy issue. No code change, no behavior change.
+
+### Files touched (round-3)
+- `yral-rishi-agent-conversation-turn-orchestrator/secrets.yaml` — 6-line block replaced with 18-line block (Redis-specific rotation steps + reference to coordinator-level secrets-manifest + corrigendum sentence).
+- This LOG addendum + STATE refresh.
+
+### Constraints touched (round-3)
+- **A2.1** — same single concern (PR #136 scope unchanged); round-3 fixes a doc accuracy issue, not scope creep.
+- **B7** — corrigendum sentence makes the git-history-reader's path clear.
+- **D8** — REDIS_PASSWORD manifest now correctly describes its rotation procedure; references the cluster-level secrets-manifest as source of truth.
+- **I11** — same-commit doc + LOG + STATE pairing.
+- **I14** — still **NOT auto-merge eligible** (carries through from round-1's Python + compose framing).
+
+### Next
+- Codex re-review on the round-3 push.
+- If APPROVE → coordinator marks Ready + merges via `gh pr merge 136 --squash`.
+- **PR-D1 Chunk A** continues in parallel — already-cut branch `session-4/day-8-pr-d1-influencer-directory-service-build` resumes after this round-3 push.
+
+---
+
 ## 2026-05-23 — PR #136 round-2 fixup: rename `kwarg` / `kwargs` shorthand → "keyword argument(s)" per B2 allowlist (Codex CONCERN on round-1)
 
 ### Status
