@@ -3,6 +3,53 @@
 
 ---
 
+### 2026-05-23 — PR #132 Round-3: GET /v1/conversations/{id} + migration 003 + Codex tests
+
+**Branch**: session-5/user-memory-rpc-endpoints
+**Trigger**: Coordinator relayed Codex round-2 CONCERN (test coverage gaps) + expanded
+scope with ITEM 2 (GET /v1/conversations/{id} for Session 3 PR-B2 trust-boundary fix).
+
+**Three items in one round-3 commit**:
+
+1. `app/migrations/versions/003_add_dedup_indexes.py`:
+   - `conversations_natural_key_active_unique_idx`: partial unique expression
+     index using COALESCE(influencer_id, '') + COALESCE(participant_b_id, '')
+     WHERE soft_deleted_at IS NULL — enables atomic upsert ON CONFLICT
+   - `messages_client_message_id_dedup_idx`: partial unique on (conversation_id,
+     client_message_id) WHERE NOT NULL — enables message idempotency
+
+2. `app/api/conversation_routes.py` — 4 changes:
+   - `create_or_get_conversation`: atomic `INSERT ... ON CONFLICT DO UPDATE RETURNING`
+   - `append_messages`: `ON CONFLICT DO NOTHING` + SELECT existing for client_message_id dedup;
+     only increments message_count for genuinely new rows
+   - `list_messages` ORDER BY: added `id DESC/ASC` tiebreaker for same-timestamp determinism
+   - NEW `GET /v1/conversations/{conversation_id}`: X-User-Id tenant isolation,
+     404 for not-found/soft-deleted/wrong-user, returns ConversationResponse + last_message inline
+
+3. Test additions (8 new tests + 1 fix):
+   - Fixed `>=` → `>` strict timestamp assertion (Codex concern)
+   - `test_create_or_get_handles_concurrent_first_calls` (asyncio.gather)
+   - `test_append_message_idempotency_via_client_message_id`
+   - `test_messages_ordering_with_same_created_at_timestamp`
+   - 5× GET /v1/conversations/{id} tests (happy path, 404×3, null last_message)
+   - `test_migration_003_unique_indexes_exist` in test_schema_migrations.py
+
+**Total tests now**: 8 schema + 24 route = 32 tests.
+
+**Key decisions**:
+- ON CONFLICT expression inference: Postgres supports COALESCE(...) in ON CONFLICT
+  target when a matching expression index exists — used for NULLable natural key columns
+- Soft-delete test: uses `database_pool` fixture alongside `test_client` for direct SQL
+  UPDATE; both fixtures truncate at setup time (no conflict) — clean dual-pool pattern
+- message_count increments only for new rows (`is_new` flag per INSERT result) — retries
+  don't double-charge the paywall counter
+- GET /v1/conversations/{id} returns 404 (not 403) for wrong-user — standard tenant
+  isolation practice; 403 would confirm conversation existence
+
+**Next**: Awaiting Codex round-3 verdict + coordinator merge. D3 (ETL plan) after merge.
+
+---
+
 ### 2026-05-22 — Deliverable 2: user-memory-service RPC endpoints
 
 **Branch**: session-5/user-memory-rpc-endpoints

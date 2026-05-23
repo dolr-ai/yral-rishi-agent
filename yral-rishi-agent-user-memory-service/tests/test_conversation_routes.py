@@ -1,12 +1,13 @@
 # ---------------------------------------------------------------------------
-# test_conversation_routes.py — HTTP-level tests for the 4 conversation +
+# test_conversation_routes.py — HTTP-level tests for all 5 conversation +
 #   message RPC endpoints.
 #
-# ⭐ START HERE: this file tests the 4 routes wired in Deliverable 2:
+# ⭐ START HERE: this file tests the 5 routes wired in Deliverable 2:
 #
 #   POST /v1/conversations                 — create_or_get_conversation
 #   POST /v1/conversations/{id}/messages   — append_messages
 #   GET  /v1/conversations/by-user/{uid}   — list_conversations_by_user
+#   GET  /v1/conversations/{id}            — get_conversation_by_id
 #   GET  /v1/conversations/{id}/messages   — list_messages
 #
 # TESTING APPROACH:
@@ -29,6 +30,9 @@
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
 
+import uuid
+
+import asyncpg
 import pytest
 from httpx import AsyncClient
 
@@ -250,7 +254,6 @@ async def test_append_messages_to_nonexistent_conversation_returns_404(
           missing" from "DB error" (which would be a 500). Without the 404,
           the FK violation from Postgres maps to an ambiguous 500.
     """
-    import uuid
     fake_id = str(uuid.uuid4())
 
     response = await test_client.post(
@@ -300,9 +303,12 @@ async def test_append_messages_updates_conversation_stats(
     assert len(conversations) == 1
     conv = conversations[0]
 
-    # last_message_at must have advanced (it's a newer timestamp)
-    assert conv["last_message_at"] >= initial_last_at, (
-        f"last_message_at did not advance: {conv['last_message_at']!r} <= {initial_last_at!r}"
+    # last_message_at MUST have strictly advanced — a message was appended,
+    # so the timestamp cannot stay equal.  `>=` would pass even when the
+    # UPDATE silently failed; `>` fails loud on that regression.
+    assert conv["last_message_at"] > initial_last_at, (
+        "appending a message MUST advance conversations.last_message_at; "
+        "if it doesn't, the stats-update SQL silently failed"
     )
     # last_message should now be populated
     assert conv["last_message"] is not None
@@ -586,7 +592,6 @@ async def test_list_messages_for_nonexistent_conversation_returns_404(
           Without this check, the route returns an empty list which the
           orchestrator would silently accept (wrong LLM context = bad replies).
     """
-    import uuid
     fake_id = str(uuid.uuid4())
 
     response = await test_client.get(f"/v1/conversations/{fake_id}/messages")
@@ -618,13 +623,470 @@ async def test_health_ready_returns_ok_with_connected_pool(
 
 
 # ===========================================================================
+# POST /v1/conversations — concurrency (Codex round-2 concern)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_create_or_get_handles_concurrent_first_calls(
+    test_client: AsyncClient,
+) -> None:
+    """WHAT: two concurrent first-time POST /v1/conversations calls with the
+             same natural key MUST resolve to the same conversation row — one
+             row in the DB, both responses carry the same id.
+    WHEN: two asyncio tasks fire the same POST simultaneously (asyncio.gather).
+    WHY:  defends the upsert race condition. Before migration 003 added the
+          partial unique expression index + the INSERT ON CONFLICT DO UPDATE,
+          both concurrent tasks could each see 0 existing rows and INSERT a
+          new row, yielding two duplicate conversation rows and two different
+          IDs for the same logical thread. The atomic INSERT ON CONFLICT is
+          the fix; this test confirms it.
+    """
+    import asyncio
+
+    payload = {
+        "user_id": "user-concurrent",
+        "ai_influencer_id": "inf-concurrent",
+        "conversation_type": "ai_chat",
+    }
+
+    # Fire two concurrent POST /v1/conversations with the same natural key.
+    # asyncio.gather runs both tasks concurrently: they interleave at each
+    # `await` point (pool.acquire, conn.fetchrow). With the ON CONFLICT
+    # path, one task inserts and the other gets the conflict row — both
+    # return 200 with the same conversation id.
+    response_a, response_b = await asyncio.gather(
+        test_client.post("/v1/conversations", json=payload),
+        test_client.post("/v1/conversations", json=payload),
+    )
+
+    assert response_a.status_code == 200, (
+        f"First concurrent call failed: {response_a.status_code} {response_a.text}"
+    )
+    assert response_b.status_code == 200, (
+        f"Second concurrent call failed: {response_b.status_code} {response_b.text}"
+    )
+
+    id_a = response_a.json()["id"]
+    id_b = response_b.json()["id"]
+
+    assert id_a == id_b, (
+        f"Concurrent upserts returned different conversation IDs: "
+        f"{id_a!r} vs {id_b!r}. The INSERT ON CONFLICT path must resolve "
+        f"both calls to the same row."
+    )
+
+
+# ===========================================================================
+# POST /v1/conversations/{id}/messages — idempotency (Codex round-2 concern)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_append_message_idempotency_via_client_message_id(
+    test_client: AsyncClient,
+) -> None:
+    """WHAT: two POST .../messages calls with the same client_message_id on
+             the same conversation return the SAME message_id and the messages
+             table has ONE row, not two.
+    WHEN: mobile retries a POST /v1/conversations/{id}/messages after a
+          network blip where the original write actually committed; the retry
+          MUST NOT duplicate the message.
+    WHY:  client_message_id is the dedup key per the locked MessageResponse
+          contract (F10 idempotency). Without the unique partial index on
+          (conversation_id, client_message_id) + ON CONFLICT DO NOTHING in
+          the INSERT, the retry would create a second row — doubling the
+          paywall charge and showing a duplicate message bubble on screen.
+          This test confirms the dedup is end-to-end correct.
+    """
+    # Create a conversation to append to.
+    conv_resp = await test_client.post(
+        "/v1/conversations",
+        json={
+            "user_id": "user-dedup",
+            "ai_influencer_id": "inf-dedup",
+            "conversation_type": "ai_chat",
+        },
+    )
+    assert conv_resp.status_code == 200
+    conv_id = conv_resp.json()["id"]
+
+    # The retry-safe payload: both calls use the same client_message_id.
+    dedup_payload = {
+        "messages": [
+            {
+                "role": "user",
+                "content": "idempotent message content",
+                "client_message_id": "client-dedup-001",
+                "count_toward_paywall": True,
+            }
+        ]
+    }
+
+    # --- First append (original write) ------------------------------------
+    resp_a = await test_client.post(
+        f"/v1/conversations/{conv_id}/messages",
+        json=dedup_payload,
+    )
+    assert resp_a.status_code == 200, (
+        f"First append failed: {resp_a.status_code} {resp_a.text}"
+    )
+    id_a = resp_a.json()[0]["id"]
+
+    # --- Second append (simulated network retry) --------------------------
+    # Sends the identical payload again. ON CONFLICT DO NOTHING detects the
+    # duplicate (same conversation_id + client_message_id) and the handler
+    # returns the EXISTING row instead of inserting a new one.
+    resp_b = await test_client.post(
+        f"/v1/conversations/{conv_id}/messages",
+        json=dedup_payload,
+    )
+    assert resp_b.status_code == 200, (
+        f"Retry append failed: {resp_b.status_code} {resp_b.text}"
+    )
+    id_b = resp_b.json()[0]["id"]
+
+    # Both calls must return the same message_id (original row reused).
+    assert id_a == id_b, (
+        f"client_message_id dedup failed: first call returned message_id "
+        f"{id_a!r}, retry returned {id_b!r}. Expected the same id."
+    )
+
+    # Verify the DB has only ONE row, not two.
+    # GET the message history — if dedup worked there should be 1 row.
+    list_resp = await test_client.get(f"/v1/conversations/{conv_id}/messages")
+    assert list_resp.status_code == 200
+    messages = list_resp.json()
+    assert len(messages) == 1, (
+        f"Expected 1 message after idempotent retry, got {len(messages)}. "
+        f"Messages: {messages}"
+    )
+    # The single message must match the original id.
+    assert messages[0]["id"] == id_a, (
+        f"The stored message id {messages[0]['id']!r} does not match the "
+        f"original insert id {id_a!r}."
+    )
+
+
+# ===========================================================================
+# GET /v1/conversations/{id}/messages — ordering tiebreaker (Codex round-2)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_messages_ordering_with_same_created_at_timestamp(
+    test_client: AsyncClient,
+) -> None:
+    """WHAT: messages inserted in the same Postgres transaction share a
+             created_at timestamp (NOW() returns the transaction start time).
+             The listing endpoint MUST return them in a deterministic order on
+             every call — defined by ORDER BY created_at ASC, id ASC.
+    WHEN: a batch POST .../messages call inserts [user, assistant] in a
+          single transaction (which is what the orchestrator always does at
+          the end of a turn).
+    WHY:  without the `id ASC` tiebreaker, Postgres may return equal-
+          timestamp rows in a different physical order on different calls —
+          mobile would occasionally see the assistant reply BEFORE the user
+          message on screen (a catastrophic UX regression). The tiebreaker
+          locks the ordering as part of the contract so the test fails loud
+          if the ORDER BY clause is ever simplified to drop the id column.
+    """
+    conv_resp = await test_client.post(
+        "/v1/conversations",
+        json={
+            "user_id": "user-ts-order",
+            "ai_influencer_id": "inf-ts-order",
+            "conversation_type": "ai_chat",
+        },
+    )
+    assert conv_resp.status_code == 200
+    conv_id = conv_resp.json()["id"]
+
+    # Batch insert: both messages share the same NOW() (transaction start time).
+    # This is the real scenario the orchestrator uses — user + assistant in
+    # one POST call.
+    batch_resp = await test_client.post(
+        f"/v1/conversations/{conv_id}/messages",
+        json={
+            "messages": [
+                {"role": "user", "content": "batch msg 1"},
+                {"role": "assistant", "content": "batch msg 2"},
+            ]
+        },
+    )
+    assert batch_resp.status_code == 200
+    assert len(batch_resp.json()) == 2
+
+    # GET messages twice — the ORDER BY (created_at ASC, id ASC) tiebreaker
+    # must produce the IDENTICAL id sequence on every call.
+    resp1 = await test_client.get(f"/v1/conversations/{conv_id}/messages")
+    resp2 = await test_client.get(f"/v1/conversations/{conv_id}/messages")
+
+    assert resp1.status_code == 200
+    assert resp2.status_code == 200
+
+    ids1 = [m["id"] for m in resp1.json()]
+    ids2 = [m["id"] for m in resp2.json()]
+
+    assert len(ids1) == 2, f"Expected 2 messages, got {len(ids1)}: {resp1.json()}"
+
+    # Non-determinism detection: same order on every call.
+    # Without the tiebreaker, equal-timestamp rows can be returned in any
+    # physical order — this assertion would be flaky (passes most of the
+    # time, fails occasionally when Postgres uses a different scan).
+    assert ids1 == ids2, (
+        f"Non-deterministic message ordering detected for same-timestamp batch:\n"
+        f"  call 1 returned: {ids1}\n"
+        f"  call 2 returned: {ids2}\n"
+        f"The ORDER BY (created_at ASC, id ASC) tiebreaker must be present "
+        f"in list_messages to prevent this flakiness."
+    )
+
+
+# ===========================================================================
+# GET /v1/conversations/{id} — get_conversation_by_id
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_get_conversation_by_id_happy_path(
+    test_client: AsyncClient,
+) -> None:
+    """WHAT: GET /v1/conversations/{id} returns ConversationResponse for the
+             conversation owner.
+    WHEN: the conversation exists, is active, and X-User-Id matches the owner.
+    WHY:  public-api (Session 3 PR-B2) calls this to derive ai_influencer_id
+          from the conversation record before forwarding to the orchestrator.
+          The shape must match ConversationResponse exactly (A8 + A16) so
+          public-api's response_models.py can parse it without adjustment.
+    """
+    # Create a conversation + append a message so last_message is populated.
+    conv_resp = await test_client.post(
+        "/v1/conversations",
+        json={
+            "user_id": "user-by-id",
+            "ai_influencer_id": "inf-by-id",
+            "conversation_type": "ai_chat",
+        },
+    )
+    assert conv_resp.status_code == 200
+    conv_id = conv_resp.json()["id"]
+
+    await test_client.post(
+        f"/v1/conversations/{conv_id}/messages",
+        json={"messages": [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]},
+    )
+
+    # Fetch the conversation by ID — owner sends their own user_id header.
+    response = await test_client.get(
+        f"/v1/conversations/{conv_id}",
+        headers={"X-User-Id": "user-by-id"},
+    )
+
+    assert response.status_code == 200, (
+        f"Expected 200, got {response.status_code}: {response.text}"
+    )
+    data = response.json()
+
+    # ConversationResponse shape checks
+    required_fields = {
+        "id", "user_id", "participant_b_id", "ai_influencer_id",
+        "conversation_type", "last_message", "last_message_at", "unread_count",
+    }
+    for field in required_fields:
+        assert field in data, f"Missing field in ConversationResponse: {field}"
+
+    assert data["id"] == conv_id
+    assert data["user_id"] == "user-by-id"
+    assert data["ai_influencer_id"] == "inf-by-id"
+    assert data["conversation_type"] == "ai_chat"
+    assert data["unread_count"] == 0
+
+    # last_message must be populated (the assistant reply)
+    assert data["last_message"] is not None
+    assert data["last_message"]["role"] == "assistant"
+    assert data["last_message"]["content"] == "hi there"
+
+
+@pytest.mark.asyncio
+async def test_get_conversation_by_id_returns_404_when_not_found(
+    test_client: AsyncClient,
+) -> None:
+    """WHAT: GET /v1/conversations/{id} returns 404 for a UUID that has never
+             been inserted.
+    WHEN: the caller passes a well-formed UUID that doesn't match any row.
+    WHY:  a 404 is the correct actionable signal — public-api can distinguish
+          "conversation gone" from a 500 "server error". Without this check,
+          the route would 500 on the missing-row SELECT (or return garbage).
+    """
+    fake_id = str(uuid.uuid4())
+
+    response = await test_client.get(
+        f"/v1/conversations/{fake_id}",
+        headers={"X-User-Id": "any-user"},
+    )
+
+    assert response.status_code == 404, (
+        f"Expected 404 for non-existent conversation, got {response.status_code}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_conversation_by_id_returns_404_for_wrong_user_tenant_isolation(
+    test_client: AsyncClient,
+) -> None:
+    """WHAT: GET /v1/conversations/{id} returns 404 (not 403) when the
+             conversation exists but belongs to a different user.
+    WHEN: X-User-Id header carries a user_id that does NOT match the
+          conversation's stored owner.
+    WHY:  tenant isolation — we must never reveal whether a conversation
+          exists to a user who doesn't own it. Returning 403 would confirm
+          the conversation exists (information leak). 404 treats all non-
+          visible conversations identically: not found.
+    """
+    # Create a conversation owned by "user-owner"
+    conv_resp = await test_client.post(
+        "/v1/conversations",
+        json={
+            "user_id": "user-owner",
+            "ai_influencer_id": "inf-owner",
+            "conversation_type": "ai_chat",
+        },
+    )
+    assert conv_resp.status_code == 200
+    conv_id = conv_resp.json()["id"]
+
+    # Request as "user-intruder" — different user, should NOT see this conv
+    response = await test_client.get(
+        f"/v1/conversations/{conv_id}",
+        headers={"X-User-Id": "user-intruder"},
+    )
+
+    assert response.status_code == 404, (
+        f"Expected 404 for wrong-user request (tenant isolation), got "
+        f"{response.status_code}. Must not return 403 (that leaks existence)."
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_conversation_by_id_returns_404_for_soft_deleted_conversation(
+    test_client: AsyncClient,
+    database_pool: asyncpg.Pool,
+) -> None:
+    """WHAT: GET /v1/conversations/{id} returns 404 for a soft-deleted
+             conversation even when the requesting user is the owner.
+    WHEN: the conversation row exists but has soft_deleted_at IS NOT NULL.
+    WHY:  soft-deleted conversations are logically removed from the active
+          namespace. Returning 200 for a deleted conversation would let
+          public-api route messages to a stale thread. The WHERE
+          soft_deleted_at IS NULL in the route's SQL handles this correctly;
+          this test confirms it.
+
+    FIXTURE ORDERING NOTE: both test_client and database_pool are function-
+    scoped; each TRUNCATE runs at fixture setup time (before the test body).
+    The test body creates data, then database_pool (a separate asyncpg pool
+    pointing at the same testcontainers Postgres) issues the soft-delete
+    UPDATE so the HTTP layer sees the change via test_client's pool.
+
+    SETUP NOTE: soft_deleted_at is set via direct DB manipulation using the
+    database_pool fixture because there is no public RPC endpoint for soft-
+    delete in Phase 1 — it's a future sprint.
+    """
+    # Create the conversation via the HTTP API.
+    conv_resp = await test_client.post(
+        "/v1/conversations",
+        json={
+            "user_id": "user-soft-del",
+            "ai_influencer_id": "inf-soft-del",
+            "conversation_type": "ai_chat",
+        },
+    )
+    assert conv_resp.status_code == 200
+    conv_id = conv_resp.json()["id"]
+
+    # Verify the conversation is reachable before soft-deleting.
+    before_delete_resp = await test_client.get(
+        f"/v1/conversations/{conv_id}",
+        headers={"X-User-Id": "user-soft-del"},
+    )
+    assert before_delete_resp.status_code == 200, (
+        "Conversation should be reachable before soft-delete"
+    )
+
+    # Soft-delete the conversation via a direct SQL UPDATE.
+    # database_pool is a separate asyncpg pool that connects to the same
+    # testcontainers Postgres — changes are immediately visible to test_client.
+    # uuid.UUID() converts the string id to the PostgreSQL-compatible type.
+    async with database_pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE conversations SET soft_deleted_at = NOW() WHERE id = $1",
+            uuid.UUID(conv_id),
+        )
+
+    # Now the same owner request should return 404 (soft-deleted = not visible).
+    after_delete_resp = await test_client.get(
+        f"/v1/conversations/{conv_id}",
+        headers={"X-User-Id": "user-soft-del"},
+    )
+    assert after_delete_resp.status_code == 404, (
+        f"Expected 404 for soft-deleted conversation, got "
+        f"{after_delete_resp.status_code}: {after_delete_resp.text}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_conversation_by_id_returns_none_last_message_for_new_conversation(
+    test_client: AsyncClient,
+) -> None:
+    """WHAT: GET /v1/conversations/{id} returns last_message=null for a newly
+             created conversation that has no messages yet.
+    WHEN: the conversation exists and is active but has zero message rows.
+    WHY:  the ConversationResponse contract allows last_message to be null
+          (Optional[MessageResponse]). A null value is correct for a fresh
+          conversation; an error or missing field here would break public-api's
+          inbox rendering for the first-time-opening scenario.
+    """
+    conv_resp = await test_client.post(
+        "/v1/conversations",
+        json={
+            "user_id": "user-no-msgs",
+            "ai_influencer_id": "inf-no-msgs",
+            "conversation_type": "ai_chat",
+        },
+    )
+    assert conv_resp.status_code == 200
+    conv_id = conv_resp.json()["id"]
+
+    response = await test_client.get(
+        f"/v1/conversations/{conv_id}",
+        headers={"X-User-Id": "user-no-msgs"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == conv_id
+
+    # No messages → last_message must be null, not an error.
+    assert data["last_message"] is None, (
+        f"Expected last_message=null for a conversation with no messages, "
+        f"got: {data['last_message']!r}"
+    )
+
+
+# ===========================================================================
 # RELATED FILES:
 #   conftest.py                  — test_client fixture (pool injection + httpx)
 #   ../app/api/conversation_routes.py
-#                                — the 4 route handlers under test
+#                                — the 5 route handlers under test
 #   ../app/api/models.py         — request + response shapes asserted above
 #   ../app/migrations/versions/001_initial_schema.py
-#                                — schema under test (conversations + messages)
+#                                — base schema (conversations + messages)
 #   ../app/migrations/versions/002_add_message_fields.py
 #                                — adds client_message_id + count_toward_paywall
+#   ../app/migrations/versions/003_add_dedup_indexes.py
+#                                — unique indexes required by concurrency +
+#                                  idempotency tests above
 # ===========================================================================

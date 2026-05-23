@@ -1,19 +1,22 @@
 # ---------------------------------------------------------------------------
-# conversation_routes.py — 4 internal RPC route handlers for conversations
+# conversation_routes.py — 5 internal RPC route handlers for conversations
 #   + messages.
 #
-# ⭐ START HERE: this file is the core of Deliverable 2. It exposes 4
+# ⭐ START HERE: this file is the core of Deliverable 2. It exposes 5
 # endpoints that the orchestrator + public-api call to persist and read
 # conversation history:
 #
 #   POST /v1/conversations                    create-or-get a conversation
 #   POST /v1/conversations/{id}/messages      append a turn (user + reply)
 #   GET  /v1/conversations/by-user/{user_id}  inbox list (with last_message)
+#   GET  /v1/conversations/{id}               single conversation by ID
 #   GET  /v1/conversations/{id}/messages      paginated message history
 #
 # CALLER MAP:
 #   public-api   → POST /v1/conversations            (mobile opens chat)
 #   public-api   → GET  /v1/conversations/by-user    (inbox screen load)
+#   public-api   → GET  /v1/conversations/{id}       (per-request influencer_id
+#                                                     derivation for PR-B2)
 #   orchestrator → POST /v1/conversations/{id}/msgs  (end of each turn)
 #   orchestrator → GET  /v1/conversations/{id}/msgs  (context fetch before LLM)
 #
@@ -22,21 +25,31 @@
 # The SQL is annotated with its performance profile so the reader knows
 # which index it relies on and how it scales.
 #
-# WHY NO AUTH CHECK ON THESE ROUTES?
-# These are INTERNAL RPC endpoints — only reachable on the Swarm overlay
-# `yral-v2-internal` (per C3). No Docker port-publish → not internet-
-# accessible. Callers are trusted per internal-rpc-contracts.md §E6.
-# External auth (JWT validation) lives in public-api — it validates
-# before any call reaches here. If inter-service mTLS lands in a future
-# phase, it mounts here via a middleware without changing handlers.
+# WHY NO AUTH CHECK ON MOST ROUTES?
+# POST / GET .../messages + GET .../by-user are INTERNAL RPC endpoints —
+# only reachable on the Swarm overlay `yral-v2-internal` (per C3). No
+# Docker port-publish → not internet-accessible. Callers are trusted per
+# internal-rpc-contracts.md §E6. External auth (JWT validation) lives in
+# public-api — it validates before any call reaches here.
+#
+# GET /v1/conversations/{id} requires X-User-Id header for tenant
+# isolation — public-api forwards it after JWT validation. The route
+# returns 404 (not 403) when the conversation exists but belongs to a
+# different user — never leaking the existence of other users' data.
 #
 # UPSERT LOGIC (POST /v1/conversations):
 # Natural key = (user_id, conversation_type, influencer_id, participant_b_id)
-# WHERE soft_deleted_at IS NULL. If an active conversation with this key
-# exists, we return it. Otherwise we INSERT and return the new row. This
-# mirrors chat-ai's create-or-get behaviour (per A8) so mobile can recover
-# a conversation_id after an app reinstall without creating duplicates.
-# IS NOT DISTINCT FROM handles NULL equality correctly — two NULLs match.
+# WHERE soft_deleted_at IS NULL. The INSERT uses ON CONFLICT with the
+# partial unique expression index (003_add_dedup_indexes.py) so the
+# operation is atomic — two concurrent calls with the same key resolve
+# to the same row. COALESCE in the index and ON CONFLICT target handles
+# NULL equality: two NULLs match each other.
+#
+# IDEMPOTENCY (POST /v1/conversations/{id}/messages):
+# If a message has a non-NULL client_message_id and a row with that
+# (conversation_id, client_message_id) already exists, the INSERT uses
+# ON CONFLICT DO NOTHING and we return the existing row. Retries from
+# mobile (after a network blip) never duplicate messages.
 #
 # PAGINATION SEMANTICS (GET /v1/conversations/{id}/messages):
 # Returns the N most-recent non-system messages in chronological order
@@ -44,6 +57,8 @@
 # N messages just before the cursor message (for loading older history
 # when the user scrolls up). The subquery DESC-then-ASC pattern ensures
 # "most recent N" semantics while preserving chronological page order.
+# ORDER BY includes `id` as a tiebreaker for same-timestamp batch inserts
+# so the ordering is always deterministic.
 #
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
@@ -54,7 +69,7 @@ from datetime import timezone
 from typing import Optional
 
 import asyncpg
-from fastapi import APIRouter, HTTPException, Path, Query
+from fastapi import APIRouter, Header, HTTPException, Path, Query
 
 from app.api.models import (
     AppendMessagesRequest,
@@ -66,7 +81,8 @@ from app.database import get_pool
 
 
 # All conversation + message endpoints share this router prefix.
-# No auth dependency — internal-overlay-only routes (see file header / C3).
+# GET /v1/conversations/{id} uses X-User-Id header for tenant isolation;
+# other routes rely on Swarm overlay trust (C3, §E6).
 router = APIRouter(prefix="/v1", tags=["conversations"])
 
 
@@ -177,10 +193,10 @@ def _row_to_conversation_response(
 # ===========================================================================
 # Route handlers
 # Declaration order matters for FastAPI's router: the literal-segment route
-# GET /by-user/{user_id} is declared BEFORE the parameterised-segment route
-# GET /{conversation_id}/messages to ensure `by-user` is never consumed as a
-# conversation_id parameter. FastAPI resolves routes left-to-right in the
-# order they are added, so the more-specific (literal) path wins.
+# GET /by-user/{user_id} is declared BEFORE the parameterised-segment routes
+# GET /{conversation_id} and GET /{conversation_id}/messages so `by-user`
+# is never consumed as a conversation_id parameter. FastAPI resolves routes
+# in the order they are added, so more-specific (literal) paths win.
 # ===========================================================================
 
 
@@ -192,74 +208,47 @@ def _row_to_conversation_response(
 async def create_or_get_conversation(
     body: ConversationCreateRequest,
 ) -> ConversationResponse:
-    """Create-or-get a conversation (upsert by natural key).
+    """Create-or-get a conversation (atomic upsert by natural key).
 
-    WHAT: looks for an existing active conversation matching
+    WHAT: atomically inserts a new active conversation matching
           (user_id, conversation_type, influencer_id, participant_b_id)
-          WHERE soft_deleted_at IS NULL. Returns it if found. Creates and
-          returns a new row if not found.
+          WHERE soft_deleted_at IS NULL, or returns the existing row if
+          a conflict is detected on the natural-key unique index added by
+          003_add_dedup_indexes.py.
     WHEN: public-api calls this when mobile opens a chat for the first
           time, or after losing the conversation_id (e.g. app reinstall).
-    WHY:  mirrors chat-ai's create-or-get behaviour (per A8) — no
-          duplicate conversation rows for the same thread when mobile
-          retries the create call.
+    WHY:  mirrors chat-ai's create-or-get behaviour (per A8). The atomic
+          INSERT ... ON CONFLICT DO UPDATE is race-condition-free: two
+          concurrent calls with the same key resolve to the same row
+          without duplicate inserts. COALESCE in the conflict target
+          handles NULL equality (NULL == NULL for this comparison).
     """
     pool = get_pool()
     async with pool.acquire() as conn:
-        # --- 1. Look for an existing active conversation -----------------
-        # IS NOT DISTINCT FROM treats NULL as equal to NULL — so "no
-        # influencer" matches "no influencer" and "no participant_b" matches
-        # "no participant_b" without needing IS NULL checks.
-        # The partial index conversations_by_user_active_idx covers this
-        # query (user_id filter + soft_deleted_at IS NULL predicate).
-        existing = await conn.fetchrow(
-            """
-            SELECT id, user_id, influencer_id, participant_b_id,
-                   conversation_type, last_message_at, message_count
-            FROM conversations
-            WHERE user_id = $1
-              AND conversation_type = $2
-              AND soft_deleted_at IS NULL
-              AND influencer_id IS NOT DISTINCT FROM $3
-              AND participant_b_id IS NOT DISTINCT FROM $4
-            ORDER BY last_message_at DESC
-            LIMIT 1
-            """,
-            body.user_id,
-            body.conversation_type,
-            body.ai_influencer_id,
-            body.participant_b_id,
-        )
-
-        if existing is not None:
-            # Found an active conversation — fetch its last non-system message
-            # (for the `last_message` field in ConversationResponse).
-            # Messages index messages_by_conversation_time_idx covers this.
-            last_msg_row = await conn.fetchrow(
-                """
-                SELECT id, conversation_id, role, content, client_message_id,
-                       media_urls, created_at, count_toward_paywall
-                FROM messages
-                WHERE conversation_id = $1
-                  AND role != 'system'
-                ORDER BY created_at DESC
-                LIMIT 1
-                """,
-                existing["id"],
-            )
-            last_msg = (
-                _row_to_message_response(last_msg_row) if last_msg_row else None
-            )
-            return _row_to_conversation_response(existing, last_msg)
-
-        # --- 2. No existing conversation — create a new row -------------
-        # gen_random_uuid() mints the primary key in Postgres (not in
-        # Python) so UUID generation is handled by the DB layer.
-        new_row = await conn.fetchrow(
+        # --- Atomic upsert using the partial expression unique index --------
+        # ON CONFLICT target must match 003_add_dedup_indexes.py's
+        # conversations_natural_key_active_unique_idx exactly (same
+        # columns + expressions + WHERE predicate).
+        #
+        # DO UPDATE SET last_message_at = conversations.last_message_at is
+        # a no-op update — it does not change any value. Its purpose is to
+        # ensure RETURNING always yields the row (DO NOTHING returns nothing;
+        # DO UPDATE returns the row whether it was inserted or conflicted).
+        # Index used: conversations_natural_key_active_unique_idx
+        conv_row = await conn.fetchrow(
             """
             INSERT INTO conversations
                 (user_id, influencer_id, participant_b_id, conversation_type)
             VALUES ($1, $2, $3, $4)
+            ON CONFLICT (
+                user_id,
+                conversation_type,
+                COALESCE(influencer_id, ''),
+                COALESCE(participant_b_id, '')
+            )
+            WHERE soft_deleted_at IS NULL
+            DO UPDATE SET
+                last_message_at = conversations.last_message_at
             RETURNING id, user_id, influencer_id, participant_b_id,
                       conversation_type, last_message_at, message_count
             """,
@@ -269,8 +258,25 @@ async def create_or_get_conversation(
             body.conversation_type,
         )
 
-        # Newly created conversation has no messages — last_message is null.
-        return _row_to_conversation_response(new_row, last_message=None)
+        # --- Fetch the last non-system message for the response -------------
+        # Index: messages_by_conversation_time_idx (conversation_id, created_at ASC)
+        # ORDER BY DESC reverses the ASC index efficiently for the most-recent row.
+        last_msg_row = await conn.fetchrow(
+            """
+            SELECT id, conversation_id, role, content, client_message_id,
+                   media_urls, created_at, count_toward_paywall
+            FROM messages
+            WHERE conversation_id = $1
+              AND role != 'system'
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            conv_row["id"],
+        )
+        last_msg = (
+            _row_to_message_response(last_msg_row) if last_msg_row else None
+        )
+        return _row_to_conversation_response(conv_row, last_msg)
 
 
 @router.post(
@@ -288,12 +294,18 @@ async def append_messages(
           a single transaction, then updates conversations.last_message_at
           + message_count. Returns only the non-system messages as
           MessageResponse objects (system messages are stored but filtered).
+          Handles client_message_id idempotency: if a message with the same
+          (conversation_id, client_message_id) already exists, the INSERT
+          uses ON CONFLICT DO NOTHING and the existing row is returned —
+          no duplicate inserted even if mobile retries after a network blip.
     WHEN: the orchestrator calls this at the end of each chat turn to
           persist [user_message, assistant_reply] together.
     WHY:  atomic batch insert ensures the DB is never in a half-turn state
           (user message saved, reply not yet). Filtering system messages
           from the response preserves the mobile wire contract — role
           "system" never crosses the mobile boundary.
+          Idempotency via ON CONFLICT DO NOTHING protects against mobile
+          retry doubling the paywall count or showing duplicate bubbles.
 
     Returns 404 if the conversation does not exist.
     Returns 422 if conversation_id is not a valid UUID.
@@ -328,7 +340,9 @@ async def append_messages(
         # If any INSERT fails (e.g. CHECK constraint violation on role),
         # the whole batch rolls back — no partial turn is persisted.
         async with conn.transaction():
-            inserted_rows: list[asyncpg.Record] = []
+            result_rows: list[asyncpg.Record] = []
+            new_row_count: int = 0
+
             for item in body.messages:
                 # Serialise JSONB columns to JSON strings for asyncpg.
                 # Explicit json.dumps ensures correct serialisation
@@ -344,12 +358,29 @@ async def append_messages(
                     else None
                 )
 
+                # --- Idempotency via ON CONFLICT DO NOTHING ---------------
+                # The partial unique index messages_client_message_id_dedup_idx
+                # covers (conversation_id, client_message_id) WHERE
+                # client_message_id IS NOT NULL.
+                #
+                # When client_message_id IS NULL (assistant / system messages):
+                #   The partial index predicate excludes these rows; the
+                #   INSERT always succeeds (no conflict possible).
+                #
+                # When client_message_id IS NOT NULL (user messages with dedup ID):
+                #   If a row with the same (conv_id, client_message_id) exists,
+                #   DO NOTHING fires: RETURNING yields nothing (None).
+                #   We then SELECT the existing row and return it so the caller
+                #   gets the same message_id as the original write — safe retry.
                 row = await conn.fetchrow(
                     """
                     INSERT INTO messages
                         (conversation_id, role, content, client_message_id,
                          media_urls, gemini_metadata, count_toward_paywall)
                     VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7)
+                    ON CONFLICT (conversation_id, client_message_id)
+                    WHERE client_message_id IS NOT NULL
+                    DO NOTHING
                     RETURNING id, conversation_id, role, content,
                               client_message_id, media_urls, created_at,
                               count_toward_paywall
@@ -362,29 +393,54 @@ async def append_messages(
                     gemini_json,
                     item.count_toward_paywall,
                 )
-                inserted_rows.append(row)
 
-            # --- 3. Update conversation stats ---------------------------
-            # Increment message_count by ALL inserted items (including
-            # system messages — the counter reflects DB row count, not
-            # paywall count). Update last_message_at to the current time.
-            await conn.execute(
-                """
-                UPDATE conversations
-                SET last_message_at = NOW(),
-                    message_count = message_count + $1
-                WHERE id = $2
-                """,
-                len(body.messages),
-                conv_uuid,
-            )
+                is_new = row is not None
+
+                if row is None and item.client_message_id is not None:
+                    # Conflict hit — fetch the existing row so the caller
+                    # gets the correct (original) message_id back.
+                    row = await conn.fetchrow(
+                        """
+                        SELECT id, conversation_id, role, content,
+                               client_message_id, media_urls, created_at,
+                               count_toward_paywall
+                        FROM messages
+                        WHERE conversation_id = $1
+                          AND client_message_id = $2
+                        """,
+                        conv_uuid,
+                        item.client_message_id,
+                    )
+
+                if row is not None:
+                    result_rows.append(row)
+                if is_new:
+                    # Count only genuinely new rows for the stats update.
+                    # Retry-matched rows must not double-increment.
+                    new_row_count += 1
+
+            # --- 3. Update conversation stats (new rows only) -----------
+            # Increment message_count only for rows that were freshly inserted.
+            # Retry-matched rows are not counted again. Update last_message_at
+            # to the current time.
+            if new_row_count > 0:
+                await conn.execute(
+                    """
+                    UPDATE conversations
+                    SET last_message_at = NOW(),
+                        message_count = message_count + $1
+                    WHERE id = $2
+                    """,
+                    new_row_count,
+                    conv_uuid,
+                )
 
         # --- 4. Build response — filter system messages -----------------
         # system-role rows are stored but must not appear in the response.
         # Mobile's MessageResponse.role is Literal["user", "assistant"].
         return [
             _row_to_message_response(row)
-            for row in inserted_rows
+            for row in result_rows
             if row["role"] != "system"
         ]
 
@@ -451,7 +507,7 @@ async def list_conversations_by_user(
                 FROM messages
                 WHERE conversation_id = c.id
                   AND role != 'system'
-                ORDER BY created_at DESC
+                ORDER BY created_at DESC, id DESC
                 LIMIT 1
             ) m ON TRUE
             WHERE c.user_id = $1
@@ -483,6 +539,109 @@ async def list_conversations_by_user(
             result.append(_row_to_conversation_response(row, last_msg))
 
         return result
+
+
+@router.get(
+    "/conversations/{conversation_id}",
+    response_model=ConversationResponse,
+    summary="Fetch a single conversation by ID (with tenant isolation)",
+)
+async def get_conversation_by_id(
+    conversation_id: str = Path(..., description="Conversation UUID"),
+    x_user_id: str = Header(
+        ...,
+        description=(
+            "The requesting user's ID (forwarded by public-api after JWT "
+            "validation). Must match the conversation's owner — the route "
+            "returns 404 for a wrong-user request to prevent leaking the "
+            "existence of other users' conversations."
+        ),
+    ),
+) -> ConversationResponse:
+    """Fetch a single conversation by ID with tenant isolation.
+
+    WHAT: fetches the active conversation for `conversation_id` from the DB,
+          verifies it belongs to the user identified by the X-User-Id header,
+          and returns a ConversationResponse with the most-recent non-system
+          message inline.
+    WHEN: public-api calls this before forwarding a chat request to the
+          orchestrator, to derive the ai_influencer_id from the stored
+          conversation record (Session 3 PR-B2 trust-boundary fix).
+    WHY:  the orchestrator needs ai_influencer_id per-request but only the
+          conversation_id arrives from mobile. The user-memory-service is the
+          single source of truth for which AI the conversation belongs to.
+
+    TENANT ISOLATION:
+    Returns 404 (not 403) when the conversation exists but belongs to a
+    different user. This prevents information leakage: the caller cannot
+    distinguish "conversation does not exist" from "conversation belongs to
+    someone else". Soft-deleted conversations also return 404.
+
+    AUTH:
+    X-User-Id header is required. public-api validates the JWT + extracts
+    the user_id, then forwards it as X-User-Id (per §E6 internal-rpc-
+    contracts). FastAPI maps `x_user_id` parameter to the `x-user-id`
+    header (underscore → hyphen, case-insensitive HTTP matching).
+
+    Returns 404 if not found, soft-deleted, or owned by a different user.
+    Returns 422 if conversation_id is not a valid UUID.
+    Returns 200 + ConversationResponse on success.
+    """
+    try:
+        conv_uuid = uuid.UUID(conversation_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"conversation_id is not a valid UUID: {exc}",
+        ) from exc
+
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        # --- 1. Fetch the conversation (active rows only) ----------------
+        # WHERE soft_deleted_at IS NULL: soft-deleted conversations behave
+        # as if they don't exist — they return 404, same as truly missing rows.
+        row = await conn.fetchrow(
+            """
+            SELECT id, user_id, influencer_id, participant_b_id,
+                   conversation_type, last_message_at, message_count
+            FROM conversations
+            WHERE id = $1
+              AND soft_deleted_at IS NULL
+            """,
+            conv_uuid,
+        )
+
+        # --- 2. Tenant isolation check -----------------------------------
+        # Return 404 for ALL non-visible cases:
+        #   a) row is None: conversation not found or soft-deleted
+        #   b) row["user_id"] != x_user_id: conversation exists but belongs
+        #      to a different user — must not leak existence (return 404,
+        #      never 403).
+        if row is None or row["user_id"] != x_user_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Conversation {conversation_id} not found",
+            )
+
+        # --- 3. Fetch the most-recent non-system message inline ----------
+        # Mirrors the LATERAL JOIN pattern in list_conversations_by_user but
+        # for a single conversation. ORDER BY created_at DESC, id DESC uses
+        # the same tiebreaker as list_messages for same-timestamp batches.
+        last_msg_row = await conn.fetchrow(
+            """
+            SELECT id, conversation_id, role, content, client_message_id,
+                   media_urls, created_at, count_toward_paywall
+            FROM messages
+            WHERE conversation_id = $1
+              AND role != 'system'
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            conv_uuid,
+        )
+        last_msg = _row_to_message_response(last_msg_row) if last_msg_row else None
+
+    return _row_to_conversation_response(row, last_msg)
 
 
 @router.get(
@@ -521,13 +680,16 @@ async def list_messages(
           history (with cursor).
     WHY:  the DESC-then-ASC subquery gives "most recent N" semantics with
           chronological ordering within the page:
-            1. inner query: ORDER BY created_at DESC LIMIT N — selects
-               the N most-recent (or N before the cursor) rows.
-            2. outer query: ORDER BY created_at ASC — re-orders the page
-               chronologically (oldest-first) for the caller.
+            1. inner query: ORDER BY created_at DESC, id DESC LIMIT N —
+               selects the N most-recent (or N before the cursor) rows;
+               id DESC is a tiebreaker for batch inserts with same timestamp.
+            2. outer query: ORDER BY created_at ASC, id ASC — re-orders
+               the page chronologically; id ASC matches the ASC direction.
           The messages_by_conversation_time_idx index
-          (conversation_id, created_at ASC) supports both the DESC and ASC
-          scans efficiently.
+          (conversation_id, created_at ASC) supports both scans efficiently.
+          The id tiebreaker closes the non-determinism gap: within a
+          same-timestamp group (same-transaction batch), rows are always
+          returned in the same order across repeated calls.
 
     Returns 404 if the conversation does not exist.
     Returns 422 if conversation_id or `before` is not a valid UUID.
@@ -558,6 +720,8 @@ async def list_messages(
         if before is None:
             # No cursor — return the most-recent `limit` non-system messages
             # in chronological order (DESC to select, then ASC to order page).
+            # id DESC / id ASC tiebreaker ensures deterministic ordering for
+            # messages sharing the same created_at (same-transaction batch inserts).
             # Index: messages_by_conversation_time_idx (conversation_id, created_at ASC)
             rows = await conn.fetch(
                 """
@@ -569,10 +733,10 @@ async def list_messages(
                     FROM messages
                     WHERE conversation_id = $1
                       AND role != 'system'
-                    ORDER BY created_at DESC
+                    ORDER BY created_at DESC, id DESC
                     LIMIT $2
                 ) sub
-                ORDER BY sub.created_at ASC
+                ORDER BY sub.created_at ASC, sub.id ASC
                 """,
                 conv_uuid,
                 limit,
@@ -591,6 +755,7 @@ async def list_messages(
             # Subquery resolves the cursor UUID to a created_at timestamp;
             # outer WHERE filters messages strictly older than the cursor.
             # DESC-then-ASC ensures the page is chronological.
+            # id tiebreaker ensures determinism for same-timestamp rows.
             rows = await conn.fetch(
                 """
                 SELECT *
@@ -606,10 +771,10 @@ async def list_messages(
                           FROM messages
                           WHERE id = $2
                       )
-                    ORDER BY created_at DESC
+                    ORDER BY created_at DESC, id DESC
                     LIMIT $3
                 ) sub
-                ORDER BY sub.created_at ASC
+                ORDER BY sub.created_at ASC, sub.id ASC
                 """,
                 conv_uuid,
                 before_uuid,
@@ -624,6 +789,10 @@ async def list_messages(
 #   models.py                        — Pydantic request + response shapes
 #   ../main.py                       — app.include_router(router) wires this
 #   ../database.py                   — get_pool() called in every handler
+#   ../migrations/versions/003_add_dedup_indexes.py
+#                                    — unique indexes required by ON CONFLICT
+#                                      in create_or_get_conversation +
+#                                      append_messages
 #   ../../tests/test_conversation_routes.py
 #                                    — route-level tests (httpx + testcontainers)
 #   ../../../../yral-rishi-agent-conversation-turn-orchestrator/app/run_turn.py
@@ -631,5 +800,6 @@ async def list_messages(
 #                                      GET .../messages (context fetch)
 #   ../../../../yral-rishi-agent-public-api/app/api/chat_routes.py
 #                                    — primary caller of POST /conversations +
-#                                      GET /conversations/by-user/{user_id}
+#                                      GET /conversations/by-user/{user_id} +
+#                                      GET /conversations/{id} (PR-B2)
 # ===========================================================================
