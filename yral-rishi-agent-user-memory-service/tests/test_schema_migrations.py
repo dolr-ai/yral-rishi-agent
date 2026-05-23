@@ -196,13 +196,17 @@ async def test_conversations_table_has_correct_columns(
 async def test_messages_table_has_correct_columns(
     database_pool: asyncpg.Pool,
 ) -> None:
-    """WHAT: verify `messages` has the exact column set from the migration spec.
-    WHEN: after `alembic upgrade head` runs (conftest guarantees this).
+    """WHAT: verify `messages` has the exact column set from both migrations.
+    WHEN: after `alembic upgrade head` runs (conftest guarantees this) — which
+          applies 001 (7 base columns) then 002 (adds client_message_id +
+          count_toward_paywall for a total of 9).
     WHY:  catches column name typos or missing columns that would cause
-          the Deliverable 2 repository layer to 500 on every insert.
+          the Deliverable 2 route handlers to 500 on every insert or select.
     """
-    # Expected columns per 001_initial_schema.upgrade() — each name is
-    # the exact SQL identifier used in the CREATE TABLE statement.
+    # Expected columns per 001_initial_schema.upgrade() (7 base columns)
+    # + 002_add_message_fields.upgrade() (2 additional columns).
+    # Each name is the exact SQL identifier used in the CREATE TABLE /
+    # ALTER TABLE statement.
     expected_columns = {
         "id",
         "conversation_id",
@@ -211,6 +215,9 @@ async def test_messages_table_has_correct_columns(
         "media_urls",
         "created_at",
         "gemini_metadata",
+        # Added by 002_add_message_fields:
+        "client_message_id",
+        "count_toward_paywall",
     }
 
     async with database_pool.acquire() as conn:
@@ -376,13 +383,62 @@ async def test_check_constraint_rejects_invalid_message_role(
             )
 
 
+@pytest.mark.asyncio
+async def test_migration_003_unique_indexes_exist(
+    database_pool: asyncpg.Pool,
+) -> None:
+    """WHAT: verify the two unique partial indexes from migration 003 were
+             created by `alembic upgrade head`.
+    WHEN: after conftest's session fixture runs `upgrade head` (which applies
+          001 → 002 → 003 in sequence).
+    WHY:  the ON CONFLICT clauses in conversation_routes.py's atomic upsert
+          (create_or_get_conversation) and message idempotency
+          (append_messages) rely on these indexes. If either index is missing,
+          the ON CONFLICT inference will fail at runtime with a Postgres error
+          — traffic-breaking, not just a test failure. Catching the missing
+          index here at test time is far cheaper.
+    """
+    # --- conversations_natural_key_active_unique_idx ----------------------
+    async with database_pool.acquire() as conn:
+        conv_indexes = await conn.fetch(
+            "SELECT indexname FROM pg_indexes "
+            "WHERE schemaname = 'public' AND tablename = 'conversations';",
+        )
+    conv_index_names = {row["indexname"] for row in conv_indexes}
+
+    assert "conversations_natural_key_active_unique_idx" in conv_index_names, (
+        "conversations_natural_key_active_unique_idx not found in pg_indexes. "
+        "Check that 003_add_dedup_indexes.upgrade() ran without error and that "
+        "alembic upgrade head reached migration 003."
+    )
+
+    # --- messages_client_message_id_dedup_idx ----------------------------
+    async with database_pool.acquire() as conn:
+        msg_indexes = await conn.fetch(
+            "SELECT indexname FROM pg_indexes "
+            "WHERE schemaname = 'public' AND tablename = 'messages';",
+        )
+    msg_index_names = {row["indexname"] for row in msg_indexes}
+
+    assert "messages_client_message_id_dedup_idx" in msg_index_names, (
+        "messages_client_message_id_dedup_idx not found in pg_indexes. "
+        "Check that 003_add_dedup_indexes.upgrade() ran without error and that "
+        "alembic upgrade head reached migration 003."
+    )
+
+
 # ===========================================================================
 # RELATED FILES:
 #   conftest.py                          — spins testcontainers-postgres,
 #                                          runs alembic upgrade head, provides
 #                                          database_pool fixture
 #   ../app/migrations/versions/001_initial_schema.py
-#                                        — the migration under test
+#                                        — base schema migration under test
+#   ../app/migrations/versions/002_add_message_fields.py
+#                                        — adds client_message_id column
+#   ../app/migrations/versions/003_add_dedup_indexes.py
+#                                        — adds unique indexes verified by
+#                                          test_migration_003_unique_indexes_exist
 #   ../alembic.ini                       — Alembic config used by _run_alembic
 #   ../app/migrations/env.py             — Alembic env.py dispatched by
 #                                          `alembic downgrade/upgrade`
