@@ -3,6 +3,111 @@
 
 ---
 
+## 2026-05-24 — PR #135 round-7 fixup: assertion 5 windowed-grep + filter per Codex CONCERN on round-6 (dead-code-with-identifier loophole)
+
+Same PR (#135), stays DRAFT. Round-6 Codex returned ⚠️  CONCERN (not BLOCKER) — narrow but real test-rigor gap.
+
+**Codex's CONCERN (verbatim):**
+> "Assertion 5 only greps for the `target_path_is_inside_repo` identifier, so it can pass even if a future refactor leaves that identifier present but stops actually checking the target fixture path."
+
+**Real gap.** Round-6's assertion 5 was a pure identifier grep — `echo "$filtered_lines" | grep -qF 'target_path_is_inside_repo'`. It correctly fires if the identifier disappears entirely. But it would FALSE-PASS if a future refactor:
+- Kept the `target_path_is_inside_repo=0` definition + the `target_path_is_inside_repo=1` setter (which sit at the top of step 6, before the while loop)
+- BUT removed the `if [ "$target_path_is_inside_repo" = "1" ]; then ... git check-ignore --no-index ...` block that actually USES the identifier inside the loop
+
+The identifier would still appear in the file → assertion 5 PASSES → regression ships.
+
+**Fix shape:** windowed grep + the round-5 filter, combining both checks (identifier present AND it sits near an executable check-ignore line).
+
+```bash
+target_gate_context_window="$(grep -B 2 -A 6 'target_path_is_inside_repo' "$new_service_script" \
+    | grep -vE '^[[:space:]]*(#|echo[[:space:]"'"'"']|printf[[:space:]])' \
+    || true)"
+if echo "$target_gate_context_window" | grep -qF 'check-ignore --no-index'; then
+    PASS
+else
+    FAIL  # identifier present but no nearby executable check-ignore
+fi
+```
+
+**Window sizing — why `-A 6` (not coordinator's suggested `-A 2`):**
+
+Mapped the actual line positions in `new-service.sh`:
+- Line 370: `target_path_is_inside_repo=0` (definition)
+- Line 372: `target_path_is_inside_repo=1` (setter inside `[[ ... ]]; then ... fi`)
+- Line 391: source-side check-ignore (~19-21 lines from #1/#2)
+- Line 413: `if [ "$target_path_is_inside_repo" = "1" ]; then` (guard inside while loop)
+- Line 417: target-side check-ignore (**4 lines below the guard at 413**)
+
+Coordinator's `-A 2` would catch only lines 414-415 from the guard — missing the check-ignore at 417 entirely → false NEGATIVE on the current correct code. `-A 6` catches lines 414-419, comfortably including 417, and adjustable via the noted "Adjust the grep window size if your code shape needs more context" allowance.
+
+`-B 2` catches the 2 lines before each match — sufficient to anchor without dragging in irrelevant adjacent blocks.
+
+**Filter reuse from round-5 (preserves Codex round-4's lesson):**
+
+The windowed output still contains comment lines + the operator-facing error `echo "  git check-ignore --no-index -q -- ..."` line at 426 (inside the if-block of the guard at 413). Without stripping, the inner grep would match the echo string and false-pass exactly the way round-4's assertion 3 did. Strip them via the same regex pipeline (anchored start-of-line `#` / `echo ` / `echo"` / `echo'` / `printf `).
+
+**Result:** assertion 5 fires when ANY of three regression classes occurs:
+1. `target_path_is_inside_repo` identifier removed entirely (existing round-6 behavior — empty window → inner grep fails)
+2. **NEW:** identifier remains but target check-ignore call is removed (window contains code, but no executable `check-ignore --no-index` in it)
+3. **NEW:** identifier remains + a comment/echo mention of `check-ignore --no-index` is in the window, but no real executable invocation (filter strips mentions; inner grep fails)
+
+**Files touched (round-7):** single file — `yral-rishi-agent-new-service-template/scripts/tests/test_dep010_no_index_guard.sh`. Production code (`new-service.sh`) untouched — round-6 dual-side shape is correct; only the test needed tightening. Same one-file-per-round discipline as round-5.
+
+**Local validation:**
+
+Positive case (current `new-service.sh` with full dual-side check):
+
+```
+$ bash test_dep010_no_index_guard.sh
+PASS  --no-index probe catches tracked-but-would-be-ignored case (exit 0)
+PASS  default probe (no --no-index) misses tracked case (exit 1, as expected)
+PASS  new-service.sh DEP-010 probe still uses 'check-ignore --no-index' on an executable line
+PASS  asymmetric .gitignore rule catches TARGET-side path, NOT source-side
+PASS  new-service.sh dual-side check wires 'target_path_is_inside_repo' to an executable 'check-ignore --no-index' invocation
+DEP-010 --no-index probe regression-class guard: 5 passed, 0 failed
+exit=0
+```
+
+**Negative-case verification — the EXACT regression class Codex named:** make a `mktemp -d` copy of `new-service.sh`, `sed`-delete every line from the guard `if [ "$target_path_is_inside_repo" = "1" ]; then` through its closing `    fi` (i.e. remove the entire target-side check-ignore block, including the inner check-ignore call + the failure-message echos + the gate `if`). KEEP the definition + setter at lines 370/372 intact (2 occurrences of the identifier remain in the patched file). Run the test against the patched copy:
+
+```
+PASS  --no-index probe catches tracked-but-would-be-ignored case (exit 0)
+PASS  default probe (no --no-index) misses tracked case (exit 1, as expected)
+PASS  new-service.sh DEP-010 probe still uses 'check-ignore --no-index' on an executable line
+PASS  asymmetric .gitignore rule catches TARGET-side path, NOT source-side
+FAIL  new-service.sh dual-side check: 'target_path_is_inside_repo' identifier present but no executable 'check-ignore --no-index' line within the ±2/+6 window around any occurrence
+DEP-010 --no-index probe regression-class guard: 4 passed, 1 failed
+exit=1
+```
+
+Identifier still present (`grep -c 'target_path_is_inside_repo' = 2`); zero executable check-ignore in any identifier's window (`grep -B 2 -A 6 'target_path_is_inside_repo' | grep -c 'check-ignore --no-index' = 0`); assertion 5 correctly FAILS.
+
+**Round-6's assertion 5 would have PASSED this patched copy** (identifier present → green) — round-7 closes the loophole.
+
+Plus `bash test_spawn_smoke.sh` → PRE-FLIGHT 5/5 + ALL 9 STEPS PASSED; `bash test_validate_secrets.sh` → still 5/5 PASS (siblings unaffected).
+
+**No A1 hard-stop in this fixup** — pure test-tightening, no behavior change in production code. The `target_gate_context_window` identifier is the only new name added, explicit-English per B1/B2/B5.
+
+**Append-only SESSION-2-LOG entry** above the round-6 entry per I11 (rounds 1-6 entry bodies untouched).
+
+**Diff size (round-7 fixup alone, on top of round-6 commit `c894dc9`):**
+
+| File | Lines |
+|---|---|
+| `scripts/tests/test_dep010_no_index_guard.sh` (assertion 5 + B7 comment rewrite) | ~+50/-15 |
+| this LOG entry | ~85 (doc) |
+| **Round-7 net effect** | very surgical — one assertion + its comment block |
+
+**Constraints touched:** A2.1 (single concern: close round-6's identifier-only-grep loophole; no other refactors folded in), B1/B2/B5 (`target_gate_context_window` is the only new identifier — explicit-English), B7 (new comment block above assertion 5 is dense — covers WHY windowed-grep, WHY `-A 6` window size with explicit line-distance reasoning, WHY filter pipeline reused from round-5, WHAT the three caught regression classes are), I11 (this append-only entry; rounds 1-6 entry bodies untouched).
+
+**Cross-session handoff:** unchanged. Coordinator's PR #139 (sibling workflow PR, Codex APPROVED + holding for #135) flips ready-for-review immediately after #135 merges.
+
+**Why this is likely the last round on PR #135:** Codex's progressive narrowing has gone from BLOCKERs (rounds 1-4) to CONCERNs (rounds 5-7), and round-7's specific catch is itself a refinement of round-6's refinement of round-5's refinement. Coordinator-level FYI: "If Codex round-7 returns yet another narrower CONCERN, coordinator override-merges with the CONCERN documented as a follow-up tightening — the gate IS load-bearing today; incremental refinement is bumping into diminishing returns territory."
+
+**Next:** Codex round-7 re-review. On APPROVE → coordinator manually merges PR #135 → PR #139 flips ready + merges → **DEP-014 (template skeleton expansion: asyncpg pool + redis.asyncio Sentinel-aware client + `/health/ready` that probes both)** becomes my next-task.
+
+---
+
 ## 2026-05-24 — PR #135 round-6 fixup: dual-side DEP-010 check (source + target when in-repo) per Codex CONCERN on round-5
 
 Same PR (#135), stays DRAFT. Round-5 Codex returned ⚠️  CONCERN (not BLOCKER) — round-6 closes the source-only-iteration gap.

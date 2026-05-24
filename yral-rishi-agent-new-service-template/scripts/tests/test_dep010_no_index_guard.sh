@@ -242,24 +242,65 @@ fi
 
 
 # ===========================================================================
-# Assertion 5 — static grep: new-service.sh implements the dual-side check
+# Assertion 5 — dual-side check: target_path_is_inside_repo identifier
+# is WIRED to an executable check-ignore --no-index invocation (not
+# just sitting unused in dead code / a comment)
 # ===========================================================================
 
-# Same filter-pipeline shape as assertion 3 (strips comments + echo/
-# printf lines so the assertion can't be false-passed by mentions of
-# the identifier in docs or operator-facing strings). The grep target
-# is `target_path_is_inside_repo` — the distinctive identifier I
-# introduced in new-service.sh's step 6 to gate the target-side probe.
-# If a future refactor removes the dual-side check or restructures
-# it without that identifier, this assertion fires.
-if echo "$filtered_lines" | grep -qF 'target_path_is_inside_repo'; then
+# Codex round-6 on PR #135 caught that round-5's assertion 5 was an
+# identifier-only grep — it would PASS even if a future refactor left
+# `target_path_is_inside_repo=0` (the definition) + the inside-repo
+# setter in place but REMOVED the `if [ "$target_path_is_inside_repo"
+# = "1" ]; then ... git check-ignore --no-index ...` block that uses
+# the identifier. The identifier would still appear in the file; the
+# actual target-side check would be gone; the assertion would silently
+# pass; the regression would ship.
+#
+# WHY WINDOWED grep -B 2 -A 6 (NOT JUST `grep identifier`):
+# `grep -B N -A M IDENT` prints each match's surrounding code window
+# (N lines before, M lines after). For my new-service.sh shape, the
+# guard line `if [ "$target_path_is_inside_repo" = "1" ]; then` is
+# ~4 lines above the target check-ignore call. `-A 6` comfortably
+# covers that distance; `-B 2` catches the closing `fi` of any
+# preceding block. The window for the OTHER two identifier
+# occurrences (definition `target_path_is_inside_repo=0` + setter
+# `target_path_is_inside_repo=1`) is far from any check-ignore call
+# in the current layout, so those windows correctly don't supply a
+# false-positive match — only the guard's window contributes.
+#
+# WHY ALSO STRIP COMMENT + ECHO/PRINTF LINES (the round-5 filter):
+# The windowed output still contains comment lines + the operator-
+# facing error `echo "  git check-ignore --no-index -q -- ..."`
+# lines from inside the if-block. Without stripping, the inner grep
+# would match those non-executable mentions and false-pass exactly
+# the way Codex round-4 caught for assertion 3. Strip them via the
+# same regex pipeline (anchored start-of-line `#` / `echo ` / `echo"`
+# / `echo'` / `printf ` ).
+#
+# RESULT: assertion 5 fires when ANY of these regression classes occur:
+#   (a) `target_path_is_inside_repo` identifier is removed entirely
+#       (no match → empty window → inner grep fails)
+#   (b) the identifier remains but the target check-ignore call is
+#       removed (window contains identifier-near-code, but no
+#       executable `check-ignore --no-index` line in it)
+#   (c) the identifier remains + a comment / echo string mentioning
+#       `check-ignore --no-index` is in the window, but no real
+#       executable invocation (filter strips the mentions; inner
+#       grep fails)
+# The current dual-side check survives all three checks → PASS today.
+target_gate_context_window="$(grep -B 2 -A 6 'target_path_is_inside_repo' "$new_service_script" \
+    | grep -vE '^[[:space:]]*(#|echo[[:space:]"'"'"']|printf[[:space:]])' \
+    || true)"
+if echo "$target_gate_context_window" | grep -qF 'check-ignore --no-index'; then
     PASS=$((PASS + 1))
-    echo "PASS  new-service.sh DEP-010 probe implements dual-side check (source + target via target_path_is_inside_repo gate)"
+    echo "PASS  new-service.sh dual-side check wires 'target_path_is_inside_repo' to an executable 'check-ignore --no-index' invocation"
 else
     FAIL=$((FAIL + 1))
-    echo "FAIL  new-service.sh DEP-010 probe is MISSING dual-side check — 'target_path_is_inside_repo' identifier not found on any executable line"
-    echo "      (Comment-only mentions are intentionally ignored. Either the dual-side check was removed,"
-    echo "       or the identifier was renamed without updating this assertion.)"
+    echo "FAIL  new-service.sh dual-side check: 'target_path_is_inside_repo' identifier present but no executable 'check-ignore --no-index' line within the ±2/+6 window around any occurrence"
+    echo "      (Comment-only and echo-string mentions of 'check-ignore --no-index' are intentionally ignored here.)"
+    echo "      Either the dual-side check was removed but the identifier was left as dead code,"
+    echo "      OR the gate identifier was renamed without updating this assertion,"
+    echo "      OR the inner check-ignore call was moved farther than 6 lines from the identifier."
     echo "      Path: $new_service_script"
 fi
 
