@@ -3,7 +3,29 @@
 
 ---
 
-### 2026-05-23 — D3: ETL migration plan + script + RUNBOOK + DEP-014
+### 2026-05-24 — PR #140 → PR #144 → PR #146 → PR #146-closed + branch rename → PR #147 webhook-glitch recreation (audit trail per I11)
+
+**Branch**: session-5/d3-etl-migration (clean branch from main — root cause fix)
+**Trigger**: Coordinator confirmed zero workflow runs on PR #140, #144, #146 since creation.
+All other branches firing normally (PR #137, #141, #142 with Codex+linters). Root cause:
+`session-5/etl-plan-day-9-draft` branch had merge conflicts with main (D2 commits already
+squash-merged as PR #132 / fffeadc). GitHub skips CI on PRs with CONFLICTING mergeability.
+
+**What happened**:
+- PR #140 opened 2026-05-23 — zero CI runs (mergeable: CONFLICTING)
+- 3× no-op pushes + close+reopen — still zero checks
+- PR #144, PR #146 created from same conflicting branch — still zero checks
+- Diagnosis: `git log HEAD..origin/main` showed D2 commits (119dd7e, 967ceec, 2e76bfc)
+  present in branch but already squash-merged to main as fffeadc (PR #132)
+
+**Fix**: Created `session-5/d3-etl-migration` from `origin/main`, cherry-picked only
+D3-specific commits (e22c2ed, 9190196), resolved merge conflicts cleanly.
+
+**PRs closed**: #140, #144, #146 — all had webhook/merge-conflict issues
+
+---
+
+### 2026-05-23 — D3: ETL migration plan + script + RUNBOOK + DEP-015
 
 **Branch**: session-5/etl-plan-day-9-draft
 **Trigger**: PR #132 merged (fffeadc); coordinator green-lit D3 scope.
