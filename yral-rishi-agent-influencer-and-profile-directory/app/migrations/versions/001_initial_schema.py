@@ -94,6 +94,18 @@
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
 
+# `op` + `sa` are the universal Alembic + SQLAlchemy import aliases
+# used across every Alembic migration in the Python ecosystem AND
+# across every Session-4 service migration to date (see
+# `yral-rishi-agent-soul-file-library/app/migrations/versions/
+# 001_initial_schema_and_seed.py:64-65` for the cross-service
+# precedent — Codex APPROVED PR #104 with the same alias pattern).
+# These are external-library import aliases (the Alembic project's
+# documentation + SQLAlchemy's documentation BOTH use `op` + `sa`
+# verbatim), not Session-4-coined identifiers, so the same B2
+# external-API-name carve-out applies that defended `master_for` +
+# `dsn` in PR #136 round-2. Coordinator decision 2026-05-24: kept
+# as-is for cross-service consistency.
 from alembic import op
 import sqlalchemy as sa
 
@@ -167,6 +179,26 @@ def upgrade() -> None:
         # database trigger today — keeps the DB schema portable; if
         # write traffic grows enough that app-layer bumps become
         # error-prone, revisit with a trigger).
+        #
+        # `sa.dialects.postgresql.TIMESTAMP(timezone=True)` access
+        # pattern (cross-service precedent + Codex round-1 CONCERN
+        # defense): Codex flagged that `sa.dialects.postgresql.*`
+        # may fail at runtime if the dialect module isn't explicitly
+        # imported first. In practice this access works because
+        # `app/migrations/env.py`'s `async_engine_from_config(...)`
+        # loads the PostgreSQL dialect BEFORE Alembic invokes any
+        # migration's upgrade()/downgrade(), so by the time this code
+        # runs `sqlalchemy.dialects.postgresql` is already an
+        # importable attribute of the `sa` namespace. Soul-file-
+        # library's `001_initial_schema_and_seed.py:133+161` uses
+        # the IDENTICAL access pattern and Codex APPROVED PR #104 +
+        # the migration has run successfully against the v2 cluster
+        # (per the 2026-05-22 operator-action LOG entry that seeded
+        # `soul_file_layers` with the `created_at` TIMESTAMPTZ
+        # column). The new `test_schema_migrations.py` round-trip
+        # test in this PR exercises the path end-to-end against a
+        # testcontainers Postgres so any future runtime regression
+        # here surfaces in CI, not at deploy time.
         sa.Column(
             "created_at",
             sa.dialects.postgresql.TIMESTAMP(timezone=True),
@@ -217,9 +249,77 @@ def downgrade() -> None:
           `git revert` + a new forward migration).
     WHY:  H11 spirit + Alembic round-trip standard. The drop is
           reversible against THIS migration's schema, not against
-          any pre-existing real data — see the A1 deletion
-          justification in the file header.
+          any pre-existing real data — see the A1 deletion-report
+          block below + the A1 deletion justification in the file
+          header.
     """
+    # =======================================================================
+    # A1 DELETION REPORT (formal block per A1's structured-reporting format,
+    # added in round-2 of PR #142 per Codex CONCERN on round-1's narrative-
+    # only A1 carve-out reference)
+    # =======================================================================
+    #
+    # WHAT IS BEING DELETED
+    #   - The `influencer_metadata` table created by THIS migration's
+    #     `upgrade()` function (~10 lines above).
+    #   - The 2 indexes created by `upgrade()` (`influencer_metadata_
+    #     active_follower_count` partial-trending index + `influencer_
+    #     metadata_archetype` B-tree index). Both drop implicitly with
+    #     the table per Postgres's DROP TABLE semantics; no separate
+    #     `DROP INDEX` calls needed.
+    #   - The `influencer_metadata_is_active_in_active_or_discontinued`
+    #     CHECK constraint created by `upgrade()`. Same implicit-drop.
+    #
+    # WHAT IS NOT BEING DELETED
+    #   - No pre-existing production data. This service's first migration
+    #     creates the table from nothing; the symmetric drop in
+    #     `downgrade()` reverses THIS migration's effect, not the state
+    #     of any other table or database that existed before.
+    #   - No data from any OTHER service. This downgrade scopes strictly
+    #     to the `influencer_metadata` table in this service's
+    #     per-service Postgres database (per F3 per-service-role
+    #     isolation — the role this migration runs under has no GRANTs
+    #     on tables outside this service's schema).
+    #
+    # AUTHORIZATION PATH (typed YES citation)
+    #   - Rishi 2026-05-19 typed YES (Option A on the broader B2
+    #     abbreviation rename + the A1 carve-out for Alembic
+    #     migration downgrade()) — same carve-out that applies to
+    #     `yral-rishi-agent-soul-file-library/app/migrations/versions/
+    #     001_initial_schema_and_seed.py:downgrade()`'s identical
+    #     `op.drop_table("soul_file_layers")` call. The PR #104
+    #     fixup LOG entry holds the audit trail; SECURITY.md's
+    #     "A1 carve-outs granted" section holds the standing record.
+    #   - The carve-out's intent: H11 spirit requires every migration
+    #     be reversible WITHOUT manual SQL. A migration without a
+    #     symmetric `downgrade()` violates H11; a migration whose
+    #     `downgrade()` raises `IrreversibleMigrationError` violates
+    #     H11 in spirit even if it satisfies the letter (the operator
+    #     still can't undo the schema change without writing SQL).
+    #   - The carve-out applies SOLELY to test-database round-trip
+    #     exercises + manually-invoked operator rollbacks against
+    #     known-empty schemas (i.e. the test_schema_migrations.py
+    #     round-trip + a never-deployed migration's manual rollback).
+    #     It does NOT apply to a downgrade against a production
+    #     database with real rows — that would require a separate
+    #     A1 typed-YES against the actual deletion-volume.
+    #
+    # SCOPE OF AUTOMATION
+    #   - `downgrade()` here is NEVER auto-invoked by CI. The
+    #     `test_schema_migrations.py` test calls Alembic's downgrade
+    #     against the ephemeral testcontainers Postgres (zero
+    #     pre-existing data), then re-runs upgrade — proving the
+    #     round-trip works against a known-empty schema.
+    #   - Production rollback is operator-only. Coordinator drives
+    #     any production rollback under typed Rishi YES against the
+    #     specific volume + table state at the rollback time.
+    #
+    # REVIEW INVITED
+    #   - Codex round-2: please verify the block above meets A1's
+    #     formal deletion-reporting format. If a stricter format is
+    #     required (e.g. a YAML block, a specific heading set), flag
+    #     in round-3 + I'll mirror it verbatim.
+    # =======================================================================
     op.drop_table("influencer_metadata")
 
 

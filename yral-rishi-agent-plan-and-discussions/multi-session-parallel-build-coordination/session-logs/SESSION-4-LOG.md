@@ -2,6 +2,69 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-24 — PR-D1 Chunk A round-2: BLOCKERs+CONCERNs closure + architectural pivot to tests-bundled-with-code
+
+### Status
+**Round-2 fixup pushed to PR #142 — DRAFT stays on.** Codex round-1 (the post-retrigger verdict that finally surfaced) returned ❌ REQUEST CHANGES with 6 BLOCKERs + 2 CONCERNs. Round-2 closes all 8 items + executes the architectural pivot to chunked-by-vertical (tests bundled with code per Codex's J1/J3 reading).
+
+### Architectural pivot: chunked-by-vertical (replaces chunked-by-layer)
+
+Yesterday's chunked-by-layer plan (Chunk A = data layer, Chunk B = endpoints, Chunk C = tests) was in tension with Codex's J1/J3 reading that "tests ship with code." Coordinator decision 2026-05-24: pivot to chunked-by-vertical. PR-D1 Chunk A round-2 NOW includes the test suite for the data layer; Chunk B will bundle endpoints + endpoint tests; Chunk C disappears. Matches Session 5's pattern on PR #132 (concurrency tests bundled with the dedup-index migration, not split).
+
+### Codex BLOCKER + CONCERN closure (6 BLOCKERs + 2 CONCERNs from round-1)
+
+| # | Type | Resolution |
+|---|------|------------|
+| 1 | 🛑 BLOCKER (D8) | Added `POSTGRES_CONNECTION_STRING_INFLUENCER_AND_PROFILE_DIRECTORY` to `secrets.yaml` per the manifest schema; ran `scripts/gen-env-example.sh` to regenerate the committed `.env.example`. Same pattern as PR #136 round-4. |
+| 2 | 🛑 BLOCKER (B1/B2) | Coordinator 2026-05-24 routed 3 pushbacks-approved + 2 renames-accepted. ACCEPTED: `_DATABASE_CONNECTION_STRING_ENV_VAR` → `_DATABASE_CONNECTION_STRING_ENVIRONMENT_VARIABLE`, `raw` → `raw_database_connection_string` (env.py). PUSHBACK kept (with role-comments citing soul-file precedent): `op` / `sa` Alembic aliases (external library imports — same external-API-name carve-out as `master_for` / `dsn` from PR #136 round-2; soul-file's 001 migration uses identical aliases + Codex APPROVED PR #104); `_log` (cross-service convention across orchestrator/idempotency.py + soul-file/database.py); `_DEFAULT_MIN_POOL_SIZE` / `_DEFAULT_MAX_POOL_SIZE` + asyncpg's `min_size` / `max_size` parameter names (math-vocabulary short forms + external API names; soul-file precedent). Each pushback documented in an inline role-comment naming the cross-service precedent so Codex round-3 can verify the reasoning without re-deriving. |
+| 3 | 🛑 BLOCKER (A1) | Added explicit A1 deletion-report block to `001_initial_schema.py:downgrade()`. Block covers: WHAT IS BEING DELETED (table + 2 indexes + CHECK constraint, all created by THIS migration moments earlier); WHAT IS NOT BEING DELETED (no pre-existing prod data; no data from other services); AUTHORIZATION PATH (Rishi 2026-05-19 typed YES with the soul-file precedent + the carve-out's H11-intent rationale); SCOPE OF AUTOMATION (never auto-invoked by CI; test_schema_migrations.py round-trip against ephemeral testcontainers Postgres only; production rollback is operator-only under typed YES against actual volume). |
+| 4 | 🛑 BLOCKER (B7) | Replaced short-comment package markers with full B7 file-header + RELATED FILES footer in 4 `__init__.py` files: `app/migrations/__init__.py`, `app/migrations/versions/__init__.py`, `app/models/__init__.py`, `app/repository/__init__.py`. Each header documents the marker's role + the package-marker carve-out rationale + cross-references via the same shape soul-file-library's package markers use. |
+| 5 | ⚠️ CONCERN (industry) | `sa.dialects.postgresql.TIMESTAMP(...)` access pattern kept verbatim (matches soul-file-library's `001_initial_schema_and_seed.py:133+161`) + added role-comment explaining why it's safe (env.py's `async_engine_from_config(...)` loads the PostgreSQL dialect BEFORE Alembic invokes any migration's upgrade/downgrade, so the `sqlalchemy.dialects.postgresql` attribute is reachable through the `sa` namespace by the time this code runs; cross-service precedent + the new test_schema_migrations.py round-trip catches any runtime regression in CI). |
+| 6 | ⚠️ CONCERN (test) | The architectural pivot. Tests bundled with code in this round (the data layer + its test suite ship together). New test files: `tests/__init__.py` (B7 package marker), `tests/conftest.py` (testcontainers-postgres + asyncpg pool + alembic upgrade fixtures, mirrored verbatim from `user-memory-service/tests/conftest.py`), `tests/test_schema_migrations.py` (4 tests: round-trip; column-presence; index-presence; CHECK constraint), `tests/test_influencer_metadata_repository.py` (8 tests: get_by_id ×2; list_paginated ×4; list_trending ×3). |
+
+### Files added (round-2 — 4 new test files + 1 new dep)
+- `yral-rishi-agent-influencer-and-profile-directory/tests/__init__.py` — B7 package marker for the test suite.
+- `yral-rishi-agent-influencer-and-profile-directory/tests/conftest.py` — testcontainers-postgres + asyncpg pool + `alembic upgrade head` fixtures. Mirrors `user-memory-service/tests/conftest.py` shape verbatim (Session-5 precedent); diff is the env var name + the TRUNCATE target table name + no `test_client` fixture yet (endpoints land in Chunk B; that fixture lands then).
+- `yral-rishi-agent-influencer-and-profile-directory/tests/test_schema_migrations.py` — 4 tests covering upgrade/downgrade round-trip + column-presence + index-presence + CHECK constraint.
+- `yral-rishi-agent-influencer-and-profile-directory/tests/test_influencer_metadata_repository.py` — 8 tests covering all 3 repository read methods (get_by_id happy + missing; list_paginated all-fits / offset+limit / past-end / both-statuses; list_trending DESC ordering / discontinued-excluded / limit-truncation).
+
+### Files updated (round-2)
+- `yral-rishi-agent-influencer-and-profile-directory/app/migrations/env.py` — accepted 2 renames + extended file-level comment.
+- `yral-rishi-agent-influencer-and-profile-directory/app/migrations/versions/001_initial_schema.py` — kept-as-is role-comments for `op` / `sa` aliases + the TIMESTAMP dialect access pattern; A1 deletion-report block in `downgrade()`.
+- `yral-rishi-agent-influencer-and-profile-directory/app/database.py` — kept-as-is role-comments for `_log` / `_DEFAULT_MIN_POOL_SIZE` / `_DEFAULT_MAX_POOL_SIZE` / `min_size` / `max_size` log keys.
+- `yral-rishi-agent-influencer-and-profile-directory/app/migrations/__init__.py` + `versions/__init__.py` + `app/models/__init__.py` + `app/repository/__init__.py` — full B7 headers.
+- `yral-rishi-agent-influencer-and-profile-directory/secrets.yaml` — added Postgres connection-string entry (D8 manifest).
+- `yral-rishi-agent-influencer-and-profile-directory/.env.example` — regenerated from secrets.yaml.
+- `yral-rishi-agent-influencer-and-profile-directory/pyproject.toml` — added `testcontainers[postgres]==4.10.0` + `asgi-lifespan==2.1.0` dev deps (versions pinned to match user-memory-service).
+
+### Sanity check pre-push
+`python3 -m py_compile` clean across all 14 .py files in the diff (6 app/ files + 4 test files + 4 package markers). Full pytest runs in CI via the per-service ci-yral-rishi-agent-influencer-and-profile-directory workflow.
+
+### Constraints touched
+- **A1** — explicit deletion-report block in `downgrade()` per Codex CONCERN closure; carve-out chain cited verbatim with typed-YES + cross-service precedent.
+- **A2.1** — single concern remains "influencer-directory service-build"; round-2 closes BLOCKERs + executes the chunked-by-vertical pivot (test suite bundled with the data layer it tests).
+- **A8 + D2** — chat-ai-parity column names unchanged from Chunk A round-1.
+- **B1 + B2** — accepted renames applied; pushback-kept identifiers carry inline role-comments citing soul-file precedent.
+- **B7** — full file headers on all 4 package markers; role-comments throughout the kept-as-is identifier blocks.
+- **D8** — secrets.yaml entry + regenerated `.env.example` close the round-1 BLOCKER on manifest drift.
+- **F12** — Python 3.12 + asyncio + asyncpg in tests (testcontainers spins up postgres:17-alpine).
+- **H11** — round-trip test exercises upgrade → downgrade → upgrade against the testcontainer (catches downgrade-broken regressions).
+- **I9** — Session-4-owned service folder only.
+- **I11** — same-commit code + tests + LOG + STATE pairing.
+- **I14** — still **NOT auto-merge eligible** (Python + new SQL migration + new test suite).
+- **J1 / J3** — round-1's deferred-tests CONCERN closed; test suite ships with the data layer it tests per the chunked-by-vertical pivot.
+
+### Diff size
+Round-2: ~2200-line addition over Chunk A round-1 (most of it heavily-commented per B7 — strict test-code is ~400 lines, the rest is conftest/test docstrings + LOG/STATE + the A1 deletion-report block + the kept-as-is role-comments). Cumulative PR-D1 count verified pre-push via `git diff --stat origin/main...HEAD`.
+
+### Next
+- Codex re-review on round-2 push.
+- If APPROVE → coordinator marks Ready + merges via `gh pr merge 142 --squash`.
+- Then Chunk B (endpoints + endpoint tests bundled, single PR) starts in this fresh session per the chunked-by-vertical pivot.
+- PR-D2 (chat-ai → v2 ETL script + column mapping doc) remains queued after PR-D1 lands.
+
+---
+
 ## 2026-05-23 — PR-D1 Chunk A: pause-for-fresh-session marker (workflow-401 retrigger + Chunk B context-budget pause)
 
 ### Status

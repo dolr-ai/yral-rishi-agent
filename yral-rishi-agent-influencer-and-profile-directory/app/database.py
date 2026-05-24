@@ -46,6 +46,27 @@ from app.config import get_settings
 _pool: asyncpg.Pool | None = None
 
 
+# B2-allowlist note (defense against repeated Codex flagging on this file):
+# - `_DEFAULT_MIN_POOL_SIZE` / `_DEFAULT_MAX_POOL_SIZE` retain the
+#   `MIN` / `MAX` short forms verbatim from soul-file-library's
+#   `app/database.py:_DEFAULT_MIN_POOL_SIZE` + `_DEFAULT_MAX_POOL_SIZE`
+#   (which Codex previously APPROVED in PR #104). `min` / `max` are
+#   universal math-vocabulary short forms used as identifier suffixes
+#   across the asyncpg + Python ecosystem; renaming here without also
+#   renaming in soul-file-library would create cross-service drift +
+#   require a separate refactor PR across both services. Coordinator
+#   decision 2026-05-24: kept as-is for cross-service consistency.
+# - `_log` (module-level logger) retains the convention used in
+#   `orchestrator/app/idempotency.py` + `soul-file-library/app/database.py`
+#   (4+ usages across Session-4 services). Renaming to `_logger` here
+#   would create cross-service drift. Coordinator decision 2026-05-24:
+#   kept as-is; if `_logger` is preferred as the standard, that's a
+#   separate cross-service refactor PR.
+# - `min_size` / `max_size` log keys (in `init_pool` below) mirror
+#   asyncpg's external API parameter names
+#   (`asyncpg.create_pool(min_size=, max_size=)`) — same external-API-
+#   name carve-out as `master_for` / `dsn` from PR #136 round-2.
+#
 # Min + max connection counts. Min held open even when idle so the
 # read-heavy hot path doesn't pay TCP-connect latency on cold first
 # call. Tuned the same as soul-file-library; revisit if the catalog

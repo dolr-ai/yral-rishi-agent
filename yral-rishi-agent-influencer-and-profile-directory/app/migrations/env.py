@@ -43,32 +43,46 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 config = context.config
 
 
-# Env var name the per-service connection string lives under. Declared
-# in `secrets.yaml`, mounted as `/run/secrets/...` in production +
-# bridged to env via the docker-compose secret-bridge wrapper. Local dev
-# uses `.env.local`. The CONSTRUCTION of the env var name is a literal
-# constant — no string-templating from the service name — so a grep for
-# this exact string finds every consumer.
-_DATABASE_CONNECTION_STRING_ENV_VAR: str = (
+# Environment variable name the per-service connection string lives
+# under. Declared in `secrets.yaml`, mounted as `/run/secrets/...` in
+# production + bridged to env via the docker-compose secret-bridge
+# wrapper. Local dev uses `.env.local`. The CONSTRUCTION of the
+# environment-variable name is a literal constant — no string-templating
+# from the service name — so a grep for this exact string finds every
+# consumer.
+#
+# Identifier renamed from `_DATABASE_CONNECTION_STRING_ENV_VAR` per Codex
+# PR #142 round-1 B2 BLOCKER (`env` + `var` not on the B2 allowlist).
+# Same Session-4-coined identifier, no cross-service precedent, so the
+# rename to the fully-spelled-out form is accepted in round-2.
+_DATABASE_CONNECTION_STRING_ENVIRONMENT_VARIABLE: str = (
     "POSTGRES_CONNECTION_STRING_INFLUENCER_AND_PROFILE_DIRECTORY"
 )
 
 
 def _resolve_database_url() -> str:
-    """Read the connection-string env var + adapt to the async driver.
+    """Read the connection-string environment variable + adapt to the async driver.
 
     WHAT: returns the SQLAlchemy URL string the AsyncEngine connects with.
     WHEN: called once at env.py module-load.
     WHY:  secrets never live in alembic.ini per D1+D8; reading at runtime
-          fails fast if the var is missing rather than silently using a
-          default localhost connection string.
+          fails fast if the variable is missing rather than silently
+          using a default localhost connection string.
     """
-    raw = os.environ.get(_DATABASE_CONNECTION_STRING_ENV_VAR)
-    if not raw:
+    # Identifier renamed from `raw` per Codex PR #142 round-1 B2
+    # CONCERN — `raw` is technically a full English word but
+    # `raw_database_connection_string` is more descriptive in context
+    # (also a B7 clarity win). Same Session-4-coined identifier, no
+    # cross-service precedent, so the rename is accepted in round-2.
+    raw_database_connection_string = os.environ.get(
+        _DATABASE_CONNECTION_STRING_ENVIRONMENT_VARIABLE
+    )
+    if not raw_database_connection_string:
         raise RuntimeError(
-            f"{_DATABASE_CONNECTION_STRING_ENV_VAR} env var is required to "
-            "run Alembic migrations. Source it from secrets.yaml or set "
-            "it in your shell before running `alembic upgrade head`."
+            f"{_DATABASE_CONNECTION_STRING_ENVIRONMENT_VARIABLE} "
+            "environment variable is required to run Alembic migrations. "
+            "Source it from secrets.yaml or set it in your shell before "
+            "running `alembic upgrade head`."
         )
 
     # The connection string as committed in `.env.example` uses the
@@ -77,9 +91,11 @@ def _resolve_database_url() -> str:
     # AsyncEngine needs the explicit driver suffix
     # `postgresql+asyncpg://` — we rewrite at this boundary so the rest
     # of the codebase keeps the simpler form.
-    if raw.startswith("postgresql://"):
-        return raw.replace("postgresql://", "postgresql+asyncpg://", 1)
-    return raw
+    if raw_database_connection_string.startswith("postgresql://"):
+        return raw_database_connection_string.replace(
+            "postgresql://", "postgresql+asyncpg://", 1
+        )
+    return raw_database_connection_string
 
 
 # No ORM models in this service (per directive — "no SQLAlchemy ORM").
