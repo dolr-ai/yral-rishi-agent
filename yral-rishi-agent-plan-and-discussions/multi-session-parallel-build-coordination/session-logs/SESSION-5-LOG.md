@@ -3,6 +3,32 @@
 
 ---
 
+### 2026-05-24 — PR #140 → PR #144 webhook-glitch recreation (audit trail per I11)
+
+**Branch**: session-5/etl-plan-day-9-draft (unchanged — same HEAD `2fab26d`)
+**Trigger**: Coordinator confirmed zero workflow runs on PR #140 since creation.
+All other branches firing normally (PR #137, #141, #142 with Codex+linters). Issue
+was webhook-context-level, not workflow-trigger-scope.
+
+**What happened**:
+- PR #140 opened 2026-05-23 — zero CI runs despite non-DRAFT state
+- 3× no-op pushes (758b951, d18c856, 2fab26d) — still zero checks
+- Close+reopen via `pull_request: reopened` event — still zero checks
+- Root cause: stuck webhook delivery context on PR #140's original `opened` event;
+  all subsequent `synchronize` + `reopened` events inherited the broken context
+
+**Fix**: Closed PR #140 with comment documenting root cause. Created fresh PR #144
+from the same branch/HEAD (`session-5/etl-plan-day-9-draft` @ `2fab26d`) with
+`pull_request: opened` from a clean webhook delivery context.
+
+**PR #144**: https://github.com/dolr-ai/yral-rishi-agent/pull/144
+**PR #140 (CLOSED)**: preserved in GitHub history with close comment for audit trail
+
+**DEP-015**: unchanged — references still valid; Session 2's DEP-014 (PR #135) not
+yet merged, so numbering stable.
+
+---
+
 ### 2026-05-23 — D3: ETL migration plan + script + RUNBOOK + DEP-015
 
 **Branch**: session-5/etl-plan-day-9-draft
