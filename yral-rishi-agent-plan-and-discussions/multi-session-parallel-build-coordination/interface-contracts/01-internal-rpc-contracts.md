@@ -256,9 +256,9 @@ Reasoning:
 - Both architectures honor the trust-boundary requirement (Codex CONCERN on PR #131): `influencer_id` derived from the conversation record, never from client-supplied body/header/query
 - Public-api derivation keeps orchestrator's contract minimal — orchestrator is "process the turn given an influencer," not "look up which influencer" + "load context for influencer." Cleaner separation of concerns.
 - Yesterday's PR-B2 plan was approved on this shape; switching mid-flight would add 1-2 days rework for a CONCERN (not BLOCKER) where both architectures meet the parity floor
-- Phase 1 timeline pressure: parity-correctness is the cutover gate, not architectural-elegance optimization
+- Phase 1 timeline pressure: parity-correctness is the production-readiness floor (at Rishi's A6 discretion), not architectural-elegance optimization
 
-**Alternative (NOT chosen for Phase 1)**: orchestrator owns the derivation. Public-api forwards just `conversation_id`; orchestrator queries user-memory directly. Cleaner "service owns its own data path" + fewer cross-service hops in some workflows. Captured as a **post-cutover re-evaluation candidate**: once v2 is in steady state + observability shows real call patterns, re-evaluate whether moving the user-memory call into orchestrator simplifies the request graph enough to justify the rework. Filed under the post-cutover architectural sweep that DEFER'd memory `feedback_v2_greenfield_freedom_1000x_better_no_chat_ai_inheritance_2026_05_22.md` tracks.
+**Alternative (NOT chosen for Phase 1)**: orchestrator owns the derivation. Public-api forwards just `conversation_id`; orchestrator queries user-memory directly. Cleaner "service owns its own data path" + fewer cross-service hops in some workflows. Captured as a **post-production-traffic re-evaluation candidate (at Rishi's A6 discretion)**: once v2 is in steady state + observability shows real call patterns, re-evaluate whether moving the user-memory call into orchestrator simplifies the request graph enough to justify the rework. Filed under the post-production-traffic architectural sweep that DEFER'd memory `feedback_v2_greenfield_freedom_1000x_better_no_chat_ai_inheritance_2026_05_22.md` tracks.
 
 This decision is binding for Phase 1. Future PRs touching the public-api ↔ user-memory boundary cite this section; Codex re-scoring should treat this as the cross-service boundary ratification per I9.
 
@@ -282,7 +282,7 @@ The two calls fetch DIFFERENT data shapes. The `/v1/conversations/{id}` call is 
 
 ### Measurable acceptance gate (CONCERN from PR #145 round-2 — addressed round-3)
 
-Codex correctly flagged that the p95 numbers above are designed budgets, not measured gates. Treating this architecture as safe requires a concrete pre-merge / pre-cutover acceptance condition with owners and fail-stop semantics. **This is the gate**:
+Codex correctly flagged that the p95 numbers above are designed budgets, not measured gates. Treating this architecture as safe requires a concrete pre-merge / pre-production-traffic acceptance condition with owners and fail-stop semantics (where any reference to production traffic stays at Rishi's A6 discretion). **This is the gate**:
 
 The canonical send-message endpoint per `00-api-contract.md:35` is `POST /api/v1/chat/conversations/{id}/messages` (mobile-facing; matches yral-mobile's `ChatRemoteDataSource`). All references in the gates below use this exact path — PR #145 round-3 and round-4 mistakenly used `POST /v1/send-message` as a shorthand; round-5 corrects to the canonical contract path.
 
@@ -307,9 +307,9 @@ The hard p95 latency thresholds run on a controlled, stable-resource runner — 
 - FAIL if measured p95 of the isolated public-api → user-memory call exceeds **15ms** (the budgeted ceiling).
 - FAIL if measured p95 of the full `POST /api/v1/chat/conversations/{id}/messages` round-trip exceeds **0.5× the chat-ai baseline** for the same endpoint, as read from the canonical baseline file maintained by Session 1 at `yral-rishi-agent-plan-and-discussions/latency-baseline-capture-from-live-services-the-numbers-v2-must-beat/daily-baseline.csv` (the Sentry-baseline-cron output owned by Session 1 per CONSTRAINTS E1 + I7 + multi-session-parallel-build-coordination/01-SESSION-SHARDING-AND-OWNERSHIP.md:70).
 - Runs nightly on a schedule + on-demand via workflow_dispatch when a PR touches either public-api or user-memory-service code paths affecting the hop.
-- Surfaces results as a comment on the touching PR + as a Slack/Sentry alert on regression.
+- Surfaces results as a comment on the touching PR + as a Google Chat webhook alert per D6 (the same alert channel chat-ai uses; never Slack unless Rishi explicitly approves channel changes) + a Sentry-tagged event for searchability.
 
-**Gate B — pre-cutover production-shape rehearsal (owner: Session 4 + coordinator, lives in chaos-test folder)**
+**Gate B — pre-production-traffic production-shape rehearsal at Rishi's A6 discretion (owner: Session 4 + coordinator, lives in chaos-test folder)**
 
 Required before any Rishi-approved production traffic (no scheduled date per A6). Implementation:
 
@@ -319,7 +319,7 @@ Required before any Rishi-approved production traffic (no scheduled date per A6)
 
 **Revisit trigger — combine-candidate re-evaluation:**
 
-If Gate A2 or Gate B fails at the 15ms public-api → user-memory threshold (i.e., the call is hotter than budgeted), the post-cutover combine-candidate below (extending `/context` to subsume the lookup) becomes a Phase-2 must-do rather than a re-evaluation candidate. The decision triggers a one-day rework spike across Sessions 3/4/5.
+If Gate A2 or Gate B fails at the 15ms public-api → user-memory threshold (i.e., the call is hotter than budgeted), the post-production-traffic combine-candidate below (extending `/context` to subsume the lookup) becomes a Phase-2 must-do rather than a re-evaluation candidate. The decision triggers a one-day rework spike across Sessions 3/4/5 (at Rishi's A6 discretion for when the rework lands).
 
 **Why per-PR Gate A (SMOKE) is not pre-merge of this contract doc:** the contract doc ratifies the architectural shape. The SMOKE check requires the actual implementation code from PR #141 (per-request `influencer_id`). PR #141 is in flight today (Day 8); the SMOKE check lands as part of Session 3's integration-test batch by Day 11 at the latest, two days before the Day 12-13 parity smoke target. Gate A2 (the hard p95 gate) depends on Session 1's benchmark-runner deliverable — separate work track, no Day 11 blocker.
 
@@ -330,9 +330,9 @@ This acceptance gate set replaces the vague "fires per-PR via the per-service-ci
 - Requires Session 3 to remove the user-memory call from public-api
 - Requires Session 4 to update orchestrator's `/context` call shape
 - Adds 1-2 days rework where the current shape meets the E1 p95 budget
-- Captured as **post-cutover re-evaluation candidate** alongside the orchestrator-derives alternative above
+- Captured as **post-production-traffic re-evaluation candidate at Rishi's A6 discretion** alongside the orchestrator-derives alternative above
 
-The current 2-call shape stays for Phase 1. Post-cutover sweep evaluates both alternatives (single-call consolidation + orchestrator-derives) once real cluster latency telemetry shows actual call patterns + bottlenecks.
+The current 2-call shape stays for Phase 1. Post-production-traffic sweep (at Rishi's A6 discretion for when it runs) evaluates both alternatives (single-call consolidation + orchestrator-derives) once real cluster latency telemetry shows actual call patterns + bottlenecks.
 
 ## orchestrator → content-safety-and-moderation
 
