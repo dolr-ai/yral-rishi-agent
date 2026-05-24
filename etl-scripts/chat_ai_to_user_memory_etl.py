@@ -37,7 +37,8 @@ import json            # serialises JSONB fields for asyncpg $N::jsonb parameter
 import logging         # structured INFO/ERROR log; content is NEVER logged (PII safety)
 import os              # reads connection strings from environment (not CLI args — ps-aux safety)
 import sys             # sys.exit(1) on verification failure; sys.stdout for log stream
-from datetime import datetime, timezone  # UTC timestamp in the verification report header
+import uuid            # nil UUID as keyset-pagination starting cursor
+from datetime import datetime, timezone  # UTC timestamp + epoch as keyset-pagination cursor
 
 # Third-party — must be installed in the ETL runner's virtualenv.
 import asyncpg         # async Postgres driver; no ORM per F12 directive
@@ -62,6 +63,14 @@ log = logging.getLogger("etl")
 # Default rows per SELECT + INSERT batch.
 # 10K balances RAM pressure against Postgres round-trips.
 DEFAULT_BATCH_SIZE = 10_000
+
+# Keyset-pagination starting cursors.
+# Keyset pagination replaces LIMIT/OFFSET to avoid the O(n²) full-table scan
+# that OFFSET causes on large tables (3.3M messages = ~millions of re-scanned
+# rows per page). The initial cursor values are guaranteed to precede every
+# real row so the first batch captures all rows.
+_ETL_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)  # no chat-ai row predates 1970
+_UUID_MIN = uuid.UUID("00000000-0000-0000-0000-000000000000")  # nil UUID sorts first
 
 
 # ---------------------------------------------------------------------------
@@ -221,109 +230,138 @@ async def migrate_conversations(
 ) -> int:
     """Phase 1: migrate all conversations from chat-ai → v2.
 
-    WHAT: reads chat-ai.conversations in batches (ORDER BY created_at ASC
-          for deterministic cursor-free pagination), transforms each row,
-          and inserts into v2.conversations with ON CONFLICT (id) DO NOTHING.
+    WHAT: reads chat-ai.conversations in batches using keyset pagination on
+          (created_at, id) — O(n) vs LIMIT/OFFSET's O(n²) for large tables.
+          Each batch is bulk-loaded into a temp staging table via asyncpg's
+          binary COPY protocol (~50× faster than per-row INSERTs), then
+          atomically upserted into v2.conversations with ON CONFLICT (id) DO NOTHING.
     WHEN: called as the first migration phase.
-    WHY:  conversations must exist BEFORE messages are inserted (FK constraint
-          on messages.conversation_id). Batch processing bounds memory usage.
+    WHY:  conversations must exist BEFORE messages (FK constraint). Keyset read
+          prevents source DB overload on 284K rows. A single destination
+          connection is held for the entire phase so the TEMP TABLE (session-
+          scoped in PostgreSQL) is visible across all batches.
 
     Returns: total rows inserted (excluding ON CONFLICT skips).
     """
     log.info("Phase 1 — conversations: starting (batch_size=%d, dry_run=%s)",
              batch_size, dry_run)
 
-    # Get total count for progress reporting.
     async with src.acquire() as conn:
         total = await conn.fetchval("SELECT count(*) FROM conversations;")
     log.info("Phase 1 — source has %d conversations total", total)
 
     inserted_total = 0
-    skipped_total = 0
     batch_num = 0
-    offset = 0
+    # Keyset cursor: start before all real rows (epoch timestamp + nil UUID).
+    cursor_ts = _ETL_EPOCH
+    cursor_id = _UUID_MIN
 
-    while True:
-        # Read one batch from source (READ ONLY connection).
-        async with src.acquire() as conn:
-            rows = await conn.fetch(
+    # Hold ONE destination connection for the entire phase.
+    # PostgreSQL TEMP TABLEs are session-scoped — a new acquire() would return
+    # a different connection without the staging table.
+    async with dst.acquire() as dst_conn:
+        if not dry_run:
+            # Create staging table once; reuse across all batches via TRUNCATE.
+            await dst_conn.execute(
                 """
-                SELECT id, user_id, influencer_id, participant_b_id,
-                       conversation_type, metadata, created_at, updated_at
-                FROM conversations
-                ORDER BY created_at ASC, id ASC
-                LIMIT $1 OFFSET $2
-                """,
-                batch_size,
-                offset,
+                CREATE TEMP TABLE IF NOT EXISTS conversations_staging (
+                    id UUID NOT NULL,
+                    user_id TEXT NOT NULL,
+                    influencer_id TEXT,
+                    participant_b_id TEXT,
+                    conversation_type TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL,
+                    last_message_at TIMESTAMPTZ NOT NULL,
+                    message_count INT NOT NULL,
+                    soft_deleted_at TIMESTAMPTZ
+                )
+                """
             )
 
-        if not rows:
-            log.info("Phase 1 — all batches exhausted at offset %d", offset)
-            break
+        while True:
+            # Keyset read — no OFFSET, so the source DB scans only new rows.
+            async with src.acquire() as src_conn:
+                rows = await src_conn.fetch(
+                    """
+                    SELECT id, user_id, influencer_id, participant_b_id,
+                           conversation_type, metadata, created_at, updated_at
+                    FROM conversations
+                    WHERE (created_at, id) > ($1, $2)
+                    ORDER BY created_at ASC, id ASC
+                    LIMIT $3
+                    """,
+                    cursor_ts,
+                    cursor_id,
+                    batch_size,
+                )
 
-        batch_num += 1
-        rows_to_insert = [transform_conversation_row(r) for r in rows]
+            if not rows:
+                log.info("Phase 1 — keyset cursor exhausted after batch %d", batch_num)
+                break
 
-        if dry_run:
-            log.info("Phase 1 — batch %d: DRY RUN — would insert %d rows",
-                     batch_num, len(rows_to_insert))
-        else:
-            # Bulk insert via executemany-style loop with ON CONFLICT DO NOTHING.
-            # We execute individually (not COPY) so ON CONFLICT is respected per-row.
-            inserted_count = 0
-            skipped_count = 0
+            batch_num += 1
+            rows_to_insert = [transform_conversation_row(r) for r in rows]
 
-            async with dst.acquire() as conn:
-                async with conn.transaction():
-                    for r in rows_to_insert:
-                        result = await conn.execute(
-                            """
-                            INSERT INTO conversations (
-                                id, user_id, influencer_id, participant_b_id,
-                                conversation_type, created_at, last_message_at,
-                                message_count, soft_deleted_at
-                            ) VALUES (
-                                $1, $2, $3, $4, $5, $6, $7, $8, $9
-                            )
-                            ON CONFLICT (id) DO NOTHING
-                            """,
-                            r["id"],
-                            r["user_id"],
-                            r["influencer_id"],
-                            r["participant_b_id"],
-                            r["conversation_type"],
-                            r["created_at"],
-                            r["last_message_at"],
-                            r["message_count"],
-                            r["soft_deleted_at"],
+            if dry_run:
+                log.info("Phase 1 — batch %d: DRY RUN — would insert %d rows",
+                         batch_num, len(rows_to_insert))
+            else:
+                # TRUNCATE staging → COPY batch (binary protocol) → INSERT SELECT.
+                # Each step auto-commits; ON CONFLICT makes the whole pipeline
+                # idempotent — a crash + restart re-runs from cursor_ts = _ETL_EPOCH
+                # and skips already-loaded rows.
+                await dst_conn.execute("TRUNCATE conversations_staging")
+                await dst_conn.copy_records_to_table(
+                    "conversations_staging",
+                    records=[
+                        (
+                            r["id"], r["user_id"], r["influencer_id"],
+                            r["participant_b_id"], r["conversation_type"],
+                            r["created_at"], r["last_message_at"],
+                            r["message_count"], r["soft_deleted_at"],
                         )
-                        # asyncpg execute() returns "INSERT 0 N" where N is rows affected.
-                        # ON CONFLICT DO NOTHING returns N=0 on conflict.
-                        if "INSERT 0 1" in result:
-                            inserted_count += 1
-                        else:
-                            skipped_count += 1
+                        for r in rows_to_insert
+                    ],
+                    columns=[
+                        "id", "user_id", "influencer_id", "participant_b_id",
+                        "conversation_type", "created_at", "last_message_at",
+                        "message_count", "soft_deleted_at",
+                    ],
+                )
+                result = await dst_conn.execute(
+                    """
+                    INSERT INTO conversations (
+                        id, user_id, influencer_id, participant_b_id,
+                        conversation_type, created_at, last_message_at,
+                        message_count, soft_deleted_at
+                    )
+                    SELECT id, user_id, influencer_id, participant_b_id,
+                           conversation_type, created_at, last_message_at,
+                           message_count, soft_deleted_at
+                    FROM conversations_staging
+                    ON CONFLICT (id) DO NOTHING
+                    """
+                )
+                # asyncpg returns "INSERT 0 N" — N is the count of new rows.
+                inserted_batch = int(result.split()[-1])
+                inserted_total += inserted_batch
+                log.info(
+                    "Phase 1 — batch %d: inserted=%d skipped=%d "
+                    "(running total inserted=%d / source=%d)",
+                    batch_num, inserted_batch, len(rows_to_insert) - inserted_batch,
+                    inserted_total, total,
+                )
 
-            inserted_total += inserted_count
-            skipped_total += skipped_count
-            log.info(
-                "Phase 1 — batch %d (offset %d): inserted=%d skipped=%d "
-                "(running total: inserted=%d skipped=%d / %d)",
-                batch_num, offset, inserted_count, skipped_count,
-                inserted_total, skipped_total, total,
-            )
+            # Advance keyset cursor to the last row of this batch.
+            cursor_ts = rows[-1]["created_at"]
+            cursor_id = rows[-1]["id"]
 
-        offset += len(rows)
+            # Exit when this batch was smaller than batch_size → no more rows.
+            if len(rows) < batch_size:
+                break
 
-        # Exit condition: this batch was smaller than batch_size → last batch.
-        if len(rows) < batch_size:
-            break
-
-    log.info(
-        "Phase 1 — conversations DONE: inserted=%d skipped=%d (expected ~%d)",
-        inserted_total, skipped_total, total,
-    )
+    log.info("Phase 1 — conversations DONE: inserted=%d (expected ~%d)",
+             inserted_total, total)
     return inserted_total
 
 
@@ -335,14 +373,23 @@ async def migrate_messages(
 ) -> int:
     """Phase 2: migrate all messages from chat-ai → v2.
 
-    WHAT: reads chat-ai.messages in batches (ORDER BY created_at ASC for
-          deterministic pagination), transforms each row (see §3 of the plan),
-          and inserts into v2.messages with ON CONFLICT (id) DO NOTHING.
-    WHEN: called AFTER Phase 1 (conversations must exist for FK to pass).
-    WHY:  3.3M rows require batch processing to bound memory. ON CONFLICT
-          makes re-runs safe.
+    WHAT: reads chat-ai.messages in batches using keyset pagination on
+          (created_at, id) — O(n) vs LIMIT/OFFSET's O(n²) for large tables.
+          Each batch is bulk-loaded into a temp staging table via asyncpg's
+          binary COPY protocol (~50× faster than per-row INSERTs), then
+          atomically upserted into v2.messages with ON CONFLICT (id) DO NOTHING.
+          JSONB columns (media_urls, gemini_metadata) are stored as TEXT in the
+          staging table and cast to JSONB in the INSERT SELECT — COPY's binary
+          protocol does not natively encode Postgres JSONB.
+    WHEN: called AFTER Phase 1 (conversations must exist before messages: FK
+          constraint on messages.conversation_id).
+    WHY:  3.3M messages × OFFSET re-scan = O(n²) on the source DB.  Keyset
+          pagination eliminates the re-scan: each page starts exactly where the
+          last left off. A single destination connection is held for the entire
+          phase so the TEMP TABLE (session-scoped in PostgreSQL) is visible
+          across all batches.
 
-    Returns: total rows inserted.
+    Returns: total rows inserted (excluding ON CONFLICT skips).
     """
     log.info("Phase 2 — messages: starting (batch_size=%d, dry_run=%s)",
              batch_size, dry_run)
@@ -352,92 +399,125 @@ async def migrate_messages(
     log.info("Phase 2 — source has %d messages total", total)
 
     inserted_total = 0
-    skipped_total = 0
     batch_num = 0
-    offset = 0
+    # Keyset cursor: start before all real rows (epoch timestamp + nil UUID).
+    cursor_ts = _ETL_EPOCH
+    cursor_id = _UUID_MIN
 
-    while True:
-        async with src.acquire() as conn:
-            rows = await conn.fetch(
+    # Hold ONE destination connection for the entire phase.
+    # PostgreSQL TEMP TABLEs are session-scoped — a new acquire() would return
+    # a different connection without the staging table.
+    async with dst.acquire() as dst_conn:
+        if not dry_run:
+            # media_urls + gemini_metadata stored as TEXT in staging; cast to
+            # JSONB in the INSERT SELECT. COPY's binary protocol cannot encode
+            # the Postgres JSONB wire format directly — TEXT is the safe bridge.
+            await dst_conn.execute(
                 """
-                SELECT id, conversation_id, role, content, media_urls,
-                       client_message_id, token_count, created_at
-                FROM messages
-                ORDER BY created_at ASC, id ASC
-                LIMIT $1 OFFSET $2
-                """,
-                batch_size,
-                offset,
+                CREATE TEMP TABLE IF NOT EXISTS messages_staging (
+                    id UUID NOT NULL,
+                    conversation_id UUID NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    media_urls TEXT,
+                    gemini_metadata TEXT,
+                    client_message_id TEXT,
+                    created_at TIMESTAMPTZ NOT NULL,
+                    count_toward_paywall BOOLEAN NOT NULL
+                )
+                """
             )
 
-        if not rows:
-            log.info("Phase 2 — all batches exhausted at offset %d", offset)
-            break
-
-        batch_num += 1
-        rows_to_insert = [transform_message_row(r) for r in rows]
-
-        if dry_run:
-            log.info("Phase 2 — batch %d: DRY RUN — would insert %d rows",
-                     batch_num, len(rows_to_insert))
-        else:
-            inserted_count = 0
-            skipped_count = 0
-
-            async with dst.acquire() as conn:
-                async with conn.transaction():
-                    for r in rows_to_insert:
-                        result = await conn.execute(
-                            """
-                            INSERT INTO messages (
-                                id, conversation_id, role, content,
-                                media_urls, gemini_metadata,
-                                client_message_id, created_at,
-                                count_toward_paywall
-                            ) VALUES (
-                                $1, $2, $3, $4,
-                                $5::jsonb, $6::jsonb,
-                                $7, $8,
-                                $9
-                            )
-                            ON CONFLICT (id) DO NOTHING
-                            """,
-                            r["id"],
-                            r["conversation_id"],
-                            r["role"],
-                            r["content"],
-                            r["media_urls"],
-                            r["gemini_metadata"],
-                            r["client_message_id"],
-                            r["created_at"],
-                            r["count_toward_paywall"],
-                        )
-                        if "INSERT 0 1" in result:
-                            inserted_count += 1
-                        else:
-                            skipped_count += 1
-
-            inserted_total += inserted_count
-            skipped_total += skipped_count
-
-            # Progress log every 10 batches (every 100K rows at default batch size)
-            if batch_num % 10 == 0:
-                log.info(
-                    "Phase 2 — batch %d (offset %d): inserted=%d skipped=%d "
-                    "(running total: inserted=%d / %d)",
-                    batch_num, offset, inserted_count, skipped_count,
-                    inserted_total, total,
+        while True:
+            # Keyset read — no OFFSET, so the source DB scans only new rows.
+            async with src.acquire() as src_conn:
+                rows = await src_conn.fetch(
+                    """
+                    SELECT id, conversation_id, role, content, media_urls,
+                           client_message_id, token_count, created_at
+                    FROM messages
+                    WHERE (created_at, id) > ($1, $2)
+                    ORDER BY created_at ASC, id ASC
+                    LIMIT $3
+                    """,
+                    cursor_ts,
+                    cursor_id,
+                    batch_size,
                 )
 
-        offset += len(rows)
+            if not rows:
+                log.info("Phase 2 — keyset cursor exhausted after batch %d", batch_num)
+                break
 
-        if len(rows) < batch_size:
-            break
+            batch_num += 1
+            rows_to_insert = [transform_message_row(r) for r in rows]
 
-    log.info(
-        "Phase 2 — messages DONE: inserted=%d skipped=%d (expected ~%d)",
-        inserted_total, skipped_total, total,
-    )
+            if dry_run:
+                log.info("Phase 2 — batch %d: DRY RUN — would insert %d rows",
+                         batch_num, len(rows_to_insert))
+            else:
+                # TRUNCATE staging → COPY batch (binary protocol) → INSERT SELECT.
+                # ON CONFLICT makes the whole pipeline idempotent — a crash +
+                # restart re-runs from cursor_ts = _ETL_EPOCH and skips already-
+                # loaded rows.
+                await dst_conn.execute("TRUNCATE messages_staging")
+                await dst_conn.copy_records_to_table(
+                    "messages_staging",
+                    records=[
+                        (
+                            r["id"], r["conversation_id"], r["role"],
+                            r["content"], r["media_urls"], r["gemini_metadata"],
+                            r["client_message_id"], r["created_at"],
+                            r["count_toward_paywall"],
+                        )
+                        for r in rows_to_insert
+                    ],
+                    columns=[
+                        "id", "conversation_id", "role", "content",
+                        "media_urls", "gemini_metadata", "client_message_id",
+                        "created_at", "count_toward_paywall",
+                    ],
+                )
+                result = await dst_conn.execute(
+                    """
+                    INSERT INTO messages (
+                        id, conversation_id, role, content,
+                        media_urls, gemini_metadata,
+                        client_message_id, created_at,
+                        count_toward_paywall
+                    )
+                    SELECT
+                        id, conversation_id, role, content,
+                        media_urls::jsonb, gemini_metadata::jsonb,
+                        client_message_id, created_at,
+                        count_toward_paywall
+                    FROM messages_staging
+                    ON CONFLICT (id) DO NOTHING
+                    """
+                )
+                # asyncpg returns "INSERT 0 N" — N is the count of new rows.
+                inserted_batch = int(result.split()[-1])
+                inserted_total += inserted_batch
+                # Progress log every 10 batches (every 100K rows at default size).
+                if batch_num % 10 == 0:
+                    log.info(
+                        "Phase 2 — batch %d: inserted=%d skipped=%d "
+                        "(running total inserted=%d / source=%d)",
+                        batch_num, inserted_batch,
+                        len(rows_to_insert) - inserted_batch,
+                        inserted_total, total,
+                    )
+
+            # Advance keyset cursor to the last row of this batch.
+            cursor_ts = rows[-1]["created_at"]
+            cursor_id = rows[-1]["id"]
+
+            # Exit when this batch was smaller than batch_size → no more rows.
+            if len(rows) < batch_size:
+                break
+
+    log.info("Phase 2 — messages DONE: inserted=%d (expected ~%d)",
+             inserted_total, total)
     return inserted_total
 
 

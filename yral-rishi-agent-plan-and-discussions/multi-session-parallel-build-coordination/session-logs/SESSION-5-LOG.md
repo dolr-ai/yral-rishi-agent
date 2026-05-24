@@ -3,6 +3,61 @@
 
 ---
 
+### 2026-05-24 — PR #147 round-5: security fix + ETL keyset+COPY rewrite
+
+**Branch**: session-5/d3-etl-migration
+**Trigger**: Codex round-4 returned two CONCERNs:
+  CONCERN 1 (SECURITY): `conversation_routes.py` — `before=` cursor subquery
+  resolved any message id globally, enabling cross-conversation cursor manipulation.
+  A caller could pass a message id from conversation B while querying conversation A,
+  anchoring pagination at B's row coordinates (wrong page boundary + info leak).
+  CONCERN 2 (perf): `chat_ai_to_user_memory_etl.py` — `migrate_messages` used
+  LIMIT/OFFSET pagination (O(n²) on 3.3M rows) + per-row INSERT (no batching).
+
+**What ships**:
+
+1. `app/api/conversation_routes.py` — cross-tenant cursor isolation (security fix):
+   - Pre-check `fetchval` validates `before=` cursor belongs to the queried conversation
+     (`WHERE id = $1 AND conversation_id = $2`) before resolving its coordinates
+   - Returns 404 (not 403 — consistent with tenant-isolation pattern) if cursor message
+     not found in this conversation
+   - Defense-in-depth: cursor subquery ALSO pins `AND conversation_id = $1` so even
+     if the pre-check is somehow bypassed, the coordinates are from the correct conversation
+
+2. `etl-scripts/chat_ai_to_user_memory_etl.py` — `migrate_messages` full rewrite:
+   - Keyset pagination: `WHERE (created_at, id) > ($cursor_ts, $cursor_id)` eliminates
+     the O(n²) OFFSET re-scan on 3.3M message rows
+   - COPY-to-temp staging: `messages_staging` TEMP TABLE holds TEXT for JSONB columns
+     (media_urls, gemini_metadata) — binary COPY protocol cannot encode Postgres JSONB
+     directly; INSERT SELECT casts TEXT → JSONB atomically
+   - Single dst connection held for entire phase (TEMP TABLE is session-scoped)
+   - Idempotent: ON CONFLICT (id) DO NOTHING means a crash + restart re-runs from
+     `_ETL_EPOCH` / `_UUID_MIN` and skips already-loaded rows
+   - Progress log every 10 batches (every 100K rows at default batch size)
+   - Docstring updated: WHAT/WHEN/WHY + JSONB TEXT bridge rationale
+
+3. `yral-rishi-agent-user-memory-service/tests/test_conversation_routes.py` — new test:
+   - `test_get_messages_before_cursor_from_different_conversation_returns_404`:
+     creates two conversations A and B; inserts one message in each; queries A
+     with the message id from B as the `before=` cursor; asserts 404
+     Documents the cross-tenant cursor isolation contract (round-5 security fix)
+
+**Key decisions**:
+- `messages_staging` uses TEXT columns for media_urls + gemini_metadata because
+  asyncpg's `copy_records_to_table` uses the binary COPY protocol which cannot
+  encode Postgres JSONB natively — TEXT → JSONB cast in the INSERT SELECT is
+  the correct bridge (same pattern as pg_dump restores)
+- 404 (not 422) for cross-tenant cursor: the cursor UUID is syntactically valid,
+  so 422 would be wrong. 404 matches the "not found in this conversation" semantics
+  and avoids confirming that the message exists elsewhere (tenant isolation)
+- `_ETL_EPOCH` / `_UUID_MIN` as keyset starting cursors: guaranteed to precede
+  all real rows in both chat-ai DBs (no row predates 1970; nil UUID sorts first)
+
+**Tests**: 19 ETL unit tests pass; user-memory-service route tests include new
+  cross-tenant cursor test; B2 clean on all new/changed code
+
+---
+
 ### 2026-05-24 — PR #147 round-4: B7 sweep on ETL script + ETL unit test suite
 
 **Branch**: session-5/d3-etl-migration

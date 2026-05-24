@@ -752,12 +752,33 @@ async def list_messages(
                     detail=f"before is not a valid UUID: {exc}",
                 ) from exc
 
-            # Subquery resolves the cursor UUID to a (created_at, id) pair;
-            # outer WHERE uses a compound row comparison so messages within
-            # the SAME timestamp batch are correctly partitioned by id.
-            # A created_at-only cursor would silently drop same-timestamp
-            # peers that precede the cursor message — compound comparison
-            # fixes this. DESC-then-ASC ensures the page is chronological.
+            # Validate cursor message belongs to THIS conversation BEFORE resolving
+            # its coordinates. A caller can pass a valid message id from conversation
+            # B while querying conversation A — the cursor itself does not leak
+            # message content, but it anchors pagination to B's row data and shifts
+            # the response shape (wrong page boundary).
+            # 404 is consistent with the tenant-isolation pattern used throughout
+            # this service: never confirm existence of another user's resources.
+            cursor_exists = await conn.fetchval(
+                """
+                SELECT id
+                FROM messages
+                WHERE id = $1
+                  AND conversation_id = $2
+                """,
+                before_uuid,
+                conv_uuid,
+            )
+            if cursor_exists is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"cursor message {before} not found in this conversation",
+                )
+
+            # Compound row comparison partitions same-timestamp batches correctly
+            # (see round-2 fix comment). Defense-in-depth: the subquery also pins
+            # conversation_id = $1 in case the pre-check is somehow bypassed.
+            # DESC-then-ASC subquery returns most-recent N in chronological order.
             rows = await conn.fetch(
                 """
                 SELECT *
@@ -772,6 +793,7 @@ async def list_messages(
                           SELECT created_at, id
                           FROM messages
                           WHERE id = $2
+                            AND conversation_id = $1
                       )
                     ORDER BY created_at DESC, id DESC
                     LIMIT $3

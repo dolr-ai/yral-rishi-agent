@@ -945,6 +945,84 @@ async def test_before_cursor_within_same_timestamp_batch_returns_correct_subset(
     )
 
 
+@pytest.mark.asyncio
+async def test_get_messages_before_cursor_from_different_conversation_returns_404(
+    test_client: AsyncClient,
+) -> None:
+    """WHAT: GET .../messages?before=<foreign_msg_id> returns 404 when the
+             cursor message belongs to a DIFFERENT conversation from the one
+             being queried.
+    WHEN: a caller passes a valid message UUID from conversation B as the
+          `before` cursor while querying conversation A.
+    WHY:  without the cross-tenant cursor check (round-5 security fix), the
+          cursor subquery resolves any message id globally — it anchors
+          pagination to B's row coordinates and produces the wrong page
+          boundary for conversation A. More critically, it lets callers probe
+          whether a message id exists in a different conversation (information
+          leak across tenant boundaries).
+          The fix (pre-check fetchval + AND conversation_id = $1 defense-in-
+          depth) must return 404 for any cursor that doesn't belong to the
+          conversation being queried. This test pins that contract.
+
+    SECURITY NOTE: 404 is the correct status — consistent with every other
+    tenant-isolation guard in this service (never 403, which would confirm
+    the resource exists).
+    """
+    # Create two separate conversations for two users.
+    conv_a_resp = await test_client.post(
+        "/v1/conversations",
+        json={
+            "user_id": "user-cross-tenant-a",
+            "ai_influencer_id": "inf-cross-tenant-a",
+            "conversation_type": "ai_chat",
+        },
+    )
+    assert conv_a_resp.status_code == 200
+    conv_a_id = conv_a_resp.json()["id"]
+
+    conv_b_resp = await test_client.post(
+        "/v1/conversations",
+        json={
+            "user_id": "user-cross-tenant-b",
+            "ai_influencer_id": "inf-cross-tenant-b",
+            "conversation_type": "ai_chat",
+        },
+    )
+    assert conv_b_resp.status_code == 200
+    conv_b_id = conv_b_resp.json()["id"]
+
+    # Insert a message into conversation A and conversation B.
+    msg_a_resp = await test_client.post(
+        f"/v1/conversations/{conv_a_id}/messages",
+        json={"messages": [{"role": "user", "content": "message in conv A"}]},
+    )
+    assert msg_a_resp.status_code == 200
+    # (msg_a_id not needed — we just need conv A to have at least one message)
+
+    msg_b_resp = await test_client.post(
+        f"/v1/conversations/{conv_b_id}/messages",
+        json={"messages": [{"role": "user", "content": "message in conv B"}]},
+    )
+    assert msg_b_resp.status_code == 200
+    msg_b_id = msg_b_resp.json()[0]["id"]
+
+    # The attack: query conversation A with a cursor from conversation B.
+    # Without the fix, the cursor subquery resolves msg_b_id globally and
+    # returns a valid (created_at, id) pair anchored in B — wrong boundary.
+    response = await test_client.get(
+        f"/v1/conversations/{conv_a_id}/messages?before={msg_b_id}&limit=10"
+    )
+
+    assert response.status_code == 404, (
+        f"Expected 404 when before= cursor belongs to a different conversation. "
+        f"Got {response.status_code}: {response.text}.\n"
+        f"  queried conv_a_id={conv_a_id!r}  cursor msg_b_id={msg_b_id!r} "
+        f"(belongs to conv_b_id={conv_b_id!r}).\n"
+        f"The cross-tenant cursor isolation check (round-5 security fix) must "
+        f"reject foreign cursors with 404, not silently return wrong results."
+    )
+
+
 # ===========================================================================
 # GET /v1/conversations/{id} — get_conversation_by_id
 # ===========================================================================
