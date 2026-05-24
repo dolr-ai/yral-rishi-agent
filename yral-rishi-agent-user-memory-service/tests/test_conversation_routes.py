@@ -867,9 +867,9 @@ async def test_before_cursor_within_same_timestamp_batch_returns_correct_subset(
     """WHAT: when `before=<id>` cursor points at the LAST message of a same-
              timestamp batch, the response includes BOTH the earlier standalone
              message AND the same-timestamp peers that precede the cursor
-             message by id.
+             message by UUID sort order.
     WHEN: mobile calls GET .../messages?before=<late_b_id> where late_b is
-          the second message of a two-message batch sharing one created_at.
+          the UUID-sort-larger of a two-message batch sharing one created_at.
     WHY:  a created_at-only cursor (`created_at < cursor.created_at`) silently
           drops same-timestamp peers — late_a shares cursor.created_at so
           `late_a.created_at < cursor.created_at` is FALSE, excluding it.
@@ -877,6 +877,11 @@ async def test_before_cursor_within_same_timestamp_batch_returns_correct_subset(
           cursor.id)` returns late_a because `late_a.id < cursor.id` resolves
           the tie. This test pins the EXACT expected id list; a created_at-only
           cursor regression returns only [early_id] and fails the assertion.
+    ORDER NOTE: UUIDv4 is random — insertion index ≠ UUID sort order. The test
+          derives late_a / late_b by sorting the two same-timestamp ids via
+          `uuid.UUID()` comparison, which matches PostgreSQL's UUID type ordering
+          exactly. The larger UUID is used as the cursor; the smaller is expected
+          in the result.
     """
     conv_resp = await test_client.post(
         "/v1/conversations",
@@ -907,11 +912,12 @@ async def test_before_cursor_within_same_timestamp_batch_returns_correct_subset(
     )
     assert late_resp.status_code == 200
     late_batch_ids = [m["id"] for m in late_resp.json()]
-    # late_batch_ids[0] = late_a (earlier id within same timestamp)
-    # late_batch_ids[1] = late_b (later id within same timestamp — used as cursor)
     assert len(late_batch_ids) == 2, f"Expected 2 late-batch messages, got {late_batch_ids}"
-    late_a_id = late_batch_ids[0]
-    late_b_id = late_batch_ids[1]
+    # Sort by uuid.UUID() value — matches PostgreSQL's UUID type comparison exactly.
+    # UUIDv4 is random so insertion index does NOT equal UUID sort order.
+    sorted_late_ids = sorted(late_batch_ids, key=lambda uid: uuid.UUID(uid))
+    late_a_id = sorted_late_ids[0]  # smaller UUID — precedes cursor in compound comparison
+    late_b_id = sorted_late_ids[1]  # larger UUID — used as the before= cursor
 
     # Sanity: confirm 3 total messages exist in chronological order.
     all_resp = await test_client.get(f"/v1/conversations/{conv_id}/messages?limit=10")
