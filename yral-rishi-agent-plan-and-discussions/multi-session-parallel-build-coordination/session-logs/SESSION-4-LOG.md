@@ -2,6 +2,35 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-24 — PR #152 round-1 fixup: drop incorrect "auto-merge eligible per I14" claim (Codex BLOCKER)
+
+### Status
+**Round-1 fixup pushed to PR #152 — DRAFT stays on.** Codex round-1 returned a 🛑 BLOCKER on SESSION-4-STATE.md's claim that the PR is "auto-merge eligible per I14." I14 explicitly excludes secrets files; PR #152 touches `secrets.yaml`, so the I14 path is closed regardless of how declarative the diff looks. Coordinator confirmed.
+
+### What's changing
+- `SESSION-4-STATE.md` top-of-file `> Updated:` line for 2026-05-24: appended a new round-1 fixup line on top documenting the correction; corrected the prior 2026-05-24 line's tail clause from "auto-merge eligible per I14" → "standard Rishi/coordinator review required — I14 explicitly excludes secrets files".
+- `SESSION-4-STATE.md` LAST THING I DID paragraph for 2026-05-24: same correction with a "round-1 corrected an earlier overreach" clarifier so the git-history reader sees the intent path.
+- This LOG addendum.
+
+### Root cause (so this doesn't recur)
+Self-quoted I14 wording from prior PRs without re-reading CONSTRAINTS for this specific file class. The I14 exclusion list reads (effectively) "secrets / behavior-changing config" — `secrets.yaml` is the canonical example. The mistake was treating "declarative manifest" as a sufficient condition for I14 eligibility; the file-class exclusion is independent of declarative-vs-imperative.
+
+### Files touched (round-1)
+- `SESSION-4-STATE.md` — text-only correction.
+- This LOG entry.
+- **NO change to `yral-rishi-agent-conversation-turn-orchestrator/secrets.yaml` or `.env.example`** — functional content of the PR unchanged.
+
+### Constraints touched
+- **A2.1** — single-concern scope unchanged (text-only).
+- **I11** — same-commit doc + LOG + STATE pairing.
+- **I14** — corrected: this PR is **NOT auto-merge eligible**. Standard Rishi/coordinator review required.
+
+### Next
+- Codex re-review on the round-1 fixup.
+- If APPROVE → coordinator marks Ready + manually merges via `gh pr merge 152 --squash`.
+
+---
+
 ## 2026-05-24 — PR-D8-orchestrator-openrouter-mirror: add OPENROUTER_API_KEY entry to orchestrator/secrets.yaml (DEP-017 unblock for Session 1's PR #150)
 
 ### Status
