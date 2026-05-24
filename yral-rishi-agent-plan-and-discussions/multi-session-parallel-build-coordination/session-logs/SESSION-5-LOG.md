@@ -3,6 +3,49 @@
 
 ---
 
+### 2026-05-24 — PR #147 round-4: B7 sweep on ETL script + ETL unit test suite
+
+**Branch**: session-5/d3-etl-migration
+**Trigger**: Codex round-3 returned two findings:
+  BLOCKER (B7): `chat_ai_to_user_memory_etl.py` — imports lacked role comments,
+  `cli()` lacked WHAT/WHEN/WHY block, non-trivial lines missing role comments.
+  CONCERN (test): no tests for transform correctness, dry-run, verification failure,
+  CLI mutual-exclusivity, or PII-safe logging.
+
+**What ships**:
+
+1. `etl-scripts/chat_ai_to_user_memory_etl.py` — B7 sweep:
+   - Import block: grouped with one-line role comment per import
+     (standard-library group + third-party group clearly separated)
+   - `cli()`: expanded from one-liner to full WHAT/WHEN/WHY block explaining
+     the sync/async boundary, argparse exit-code 2 contract, and testability rationale
+   - RELATED FILES footer: DEP-014 relic → DEP-015
+
+2. `tests/test_etl_transforms.py` — new, 19 tests:
+   - Conversation transform: full column mapping, metadata drop, H2H nulls
+   - Message transform: token_count→gemini_metadata, NULL content→'', paywall default,
+     dropped columns absent, client_message_id preserved
+   - JSONB serialization: None, dict, list, already-string passthrough
+   - Verification failure: passes within tolerance, exits 1 on large conv delta,
+     exits 1 on large message delta
+   - CLI mutual-exclusivity: --conversations-only + --messages-only → exit 2
+   - PII-safe logging: message content + metadata values never appear in log records
+   - All 19 pass locally (Python 3.14.5, pytest 9.0.3)
+
+**Key decisions**:
+- `asyncpg` stubbed via `sys.modules["asyncpg"] = MagicMock()` before module load —
+  pure-function tests don't need a real asyncpg install; consistent with user-memory-
+  service's isolation of DB-calling code from transform logic
+- `sys.path.insert(0, etl-scripts-dir)` + `import ... as etl` avoids the
+  `importlib.util` import path (B2 lint would flag `util`); `chat_ai_to_user_memory_etl`
+  is a valid Python module name so direct import works once the directory is on sys.path
+- `_MockPool` / `_MockConn` minimal in-process stand-ins for `run_verification()` tests —
+  no subprocess, no real DB, deterministic fetchval sequences
+- `asyncio.run()` inside test functions instead of `@pytest.mark.asyncio` — avoids
+  pytest-asyncio dependency at the repo level (not yet in any root-level pyproject.toml)
+
+---
+
 ### 2026-05-24 — PR #140 → PR #144 → PR #146 → PR #146-closed + branch rename → PR #147 webhook-glitch recreation (audit trail per I11)
 
 **Branch**: session-5/d3-etl-migration (clean branch from main — root cause fix)

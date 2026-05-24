@@ -30,15 +30,17 @@
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
 
-import argparse
-import asyncio
-import json
-import logging
-import os
-import sys
-from datetime import datetime, timezone
+# Standard-library imports — all built into Python 3.12, no install required.
+import argparse        # CLI argument parsing + mutual-exclusivity validation
+import asyncio         # runs async ETL phases from the synchronous cli() entry point
+import json            # serialises JSONB fields for asyncpg $N::jsonb parameters
+import logging         # structured INFO/ERROR log; content is NEVER logged (PII safety)
+import os              # reads connection strings from environment (not CLI args — ps-aux safety)
+import sys             # sys.exit(1) on verification failure; sys.stdout for log stream
+from datetime import datetime, timezone  # UTC timestamp in the verification report header
 
-import asyncpg
+# Third-party — must be installed in the ETL runner's virtualenv.
+import asyncpg         # async Postgres driver; no ORM per F12 directive
 
 
 # ---------------------------------------------------------------------------
@@ -600,7 +602,22 @@ async def main(
 
 
 def cli() -> None:
-    """Parse command-line arguments and run the ETL."""
+    """WHAT: parse CLI arguments via argparse, validate mutual exclusivity of
+             phase-skip flags, and delegate to `main()` via asyncio.run().
+    WHEN: invoked when the script is run directly:
+             python3 chat_ai_to_user_memory_etl.py [flags]
+          Also the setuptools console_scripts entry point if the script is
+          ever installed as a package (not current, but supported by design).
+    WHY:  synchronous argparse must run before the asyncio event loop starts;
+          asyncio.run() then creates a fresh loop, runs `main()` to completion,
+          and closes the loop. Separating CLI parsing from async orchestration
+          keeps each function testable in isolation — tests can call
+          `transform_conversation_row()` or `run_verification()` directly
+          without spawning a subprocess or invoking the full argument parser.
+          argparse `parser.error()` exits with code 2 on validation failure
+          (including the --conversations-only / --messages-only mutual-exclusivity
+          check) — standard POSIX CLI contract for argument errors.
+    """
     parser = argparse.ArgumentParser(
         description=(
             "chat-ai → user-memory-service ETL migration. "
@@ -663,7 +680,7 @@ if __name__ == "__main__":
 #   ../yral-rishi-agent-user-memory-service/RUNBOOK.md
 #                                        — ETL runbook section (§ ETL Day-9)
 #   ../yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/
-#     cross-session-dependencies.md     — DEP-014: coordinator runs this under YES
+#     cross-session-dependencies.md     — DEP-015: coordinator runs this under YES
 #   ../yral-rishi-agent-plan-and-discussions/
 #     running-coordination-asks-plus-mobile-team-memo-and-change-log/
 #     live-data-pulls-log.md             — log the pull here after execution
