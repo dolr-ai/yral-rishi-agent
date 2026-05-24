@@ -312,16 +312,30 @@ Required by Phase 1 parity smoke (Day 12-13 target). User-memory side of the bou
 
 Codex round-6 BLOCKER correctly flagged that E1 explicitly requires a CI latency gate that blocks merge when a user-interactive endpoint misses the 0.5× chat-ai baseline. This architecture adds a synchronous hot-path call, so the hard latency gate cannot be deferred to nightly/comment-only. Round-7 makes Gate A2 the **required, merge-blocking** controlled-runner gate for the send-message hot path.
 
-The gate runs on a controlled, stable-resource runner (self-hosted GitHub Actions on a dedicated worker OR a scheduled job on rishi-4/5/6 cluster, resource-isolated) — J2 zero-flake compliance comes from the STABLE HARDWARE, not from making the gate non-blocking. Required by Phase 1 parity smoke + before any Rishi-approved production traffic. Implementation:
+The gate lives at `latency-baseline-capture-from-live-services-the-numbers-v2-must-beat/scripts/` (this path is nested under `yral-rishi-agent-plan-and-discussions/` in the actual repo, but the `scripts/` subfolder is **Session 1's owned territory** per the explicit carve-out in `multi-session-parallel-build-coordination/01-SESSION-SHARDING-AND-OWNERSHIP.md:70` and the lint-scope-violations.yml workflow allowlist at line 89: `SESSION_PATHS[1]="bootstrap-scripts-for-the-v2-docker-swarm-cluster/|yral-rishi-agent-plan-and-discussions/latency-baseline-capture-from-live-services-the-numbers-v2-must-beat/scripts/|...`. The docs-around-the-scripts are coordinator-owned; the scripts themselves are Session 1's — same DEP-001 fix Session 1 caught on 2026-05-04). Codex round-7 mis-flagged this as an I8 violation by reading only the umbrella path prefix; the carve-out is explicit and CI-enforced.
 
-- Same N=500 `POST /api/v1/chat/conversations/{id}/messages` call pattern, but run on stable-resource hardware (NOT GitHub-hosted ephemeral runners).
-- FAIL the workflow check if measured p95 of the isolated public-api → user-memory call exceeds **15ms** (the budgeted ceiling).
-- FAIL the workflow check if measured p95 of the full `POST /api/v1/chat/conversations/{id}/messages` round-trip exceeds **0.5× the chat-ai baseline** for the same endpoint, as read from the canonical baseline file maintained by Session 1 at `yral-rishi-agent-plan-and-discussions/latency-baseline-capture-from-live-services-the-numbers-v2-must-beat/daily-baseline.csv`.
-- Runs on PR-touch (workflow_dispatch on PRs touching public-api or user-memory-service code paths affecting the hop) + nightly on a schedule (for early baseline-drift detection).
-- **Marked as a REQUIRED check in the merge protection rule** for the send-message hot path — implementation PR cannot merge until Gate A2 passes. This is the E1-compliant hard gate; J2 zero-flake comes from the controlled runner, NOT from making the gate optional.
-- Surfaces results as a comment on the touching PR + as a Google Chat webhook alert per D6 (the same alert channel chat-ai uses; never Slack unless Rishi explicitly approves channel changes) + a Sentry-tagged event for searchability.
+The gate runs in TWO modes for J2 zero-flake compliance — stable hardware ALONE doesn't help if external LLM latency variance is in the measured path (Codex round-7 CONCERN, correctly flagged):
 
-**Sequencing note**: Gate A2's hard p95 gate cannot run until Session 1's controlled benchmark runner exists. Session 1's deliverable to stand it up is now on the critical path for Phase 1 parity smoke (Day 12-13). If Session 1 cannot land the runner by Day 11, coordinator surfaces the conflict to Rishi as either: (a) scope slip on Phase 1 parity smoke, (b) accept Gate B (pre-production-shape rehearsal) as the SOLE latency gate temporarily until A2 lands post-merge, or (c) change E1's strict CI-gate language to allow time-boxed post-merge enforcement. None of these is coordinator's call to make unilaterally per A6 + the no-changes-to-E1-without-Rishi rule.
+**Gate A2-PR (merge-blocking, deterministic mock LLM)**:
+- Run on PR-touch (workflow_dispatch on PRs touching public-api or user-memory-service code paths affecting the send-message hot path)
+- LLM provider replaced with deterministic mock (fixed-latency mock client at a known response time, e.g. always 50ms) so the measured p95 isolates infrastructure variance ONLY (Postgres, asyncpg pool, network, public-api → user-memory hop)
+- Same N=500 `POST /api/v1/chat/conversations/{id}/messages` call pattern on stable-resource hardware (self-hosted GitHub Actions on a dedicated worker OR scheduled job on rishi-4/5/6 cluster, resource-isolated)
+- FAIL the workflow check if measured p95 of the isolated public-api → user-memory call exceeds **15ms** (budgeted ceiling)
+- FAIL the workflow check if measured p95 of the full `POST /api/v1/chat/conversations/{id}/messages` round-trip exceeds **(0.5× chat-ai baseline) MINUS (mock-LLM-fixed-latency)** for the same endpoint (the subtraction removes the mock's contribution so the threshold isolates v2 infrastructure cost; if chat-ai baseline p95 is e.g. 400ms then with a 50ms mock the threshold is 200ms - 50ms = 150ms — only infrastructure)
+- Marked as a REQUIRED check in the merge protection rule for the send-message hot path — implementation PR cannot merge until Gate A2-PR passes. J2 zero-flake compliance comes from BOTH stable hardware AND deterministic mock LLM.
+
+**Gate A2-NIGHTLY (telemetry, NOT merge-blocking, real LLM provider)**:
+- Run nightly on a schedule (catches baseline-drift + real-provider latency regressions early)
+- Same N=500 calls but against real LLM providers (Gemini Flash for default, OpenRouter for Tara/NSFW per A10)
+- Records full real-world p95 telemetry into Langfuse + the daily-baseline.csv
+- Surfaces alerts via Google Chat webhook per D6 if p95 drifts > 10% week-over-week
+- Does NOT block merges — real-provider variance makes this telemetry, not gating
+
+Sources:
+- baseline file: `yral-rishi-agent-plan-and-discussions/latency-baseline-capture-from-live-services-the-numbers-v2-must-beat/daily-baseline.csv` (maintained by Session 1 per the Sentry-baseline-cron)
+- mock-LLM latency value: declared in the Gate A2-PR workflow's environment as `MOCK_LLM_FIXED_LATENCY_MS`; same value in PR runs so the subtraction is deterministic
+
+**Sequencing note**: Gate A2-PR cannot fire until Session 1's controlled benchmark runner + deterministic mock LLM scaffold exist. Session 1's deliverable to stand both up is on the critical path for Phase 1 parity smoke (Day 12-13). If Session 1 cannot land both by Day 11, coordinator surfaces the conflict to Rishi as either: (a) scope slip on Phase 1 parity smoke, (b) accept Gate B (pre-production-shape rehearsal) as the SOLE latency gate temporarily until A2-PR lands post-merge, or (c) change E1's strict CI-gate language to allow time-boxed post-merge enforcement. None of these is coordinator's call to make unilaterally per A6 + the no-changes-to-E1-without-Rishi rule.
 
 **Gate B — pre-production-traffic production-shape rehearsal at Rishi's A6 discretion (owner: Session 4 + coordinator, lives in chaos-test folder)**
 
