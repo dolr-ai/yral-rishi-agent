@@ -170,15 +170,17 @@ Blocks:  No hard runtime block today (v2 is pre-cutover; dev
          pre-cutover gate should include "Redis ACL dual-password
          rotation validated by Session 1."
 
-ETA needed: Before A6 cutover (no fixed calendar; tracks the
-         cutover go-decision).
+ETA needed: Before any real production traffic, at Rishi's
+         discretion (per A6, cutover timing is not scheduled or
+         pressured; this DEP captures the production-hardening
+         work, not a deadline).
 
 Suggested
 resolution:
-         Session 1 picks this up as part of pre-cutover hardening
-         (around Day 11-12 in the current Phase 1 roadmap when
-         the cluster smoke is fully green + we're prepping for
-         cutover go-decision):
+         Session 1 picks this up as pre-production hardening
+         (whenever Rishi green-lights — A6 says cutover happens
+         only at Rishi's discretion, so this DEP's ETA is
+         "before real traffic arrives" not "by date X"):
            - Validate Redis 7 ACL dual-password support on the
              current cluster's Redis primary + replica + sentinel
              configuration
