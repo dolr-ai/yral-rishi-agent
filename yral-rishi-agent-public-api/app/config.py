@@ -145,6 +145,27 @@ class Settings(BaseSettings):
     # when this is empty.
     redis_password: str = ""
 
+    # MERGE-ORDER PRE-FLIGHT (Codex PR #137 round-8 BLOCKER 1):
+    # The validator below hard-fails any credential-bearing
+    # `REDIS_URL`. The pre-round-8 deployed contract documented
+    # production REDIS_URL with embedded password
+    # (`redis://:<password>@<host>:6379/0`); if the current Swarm /
+    # GitHub Secret REDIS_URL value still uses that shape, public-api
+    # will CRASH on startup the moment this PR's image ships to the
+    # cluster.
+    #
+    # Coordinator gates the merge order to prevent the crash:
+    #   1. Session 1's PR #150 (cluster manifest + Session 4 mirror)
+    #      lands the new passwordless REDIS_URL contract.
+    #   2. Session 1 rotates the deployed Swarm + GitHub Secret
+    #      REDIS_URL values to the passwordless shape.
+    #   3. **Only THEN** is THIS PR (#137) safe to merge.
+    #
+    # The validator stays as the correct defensive design — failing
+    # LOUDLY at boot beats silent runtime credential-precedence
+    # confusion when REDIS_PASSWORD rotates next. Coordinator tracks
+    # the sequencing dependency; do NOT merge #137 ahead of #150 +
+    # the secret rotation, even if Codex APPROVE arrives first.
     @field_validator("redis_url")
     @classmethod
     def _reject_password_in_redis_url(cls, value: str) -> str:

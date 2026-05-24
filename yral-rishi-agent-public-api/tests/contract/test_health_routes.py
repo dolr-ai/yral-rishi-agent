@@ -281,7 +281,7 @@ def test_get_redis_forwards_password_to_from_url(monkeypatch):
 
     # Build a fresh Settings instance with a known password so the
     # assertion below has a unique sentinel to look for.
-    fake_settings = Settings(redis_password="test-pwd-from-fixture")
+    fake_settings = Settings(redis_password="test-password-from-fixture")
     monkeypatch.setattr(redis_client, "get_settings", lambda: fake_settings)
 
     # Clear the lru_cache on get_redis so the next call re-runs the
@@ -303,8 +303,8 @@ def test_get_redis_forwards_password_to_from_url(monkeypatch):
 
         redis_client.get_redis()
 
-        assert captured.get("password") == "test-pwd-from-fixture", (
-            f"Expected `password=test-pwd-from-fixture` argument on from_url(); "
+        assert captured.get("password") == "test-password-from-fixture", (
+            f"Expected `password=test-password-from-fixture` argument on from_url(); "
             f"got: {captured!r}"
         )
     finally:
@@ -384,7 +384,7 @@ def test_health_ready_sentinel_path_forwards_password(
     # tests above already cover that path).
     fake_settings = Settings(
         redis_sentinel_enabled=True,
-        redis_password="test-pwd-from-fixture",
+        redis_password="test-password-from-fixture",
     )
     monkeypatch.setattr(health_routes, "get_settings", lambda: fake_settings)
 
@@ -395,7 +395,7 @@ def test_health_ready_sentinel_path_forwards_password(
         "_load_redis_section_from_shared_config",
         lambda: {
             "sentinel_master_name": "yral-v2-redis-primary",
-            "sentinel_hosts": [{"host": "127.0.0.1", "port": 26379}],
+            "sentinel_hosts": [{"host": "redis-sentinel-for-test", "port": 26379}],
         },
     )
 
@@ -422,8 +422,8 @@ def test_health_ready_sentinel_path_forwards_password(
     response = client_flag_off.get("/health/ready")
 
     # Primary assertion: the AUTH credential reached master_for.
-    assert captured.get("password") == "test-pwd-from-fixture", (
-        f"Expected `password=test-pwd-from-fixture` argument on master_for(); "
+    assert captured.get("password") == "test-password-from-fixture", (
+        f"Expected `password=test-password-from-fixture` argument on master_for(); "
         f"got: {captured!r}"
     )
     # Secondary signal: the handler took the 200 branch (the mock
@@ -475,7 +475,7 @@ def test_redis_url_without_embedded_password_is_accepted():
 
     WHAT: instantiate the Settings model with three passwordless
           REDIS_URL forms (local docker-compose; production single-
-          primary by hostname; full URI with port + db); assert no
+          primary by hostname; full URI with port + database); assert no
           ValidationError raised.
     WHEN: every CI run — defends against a future tightening of the
           validator that accidentally rejects a legitimate URL.
@@ -484,7 +484,7 @@ def test_redis_url_without_embedded_password_is_accepted():
 
     Settings(redis_url="redis://localhost:6379/0")  # local docker-compose
     Settings(redis_url="redis://yral-v2-redis-primary:6379")  # prod hostname
-    Settings(redis_url="redis://some-host.internal:6380/2")  # other port + db
+    Settings(redis_url="redis://some-host.internal:6380/2")  # other port + database
 
 
 # ===========================================================================

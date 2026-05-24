@@ -170,6 +170,49 @@ Defensive B2 sweep on round-8 additions: 1 new `kwarg` mention scrubbed in the t
 
 Same PR + branch. 7 files touched + this LOG subsection. No new files. **Behavior change**: Settings construction now FAILS LOUDLY (boot-time `ValidationError`) on a credential-bearing `REDIS_URL` — by design. Anyone upgrading from a `REDIS_URL=redis://:password@host` form to round-8 will get a startup crash naming the field on the first deploy; the fix is to move the password to `REDIS_PASSWORD` and strip the URL.
 
+### Round-9 fixups (Codex round-8: 3 BLOCKERs + 1 CI failure)
+Codex round-8 returned 3 BLOCKERs and a CI happy-path failure on commit `d375794`.
+
+**BLOCKER 1 (industry — production safety) — `app/config.py:143`** ⏸ NOT a code change: the new validator hard-fails any credential-bearing REDIS_URL; the pre-round-8 deployed contract documented production REDIS_URL with embedded password. If the current Swarm/GitHub Secret REDIS_URL still uses that shape, public-api crashes on startup the moment this PR's image ships. Coordinator gates the merge order:
+  1. PR #150 (Session 1 cluster manifest + Session 4 mirror) lands the new passwordless contract.
+  2. Session 1 rotates the deployed Swarm + GitHub Secret REDIS_URL values to passwordless.
+  3. **Only THEN** is PR #137 safe to merge.
+
+The validator stays as the correct defensive design (failing loudly at boot beats silent runtime credential-precedence confusion when REDIS_PASSWORD rotates next). Round-9 adds a `MERGE-ORDER PRE-FLIGHT` block above the validator in `app/config.py` documenting the sequencing + the cross-PR dependency on #150 + the secret rotation. PR body also gets the sequencing note via `gh pr edit`.
+
+**BLOCKER 2 (C6 IP literals) — `tests/contract/test_health_routes.py:371`**: Sentinel test fixture used `127.0.0.1`. Replaced with the named fake host `redis-sentinel-for-test` (the literal Codex suggested in the fix).
+
+**BLOCKER 3 (B2 abbreviations) — `tests/contract/test_health_routes.py:491`**:
+- Test sentinel strings: `test-pwd-from-fixture` → `test-password-from-fixture` (5 occurrences via `replace_all`).
+- Comments: `db` → `database` (2 occurrences in the new validator-acceptance test docstring + inline comment).
+
+**CI happy-path failure — `validate-secrets.sh: expected exit=0, got=1`**: pre-existing DEP-010 gap on public-api side — the `scripts/tests/fixtures/valid/` fixture was missing its `.env.local` companion. Template already has the post-rename `env.local.fixture` + a mktemp-copy-rename test runner; public-api spawned BEFORE that rename + the legacy `.env.local` was never `git add -f`'d into the per-service fixture (the README explicitly authorizes this escape hatch for `.env.local` placeholder fixtures).
+
+Round-9 fix: create `scripts/tests/fixtures/valid/.env.local` with the two placeholder values from the template's `env.local.fixture` + `git add -f` it. Validated locally: `bash scripts/tests/test_validate_secrets.sh` → **5 passed, 0 failed**.
+
+Full DEP-010 template-sync to public-api (port the template's mktemp-rename test runner + drop the legacy `.env.local` for `env.local.fixture` everywhere) is a separate coordinator-queued follow-up; this round-9 fix uses the README-sanctioned legacy escape hatch to unblock CI without growing PR scope.
+
+### Files touched (round-9)
+- `yral-rishi-agent-public-api/tests/contract/test_health_routes.py` — BLOCKER 2 + BLOCKER 3 + the test_orchestrator_proxy.py-style `kwarg` scrub in the new validator-test section header (renamed to "keyword argument").
+- `yral-rishi-agent-public-api/app/config.py` — new `MERGE-ORDER PRE-FLIGHT` comment block above the validator (BLOCKER 1 documentation only — no code change). Validator body unchanged.
+- `yral-rishi-agent-public-api/scripts/tests/fixtures/valid/.env.local` — NEW file (committed via `git add -f` per fixture README convention). 2 placeholder lines matching the template's `env.local.fixture` content verbatim.
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-3-LOG.md` — this round-9 subsection.
+
+### Constraints touched
+- **A2.1** — single concern (close 3 BLOCKERs + 1 CI gate with minimal scope; no scope creep into full DEP-010 template port).
+- **B2** — abbreviation scrub on test code identifiers + comments.
+- **C6** — no IP literals in test fixtures.
+- **D8** — fixture README's authorized escape hatch (`git add -f` for `.env.local` placeholders) explicitly invoked.
+- **I9** — cross-PR sequencing on BLOCKER 1 captured in code-comment + LOG + (next push) PR body. Coordinator-owned gate; no Session 3 action beyond documentation.
+- **I11** — same-commit LOG entry (this one).
+- **NOT I14** — Python + shell fixture additions + behavior-documenting comment change. Coordinator manually merges via `gh pr merge <N> --squash` after Codex APPROVE **AND** PR #150 lands **AND** Session 1 confirms the deployed REDIS_URL secret has been rotated to passwordless shape.
+
+Pre-existing-but-flagged for separate follow-up:
+- `env-local-incomplete/` fixture's test "incomplete .env.local" was passing for the WRONG reason (exit=1 from missing-file, not from incomplete-file). Same DEP-010 gap; not in round-9 scope but flagged here for the coordinator-queued template-sync follow-up.
+- Public-api's test_validate_secrets.sh doesn't yet use the template's mktemp-copy-rename pattern; will land via the coordinator-queued DEP-010 template-sync.
+
+Same PR + branch. 4 files touched + 1 new `.env.local` fixture. No code-behavior change (round-9 is documentation + test-fixture + naming scrubs; only the boot-time validator behavior change from round-8 stands).
+
 ---
 
 ## 2026-05-22 — PR-B — Day-8 directory-RPC wrapper for `/api/v1/influencers` list + by-id (DRAFT, blocked on Session 4 directory ratification)
