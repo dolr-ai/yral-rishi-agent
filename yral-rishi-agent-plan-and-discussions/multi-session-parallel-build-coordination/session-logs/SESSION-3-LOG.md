@@ -62,7 +62,7 @@ Both paths share the same `settings.redis_password` source — single source of 
 
 ### Round-2 fixups (Codex round-1 CONCERN + defensive B2 naming check)
 1. **Test-isolation leak (CONCERN at `tests/contract/test_health_routes.py:289`)** — Codex flagged that the `test_get_redis_*` tests cleared the `redis_client.get_redis` lru_cache BEFORE the monkey-patched call but didn't re-clear AFTER, leaking a captured fake-Redis object into later tests. Round-2 wraps tests 1 + 3 (the two that touch the get_redis cache) in `try/finally` with `redis_client.reset_for_testing()` in the finally block. Test 2 (`test_health_ready_sentinel_path_forwards_password`) doesn't touch the get_redis cache; no wrap needed there.
-2. **B2 naming check (defensive, no Codex feedback yet on #137 specifically)** — Session 4's PR #136 picked up a B2 CONCERN on the abbreviated form of "keyword argument(s)"; preemptively scrubbed my new tests for the same pattern. Renamed test names + helper parameter names to spell out "keyword argument(s)" / "positional args" in full; rewrote docstring/comment mentions to use "argument" / "keyword argument" / "parameter" as fits.
+2. **B2 naming check (defensive, no Codex feedback yet on #137 specifically)** — Session 4's PR #136 picked up a B2 CONCERN on the abbreviated form of "keyword argument(s)"; preemptively scrubbed my new tests for the same pattern. Renamed test names + helper parameter names to spell out "keyword argument(s)" / the longer form of "positional arguments" in full; rewrote docstring/comment mentions to use "argument" / "keyword argument" / "parameter" as fits. (Round-6 below fixes a residual abbreviation in this round-2 rename — the "positional" variadic name still used a 4-letter shorthand suffix which is B2-disallowed.)
 
 Single-file change (`tests/contract/test_health_routes.py`) plus this LOG-entry-subsection update. Same PR + branch + no new commit message scope.
 
@@ -116,6 +116,18 @@ Changes:
 - `scripts/gen-env-example.sh` header "WHAT THIS SCRIPT DOES NOT DO" section: paragraph documenting the field-aware-emission gap + naming `REDIS_URL` as the one entry that currently needs manual post-script restoration.
 
 Same PR + branch. 2 files touched + this LOG subsection. No new files. No code-behavior change (the manual restoration just preserves the pre-round-4 local-dev value).
+
+### Round-6 fixups (Codex round-5 CONCERN — residual shorthand on the "positional" variadic name)
+Codex round-5 CONCERN at `test_health_routes.py:290`: round-2's defensive rename spelled out the keyword-argument variadic in full but kept the "positional" variadic on a 4-letter shorthand suffix. That shorthand is not on the B2 allowed-abbreviation list, so the same B2 violation pattern Codex flagged in earlier rounds — just in a different position on the parameter name.
+
+Round-6 mechanical rename — single replace_all on `test_health_routes.py`:
+- The "positional" variadic name spelled out fully → `positional_arguments` (3 occurrences: 2 `def fake_from_url(*positional_arguments, **keyword_arguments):` helpers + 1 `lambda *positional_arguments, **keyword_arguments: mock_sentinel,`).
+
+Plus the round-2 LOG subsection narrative reference rewritten to "the longer form of 'positional arguments'" — avoids the literal shorthand in narrative documentation (same defensive-scrub pattern as the round-3 keyword-argument rephrase).
+
+Defensive sweep for other B2-suspect tokens in this PR's diff additions (`tmp`, `params`, bare-`args`-tokens): clean — no other occurrences. Pre-existing `**kwargs` on `test_health_routes.py:133` (pre-existing test code outside my diff) untouched per the "fix what you ship" norm.
+
+Same PR + branch. 1 production-file change (`test_health_routes.py`) + this LOG subsection. No new files. No code-behavior change.
 
 ---
 

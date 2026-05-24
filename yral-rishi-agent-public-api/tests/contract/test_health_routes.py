@@ -293,7 +293,7 @@ def test_get_redis_forwards_password_to_from_url(monkeypatch):
         # reached the redis-py boundary.
         captured: dict = {}
 
-        def fake_from_url(*positional_args, **keyword_arguments):
+        def fake_from_url(*positional_arguments, **keyword_arguments):
             captured.update(keyword_arguments)
             return object()
 
@@ -337,7 +337,7 @@ def test_empty_redis_password_resolves_to_none_in_from_url(monkeypatch):
     try:
         captured: dict = {}
 
-        def fake_from_url(*positional_args, **keyword_arguments):
+        def fake_from_url(*positional_arguments, **keyword_arguments):
             captured.update(keyword_arguments)
             return object()
 
@@ -416,7 +416,7 @@ def test_health_ready_sentinel_path_forwards_password(
     mock_sentinel.master_for = fake_master_for
     monkeypatch.setattr(
         health_routes, "Sentinel",
-        lambda *positional_args, **keyword_arguments: mock_sentinel,
+        lambda *positional_arguments, **keyword_arguments: mock_sentinel,
     )
 
     response = client_flag_off.get("/health/ready")
