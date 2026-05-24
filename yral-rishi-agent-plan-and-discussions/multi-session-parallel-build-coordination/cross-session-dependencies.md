@@ -56,6 +56,68 @@ How spotted: PR #138 round-4 Codex BLOCKER on 2026-05-24 — Codex
          Rishi's A6 discretion).
 
 
+### DEP-017 — Session 4 to add `OPENROUTER_API_KEY` to orchestrator's per-service `secrets.yaml` (D8 hygiene mirror of cluster-manifest entry landing in PR #150)
+
+Raised: 2026-05-24 by Session 1 (companion to cluster-manifest entry added in PR #150; previously reserved by closed PR #143 — reservation released, re-claimed here).
+
+What:    PR #150 adds `OPENROUTER_API_KEY` to
+         `bootstrap-scripts-for-the-v2-docker-swarm-cluster/secrets-manifest.yaml`
+         as a Phase 1 secret (consumed_by:
+         [yral-rishi-agent-conversation-turn-orchestrator/app/llm_client/openrouter.py]).
+         Per D8, every secret a service consumes MUST also be declared
+         in that service's own `secrets.yaml`. Session 4 owns
+         `yral-rishi-agent-conversation-turn-orchestrator/secrets.yaml`
+         and must add the OPENROUTER_API_KEY entry there.
+
+         Schema to mirror: GEMINI_API_KEY block in the same file
+         (currently at ~line 220). Same field order, same description
+         style, same notes pattern. Per-service schema is 2-field
+         classification (no `sensitivity`), string `source` descriptions,
+         and `required_in: [ci, production]` as a YAML list.
+
+Why:     D8 hygiene is CI-enforced. Without the mirror, orchestrator's
+         compose-level secret loading won't have OPENROUTER_API_KEY
+         available at runtime even though the cluster manifest declares
+         it — the per-service manifest is what drives the actual env-var
+         wiring.
+
+Blocks:  PR #150's cluster-manifest entry technically merges fine in
+         isolation (the cluster manifest is just a declaration), but
+         Codex's D8 read requires both sides to co-exist before the
+         routing code consumes them. Soft sequencing dependency:
+         Session 4's mirror PR must land before PR #150 merges, OR
+         coordinator merges with a typed-YES override (not recommended;
+         the sequence is short).
+
+         Any Session 4 PR that wires the actual Tara/NSFW routing
+         through OpenRouter (the orchestrator code change that calls
+         openrouter.ai per A10) cannot land until the mirror entry
+         exists in its `secrets.yaml`.
+
+ETA needed: Before PR #150 merges. Session 4 mirror PR is ~30 lines
+         (declaration-only); should be fast.
+
+Suggested resolution: SEQUENCE per Codex round-3 direction on PR #150:
+         (1) Coordinator routes the orchestrator/secrets.yaml mirror
+         work to Session 4 in a separate dedicated PR (~30 lines);
+         (2) Session 4 authors + merges that mirror PR;
+         (3) Coordinator moves DEP-017 OPEN → RESOLVED in a follow-up
+         coordinator-scoped doc-only PR (matches the I8 / scope-
+         boundary protocol: sessions raise OPEN; coordinator moves
+         to RESOLVED);
+         (4) PR #150 (this cluster-manifest + DEP-016 + DEP-017-open
+         PR) merges after step 3.
+
+How spotted: Coordinator PR #143 round-3 Codex BLOCKER 2026-05-24 (D8
+         missing-per-service-mirror) + PR #150 round-2 Codex BLOCKER
+         (same D8 violation when DEP-routed via option-b) + PR #150
+         round-3-revised Codex BLOCKER (scope — Session 1 can't edit
+         Session 4-owned files; sessions can't set DEPs to RESOLVED).
+         Final routing per Codex round-3's top-3 explicit direction:
+         "Sequence the D8 fix safely: Session 4 lands the per-service
+         mirror first, then this PR merges as the cluster-manifest side."
+
+
 ### DEP-014 — Template skeleton lacks Postgres/Redis client wiring + a Redis/Postgres-touching /health/ready; spawn-smoke CI gate cannot catch shared-config / Redis-AUTH / connection-string drift at template time until that wiring lands
 
 Raised: 2026-05-23 by Session 2 (filed in the same PR that lands the spawn-smoke CI gate)
@@ -1149,51 +1211,6 @@ resolution: Coordinator edits the `public-api → orchestrator` section
 ---
 
 ## RESOLVED
-
-### DEP-017 — Session 4 to add `OPENROUTER_API_KEY` to orchestrator's per-service `secrets.yaml` (D8 hygiene mirror of cluster-manifest entry)
-
-Raised: 2026-05-24 by Session 1 (companion to cluster-manifest entry added in this PR).
-Resolved: 2026-05-24 by Session 1 (mirror entry landed in the SAME PR per option-a routing, after Codex round-2 BLOCKER on PR #150 rejected the option-b DEP-routed split for D8 reasons).
-
-What:    PR #150 adds `OPENROUTER_API_KEY` to
-         `bootstrap-scripts-for-the-v2-docker-swarm-cluster/secrets-manifest.yaml`
-         (consumed_by:
-         [yral-rishi-agent-conversation-turn-orchestrator/app/llm_client/openrouter.py]).
-         Per D8, every secret a service consumes MUST also be declared
-         in that service's own `secrets.yaml`. The per-service mirror
-         in `yral-rishi-agent-conversation-turn-orchestrator/secrets.yaml`
-         lands in the SAME PR per option-a routing after Codex round-2
-         rejected the option-b DEP-routed split (the DEP-routing approach
-         doesn't satisfy D8 when both declarations must co-exist before
-         the cluster manifest entry merges).
-
-         Mirror entry shape (final, as landed):
-         - name: OPENROUTER_API_KEY
-         - description: same A10 routing-rule explanation as the cluster
-           manifest (Tara via per-influencer rule + any `is_nsfw=TRUE`
-           influencer; all others default to Gemini Flash / Claude)
-         - required_in: [ci, production]  # YAML list, mirror GEMINI
-         - source: { local, ci, production } string-description style
-         - rotation_policy: "every 90 days; rotate via OpenRouter console"
-         - consumed_by: [app/llm_client/openrouter.py]
-         - classification: { blast_radius: high, access_pattern:
-           write-only-from-our-side } (per-service schema is 2-field,
-           no sensitivity — mirrors GEMINI_API_KEY's shape exactly)
-         - notes: quota-burn blast radius; cluster manifest at
-           bootstrap-scripts/secrets-manifest.yaml is source-of-truth
-           per D8; this mirror records orchestrator as a consumer
-
-How spotted: Coordinator PR #143 round-3 Codex BLOCKER 2026-05-24 (D8
-         missing-per-service-mirror) + PR #150 round-2 Codex BLOCKER
-         (same D8 violation when option-b DEP-routed). Resolution
-         path: option-a in-same-PR bundle.
-
-I9 carve-out: The orchestrator/secrets.yaml edit is in Session 4's
-         documented write scope. Authored here under coordinator
-         ratification of the Codex round-2 D8 BLOCKER + PR #129
-         cross-service-edit precedent. Session 4 reviews + approves
-         the mirror entry in PR #150 comments before coordinator merges.
-
 
 ### DEP-003 — Session 2 needs Session 1 to confirm the three cluster overlay network names match the template's `docker-compose.swarm.yml`
 
