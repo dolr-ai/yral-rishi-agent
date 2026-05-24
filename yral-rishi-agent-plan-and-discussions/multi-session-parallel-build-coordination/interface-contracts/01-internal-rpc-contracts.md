@@ -280,6 +280,35 @@ The two calls fetch DIFFERENT data shapes. The `/v1/conversations/{id}` call is 
 
 3. **CI/Sentry latency observability**: Session 5's daily Sentry baseline pull from chat-ai (per memory `project_v2_first_build_task_sentry_baseline_pull`) establishes the chat-ai latency baseline; v2 latency observability via Langfuse traces every send-message turn with cross-service-call breakdowns. The 50%-faster comparison fires per-PR via the per-service-ci latency check (Session 2's deliverable once skeleton expansion lands).
 
+### Measurable acceptance gate (CONCERN from PR #145 round-2 — addressed round-3)
+
+Codex correctly flagged that the p95 numbers above are designed budgets, not measured gates. Treating this architecture as safe requires a concrete pre-merge / pre-cutover acceptance condition with owners and fail-stop semantics. **This is the gate**:
+
+**Gate A — per-PR public-api integration-test benchmark (owner: Session 3, lives in `yral-rishi-agent-public-api/tests/integration/`)**
+
+Required by Phase 1 parity smoke (Day 12-13 target). Implementation:
+
+- Add an integration test that spins up real public-api + real user-memory-service + real Postgres via testcontainers, issues N=500 `POST /v1/send-message` calls (or the per-request `influencer_id` lookup path equivalent once PR #141 lands), and records the per-call latency contribution of the public-api → user-memory `GET /v1/conversations/{id}` hop in isolation.
+- FAIL the test if measured p95 of the isolated user-memory call exceeds **15ms** (the budgeted ceiling in #1 above).
+- FAIL the test if measured p95 of the full `POST /v1/send-message` round-trip exceeds **0.5× the chat-ai baseline** for the equivalent send-message endpoint, as read from the chat-ai baseline file Session 5 maintains daily (`yral-rishi-agent-extract-transform-load-pipeline/baselines/chat-ai-latency-p95.json` or whatever path Session 5 lands per `project_v2_first_build_task_sentry_baseline_pull`).
+- Gate this integration test into the per-service CI workflow as a **required check** for PRs touching either public-api or user-memory-service.
+
+**Gate B — pre-cutover production-shape rehearsal (owner: Session 4 + coordinator, lives in chaos-test folder)**
+
+Required by Phase 1 cutover decision (no scheduled date per A6). Implementation:
+
+- Before any cutover decision, run a 1-hour shadow-traffic rehearsal at projected day-0 RPS (chat-ai current ~25K msgs/day = ~0.3 RPS sustained, ~2-5 RPS burst) against the live rishi-4/5/6 cluster.
+- Pull Langfuse p95 for the public-api → user-memory call span.
+- BLOCK cutover if measured p95 exceeds 15ms OR if total send-message p95 exceeds 0.5× chat-ai baseline. Coordinator surfaces this to Rishi as the cutover go/no-go criterion.
+
+**Revisit trigger — combine-candidate re-evaluation:**
+
+If Gate A or Gate B fails at the 15ms public-api → user-memory threshold (i.e., the call is hotter than budgeted), the post-cutover combine-candidate above (extending `/context` to subsume the lookup) becomes a Phase-2 must-do rather than a re-evaluation candidate. The decision triggers a one-day rework spike across Sessions 3/4/5.
+
+**Why per-PR Gate A is not pre-merge of this contract doc:** the contract doc ratifies the architectural shape. The benchmark requires the actual implementation code from PR #141 (per-request `influencer_id`) + Session 5's chat-ai baseline file to exist. Both are in flight today (Day 8); the gate lands as part of Session 3's integration-test batch by Day 11 at the latest, two days before the Day 12-13 parity smoke target. If Session 3 cannot land Gate A by Day 11, coordinator escalates to Rishi for either a scope slip or a Gate-B-only acceptance (riskier — measured at cutover time only, not per-PR).
+
+This acceptance gate replaces the vague "fires per-PR via the per-service-ci latency check" language in #3 above with concrete fail-stop thresholds, owners, and dates.
+
 **Combine candidate (NOT chosen for Phase 1)**: extend `user-memory's /context` endpoint to accept `conversation_id` instead of `influencer_id` + return BOTH the memory context AND the conversation's influencer_id in one shape. Then orchestrator's existing `/context` call subsumes the public-api lookup; public-api just forwards `conversation_id` to orchestrator + orchestrator does the single user-memory call. Cleaner single-hop architecture. NOT chosen for Phase 1 because:
 - Requires Session 5 to add `conversation_id` parameter handling to `/context`
 - Requires Session 3 to remove the user-memory call from public-api
