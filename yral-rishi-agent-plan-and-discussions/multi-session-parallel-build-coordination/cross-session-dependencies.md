@@ -159,16 +159,20 @@ What:    PR #138's `bootstrap-scripts-for-the-v2-docker-swarm-
          current cluster shape (Redis 7 binaries already in use)
          + document the post-cutover rotation runbook.
 
-Why:     Before v2 takes any real production traffic (post-A6
-         cutover), the rotation runbook must document a
-         production-safe path. The current runbook is honest
-         about being dev-cluster-only; this DEP captures the
-         work needed to make it production-cutover-ready.
+Why:     Before v2 takes any Rishi-approved production traffic,
+         the rotation runbook must document a production-safe
+         path. The current runbook is honest about being
+         dev-cluster-only; this DEP captures the production-
+         hardening work, not a scheduled gate (per A6, cutover
+         timing stays explicitly at Rishi's discretion — this
+         DEP names the work, not the date).
 
-Blocks:  No hard runtime block today (v2 is pre-cutover; dev
-         cluster only). Soft block on A6 cutover — the
-         pre-cutover gate should include "Redis ACL dual-password
-         rotation validated by Session 1."
+Blocks:  No hard runtime block today (v2 is pre-production; dev
+         cluster only). Soft block on any Rishi-approved
+         production traffic — before v2 takes production
+         traffic at Rishi's discretion, Session 1's ACL
+         dual-password validation should be complete. This is
+         a production-readiness gate, not a cutover deadline.
 
 ETA needed: Before any real production traffic, at Rishi's
          discretion (per A6, cutover timing is not scheduled or
@@ -206,7 +210,77 @@ How spotted:
          correctly read the runbook + identified the production-
          unsafe rotation shape. Coordinator override-merged with
          dev-cluster-only framing + filed this DEP for the
-         post-cutover hardening work.
+         production-hardening work (at Rishi's A6 discretion).
+
+---
+
+### DEP-017 — Session 4 to add `OPENROUTER_API_KEY` to orchestrator's per-service `secrets.yaml` before any Tara/NSFW routing code consumes it
+
+Raised: 2026-05-24 by Coordinator (PR #143 round-3 Codex BLOCKER —
+        correctly flagged D8 violation: cluster-level secrets-manifest.yaml
+        declared OPENROUTER_API_KEY as production-required + consumed_by:
+        ["orchestrator"] but the orchestrator's per-service secrets.yaml
+        does not declare the same secret).
+
+What:    PR #143 added `OPENROUTER_API_KEY` to
+         `bootstrap-scripts-for-the-v2-docker-swarm-cluster/secrets-manifest.yaml`
+         as a Phase 1 secret (consumed_by: ["yral-rishi-agent-conversation-turn-orchestrator"],
+         required_in: ["dev", "prod"]). Per D8, every secret a service
+         consumes MUST also be declared in that service's own
+         `secrets.yaml` (the per-service declarative manifest that the
+         3 bridge scripts use to keep .env.local / GitHub Secrets / Swarm
+         secrets in sync; the lint-secrets-hygiene.yml CI workflow fails
+         PRs if drift between cluster manifest + per-service manifests
+         exists).
+
+         Session 4 owns `yral-rishi-agent-conversation-turn-orchestrator/secrets.yaml`
+         and must add the OPENROUTER_API_KEY entry there with:
+           - description: "OpenRouter API key — used by Tara routing +
+             other NSFW influencer paths per A10 (memory:
+             reference_yral_chat_v2_llm_routing_tara). Phase 1 scope."
+           - required_in: ["dev", "prod"]
+           - source: { dev: github-secrets, prod: github-secrets }
+           - rotation_policy: per memory + Rishi's process
+           - consumed_by: ["app/llm_router.py", "tests/test_llm_routing.py"]
+             (or whatever the actual code paths end up being)
+           - classification: API_KEY
+
+Why:     D8 hygiene is CI-enforced (lint-secrets-hygiene.yml). Without
+         this DEP being resolved before Session 4's Tara routing code
+         lands, the orchestrator service's compose-level secret loading
+         will not have OPENROUTER_API_KEY available at runtime even
+         though the cluster manifest declares it — the per-service
+         manifest is what drives the actual env-var wiring.
+
+Blocks:  Any Session 4 PR that wires Tara/NSFW routing through
+         OpenRouter (the orchestrator code change that calls
+         openrouter.ai per A10's routing rule). PR can be drafted
+         + reviewed, but cannot land until the secrets.yaml entry
+         exists.
+
+ETA needed: Before Session 4's Tara/NSFW routing code merges (no
+         calendar deadline; tracks Session 4's orchestrator work).
+
+Suggested
+resolution:
+         Single small Session 4 PR to
+         `yral-rishi-agent-conversation-turn-orchestrator/secrets.yaml`
+         adding the OPENROUTER_API_KEY entry per the schema above.
+         Mirror the declaration shape that already exists for other
+         orchestrator secrets in the same file. Auto-merge eligible
+         per I14 if the diff is <200 lines + doesn't change behavior
+         (it does not — it's a manifest declaration only; the actual
+         Tara routing code lands in a separate PR that consumes this
+         declaration).
+
+How spotted:
+         PR #143 round-3 Codex BLOCKER on 2026-05-24 — Codex correctly
+         applied D8 (per-service secrets.yaml mirror requirement) to
+         coordinator's cluster-manifest addition. Resolution-via-DEP
+         path chosen per the 2026-05-23 process change (route
+         cross-session work as DEPs to the owning session, not as
+         coordinator-authored cross-session edits — memory
+         feedback_coordinator_pace_and_process_improvements_2026_05_23).
 
 ---
 
