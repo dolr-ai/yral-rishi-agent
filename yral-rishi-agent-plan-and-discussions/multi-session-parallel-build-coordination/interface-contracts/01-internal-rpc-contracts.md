@@ -286,28 +286,42 @@ Codex correctly flagged that the p95 numbers above are designed budgets, not mea
 
 The canonical send-message endpoint per `00-api-contract.md:35` is `POST /api/v1/chat/conversations/{id}/messages` (mobile-facing; matches yral-mobile's `ChatRemoteDataSource`). All references in the gates below use this exact path — PR #145 round-3 and round-4 mistakenly used `POST /v1/send-message` as a shorthand; round-5 corrects to the canonical contract path.
 
-**Gate A — per-PR public-api integration-test SMOKE benchmark (owner: Session 3, lives in `yral-rishi-agent-public-api/tests/integration/`)**
+**Gate A1 — per-PR PUBLIC-API integration-test SMOKE check (owner: Session 3, lives in `yral-rishi-agent-public-api/tests/integration/`)**
 
-Required by Phase 1 parity smoke (Day 12-13 target). Implementation:
+Required by Phase 1 parity smoke (Day 12-13 target). Public-api side of the boundary only — tests what public-api can validly observe about its own RPC call to user-memory. Implementation:
 
-- Add an integration test that spins up real public-api + real user-memory-service + real Postgres via testcontainers, issues N=500 `POST /api/v1/chat/conversations/{id}/messages` calls (the per-request `influencer_id` lookup path once PR #141 lands), and records the per-call latency contribution of the public-api → user-memory `GET /v1/conversations/{id}` hop in isolation.
-- The test is a **SMOKE check at PR-CI tier, not a hard p95 fail-stop gate** (Codex round-4 correctly flagged that ms-scale p95 thresholds in shared GitHub-runner CI risk J2 zero-flake violations — GitHub-hosted runners have variable CPU + I/O contention). The PR-CI tier verifies INSTRUMENTATION + QUERY/INDEX USAGE + MOCKED-HOP BEHAVIOR:
-  - Asserts the public-api → user-memory call is INSTRUMENTED with a Langfuse span (test reads the in-process span exporter).
-  - Asserts the asyncpg query uses the conversation_id PK INDEX (test reads `EXPLAIN ANALYZE` output of the underlying SQL).
-  - Asserts the asyncpg connection POOL is reused across N=500 calls (test reads asyncpg's pool stats).
-  - Asserts the call shape matches the contract (Pydantic model validation).
-- The hard p95 latency thresholds (≤15ms isolated, ≤0.5× chat-ai baseline full) are NOT enforced at this tier — they move to Gate A2 (below) on a controlled benchmark runner.
-- Gate the SMOKE integration test into the per-service CI workflow as a **required check** for PRs touching either public-api or user-memory-service.
+- Add an integration test that spins up real public-api + a real user-memory-service via testcontainers, issues N=500 `POST /api/v1/chat/conversations/{id}/messages` calls (the per-request `influencer_id` lookup path once PR #141 lands).
+- The test is a **SMOKE check at PR-CI tier, not a hard p95 fail-stop gate** (Codex round-4 correctly flagged that ms-scale p95 thresholds in shared GitHub-runner CI risk J2 zero-flake violations). The PR-CI tier verifies what public-api can validly observe at the RPC boundary:
+  - Asserts the public-api → user-memory call is INSTRUMENTED with a Langfuse span (test reads the in-process span exporter on the public-api side).
+  - Asserts the RPC contract shape — request body matches the proposed shape, response Pydantic model parses cleanly (contract-level validation, not implementation peek).
+  - Asserts TIMEOUT + ERROR + 5xx behavior — when the user-memory testcontainer is killed mid-test, public-api returns the documented envelope-shaped 503 with `user_memory.call.failed=<mode>` Sentry tag (per Session 3's PR-B2 spec). NO silent fallback.
+  - Asserts ENVELOPE MAPPING — the user-memory response maps correctly into public-api's `ApiResponse<MessageResponse>` envelope per `00-api-contract.md`.
+- Gate this SMOKE integration test into the per-service CI workflow as a **required check** for PRs touching `yral-rishi-agent-public-api/`.
 
-**Gate A2 — controlled benchmark runner (owner: Session 1, lives in `yral-rishi-agent-plan-and-discussions/latency-baseline-capture-from-live-services-the-numbers-v2-must-beat/scripts/`)**
+**Gate A_user_memory — per-PR USER-MEMORY-SERVICE internal test (owner: Session 5, lives in `yral-rishi-agent-user-memory-service/tests/`)**
 
-The hard p95 latency thresholds run on a controlled, stable-resource runner — either self-hosted GitHub Actions on a dedicated worker, OR a scheduled job on rishi-4/5/6 cluster (resource-isolated). Required by Phase 1 parity smoke + before any Rishi-approved production traffic. Implementation:
+Required by Phase 1 parity smoke (Day 12-13 target). User-memory side of the boundary only — tests internal SQL + pool behavior in Session 5's scope, NOT exposed to public-api's tests (Codex round-6 CONCERN correctly flagged cross-service test boundary leakage). Implementation:
+
+- Add an integration test that spins up real user-memory-service + real Postgres via testcontainers, issues N=500 `GET /v1/conversations/{id}` calls direct to user-memory (no public-api involvement).
+- Asserts the asyncpg query uses the `conversation_id` PK INDEX (test reads `EXPLAIN ANALYZE` output of the underlying SQL — this is Session 5's internal SQL, tested inside Session 5's scope).
+- Asserts the asyncpg connection POOL is reused across N=500 calls (test reads asyncpg's pool stats — Session 5's internal pool, tested inside Session 5's scope).
+- Asserts the response Pydantic model serializes cleanly for the contract shape.
+- Gate this test into the per-service CI workflow as a **required check** for PRs touching `yral-rishi-agent-user-memory-service/`.
+
+**Gate A2 — controlled benchmark runner, MERGE-BLOCKING (owner: Session 1, lives in `yral-rishi-agent-plan-and-discussions/latency-baseline-capture-from-live-services-the-numbers-v2-must-beat/scripts/`)**
+
+Codex round-6 BLOCKER correctly flagged that E1 explicitly requires a CI latency gate that blocks merge when a user-interactive endpoint misses the 0.5× chat-ai baseline. This architecture adds a synchronous hot-path call, so the hard latency gate cannot be deferred to nightly/comment-only. Round-7 makes Gate A2 the **required, merge-blocking** controlled-runner gate for the send-message hot path.
+
+The gate runs on a controlled, stable-resource runner (self-hosted GitHub Actions on a dedicated worker OR a scheduled job on rishi-4/5/6 cluster, resource-isolated) — J2 zero-flake compliance comes from the STABLE HARDWARE, not from making the gate non-blocking. Required by Phase 1 parity smoke + before any Rishi-approved production traffic. Implementation:
 
 - Same N=500 `POST /api/v1/chat/conversations/{id}/messages` call pattern, but run on stable-resource hardware (NOT GitHub-hosted ephemeral runners).
-- FAIL if measured p95 of the isolated public-api → user-memory call exceeds **15ms** (the budgeted ceiling).
-- FAIL if measured p95 of the full `POST /api/v1/chat/conversations/{id}/messages` round-trip exceeds **0.5× the chat-ai baseline** for the same endpoint, as read from the canonical baseline file maintained by Session 1 at `yral-rishi-agent-plan-and-discussions/latency-baseline-capture-from-live-services-the-numbers-v2-must-beat/daily-baseline.csv` (the Sentry-baseline-cron output owned by Session 1 per CONSTRAINTS E1 + I7 + multi-session-parallel-build-coordination/01-SESSION-SHARDING-AND-OWNERSHIP.md:70).
-- Runs nightly on a schedule + on-demand via workflow_dispatch when a PR touches either public-api or user-memory-service code paths affecting the hop.
+- FAIL the workflow check if measured p95 of the isolated public-api → user-memory call exceeds **15ms** (the budgeted ceiling).
+- FAIL the workflow check if measured p95 of the full `POST /api/v1/chat/conversations/{id}/messages` round-trip exceeds **0.5× the chat-ai baseline** for the same endpoint, as read from the canonical baseline file maintained by Session 1 at `yral-rishi-agent-plan-and-discussions/latency-baseline-capture-from-live-services-the-numbers-v2-must-beat/daily-baseline.csv`.
+- Runs on PR-touch (workflow_dispatch on PRs touching public-api or user-memory-service code paths affecting the hop) + nightly on a schedule (for early baseline-drift detection).
+- **Marked as a REQUIRED check in the merge protection rule** for the send-message hot path — implementation PR cannot merge until Gate A2 passes. This is the E1-compliant hard gate; J2 zero-flake comes from the controlled runner, NOT from making the gate optional.
 - Surfaces results as a comment on the touching PR + as a Google Chat webhook alert per D6 (the same alert channel chat-ai uses; never Slack unless Rishi explicitly approves channel changes) + a Sentry-tagged event for searchability.
+
+**Sequencing note**: Gate A2's hard p95 gate cannot run until Session 1's controlled benchmark runner exists. Session 1's deliverable to stand it up is now on the critical path for Phase 1 parity smoke (Day 12-13). If Session 1 cannot land the runner by Day 11, coordinator surfaces the conflict to Rishi as either: (a) scope slip on Phase 1 parity smoke, (b) accept Gate B (pre-production-shape rehearsal) as the SOLE latency gate temporarily until A2 lands post-merge, or (c) change E1's strict CI-gate language to allow time-boxed post-merge enforcement. None of these is coordinator's call to make unilaterally per A6 + the no-changes-to-E1-without-Rishi rule.
 
 **Gate B — pre-production-traffic production-shape rehearsal at Rishi's A6 discretion (owner: Session 4 + coordinator, lives in chaos-test folder)**
 
