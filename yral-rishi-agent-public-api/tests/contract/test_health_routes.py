@@ -434,6 +434,60 @@ def test_health_ready_sentinel_path_forwards_password(
 
 
 # ===========================================================================
+# Round-8 — passwordless REDIS_URL contract validator (Codex BLOCKER 1)
+# ===========================================================================
+# The Settings model's `_reject_password_in_redis_url` validator
+# rejects credential-bearing REDIS_URL values at construction time
+# so an operator who copies the pre-round-8 `redis://:password@host`
+# format gets a loud startup crash naming the field — instead of a
+# silent runtime credential-precedence confusion where redis-py
+# would take URL credentials over the `password=` keyword argument, bypassing
+# the REDIS_PASSWORD Swarm-secret rotation pattern.
+# ===========================================================================
+
+
+def test_redis_url_with_embedded_password_is_rejected():
+    """WHAT: instantiate the Settings model with a REDIS_URL that
+            embeds a password in the `user:pass@host` portion; assert
+            ValidationError raised at construction time (NOT silently
+            accepted + handed to redis-py).
+    WHEN: an operator copies a pre-round-8 credential-bearing
+          `REDIS_URL` into a .env.local OR a Swarm secret value
+          (e.g., the old `redis://:password@host:6379/0` format that
+          PR #137 round-7 BLOCKER 1 flagged).
+    WHY:  defense-in-depth on the passwordless-URL contract.
+          REDIS_PASSWORD is the sole AUTH source — the validator
+          fails LOUDLY at Settings boot rather than allowing the
+          URL-embedded credentials to silently take precedence over
+          the `password=` argument that forwards REDIS_PASSWORD.
+    """
+    from pydantic import ValidationError
+
+    from app.config import Settings
+
+    with pytest.raises(ValidationError, match="REDIS_URL must be passwordless"):
+        Settings(redis_url="redis://:leaked-password@some-host:6379/0")
+
+
+def test_redis_url_without_embedded_password_is_accepted():
+    """WHY: regression guard — the validator MUST accept the standard
+           passwordless production + local-dev forms verbatim.
+
+    WHAT: instantiate the Settings model with three passwordless
+          REDIS_URL forms (local docker-compose; production single-
+          primary by hostname; full URI with port + db); assert no
+          ValidationError raised.
+    WHEN: every CI run — defends against a future tightening of the
+          validator that accidentally rejects a legitimate URL.
+    """
+    from app.config import Settings
+
+    Settings(redis_url="redis://localhost:6379/0")  # local docker-compose
+    Settings(redis_url="redis://yral-v2-redis-primary:6379")  # prod hostname
+    Settings(redis_url="redis://some-host.internal:6380/2")  # other port + db
+
+
+# ===========================================================================
 # RELATED FILES:
 #   conftest.py                          — provides `client_flag_off`
 #   ../../app/api/health_routes.py       — handlers under test +

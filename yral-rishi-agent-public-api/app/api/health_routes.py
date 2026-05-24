@@ -285,6 +285,16 @@ async def _check_redis_reachable() -> bool:
             # reports Redis unreachable. Empty default keeps local
             # dev working — sentinels in laptop docker-compose are
             # rare anyway, but if present they'd be unauthenticated.
+            #
+            # PASSWORDLESS-URL CONTRACT (Codex PR #137 round-7 BLOCKER
+            # 1 fix): `REDIS_PASSWORD` (forwarded here) is the SOLE
+            # AUTH source. `REDIS_URL` MUST be passwordless —
+            # credential-bearing URLs are rejected at Settings
+            # construction time by the `app/config.py`
+            # `_reject_password_in_redis_url` validator. Same
+            # contract enforced symmetrically on the
+            # `redis.Redis.from_url()` callsite in
+            # `app/redis_client.py`.
             primary_client = sentinel_client.master_for(
                 master_name,
                 socket_timeout=_HEALTH_PROBE_TIMEOUT_SECONDS,

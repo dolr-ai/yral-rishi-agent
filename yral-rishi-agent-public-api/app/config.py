@@ -37,7 +37,9 @@
 # ---------------------------------------------------------------------------
 
 from functools import lru_cache
+from urllib.parse import urlparse
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -142,6 +144,47 @@ class Settings(BaseSettings):
     # bundled Redis is unauthenticated, both code paths skip AUTH
     # when this is empty.
     redis_password: str = ""
+
+    @field_validator("redis_url")
+    @classmethod
+    def _reject_password_in_redis_url(cls, value: str) -> str:
+        """Reject `REDIS_URL` values that embed credentials in the URL.
+
+        WHAT: parse `REDIS_URL` at Settings construction time; raise
+              `ValueError` if the URL contains a username or password
+              segment (i.e., the `user:pass@` portion before `host`).
+        WHEN: every time the Settings model is instantiated — at
+              `get_settings()` first call on the lru_cache path, or
+              immediately on app boot via the explicit `get_settings()`
+              import sites in middleware.
+        WHY:  closes Codex PR #137 round-7 BLOCKER 1 — the redis-py
+              URL parser takes URL-embedded credentials over the
+              `password=` keyword argument, which would silently
+              bypass the `REDIS_PASSWORD` Swarm secret rotation
+              pattern. Failing LOUDLY at Settings construction is the
+              earliest possible diagnosis point; an operator who
+              copies the pre-round-8 `redis://:password@host` format
+              into a `.env.local` or Swarm secret gets a startup
+              crash naming the field instead of a silent runtime
+              credential-precedence confusion that would only surface
+              when the Swarm secret rotates.
+        """
+        # Empty URL is technically valid (defaults to redis://localhost
+        # if pydantic-settings doesn't apply the field default; defensive
+        # short-circuit).
+        if not value:
+            return value
+        parsed = urlparse(value)
+        if parsed.username or parsed.password:
+            raise ValueError(
+                "REDIS_URL must be passwordless — REDIS_PASSWORD is the "
+                "sole AUTH source per the round-8 contract. Got a URL "
+                "with embedded credentials; strip the `user:pass@` "
+                "portion and rely on the REDIS_PASSWORD env var. See "
+                "secrets.yaml REDIS_URL description for the full "
+                "rationale (Codex PR #137 round-7 BLOCKER 1)."
+            )
+        return value
 
     # -- C11 Sentinel feature flag (Codex PR #97 round-4 BLOCKER 2) --------
     # Default-OFF so laptop dev + docker-compose + CI run on the

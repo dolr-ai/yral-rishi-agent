@@ -129,6 +129,47 @@ Defensive sweep for other B2-suspect tokens in this PR's diff additions (`tmp`, 
 
 Same PR + branch. 1 production-file change (`test_health_routes.py`) + this LOG subsection. No new files. No code-behavior change.
 
+### Round-8 fixups (Codex round-7 BLOCKERs 1+2 — passwordless-URL contract + generator drift)
+Codex round-7 returned two BLOCKERs on commit `97b511a`:
+
+**BLOCKER 1 (industry) — `app/redis_client.py:82`**: the single-URL path may still use a password embedded in `REDIS_URL` instead of the new `REDIS_PASSWORD`. PR's own `.env.example` still documented production `REDIS_URL` as `redis://:<password>@...` + redis-py URL parsing can take URL credentials over keyword arguments.
+
+**BLOCKER 2 (constraint) — `.env.example:51`**: D8 says `.env.example` is generated from `secrets.yaml` + CI fails on drift; round-5 manually restored `REDIS_URL=redis://localhost:6379/0` after generation while only documenting that the generator couldn't reproduce it. The manual restore IS drift the generator can't reproduce on a clean run.
+
+Round-8 addresses both with a single coherent change: **make the generator the single source of truth for the local-dev default + assert REDIS_PASSWORD as the sole AUTH source (no URL-embedded password)**.
+
+**The generator fix (approach δ, not α)**: rather than extend the `secrets.yaml` schema with a `local_default_value` field (Option α — coordinator flagged as I6 cross-service schema drift if only public-api adopts), use a per-service hardcoded case-statement INSIDE `gen-env-example.sh`. The script's new `local_default_value_for_name()` helper returns a hardcoded default per name; `REDIS_URL` gets `redis://localhost:6379/0`, every other name falls through to blank. The hardcode lives in service-local territory (per-service script knows per-service defaults) — no schema change forces other services to adopt anything. A coordinator-queued follow-up syncs the same case-statement convention into the template's `gen-env-example.sh` for future spawned services.
+
+**The passwordless-URL contract**: belt-and-suspenders enforcement on three layers:
+1. **`secrets.yaml`** — REDIS_URL description rewritten to mandate "PASSWORDLESS URL; REDIS_PASSWORD is the sole AUTH source." REDIS_PASSWORD description mirrors with "SOLE AUTH source." Documents the contract as the wire-shape source-of-truth.
+2. **`app/config.py`** — new `_reject_password_in_redis_url` field validator parses `REDIS_URL` at Settings construction time + raises `ValidationError` if the URL contains a `user:pass@` portion. Defense-in-depth: an operator who copies the pre-round-8 `redis://:password@host` format gets a loud startup crash naming the field instead of a silent runtime credential-precedence confusion when REDIS_PASSWORD rotates.
+3. **`app/redis_client.py` + `app/api/health_routes.py`** — role-comments on the two `password=`-forwarding callsites updated to document the passwordless-URL contract + cross-reference the validator + name `REDIS_PASSWORD` as the sole AUTH source.
+
+### Files touched (round-8)
+- `yral-rishi-agent-public-api/scripts/gen-env-example.sh` — new `local_default_value_for_name()` helper with the REDIS_URL case; generate loop calls it for each secret. Header rewritten to document the per-service-hardcoded-lookup approach + the rationale for not extending the secrets.yaml schema. Round-5's "manual workaround" header paragraph removed (no longer needed; the generator IS the single source of truth now).
+- `yral-rishi-agent-public-api/.env.example` — REGENERATED via the updated script. REDIS_URL line is now emitted by the script as `REDIS_URL=redis://localhost:6379/0` (was previously manually restored after a blank generation). Round-5's inline "manual override" comment removed (no longer applicable). A clean re-run of `bash scripts/gen-env-example.sh` reproduces the file exactly — no drift; CI lint-secrets-hygiene gate passes naturally.
+- `yral-rishi-agent-public-api/secrets.yaml` — REDIS_URL description rewritten to mandate PASSWORDLESS URL form + name REDIS_PASSWORD as the sole AUTH source. REDIS_PASSWORD description mirrors with the SOLE AUTH source language + cross-references the BLOCKER-1 rationale.
+- `yral-rishi-agent-public-api/app/config.py` — new `_reject_password_in_redis_url` `@field_validator` on the `redis_url` setting; raises `ValidationError` with a clear-naming-and-rationale message if the URL contains a `user:pass@` segment. Adds `from urllib.parse import urlparse` + `from pydantic import field_validator` imports.
+- `yral-rishi-agent-public-api/app/redis_client.py` — role-comment on the `from_url()` call extended with the PASSWORDLESS-URL CONTRACT block (8 lines) cross-referencing the validator + the BLOCKER-1 fix.
+- `yral-rishi-agent-public-api/app/api/health_routes.py` — same role-comment extension on the `Sentinel.master_for()` call so the contract is documented symmetrically on both Redis paths.
+- `yral-rishi-agent-public-api/tests/contract/test_health_routes.py` — 2 new tests at the end of the Redis-AUTH section:
+  - `test_redis_url_with_embedded_password_is_rejected` — instantiates Settings with a credential-bearing URL; asserts `ValidationError` raised with the contract-naming message.
+  - `test_redis_url_without_embedded_password_is_accepted` — instantiates Settings with 3 passwordless forms (docker-compose, prod hostname, full URI); asserts no exception.
+
+### Constraints touched
+- **A2.1** — single concern (close BLOCKERs 1+2 with a coherent passwordless-contract + generator-single-source-of-truth change). No scope creep into other secrets / other services.
+- **B7** — all new comments + docstrings carry WHAT/WHEN/WHY blocks + cite the BLOCKER they close + cross-reference sibling files.
+- **D8** — `secrets.yaml` is the source of truth; `.env.example` now strictly generated from it via the script (no manual override). CI lint-secrets-hygiene gate passes on a clean re-run.
+- **H3** — `--requirepass` is the cluster-side enforcement; round-8 strengthens the client-side compliance by making `REDIS_PASSWORD` the sole AUTH source unambiguously.
+- **I6** — chose δ approach over α specifically to avoid cross-service schema drift the coordinator flagged.
+- **I9** — coordinator-queued template-script sync follow-up captured in the script header comment as a pointer for future-coordinator work; not bundled in this PR.
+- **I11** — same-commit LOG entry (this one).
+- **NOT I14** — Python code addition (new validator + 2 tests) + behavior change (rejects credential-bearing URLs at boot). Coordinator manually merges via `gh pr merge <N> --squash` after Codex APPROVE.
+
+Defensive B2 sweep on round-8 additions: 1 new `kwarg` mention scrubbed in the test-section header comment to "keyword argument" spelled out fully. Other diff-additions B2-shorthand check: clean.
+
+Same PR + branch. 7 files touched + this LOG subsection. No new files. **Behavior change**: Settings construction now FAILS LOUDLY (boot-time `ValidationError`) on a credential-bearing `REDIS_URL` — by design. Anyone upgrading from a `REDIS_URL=redis://:password@host` form to round-8 will get a startup crash naming the field on the first deploy; the fix is to move the password to `REDIS_PASSWORD` and strip the URL.
+
 ---
 
 ## 2026-05-22 — PR-B — Day-8 directory-RPC wrapper for `/api/v1/influencers` list + by-id (DRAFT, blocked on Session 4 directory ratification)

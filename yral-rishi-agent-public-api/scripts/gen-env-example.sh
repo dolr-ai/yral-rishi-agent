@@ -23,17 +23,30 @@
 #   - It does NOT delete `.env.example`. The script overwrites the file
 #     with new content (a file modification, not a deletion — A1-clean).
 #   - It does NOT touch `.env.local` (which is gitignored).
-#   - It does NOT yet read a per-secret `source.local` field from
-#     `secrets.yaml` to emit safe local-dev defaults. Today every
-#     entry writes blank `NAME=`, which is correct for true-secret
-#     credentials (SENTRY_DSN, LANGFUSE_*, REDIS_PASSWORD) but
-#     INCORRECT for entries whose local-dev value is a safe public
-#     URL (notably `REDIS_URL=redis://localhost:6379/0`). Codex PR
-#     #137 round-4 CONCERN flagged this. Today's workaround: after
-#     running this script, manually restore the local-dev default
-#     on `REDIS_URL` (the only entry that currently needs it). A
-#     coordinator-queued follow-up adds the field-aware emission
-#     so the post-script manual step goes away.
+#
+# PER-SERVICE LOCAL-DEV-DEFAULT LOOKUP (Codex PR #137 round-7 BLOCKER 2 fix):
+# Most secrets emit `NAME=` (blank — devs fill in via `.env.local`),
+# which is correct for true-secret credentials (SENTRY_DSN, LANGFUSE_*,
+# REDIS_PASSWORD). Some secrets have a safe public local-dev value
+# (notably `REDIS_URL=redis://localhost:6379/0` pointing at the
+# docker-compose Redis) which a blank `.env.example` line would
+# WRONGLY override the Settings default for when devs run
+# `cp .env.example .env.local`.
+#
+# Round-8 fix: the `local_default_value_for_name()` helper below
+# returns a hardcoded per-service default for the small set of
+# secret names that need one (currently just `REDIS_URL` here in
+# public-api). Other secret names fall through to blank emission.
+#
+# Why a hardcoded lookup (not a `secrets.yaml` schema extension):
+# extending the D8 schema with a per-entry `local_default_value`
+# field would force EVERY service's `secrets.yaml` to be updated +
+# every service's copy of THIS script to recognize the new field —
+# cross-service schema drift in the worst case. The per-service
+# hardcoded case-statement is service-local: encodes service-
+# specific knowledge in the service-specific script. A coordinator-
+# queued follow-up syncs the same case-statement convention into
+# the template's `gen-env-example.sh` so future services inherit it.
 #
 # FLAGS:
 #   (no flags)    write `.env.example` and exit 0.
@@ -97,6 +110,36 @@ fi
 # Build the would-be content into a variable, then either write OR diff
 # ===========================================================================
 
+local_default_value_for_name() {
+    # WHAT: return the hardcoded local-dev default value for the given
+    #       secret name, or empty string if the secret has no safe
+    #       local-dev default (the common case).
+    # WHEN: called once per secret while generating each `.env.example`
+    #       entry — the return value becomes the right-hand side of
+    #       `NAME=<value>` in the output.
+    # WHY:  closes Codex PR #137 round-7 BLOCKER 2 — the generator is
+    #       now the single source of truth for the local-dev default,
+    #       so a clean re-run reproduces `.env.example` exactly (no
+    #       post-script manual edit required, no `lint-secrets-
+    #       hygiene` CI drift).
+    case "$1" in
+        REDIS_URL)
+            # docker-compose Redis (unauthenticated) — the safe local
+            # default. Production REDIS_URL points at the Sentinel
+            # quorum and is PASSWORDLESS (AUTH is via REDIS_PASSWORD
+            # per H3 + the 2026-05-22 rotation). See `secrets.yaml`
+            # REDIS_URL description for the passwordless-URL contract.
+            echo "redis://localhost:6379/0"
+            ;;
+        *)
+            # No safe local-dev default for this secret — emit blank
+            # so devs MUST fill it in via `.env.local`.
+            echo ""
+            ;;
+    esac
+}
+
+
 generate_content() {
     cat <<'HEADER'
 # .env.example
@@ -149,7 +192,14 @@ HEADER
         echo "# Source: local=$local_source"
         echo "#         ci=$ci_source"
         echo "#         production=$production_source"
-        echo "$name="
+        # Per-service local-dev-default lookup (Codex PR #137 round-7
+        # BLOCKER 2 fix). Returns the hardcoded value for secrets like
+        # REDIS_URL whose local-dev default is a safe public URL;
+        # returns empty for true-secret credentials so devs fill them
+        # in via .env.local.
+        local local_default_value
+        local_default_value=$(local_default_value_for_name "$name")
+        echo "$name=$local_default_value"
 
         index=$((index + 1))
     done
