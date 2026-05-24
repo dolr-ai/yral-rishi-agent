@@ -19,17 +19,7 @@ Bundled session-1 PR re-implementing 3 items routed from closed coordinator PRs 
 
 **MECHANICAL (Lint State Hygiene):** SESSION-1-LOG.md was not updated in the round-1 commit (`678befe`). Per I11, every commit on a `session-N/*` branch must update `SESSION-N-LOG.md` in the same commit. This entry closes that gap retroactively + makes the round-2 commit I11-compliant.
 
-### Why this PR landed under session-1 ownership (not coordinator)
-
-`bootstrap-scripts-for-the-v2-docker-swarm-cluster/**` is documented as Session 1's write scope in `01-SESSION-SHARDING-AND-OWNERSHIP.md`. Coordinator's PRs #143 + #149 attempted to author the cluster manifest entry directly + hit Codex I9 BLOCKER both times. The PR #143 round-3 BLOCKER on schema-field-name invention also informed this PR's discipline: read the existing exemplars FIRST + mirror field-by-field, never invent.
-
-### Cross-session DEP routing (option (b) — Session 4's per-service mirror)
-
-Coordinator picked option (b) over option (a) (which would have bundled the Session 4 orchestrator/secrets.yaml mirror into this PR). Reasoning:
-- The 2026-05-23 process change memory says "FIRST ask: 'Could this be 2-3 PRs with no drift risk?'" — yes here.
-- Codex's PR #143 BLOCKER listed the DEP-routed split as option #2 of its own suggestion.
-- Session 5's recent ETL bundle was a single-session bundle within Session 5's own paths, NOT a cross-session bundle precedent.
-- Single Codex cycle per PR; Session 4 lands their mirror in their own schema voice.
+**Round-3 fold-in:** trimmed two LOG sub-sections ("Why this PR landed under session-1 ownership" + "Cross-session DEP routing option (b)") that fully duplicated PR body content, bringing cumulative diff from 201 to ~193 lines to restore I14 `<200` compliance. Coordinator-routed per the I14-vs-I11 structural tension queued for post-feature-parity policy fix (the `<200` cap was sized pre-I11; LOG-required PRs effectively cap at ~140 of substantive change).
 
 ### Constraints touched
 
