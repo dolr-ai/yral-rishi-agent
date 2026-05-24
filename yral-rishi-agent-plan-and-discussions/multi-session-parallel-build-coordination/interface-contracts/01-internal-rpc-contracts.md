@@ -220,6 +220,48 @@ POST http://yral-rishi-agent-user-memory-service:8000/extract-async
 
 `/context` is hot path (parallel-fetched per Section 2.7). `/extract-async` is fire-and-forget for memory extraction.
 
+## public-api → user-memory-service
+
+```
+GET http://yral-rishi-agent-user-memory-service:8000/v1/conversations/{conversation_id}
+  Headers: X-User-Id + X-Internal-Caller +
+           X-Request-Id + X-Trace-Id (4 internal-call headers;
+           no X-Idempotency-Key on stateless GETs)
+
+→ 200 {
+    id: string,
+    user_id: string,
+    ai_influencer_id: string,
+    conversation_type: string,
+    created_at: string,
+    last_message_at: string,
+    message_count: integer,
+    soft_deleted_at: string|null,
+    last_message: {...}|null
+  }
+→ 404 (conversation not found, soft-deleted, OR owned by different
+       user — tenant-isolation 404; never 403 + never leaks
+       existence of other users' conversations)
+```
+
+**Used by**: `public-api`'s `send_message` handler (`app/api/chat_routes.py`) at request time on every `POST /api/v1/chat/conversations/{id}/messages`. The handler derives `ai_influencer_id` from the conversation lookup, then forwards it as the per-request `influencer_id` field in the orchestrator `run_turn` call.
+
+### Architectural decision — Phase-1 ratification (2026-05-24)
+
+Codex CONCERN on PR #141 round-5 surfaced the cross-service boundary question: should `public-api` call `user-memory-service` directly to derive `influencer_id`, OR should `orchestrator` own the derivation (calling `user-memory-service` itself)?
+
+**Coordinator decision: public-api → user-memory direct call is the ratified Phase-1 architecture.**
+
+Reasoning:
+- Both architectures honor the trust-boundary requirement (Codex CONCERN on PR #131): `influencer_id` derived from the conversation record, never from client-supplied body/header/query
+- Public-api derivation keeps orchestrator's contract minimal — orchestrator is "process the turn given an influencer," not "look up which influencer" + "load context for influencer." Cleaner separation of concerns.
+- Yesterday's PR-B2 plan was approved on this shape; switching mid-flight would add 1-2 days rework for a CONCERN (not BLOCKER) where both architectures meet the parity floor
+- Phase 1 timeline pressure: parity-correctness is the cutover gate, not architectural-elegance optimization
+
+**Alternative (NOT chosen for Phase 1)**: orchestrator owns the derivation. Public-api forwards just `conversation_id`; orchestrator queries user-memory directly. Cleaner "service owns its own data path" + fewer cross-service hops in some workflows. Captured as a **post-cutover re-evaluation candidate**: once v2 is in steady state + observability shows real call patterns, re-evaluate whether moving the user-memory call into orchestrator simplifies the request graph enough to justify the rework. Filed under the post-cutover architectural sweep that DEFER'd memory `feedback_v2_greenfield_freedom_1000x_better_no_chat_ai_inheritance_2026_05_22.md` tracks.
+
+This decision is binding for Phase 1. Future PRs touching the public-api ↔ user-memory boundary cite this section; Codex re-scoring should treat this as the cross-service boundary ratification per I9.
+
 ## orchestrator → content-safety-and-moderation
 
 ```
