@@ -1,0 +1,120 @@
+# ---------------------------------------------------------------------------
+# template-spawn-smoke.yml — GitHub Actions workflow that runs the
+# template's end-to-end spawn-smoke gate on every PR that touches the
+# template folder (or the workflow file itself).
+#
+# ⭐ THIS WORKFLOW IN ONE SENTENCE
+# Spawns a fresh service from the template into a tempdir, builds its
+# Docker image, boots its docker-compose stack, probes /openapi.json,
+# and tears everything down — failing the PR if any step breaks.
+#
+# 📖 EXPLAINED FOR A NON-PROGRAMMER
+# The yral-rishi-agent-new-service-template/ folder is what every new
+# v2 service is copied from. On 2026-05-22 a bug in the template
+# (DEP-010 — wrong fixture filename) cascaded silently into 4 spawned
+# services because nothing ever ran the template end-to-end before
+# spawning from it. This workflow is that "run it end-to-end" gate:
+# every PR that touches the template must prove a fresh spawn still
+# builds, boots, and serves before the PR can merge.
+#
+# 🔗 HOW IT FITS
+#   - Triggered: pull_request + push (main) on
+#     `yral-rishi-agent-new-service-template/**` and on this workflow
+#     file itself.
+#   - Runs: bash yral-rishi-agent-new-service-template/scripts/tests/
+#     test_spawn_smoke.sh (which spawns, builds, boots, probes, tears
+#     down).
+#   - Gated by: auto-merge-small-session-fix-prs.yml's required-checks
+#     set — this workflow's JOB name (NOT the workflow name) is listed
+#     in REQUIRED_CHECK_NAMES so any template PR that fails this gate
+#     can't auto-merge.
+#   - Defends: D1 (the architectural-audit decision from 2026-05-23
+#     that ordered this gate after the 2026-05-22 cascade) +
+#     CONSTRAINTS I10/I2/J4 (CI gates must be trusted + green).
+#
+# 📥 INPUTS
+#   - PR head SHA (checkout)
+#   - The template folder under
+#     `yral-rishi-agent-new-service-template/` at that SHA
+#
+# 📤 OUTPUTS / SIDE EFFECTS
+#   - Exit 0 (success) → check shows green on the PR
+#   - Exit 1 (failure) → check shows red; auto-merge gate refuses to
+#     merge; the EXIT-trap diagnostic in test_spawn_smoke.sh logs
+#     compose ps + last-50 service-log + last-20 postgres-log lines
+#     into the workflow run for triage
+#   - All Docker state on the runner is cleaned up by the EXIT trap;
+#     no cross-run pollution.
+#
+# RELATED FILES
+#   - yral-rishi-agent-new-service-template/scripts/tests/test_spawn_smoke.sh
+#       The 9-step script this workflow runs
+#   - yral-rishi-agent-new-service-template/scripts/new-service.sh
+#       The spawner the gate exercises (incl. --target-dir flag)
+#   - .github/workflows/auto-merge-small-session-fix-prs.yml
+#       The required-check set this workflow's job-name is added to
+#   - yral-rishi-agent-plan-and-discussions/multi-session-parallel-
+#     build-coordination/cross-session-dependencies.md (DEP-014)
+#       The skeleton-expansion follow-up that unlocks the gate to
+#       catch Redis/Postgres-config bug classes
+# ---------------------------------------------------------------------------
+
+# Workflow name as it appears in the GitHub Actions UI. Auto-merge's
+# `on.workflow_run.workflows` array references this name verbatim.
+name: Template Spawn Smoke
+
+# Path-scoped triggers — runs only when the template folder OR this
+# workflow file changes. Other services' PRs don't pay this gate's
+# CI minutes (per F16 + the per-service-ci.yml scoping pattern).
+on:
+  pull_request:
+    paths:
+      - 'yral-rishi-agent-new-service-template/**'
+      - '.github/workflows/template-spawn-smoke.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'yral-rishi-agent-new-service-template/**'
+      - '.github/workflows/template-spawn-smoke.yml'
+
+# Default permissions are read-only. The job below doesn't need write
+# (no commit, no comment, no merge); read-only contents is sufficient
+# for `actions/checkout`.
+permissions:
+  contents: read
+
+jobs:
+
+  # -------------------------------------------------------------------------
+  # spawn-smoke — the single end-to-end gate job.
+  # -------------------------------------------------------------------------
+  spawn-smoke:
+    # Job display name — auto-merge-small-session-fix-prs.yml's
+    # REQUIRED_CHECK_NAMES bash array references THIS string verbatim.
+    # Keep the two in sync; if you rename here, update there.
+    name: Verify template spawn smoke (build + boot + openapi)
+    runs-on: ubuntu-latest
+    # 15 minutes is plenty for a cold-cache build + boot + probe
+    # (typical run is ~3-5 min on warm cache, ~7-10 min cold). The
+    # cap stops a hung run from burning GH-Actions minutes.
+    timeout-minutes: 15
+    steps:
+      # Standard checkout — gives us the PR head SHA's working tree
+      # including the template folder we'll spawn from.
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      # Buildx with GHA cache makes successive runs fast — the
+      # template's multi-stage Dockerfile + pip install takes
+      # ~3-4 minutes cold, ~30s warm. The cache key is per-Dockerfile-
+      # SHA + per-pyproject-SHA, so unrelated PRs share the warm cache.
+      - name: Set up Docker Buildx (with GHA cache)
+        uses: docker/setup-buildx-action@v3
+
+      # Run the actual gate. `bash` (not `sh`) — the script uses bash
+      # 4+ features (mapfile in adjacent test scripts, [[ ]] etc.).
+      # ubuntu-latest's default bash is 5+ so this is satisfied; on
+      # macOS dev the operator may need `/opt/homebrew/bin/bash`
+      # (documented in the script's header).
+      - name: Run template spawn-smoke
+        run: bash yral-rishi-agent-new-service-template/scripts/tests/test_spawn_smoke.sh
