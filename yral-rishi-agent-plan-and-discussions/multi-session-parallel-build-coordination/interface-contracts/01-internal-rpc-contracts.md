@@ -323,8 +323,17 @@ The gate lives at `latency-baseline-capture-from-live-services-the-numbers-v2-mu
 
 The gate runs in TWO modes for J2 zero-flake compliance — stable hardware ALONE doesn't help if external LLM latency variance is in the measured path (Codex round-7 CONCERN, correctly flagged):
 
-**Gate A2-PR (merge-blocking, deterministic mock LLM)**:
-- Automatically triggered on every `pull_request` event matching path filters: `yral-rishi-agent-public-api/**`, `yral-rishi-agent-user-memory-service/**`, AND the orchestrator/billing call-paths if they're touched (`yral-rishi-agent-conversation-turn-orchestrator/app/run_turn.py`, any code consuming yral-billing's chat-access endpoint). Workflow_dispatch is also available for manual re-runs but is NOT the primary trigger — the `pull_request` path filter is what makes the gate automatically protect every PR touching the hot path, satisfying E1's hard CI gate requirement (Codex round-10 BLOCKER, correctly flagged).
+**Gate A2-PR (merge-blocking, deterministic mock LLM)** — TWO-PART OWNERSHIP per Codex round-12 CONCORN (correctly flagged that workflow files + branch protection are coordinator-scope, NOT Session 1's):
+
+*Session 1 deliverable (lives in `yral-rishi-agent-plan-and-discussions/latency-baseline-capture-from-live-services-the-numbers-v2-must-beat/scripts/`)*:
+- The benchmark script itself: spins up the deterministic mock LLM scaffold, issues N=500 calls, computes p95s, exits 0/1 based on the fail-stop thresholds.
+- Owns the script's runtime behavior + the MOCK_LLM_FIXED_LATENCY_MS constant + the threshold formula.
+
+*Coordinator deliverable (lives in `.github/workflows/` per I9 coordinator-scope)*:
+- The GitHub Actions workflow file (`.github/workflows/gate-a2-pr-benchmark.yml` or similar) that wires the Session 1 script into `pull_request` event triggers.
+- Path filters: `yral-rishi-agent-public-api/**`, `yral-rishi-agent-user-memory-service/**`, AND the orchestrator/billing call-paths if they're touched (`yral-rishi-agent-conversation-turn-orchestrator/app/run_turn.py`, any code consuming yral-billing's chat-access endpoint).
+- Workflow_dispatch is also available for manual re-runs but is NOT the primary trigger — the `pull_request` path filter is what makes the gate automatically protect every PR touching the hot path, satisfying E1's hard CI gate requirement (Codex round-10 BLOCKER, correctly flagged).
+- Branch protection rule update (via GitHub repo settings — owned by coordinator at the repo-admin level) to mark this workflow as a REQUIRED check on the send-message hot path.
 - LLM provider replaced with deterministic mock (fixed-latency mock client at a known response time, e.g. always 50ms) so the measured p95 isolates infrastructure variance ONLY (Postgres, asyncpg pool, network, public-api → user-memory hop)
 - Same N=500 `POST /api/v1/chat/conversations/{id}/messages` call pattern on stable-resource hardware (self-hosted GitHub Actions on a dedicated worker OR scheduled job on rishi-4/5/6 cluster, resource-isolated)
 - FAIL the workflow check if measured p95 of the isolated public-api → user-memory call exceeds **15ms** (budgeted ceiling)
@@ -344,11 +353,11 @@ Sources:
 
 **Sequencing note**: Gate A2-PR cannot fire until Session 1's controlled benchmark runner + deterministic mock LLM scaffold exist. Session 1's deliverable to stand both up is on the critical path for Phase 1 parity smoke (Day 12-13). If Session 1 cannot land both by Day 11, coordinator surfaces the conflict to Rishi as either: (a) scope slip on Phase 1 parity smoke, (b) accept Gate B (pre-production-shape rehearsal) as the SOLE latency gate temporarily until A2-PR lands post-merge, or (c) change E1's strict CI-gate language to allow time-boxed post-merge enforcement. None of these is coordinator's call to make unilaterally per A6 + the no-changes-to-E1-without-Rishi rule.
 
-**Gate B — pre-production-traffic production-shape rehearsal at Rishi's A6 discretion (owner: Session 4 + coordinator, lives in chaos-test folder)**
+**Gate B — pre-production-traffic production-shape rehearsal at Rishi's A6 discretion (owner: Session 1, lives in `bootstrap-scripts-for-the-v2-docker-swarm-cluster/chaos-tests/`)**
 
-Required before any Rishi-approved production traffic (no scheduled date per A6). Implementation:
+Codex round-12 BLOCKER correctly flagged that the chaos-tests folder is Session 1's scope (per ownership doc), NOT Session 4 + coordinator's. Round-13 corrects: Session 1 owns Gate B since it's a cluster-level shadow-traffic exercise + lives in their existing chaos-tests/ scope. Required before any Rishi-approved production traffic (no scheduled date per A6). Implementation:
 
-- Before any Rishi-approved production traffic, run a 1-hour shadow-traffic rehearsal at projected day-0 RPS (chat-ai current ~25K msgs/day = ~0.3 RPS sustained, ~2-5 RPS burst) against the live rishi-4/5/6 cluster.
+- Before any Rishi-approved production traffic, Session 1 runs a 1-hour shadow-traffic rehearsal at projected day-0 RPS (chat-ai current ~25K msgs/day = ~0.3 RPS sustained, ~2-5 RPS burst) against the live rishi-4/5/6 cluster.
 - Pull Langfuse p95 for the public-api → user-memory call span.
 - BLOCK Rishi-approved production traffic if measured p95 exceeds 15ms OR if total `POST /api/v1/chat/conversations/{id}/messages` p95 exceeds 0.5× chat-ai baseline. Coordinator surfaces this to Rishi as the go/no-go criterion (per A6, the decision sits with Rishi).
 
