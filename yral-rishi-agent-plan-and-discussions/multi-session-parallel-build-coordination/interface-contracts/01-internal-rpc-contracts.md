@@ -262,6 +262,33 @@ Reasoning:
 
 This decision is binding for Phase 1. Future PRs touching the public-api ↔ user-memory boundary cite this section; Codex re-scoring should treat this as the cross-service boundary ratification per I9.
 
+### Latency rationale — E1 50%-faster-than-chat-ai compliance
+
+Codex PR #145 round-1 raised a real performance question: does this synchronous public-api → user-memory call on the user-interactive hot path comply with E1's hard 50%-faster latency target? And does it duplicate orchestrator's existing `/context` call?
+
+**Not duplicative — different endpoints serve different purposes:**
+- `public-api → user-memory: GET /v1/conversations/{id}` — returns conversation metadata (id, user_id, ai_influencer_id, message_count, last_message). Used by public-api to derive `influencer_id` + verify tenant ownership (404 if not-owned).
+- `orchestrator → user-memory: GET /context?user_id&influencer_id&recent_messages=10` (per the section above) — returns semantic memory facts + user profile + recent episode summaries. Used by orchestrator to enrich the LLM prompt.
+
+The two calls fetch DIFFERENT data shapes. The `/v1/conversations/{id}` call is a single-row Postgres SELECT (~1-3ms warm + ~5-10ms cold including network round-trip). The `/context` call is a multi-table join + aggregation (heavier, but its own bucket; was already in the design).
+
+**E1 50%-faster target compliance approach:**
+
+1. **p95 budget**: GET `/v1/conversations/{id}` p95 ≤ 15ms (Postgres index hit on conversation_id PK + asyncpg connection pool reuse). The total send-message hot-path p95 budget allocates ~30ms to all user-memory calls combined (this one + orchestrator's `/context`); we're well inside.
+
+2. **Timeout/fallback behavior**: per Session 3's PR-B2 implementation, user-memory unreachable / 404 / 5xx / timeout → public-api returns envelope-shaped 503 with `user_memory.call.failed=<mode>` Sentry tag. NO silent fallback to a stale or default influencer_id — failing loudly preserves the trust-boundary semantic.
+
+3. **CI/Sentry latency observability**: Session 5's daily Sentry baseline pull from chat-ai (per memory `project_v2_first_build_task_sentry_baseline_pull`) establishes the chat-ai latency baseline; v2 latency observability via Langfuse traces every send-message turn with cross-service-call breakdowns. The 50%-faster comparison fires per-PR via the per-service-ci latency check (Session 2's deliverable once skeleton expansion lands).
+
+**Combine candidate (NOT chosen for Phase 1)**: extend `user-memory's /context` endpoint to accept `conversation_id` instead of `influencer_id` + return BOTH the memory context AND the conversation's influencer_id in one shape. Then orchestrator's existing `/context` call subsumes the public-api lookup; public-api just forwards `conversation_id` to orchestrator + orchestrator does the single user-memory call. Cleaner single-hop architecture. NOT chosen for Phase 1 because:
+- Requires Session 5 to add `conversation_id` parameter handling to `/context`
+- Requires Session 3 to remove the user-memory call from public-api
+- Requires Session 4 to update orchestrator's `/context` call shape
+- Adds 1-2 days rework where the current shape meets the E1 p95 budget
+- Captured as **post-cutover re-evaluation candidate** alongside the orchestrator-derives alternative above
+
+The current 2-call shape stays for Phase 1. Post-cutover sweep evaluates both alternatives (single-call consolidation + orchestrator-derives) once real cluster latency telemetry shows actual call patterns + bottlenecks.
+
 ## orchestrator → content-safety-and-moderation
 
 ```
