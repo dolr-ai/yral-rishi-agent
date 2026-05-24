@@ -3,6 +3,126 @@
 
 ## OPEN
 
+### DEP-016 — Session 1 to validate Redis 7 ACL dual-password rotation as production-ready canonical method BEFORE v2 takes any Rishi-approved production traffic
+
+Raised: 2026-05-24 by Coordinator (PR #138 override-merge action item — Codex correctly flagged the all-5-services-simultaneous rotation pattern as production-unsafe but coordinator accepted dev-cluster reality for v2-today scope).
+
+What:    PR #138's REDIS_PRIMARY_PASSWORD rotation_runbook documents
+         a rolling-update-all-5-services-simultaneously shape. That
+         shape WORKED on the 2026-05-22 dev-cluster incident response
+         (Sentinel quorum held, no FAILOVER) and is what we executed
+         honestly. But for production traffic that shape creates a
+         brief mixed-password window (Sentinel-failover-to-stale-
+         credentialed-replica risk + replication breakage risk).
+
+         Codex's two production-safe shapes: (1) Redis 7 ACL dual-
+         password rotation (zero-downtime; requires ACL config the
+         cluster doesn't have today), (2) Maintenance-window with
+         write-pause + sentinel-failover-disabled (production-safe
+         but requires planned downtime per rotation). HA-safe long-
+         term answer is (1).
+
+Why:     Before v2 takes any Rishi-approved production traffic, the
+         rotation runbook must document a production-safe path. The
+         current runbook is honest about being dev-cluster-only;
+         this DEP captures the production-hardening work, not a
+         scheduled gate (per A6, cutover timing stays at Rishi's
+         discretion).
+
+Blocks:  No hard runtime block today (v2 is pre-production; dev
+         cluster only). Soft block on any Rishi-approved production
+         traffic — before v2 takes production traffic at Rishi's
+         discretion, Session 1's ACL dual-password validation should
+         be complete. Production-readiness gate, not a cutover
+         deadline.
+
+ETA needed: Before any Rishi-approved production traffic (no calendar
+         deadline — at Rishi's A6 discretion).
+
+Suggested resolution: (a) Validate Redis 7 ACL dual-password support
+         on current cluster. (b) Update `redis-sentinel-install.sh`
+         to bootstrap with ACL SETUSER. (c) Update
+         `REDIS_PRIMARY_PASSWORD` rotation_runbook to make ACL dual-
+         password the primary path; demote all-5-simultaneous to
+         "dev-cluster-only emergency path". (d) Document migration
+         from `--requirepass` to ACL config as a separate one-time
+         cluster-state change. (e) Dry-run the ACL dual-password
+         rotation on dev cluster.
+
+How spotted: PR #138 round-4 Codex BLOCKER on 2026-05-24 — Codex
+         correctly identified the production-unsafe rotation shape.
+         Coordinator override-merged with dev-cluster-only framing
+         + filed this DEP for the production-hardening work (at
+         Rishi's A6 discretion).
+
+
+### DEP-017 — Session 4 to add `OPENROUTER_API_KEY` to orchestrator's per-service `secrets.yaml` before any Tara/NSFW routing code consumes it (D8 hygiene)
+
+Raised: 2026-05-24 by Session 1 (companion to cluster-manifest entry added in this PR; previously reserved by closed PR #143 — reservation released, re-claimed here).
+
+What:    This PR adds `OPENROUTER_API_KEY` to
+         `bootstrap-scripts-for-the-v2-docker-swarm-cluster/secrets-manifest.yaml`
+         as a Phase 1 secret (consumed_by:
+         [yral-rishi-agent-conversation-turn-orchestrator/app/llm_client/openrouter.py]).
+         Per D8, every secret a service consumes MUST also be declared
+         in that service's own `secrets.yaml`. Session 4 owns
+         `yral-rishi-agent-conversation-turn-orchestrator/secrets.yaml`
+         and must add the OPENROUTER_API_KEY entry there.
+
+         Schema to mirror: GEMINI_API_KEY block in the same file
+         (currently at ~line 220). Same field order, same description
+         style, same notes pattern. Don't invent new field names —
+         coordinator's earlier DEP-017 draft (closed PR #143) tried
+         that + Codex BLOCKER'd.
+
+         Suggested per-service entry shape (Session 4 refines as needed):
+           - name: OPENROUTER_API_KEY
+           - description: same routing-rule explanation as the cluster
+             manifest entry (Tara + NSFW paths via A10)
+           - required_in: [ci, production]  # YAML list, mirror GEMINI
+           - source:
+               local: ".env.local (personal OpenRouter key for laptop;
+                       or leave empty + Tara/NSFW routes refuse to init)"
+               ci: "GitHub Secret OPENROUTER_API_KEY"
+               production: "GitHub Secret OPENROUTER_API_KEY → Swarm secret at deploy"
+           - rotation_policy: "every 90 days; rotate via OpenRouter console"
+           - consumed_by: [app/llm_client/openrouter.py]
+           - classification:
+               blast_radius: high
+               access_pattern: write-only-from-our-side
+           - notes: quota-burn-only blast radius; cluster manifest at
+             bootstrap-scripts/secrets-manifest.yaml is source-of-truth
+             per D8; this mirror records orchestrator as a consumer
+
+Why:     D8 hygiene is CI-enforced (lint-secrets-hygiene.yml). Without
+         the mirror, orchestrator's compose-level secret loading won't
+         have OPENROUTER_API_KEY available at runtime even though the
+         cluster manifest declares it — the per-service manifest is what
+         drives the actual env-var wiring.
+
+Blocks:  Any Session 4 PR that wires Tara/NSFW routing through OpenRouter
+         (the orchestrator code change that calls openrouter.ai per A10).
+         The routing PR can be drafted + reviewed but cannot land until
+         the secrets.yaml entry exists.
+
+ETA needed: Before Session 4's Tara/NSFW routing code merges. No
+         calendar deadline; tracks Session 4's orchestrator work.
+
+Suggested resolution: Single small Session 4 PR to
+         `yral-rishi-agent-conversation-turn-orchestrator/secrets.yaml`
+         adding the OPENROUTER_API_KEY entry per the schema above.
+         Auto-merge eligible per I14 if the diff is <200 lines + doesn't
+         change behavior (it does not — declaration-only; the Tara
+         routing code lands in a separate PR that consumes this).
+
+How spotted: Coordinator PR #143 round-3 Codex BLOCKER on 2026-05-24 —
+         Codex correctly applied D8 to coordinator's cluster-manifest
+         addition. Coordinator initially routed via DEP-017 with wrong
+         schema fields; closed PR #143; re-routed to Session 1 as this
+         bundled PR. Session 1 + Codex caught the wrong-schema mistake
+         + re-drafted with the correct per-service schema fields.
+
+
 ### DEP-014 — Template skeleton lacks Postgres/Redis client wiring + a Redis/Postgres-touching /health/ready; spawn-smoke CI gate cannot catch shared-config / Redis-AUTH / connection-string drift at template time until that wiring lands
 
 Raised: 2026-05-23 by Session 2 (filed in the same PR that lands the spawn-smoke CI gate)
