@@ -1,6 +1,65 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-24 — PR #150: Phase 1 OPENROUTER_API_KEY in cluster secrets-manifest + DEP-016 (Redis ACL rotation production-readiness) + DEP-017 (Session 4 orchestrator/secrets.yaml mirror routing)
+
+### Action
+
+Bundled session-1 PR re-implementing 3 items routed from closed coordinator PRs #143 + #149 (both hit I9 BLOCKER — `bootstrap-scripts-for-the-v2-docker-swarm-cluster/**` is Session 1's documented write scope per `01-SESSION-SHARDING-AND-OWNERSHIP.md`).
+
+1. **Cluster manifest entry** — added `OPENROUTER_API_KEY` to `bootstrap-scripts-for-the-v2-docker-swarm-cluster/secrets-manifest.yaml` under a new `# ─── External LLM provider API keys (per CONSTRAINTS A10) ───` sub-section header. Schema mirrors the simpler-shape exemplars `GHCR_PULL_TOKEN` + `GOOGLE_CHAT_WEBHOOK_URL` field-by-field (no schema invention — the failure mode of coordinator's PR #143 round-3 Codex BLOCKER). Phase 1 scope per the 2026-05-23 correction: chat-ai uses OpenRouter for Tara today, A8 feature parity requires v2 to do the same from Phase 1.
+2. **DEP-016 entry** — Session 1 to validate Redis 7 ACL dual-password rotation as production-ready canonical method before v2 takes any Rishi-approved production traffic. Captured from PR #138 round-4 Codex BLOCKER (the all-5-services-simultaneous rotation pattern is dev-safe but production-unsafe; ACL dual-password is the long-term HA-safe answer). Production-readiness gate, not a cutover deadline — per A6, cutover timing stays at Rishi's discretion.
+3. **DEP-017 entry** — Session 4 to add `OPENROUTER_API_KEY` to orchestrator's per-service `secrets.yaml` per D8 hygiene (every cluster-manifest secret a service consumes must also be declared in that service's own secrets.yaml). Option (b) routing per coordinator: cluster manifest + DEP-017 in this PR; Session 4 picks up the per-service mirror in their own small follow-up PR with their existing schema voice. DEP-017 reservation released by closed PR #143; re-claimed here.
+
+### Round-2 corrections (Codex round-1 verdict: 1 CONCERN, no BLOCKERs)
+
+**CONCERN (constraint, secrets-manifest.yaml:565):** classification framing inconsistency — cluster manifest had `sensitivity: medium` while the DEP-017 suggested per-service entry framed `blast_radius: high`. An external LLM key burns quota + bills + should be treated as high-impact uniformly across both manifests.
+
+**Fix:** bumped cluster manifest `sensitivity: medium` → `sensitivity: high`. `blast_radius: external_llm_quota_burn` + `access_pattern: write-only-from-our-side` unchanged (those were already in the entry per the `GHCR_PULL_TOKEN` + `GOOGLE_CHAT_WEBHOOK_URL` 3-field schema). Now the cluster manifest's sensitivity dimension aligns with DEP-017's high-impact framing.
+
+**MECHANICAL (Lint State Hygiene):** SESSION-1-LOG.md was not updated in the round-1 commit (`678befe`). Per I11, every commit on a `session-N/*` branch must update `SESSION-N-LOG.md` in the same commit. This entry closes that gap retroactively + makes the round-2 commit I11-compliant.
+
+### Why this PR landed under session-1 ownership (not coordinator)
+
+`bootstrap-scripts-for-the-v2-docker-swarm-cluster/**` is documented as Session 1's write scope in `01-SESSION-SHARDING-AND-OWNERSHIP.md`. Coordinator's PRs #143 + #149 attempted to author the cluster manifest entry directly + hit Codex I9 BLOCKER both times. The PR #143 round-3 BLOCKER on schema-field-name invention also informed this PR's discipline: read the existing exemplars FIRST + mirror field-by-field, never invent.
+
+### Cross-session DEP routing (option (b) — Session 4's per-service mirror)
+
+Coordinator picked option (b) over option (a) (which would have bundled the Session 4 orchestrator/secrets.yaml mirror into this PR). Reasoning:
+- The 2026-05-23 process change memory says "FIRST ask: 'Could this be 2-3 PRs with no drift risk?'" — yes here.
+- Codex's PR #143 BLOCKER listed the DEP-routed split as option #2 of its own suggestion.
+- Session 5's recent ETL bundle was a single-session bundle within Session 5's own paths, NOT a cross-session bundle precedent.
+- Single Codex cycle per PR; Session 4 lands their mirror in their own schema voice.
+
+### Constraints touched
+
+- **A2.1** — single concern: bundled secrets-manifest entry + companion DEPs. No code changes, no compose changes.
+- **A10** — `OPENROUTER_API_KEY` is the Tara + NSFW routing path's auth secret; description explicitly enumerates the two routing paths that send to OpenRouter (Tara via per-influencer rule; any `is_nsfw=TRUE` influencer).
+- **C6** — no literal IPs added; placement-pinning conventions unchanged.
+- **D7** — secrets manifest schema preserved verbatim (matched `GHCR_PULL_TOKEN` + `GOOGLE_CHAT_WEBHOOK_URL` field-by-field; no schema invention).
+- **D8** — per-service hygiene mirror routed to Session 4 via DEP-017.
+- **I9** — `bootstrap-scripts-for-the-v2-docker-swarm-cluster/**` correctly authored by Session 1; closed PRs #143 + #149 violated this and this PR restores correct ownership.
+- **I11** — round-2 commit adds this LOG entry in the same commit as the classification fix; the round-1 commit (`678befe`) was missing the LOG entry — gap closed retroactively here.
+- **I14** — `.yml` + `.md` only, cumulative diff vs main verified pre-push (round-1: 142 lines; round-2 adds ~3 lines for the sensitivity field bump + this LOG entry); well under 200-line cap.
+
+### Files touched (round 1 + round 2 cumulative)
+
+- `bootstrap-scripts-for-the-v2-docker-swarm-cluster/secrets-manifest.yaml` — new `OPENROUTER_API_KEY` entry (round 1) + sensitivity `medium → high` (round 2 Codex CONCERN fix).
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/cross-session-dependencies.md` — DEP-016 + DEP-017 entries at top of OPEN (round 1, conflict-resolved against upstream DEP-014 which landed via PR #135).
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-1-LOG.md` — this entry (round 2 I11 gap fix).
+
+### Worktree-drift recurrence (operator note, not a constraint violation)
+
+The shared `/Users/rishichadha/Claude Projects/yral-rishi-agent/` directory got switched off my `session-1/...` branch twice during this PR work (once before round-1 commit, once before round-2 commit) by coordinator's parallel `git switch` operations. Each recurrence handled via `git stash → git switch session-1/... → git stash pop` (round 1) or `git switch session-1/...` direct (round 2, no working-tree mods to stash). Root cause logged in memory `feedback_laptop_shutdown_coordination_collision`. No new memory write needed.
+
+### Sub-followups (none for me; routing handoffs only)
+
+- **DEP-016 work** — Session 1 (me) eventually. No calendar date; before any Rishi-approved production traffic (A6 discretion).
+- **DEP-017 work** — Session 4. Small declaration-only PR to add the per-service mirror; gates any future Tara/NSFW routing code PR.
+- **OpenRouter `app/llm_client/openrouter.py` consumer code** — Session 4. Lands in a separate PR after DEP-017's per-service secrets.yaml mirror.
+
+---
+
 ## 2026-05-21 — OPERATOR ACTION: alembic upgrade head against soul_file_library on Patroni leader rishi-5 (Day-7 close-out for Session 4's soul-file-library)
 
 ### Action
