@@ -245,6 +245,53 @@ Pre-existing-but-flagged (still out of scope):
 
 Same PR + branch. 2 files changed (1 rename + 1 script edit) + LOG round-10 subsection. No new files. No code-behavior change.
 
+### Round-11 fixups (Codex round-9 verdict: 3 BLOCKERs — 1 already closed by round-10, 2 addressed here)
+Codex round-9 verdict on commit `3f79c25` returned 3 BLOCKERs:
+
+**BLOCKER 2 (D8 `.env.local` force-add) — ALREADY CLOSED by round-10 commit `7682cff`** (pushed preemptively before Codex re-reviewed). Round-10 mirrored Session 4's PR #148 round-4 fix: renamed `.env.local` → `env.local.fixture` + ported the template's mktemp-copy-rename test runner. No round-11 action needed; coordinator confirmation that Codex's BLOCKER 2 fires on a stale view of the branch is captured here for the record.
+
+**BLOCKER 1 (B2 abbreviation leakage in new comments/docs) — `scripts/gen-env-example.sh:26`**: new comments/docs contain non-allowed abbreviations: `dev`/`devs`, `prod`, `env vars`, `URI`. B2 allowlist doesn't include them. Round-11 scrub:
+- `gen-env-example.sh` — multiple `dev`/`devs` mentions in the new round-8 header + `local_default_value_for_name()` docstring → `development`/`developers`. One `env vars` mention in the file-not-touched WHAT-THIS-SCRIPT-DOES-NOT-DO list → `environment-variable`. Pre-existing line 168 `Default "false" so local dev doesn't need real Langfuse keys.` scrubbed defensively even though it predates my diff (the regenerated `.env.example` would otherwise surface the abbreviation).
+- `secrets.yaml` — REDIS_URL description's `local dev` mention → `local development`. SENTRY_DSN source.local pre-existing `(use a dev Sentry project so local errors don't pollute prod)` → `(use a development Sentry project so local errors don't pollute production)` (scrubbed defensively for the same regen-surfacing reason).
+- `app/config.py` + `app/redis_client.py` + `app/api/health_routes.py` — `local dev` → `local development` across all role-comments my rounds touched.
+- `tests/contract/test_health_routes.py` — `local dev` (5 occurrences) → `local development`; `local-dev` (1) → `local-development`.
+- `.env.example` REGENERATED after the source edits propagate.
+
+**BLOCKER 3 (industry — production safety, soft merge-order gate insufficient)**: Codex won't accept comment + PR body as the BLOCKER-1 (round-7) mitigation. Round-11 implements option (a) — the feature-flag pattern.
+
+New `enforce_passwordless_redis_url: bool = False` Settings field declared BEFORE `redis_url` (pydantic v2 declaration-order matters for `info.data` visibility in field validators). Validator gates the rejection branch on `info.data.get("enforce_passwordless_redis_url", False)` — when False (default), no-op + URL passes through; when True, the round-8 rejection logic fires. PR #137 ships with the flag OFF, so it's safe to merge BEFORE PR #150 + secret rotation; Session 1 flips the flag TRUE in a small follow-up after the rotation. Pattern precedent: v2's JWT strict signature validation shadow-mode rollout (per memory `feedback_jwt_signature_validation_with_shadow_rollout`).
+
+Round-9's `MERGE-ORDER PRE-FLIGHT` comment block above the validator removed (no longer the load-bearing mechanism — the feature flag is). PR body's MERGE ORDER GATE section replaced with a "validator behind feature flag" section explaining the new mechanism + the Session-1-follow-up that flips the flag TRUE.
+
+Validator role-comments in `redis_client.py` + `health_routes.py` updated to mention the feature-flag gating + the post-rotation enable path.
+
+Test rework:
+- Renamed existing tests to clarify they test the flag-ON path: `test_redis_url_with_embedded_password_is_rejected` → `..._when_flag_is_on`; `..._is_accepted` → `..._is_accepted_when_flag_is_on`. Both now pass `enforce_passwordless_redis_url=True` explicitly.
+- New test `test_credential_bearing_redis_url_is_accepted_when_flag_is_off` — proves the default-FALSE behavior allows the pre-rotation deployed credential-bearing URL through. The load-bearing safety-net assertion: no exception raised + URL preserved verbatim + flag defaults to False (guards against a future refactor that flips the default).
+
+### Files touched (round-11)
+- `yral-rishi-agent-public-api/scripts/gen-env-example.sh` — B2 scrub: 6 `dev`/`devs` → `development`/`developers`; 1 `env vars` → `environment-variable`; defensive scrub of pre-existing line 168 (regen-surfacing concern).
+- `yral-rishi-agent-public-api/secrets.yaml` — B2 scrub: 1 `local dev` → `local development` (mine); defensive scrub of SENTRY_DSN source.local pre-existing `dev Sentry`/`pollute prod` → `development Sentry`/`pollute production`.
+- `yral-rishi-agent-public-api/.env.example` — REGENERATED via the updated script + secrets.yaml. Inlined content now reflects the B2-clean source-of-truth.
+- `yral-rishi-agent-public-api/app/config.py` — NEW `enforce_passwordless_redis_url: bool = False` Settings field declared BEFORE `redis_url`. `_reject_password_in_redis_url` validator's signature gains `info` parameter + an early no-op return when the flag is False. Round-9's `MERGE-ORDER PRE-FLIGHT` comment block replaced with a new `FEATURE FLAG` comment block above the field that documents the flag-default-OFF safety net + the Session-1-follow-up pattern + the pydantic v2 declaration-order requirement.
+- `yral-rishi-agent-public-api/app/redis_client.py` + `yral-rishi-agent-public-api/app/api/health_routes.py` — role-comments on the `password=`-forwarding callsites updated to mention the feature-flag gating + the post-rotation enable path. B2: `local dev` → `local development`.
+- `yral-rishi-agent-public-api/tests/contract/test_health_routes.py` — 2 existing validator tests renamed + reworked to pass `enforce_passwordless_redis_url=True`. New 3rd test `test_credential_bearing_redis_url_is_accepted_when_flag_is_off`. B2 scrubs: 6 `local dev`/`local-dev` → `local development`/`local-development`.
+
+### Constraints touched
+- **A2.1** — single concern (close round-9 BLOCKERs 1+3 + acknowledge BLOCKER 2 already closed in round-10).
+- **B2** — abbreviation scrub on production code/scripts/manifest.
+- **D8** — flag-OFF default safety net so PR is mergeable before deployed-secret rotation; validator code lives in main but doesn't fire until enabled.
+- **I9** — feature-flag pattern matches the v2 JWT shadow-rollout precedent; cross-session-coordination via Session-1-follow-up after PR #150 + rotation land.
+- **I11** — same-commit LOG entry (this one).
+- **NOT I14** — Python field addition + validator signature change + 1 new test + multiple comment scrubs. Coordinator manually merges after Codex APPROVE. **No longer gated on PR #150 + secret rotation** — the feature-flag's OFF default makes this PR safe to merge independently. Session 1's follow-up to flip the flag TRUE depends on PR #150 + rotation; that PR will be a separate small follow-up.
+
+Verified locally:
+- `bash scripts/tests/test_validate_secrets.sh` → **5 passed, 0 failed**.
+- `python3 -c "import ast; ast.parse(...)"` on `config.py` + `test_health_routes.py` → OK.
+- Production-file B2 sweep on diff additions: clean (only `/dev/null` UNIX path literal remains, which is not a B2-suspect identifier).
+
+Same PR + branch. 7 files touched + this LOG subsection. **Behavior change**: validator is now gated behind a feature flag; default-FALSE means existing credential-bearing REDIS_URL secrets keep working until Session 1 flips the flag TRUE in the follow-up.
+
 ---
 
 ## 2026-05-22 — PR-B — Day-8 directory-RPC wrapper for `/api/v1/influencers` list + by-id (DRAFT, blocked on Session 4 directory ratification)

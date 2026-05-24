@@ -283,17 +283,19 @@ async def _check_redis_reachable() -> bool:
             # 2026-05-22 incident-response rotation). Without it, the
             # ping() raises AuthenticationError + /health/ready falsely
             # reports Redis unreachable. Empty default keeps local
-            # dev working — sentinels in laptop docker-compose are
-            # rare anyway, but if present they'd be unauthenticated.
+            # development working — sentinels in laptop docker-compose
+            # are rare anyway, but if present they'd be unauthenticated.
             #
             # PASSWORDLESS-URL CONTRACT (Codex PR #137 round-7 BLOCKER
-            # 1 fix): `REDIS_PASSWORD` (forwarded here) is the SOLE
-            # AUTH source. `REDIS_URL` MUST be passwordless —
-            # credential-bearing URLs are rejected at Settings
-            # construction time by the `app/config.py`
-            # `_reject_password_in_redis_url` validator. Same
-            # contract enforced symmetrically on the
-            # `redis.Redis.from_url()` callsite in
+            # 1 + round-9 BLOCKER 3 fix): `REDIS_PASSWORD` (forwarded
+            # here) is the SOLE AUTH source. `REDIS_URL` MUST be
+            # passwordless — credential-bearing URLs are rejected at
+            # Settings construction time by the `app/config.py`
+            # `_reject_password_in_redis_url` validator, gated behind
+            # the `enforce_passwordless_redis_url` feature flag
+            # (defaults FALSE; Session 1 flips TRUE after PR #150 +
+            # secret rotation). Same contract enforced symmetrically
+            # on the `redis.Redis.from_url()` callsite in
             # `app/redis_client.py`.
             primary_client = sentinel_client.master_for(
                 master_name,

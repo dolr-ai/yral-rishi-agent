@@ -250,7 +250,7 @@ def test_health_deep_returns_503_envelope_with_explanation(client_flag_off):
 # enabled primary accepts the connection. Tests assert the password
 # argument reaches `redis.Redis.from_url()` (single-URL path) AND
 # `Sentinel.master_for()` (C11 Sentinel-aware path). Third test guards
-# the empty-default → None normalization that keeps local dev working.
+# the empty-default → None normalization that keeps local development working.
 # Closes the Codex CONCERN on closed coordinator PR #134 by proving
 # the public-api half of the wiring on both Redis paths.
 #
@@ -318,14 +318,14 @@ def test_get_redis_forwards_password_to_from_url(monkeypatch):
 
 def test_empty_redis_password_resolves_to_none_in_from_url(monkeypatch):
     """WHY: the `or None` guard normalizes empty string to None so
-           redis-py skips the AUTH frame in local dev. Defends
+           redis-py skips the AUTH frame in local development. Defends
            against the regression where someone removes `or None`
-           + breaks local-dev unauthenticated Redis.
+           + breaks local-development unauthenticated Redis.
 
     WHAT: assert that when settings.redis_password=="" (the empty
-          default kept for local dev), get_redis() forwards
+          default kept for local development), get_redis() forwards
           password=None (NOT password="") to redis.Redis.from_url().
-    WHEN: laptop dev / docker-compose / CI — environments where the
+    WHEN: laptop development / docker-compose / CI — environments where the
           local Redis container runs unauthenticated.
     """
     from app import redis_client
@@ -446,45 +446,96 @@ def test_health_ready_sentinel_path_forwards_password(
 # ===========================================================================
 
 
-def test_redis_url_with_embedded_password_is_rejected():
-    """WHAT: instantiate the Settings model with a REDIS_URL that
+def test_redis_url_with_embedded_password_is_rejected_when_flag_is_on():
+    """WHAT: instantiate the Settings model with
+            enforce_passwordless_redis_url=True AND a REDIS_URL that
             embeds a password in the `user:pass@host` portion; assert
             ValidationError raised at construction time (NOT silently
             accepted + handed to redis-py).
-    WHEN: an operator copies a pre-round-8 credential-bearing
-          `REDIS_URL` into a .env.local OR a Swarm secret value
-          (e.g., the old `redis://:password@host:6379/0` format that
-          PR #137 round-7 BLOCKER 1 flagged).
+    WHEN: post-rotation steady state — Session 1 has flipped
+          enforce_passwordless_redis_url to True via a follow-up PR
+          after PR #150 + secret rotation. An operator who copies a
+          credential-bearing URL into a .env.local or Swarm secret
+          value now gets a loud boot crash naming the field.
     WHY:  defense-in-depth on the passwordless-URL contract.
-          REDIS_PASSWORD is the sole AUTH source — the validator
-          fails LOUDLY at Settings boot rather than allowing the
-          URL-embedded credentials to silently take precedence over
-          the `password=` argument that forwards REDIS_PASSWORD.
+          REDIS_PASSWORD is the sole AUTH source — when the flag is
+          on, the validator fails LOUDLY at Settings boot rather
+          than allowing the URL-embedded credentials to silently
+          take precedence over the `password=` argument that
+          forwards REDIS_PASSWORD.
     """
     from pydantic import ValidationError
 
     from app.config import Settings
 
     with pytest.raises(ValidationError, match="REDIS_URL must be passwordless"):
-        Settings(redis_url="redis://:leaked-password@some-host:6379/0")
+        Settings(
+            enforce_passwordless_redis_url=True,
+            redis_url="redis://:leaked-password@some-host:6379/0",
+        )
 
 
-def test_redis_url_without_embedded_password_is_accepted():
+def test_redis_url_without_embedded_password_is_accepted_when_flag_is_on():
     """WHY: regression guard — the validator MUST accept the standard
-           passwordless production + local-dev forms verbatim.
+           passwordless production + local-developmentelopment forms verbatim
+           even when the enforce flag is on.
 
-    WHAT: instantiate the Settings model with three passwordless
+    WHAT: instantiate the Settings model with
+          enforce_passwordless_redis_url=True + three passwordless
           REDIS_URL forms (local docker-compose; production single-
-          primary by hostname; full URI with port + database); assert no
-          ValidationError raised.
+          primary by hostname; full URL with port + database); assert
+          no ValidationError raised.
     WHEN: every CI run — defends against a future tightening of the
-          validator that accidentally rejects a legitimate URL.
+          validator that accidentally rejects a legitimate URL when
+          the flag is enabled.
     """
     from app.config import Settings
 
-    Settings(redis_url="redis://localhost:6379/0")  # local docker-compose
-    Settings(redis_url="redis://yral-v2-redis-primary:6379")  # prod hostname
-    Settings(redis_url="redis://some-host.internal:6380/2")  # other port + database
+    # local docker-compose
+    Settings(
+        enforce_passwordless_redis_url=True,
+        redis_url="redis://localhost:6379/0",
+    )
+    # production hostname
+    Settings(
+        enforce_passwordless_redis_url=True,
+        redis_url="redis://yral-v2-redis-primary:6379",
+    )
+    # other port + database
+    Settings(
+        enforce_passwordless_redis_url=True,
+        redis_url="redis://some-host.internal:6380/2",
+    )
+
+
+def test_credential_bearing_redis_url_is_accepted_when_flag_is_off():
+    """WHY: closes Codex PR #137 round-9 BLOCKER 3 — feature-flag
+           safety net. Until Session 1 rotates the deployed Swarm /
+           GitHub Secret REDIS_URL to passwordless shape AND flips
+           enforce_passwordless_redis_url to True, the
+           pre-round-8 credential-bearing URL form MUST keep
+           working. This test proves the default-FALSE flag value
+           lets a credential-bearing URL through without raising.
+
+    WHAT: instantiate the Settings model WITHOUT setting
+          enforce_passwordless_redis_url (default FALSE) + a
+          credential-bearing REDIS_URL; assert NO exception raised +
+          the URL is preserved verbatim in the constructed instance.
+    WHEN: the PR-merge window between this PR landing and Session 1's
+          follow-up that flips the flag TRUE. The deployed Swarm
+          REDIS_URL may still carry the pre-round-8 credential-
+          bearing shape; the validator must NOT crash startup.
+    """
+    from app.config import Settings
+
+    credential_bearing_url = "redis://:leaked-password@some-host:6379/0"
+    settings = Settings(redis_url=credential_bearing_url)
+    # URL preserved verbatim — no validator-side mutation, no
+    # validation error.
+    assert settings.redis_url == credential_bearing_url
+    # Flag confirmed default-FALSE so a future refactor that flips
+    # the default doesn't silently break this safety-net behavior.
+    assert settings.enforce_passwordless_redis_url is False
 
 
 # ===========================================================================

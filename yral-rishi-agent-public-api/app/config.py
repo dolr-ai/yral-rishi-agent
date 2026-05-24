@@ -108,14 +108,40 @@ class Settings(BaseSettings):
     # is NOT yet in place AND (b) the deploy target is local/staging.
     enable_session_3_phase_1_day_2_placeholder_responses: bool = False
 
+    # FEATURE FLAG — `enforce_passwordless_redis_url` (Codex PR #137
+    # round-9 BLOCKER 3 — option (a) feature-flag pattern):
+    # Defaults FALSE so this PR is safe to merge BEFORE Session 1's
+    # PR #150 lands the passwordless cluster manifest + before
+    # Session 1 rotates the deployed Swarm/GitHub Secret REDIS_URL
+    # to the passwordless shape. With the flag OFF, the
+    # `_reject_password_in_redis_url` validator below is a no-op —
+    # the pre-round-8 credential-bearing `redis://:<password>@<host>`
+    # form keeps working in production without a boot-time crash.
+    #
+    # After PR #150 + secret rotation land + coordinator confirms,
+    # Session 1 flips this flag to TRUE in a small follow-up PR.
+    # That activates the validator + locks in the passwordless-URL
+    # contract going forward. Belt-and-suspenders: validator code
+    # lives in main but doesn't fire until enabled.
+    #
+    # Pattern precedent: same shadow-mode-rollout idiom v2 uses for
+    # the JWT strict signature validation (per memory
+    # `feedback_jwt_signature_validation_with_shadow_rollout`).
+    #
+    # MUST be declared BEFORE `redis_url` so the validator below can
+    # read it via `info.data` (pydantic v2 validates fields in
+    # declaration order; only previously-validated fields appear in
+    # the validator's `info.data` snapshot).
+    enforce_passwordless_redis_url: bool = False
+
     # -- Redis URL (single-primary fallback path for /health/ready) --------
     # Used by /health/ready's C11-Sentinel fallback path when
-    # `redis_sentinel_enabled` is False (laptop dev / docker-compose).
-    # Production sets the Sentinel flag to True + lets the Sentinel-
-    # aware client discover the current primary at connect time, so
-    # this URL is unused in cluster. PR #101's JWKS cache + PR #103's
-    # idempotency cache also consume this setting on the Day-4A/4C
-    # branches.
+    # `redis_sentinel_enabled` is False (laptop development /
+    # docker-compose). Production sets the Sentinel flag to True +
+    # lets the Sentinel-aware client discover the current primary at
+    # connect time, so this URL is unused in cluster. PR #101's JWKS
+    # cache + PR #103's idempotency cache also consume this setting
+    # on the Day-4A/4C branches.
     redis_url: str = "redis://localhost:6379/0"
 
     # `redis_password`: AUTH credential sent in response to Redis's
@@ -134,65 +160,55 @@ class Settings(BaseSettings):
     #     /health/ready C11 probe)
     #
     # Sourced from the `REDIS_PASSWORD` secret declared in
-    # `secrets.yaml` (mounted at `/run/secrets/REDIS_PASSWORD`; env
-    # var auto-exported via the compose secret-bridge wrapper).
-    # Swarm secret name: `yral_v2_redis_primary_password_<sha>`
-    # (versioned via 2026-05-22 rotation pattern; compose maps the
-    # logical name → versioned secret via `external: name:`).
+    # `secrets.yaml` (mounted at `/run/secrets/REDIS_PASSWORD`;
+    # environment variable auto-exported via the compose
+    # secret-bridge wrapper). Swarm secret name:
+    # `yral_v2_redis_primary_password_<sha>` (versioned via
+    # 2026-05-22 rotation pattern; compose maps the logical name →
+    # versioned secret via `external: name:`).
     #
-    # Empty default keeps local dev working: the docker-compose-
-    # bundled Redis is unauthenticated, both code paths skip AUTH
-    # when this is empty.
+    # Empty default keeps local development working: the
+    # docker-compose-bundled Redis is unauthenticated, both code
+    # paths skip AUTH when this is empty.
     redis_password: str = ""
 
-    # MERGE-ORDER PRE-FLIGHT (Codex PR #137 round-8 BLOCKER 1):
-    # The validator below hard-fails any credential-bearing
-    # `REDIS_URL`. The pre-round-8 deployed contract documented
-    # production REDIS_URL with embedded password
-    # (`redis://:<password>@<host>:6379/0`); if the current Swarm /
-    # GitHub Secret REDIS_URL value still uses that shape, public-api
-    # will CRASH on startup the moment this PR's image ships to the
-    # cluster.
-    #
-    # Coordinator gates the merge order to prevent the crash:
-    #   1. Session 1's PR #150 (cluster manifest + Session 4 mirror)
-    #      lands the new passwordless REDIS_URL contract.
-    #   2. Session 1 rotates the deployed Swarm + GitHub Secret
-    #      REDIS_URL values to the passwordless shape.
-    #   3. **Only THEN** is THIS PR (#137) safe to merge.
-    #
-    # The validator stays as the correct defensive design — failing
-    # LOUDLY at boot beats silent runtime credential-precedence
-    # confusion when REDIS_PASSWORD rotates next. Coordinator tracks
-    # the sequencing dependency; do NOT merge #137 ahead of #150 +
-    # the secret rotation, even if Codex APPROVE arrives first.
     @field_validator("redis_url")
     @classmethod
-    def _reject_password_in_redis_url(cls, value: str) -> str:
+    def _reject_password_in_redis_url(cls, value: str, info) -> str:
         """Reject `REDIS_URL` values that embed credentials in the URL.
 
         WHAT: parse `REDIS_URL` at Settings construction time; raise
               `ValueError` if the URL contains a username or password
               segment (i.e., the `user:pass@` portion before `host`).
+              Only fires when `enforce_passwordless_redis_url=True` —
+              otherwise the validator no-ops (returns the value
+              unchanged) to allow the pre-round-8 credential-bearing
+              URL shape to keep working before Session 1 rotates the
+              deployed secret.
         WHEN: every time the Settings model is instantiated — at
               `get_settings()` first call on the lru_cache path, or
               immediately on app boot via the explicit `get_settings()`
               import sites in middleware.
-        WHY:  closes Codex PR #137 round-7 BLOCKER 1 — the redis-py
-              URL parser takes URL-embedded credentials over the
-              `password=` keyword argument, which would silently
-              bypass the `REDIS_PASSWORD` Swarm secret rotation
-              pattern. Failing LOUDLY at Settings construction is the
-              earliest possible diagnosis point; an operator who
-              copies the pre-round-8 `redis://:password@host` format
-              into a `.env.local` or Swarm secret gets a startup
-              crash naming the field instead of a silent runtime
-              credential-precedence confusion that would only surface
-              when the Swarm secret rotates.
+        WHY:  closes Codex PR #137 round-7 BLOCKER 1 + round-9 BLOCKER
+              3 — the redis-py URL parser takes URL-embedded
+              credentials over the `password=` keyword argument, which
+              would silently bypass the `REDIS_PASSWORD` Swarm secret
+              rotation pattern. Failing LOUDLY at Settings
+              construction is the earliest possible diagnosis point;
+              the feature flag gating makes the protection opt-in so
+              this PR is safe to merge before the deployed secret has
+              been rotated to the passwordless shape.
         """
-        # Empty URL is technically valid (defaults to redis://localhost
-        # if pydantic-settings doesn't apply the field default; defensive
-        # short-circuit).
+        # Feature flag OFF (the default): no-op. The validator stays
+        # in main but doesn't fire until Session 1 flips the flag TRUE
+        # after PR #150 + secret rotation land. Closes Codex round-9
+        # BLOCKER 3 — soft merge-order gate (comment + PR body) was
+        # judged insufficient; feature flag is the real mechanism.
+        if not info.data.get("enforce_passwordless_redis_url", False):
+            return value
+        # Empty URL is technically valid (defaults to
+        # redis://localhost if pydantic-settings doesn't apply the
+        # field default; defensive short-circuit).
         if not value:
             return value
         parsed = urlparse(value)
