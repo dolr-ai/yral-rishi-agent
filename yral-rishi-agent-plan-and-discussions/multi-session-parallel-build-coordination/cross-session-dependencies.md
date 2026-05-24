@@ -1,6 +1,8 @@
 # Cross-Session Dependencies (kanban)
 > Sessions raise OPEN deps; coordinator moves to RESOLVED when fixed. RESOLVED stays forever (audit trail).
 
+> **DEP numbering — ask coordinator first.** Before writing a new DEP entry, ASK the coordinator (via Rishi) for the next free DEP number. Coordinator tracks in-flight reservations across all open PRs (since the highest DEP visible on main is NOT necessarily next-free — open PRs may have already-claimed numbers that haven't merged yet). Two collisions in 24 hours triggered this rule: Session 3 vs Session 5 collided on DEP-012 (2026-05-22), and Session 2 vs Session 5 collided on DEP-014 (2026-05-23). Each collision required a renumber round (PR body + content + RUNBOOK references; ~30-60 min). Ask first; renumber-rounds avoided.
+
 ## OPEN
 
 ### DEP-014 — Template skeleton lacks Postgres/Redis client wiring + a Redis/Postgres-touching /health/ready; spawn-smoke CI gate cannot catch shared-config / Redis-AUTH / connection-string drift at template time until that wiring lands
@@ -113,6 +115,99 @@ How spotted:
          coordinator approved the spawn-smoke PR landing without
          this coverage and queued DEP-014 as the immediate
          next-task post-merge.
+### DEP-016 — Session 1 to validate Redis 7 ACL dual-password rotation as post-cutover-canonical method BEFORE v2 takes production traffic
+
+Raised: 2026-05-24 by Coordinator (PR #138 override-merge action item — Codex round-4 correctly flagged the all-5-services-simultaneous rotation pattern as production-unsafe but coordinator accepted dev-cluster reality for v2-today scope).
+
+What:    PR #138's `bootstrap-scripts-for-the-v2-docker-swarm-
+         cluster/secrets-manifest.yaml` rotation_runbook for
+         REDIS_PRIMARY_PASSWORD documents a rolling-update-all-5-
+         services-simultaneously shape. That shape:
+           - WORKED on 2026-05-22 dev-cluster incident response
+             (Sentinel quorum held, replica master_link_status
+             stayed up, no FAILOVER events during the 60-second
+             rolling-restart window)
+           - Is what coordinator-side ops actually executed
+           - Is documented honestly in the runbook as the
+             "all-5-simultaneous" shape
+         But Codex round-4 correctly flagged: Swarm `docker
+         service update` per service is async + the all-5
+         simultaneous shape DOES create a brief mixed-password
+         window during the rolling-restart cascade. For
+         production traffic that would risk:
+           - Replication breakage (replica's --masterauth on old,
+             primary's --requirepass on new)
+           - Spurious sentinel failover to stale-credentialed
+             replica → write loss + client auth break
+         Acceptable on v2 dev cluster (zero production traffic);
+         NOT acceptable post-A6 cutover.
+
+         Codex's two acceptable shapes:
+           (1) Redis 7 ACL dual-password rotation — set new
+               password as additional credential, roll services,
+               revoke old. Zero-downtime. Requires Redis 7 ACL
+               configuration in the cluster bootstrap that v2
+               doesn't have today.
+           (2) Maintenance-window with write-pause + sentinel-
+               failover-disabled + ordered verification + rollback
+               validated by Session 1. Production-safe but
+               requires planned downtime per rotation.
+
+         The HA-safe long-term answer is (1). Session 1 owns the
+         Redis-stack install scripts + cluster bootstrap; they
+         validate the ACL dual-password rotation path against the
+         current cluster shape (Redis 7 binaries already in use)
+         + document the post-cutover rotation runbook.
+
+Why:     Before v2 takes any real production traffic (post-A6
+         cutover), the rotation runbook must document a
+         production-safe path. The current runbook is honest
+         about being dev-cluster-only; this DEP captures the
+         work needed to make it production-cutover-ready.
+
+Blocks:  No hard runtime block today (v2 is pre-cutover; dev
+         cluster only). Soft block on A6 cutover — the
+         pre-cutover gate should include "Redis ACL dual-password
+         rotation validated by Session 1."
+
+ETA needed: Before A6 cutover (no fixed calendar; tracks the
+         cutover go-decision).
+
+Suggested
+resolution:
+         Session 1 picks this up as part of pre-cutover hardening
+         (around Day 11-12 in the current Phase 1 roadmap when
+         the cluster smoke is fully green + we're prepping for
+         cutover go-decision):
+           - Validate Redis 7 ACL dual-password support on the
+             current cluster's Redis primary + replica + sentinel
+             configuration
+           - Update redis-sentinel-install.sh to bootstrap with
+             ACL SETUSER (multi-password-capable) instead of the
+             current --requirepass single-password
+           - Update bootstrap-scripts-for-the-v2-docker-swarm-
+             cluster/secrets-manifest.yaml's
+             REDIS_PRIMARY_PASSWORD rotation_runbook to make ACL
+             dual-password the primary path; demote the all-5-
+             simultaneous shape to "dev-cluster-only emergency
+             path"
+           - Document the migration from current --requirepass
+             config to ACL config as a separate cluster-state
+             change (one-time, NOT a rotation)
+           - Dry-run the ACL dual-password rotation on the dev
+             cluster (rotate without dropping the old credential;
+             verify clients can connect via either; drop the old
+             credential; verify only the new works)
+
+How spotted:
+         PR #138 round-4 Codex BLOCKER on 2026-05-24 — Codex
+         correctly read the runbook + identified the production-
+         unsafe rotation shape. Coordinator override-merged with
+         dev-cluster-only framing + filed this DEP for the
+         post-cutover hardening work.
+
+---
+
 
 ### DEP-012 — Coordinator / Session 1 must provision `user_memory_role` + `user_memory` database on the Patroni cluster before user-memory-service can deploy
 
