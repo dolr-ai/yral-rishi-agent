@@ -213,6 +213,38 @@ Pre-existing-but-flagged for separate follow-up:
 
 Same PR + branch. 4 files touched + 1 new `.env.local` fixture. No code-behavior change (round-9 is documentation + test-fixture + naming scrubs; only the boot-time validator behavior change from round-8 stands).
 
+### Round-10 fixups (preemptive D8 escape-hatch closure)
+Coordinator paste flagged that round-9's `git add -f .env.local` for the DEP-010 escape hatch is the EXACT pattern Codex BLOCKER'd on Session 4's PR #148 round-3. Codex would almost certainly hit PR #137 with the same BLOCKER on next review:
+
+> "D8 says .env.local is gitignored and must not be committed. Force-adding fixture files named .env.local creates an exception to a hard secrets-hygiene rule and trains future agents to commit local-env files."
+
+Round-10 ships the same fix Session 4 was forced into on PR #148 round-4 — the rename + mktemp-copy-rename pattern — preemptively, before Codex round-9 fires. Saves a Codex cycle + aligns with cross-service convention.
+
+**Source of truth**: the post-DEP-010 template's `scripts/tests/test_validate_secrets.sh` at `yral-rishi-agent-new-service-template/scripts/tests/test_validate_secrets.sh`. Public-api was spawned BEFORE the template's DEP-010 rename + carries the legacy `assert_exit_code` that `cd`s directly into the fixture dir. Round-10 ports the template's runner verbatim:
+
+1. **Renamed `scripts/tests/fixtures/valid/.env.local` → `env.local.fixture`** via `git mv`. The new filename is gitignore-safe (no longer collides with the `.env.local` ignore rule); no `git add -f` escape hatch needed.
+2. **Replaced `test_validate_secrets.sh`'s `assert_exit_code` helper** with the template's mktemp-copy-rename pattern: subshell with EXIT trap → `mktemp -d` → `cp -R fixture/. tmpdir/` → rename `env.local.fixture` → `.env.local` inside the tmpdir → `cd` + run validator → cleanup on subshell exit. Guarded by `[ -f env.local.fixture ]` so fixtures intentionally without an env file (missing-env-local, malformed-yaml, no-secrets-yaml) skip the rename step.
+3. **Updated file-header narrative** to document the DEP-010 rationale + the mktemp-copy-rename mechanism. Tone matches the template verbatim (it's a verbatim port).
+
+Verified locally: `bash scripts/tests/test_validate_secrets.sh` → **5 passed, 0 failed** (same green state as round-9 — no behavior change, just compliance with the cross-service D8 escape-hatch-free pattern).
+
+### Files touched (round-10)
+- `yral-rishi-agent-public-api/scripts/tests/fixtures/valid/.env.local` → `yral-rishi-agent-public-api/scripts/tests/fixtures/valid/env.local.fixture` — git-rename only (content unchanged; same 2 placeholder lines from round-9).
+- `yral-rishi-agent-public-api/scripts/tests/test_validate_secrets.sh` — file header rewritten to document DEP-010 mechanism; `assert_exit_code` replaced with the template's mktemp-copy-rename version verbatim.
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-3-LOG.md` — this round-10 subsection.
+
+### Constraints touched
+- **A2.1** — single concern (preemptive D8 escape-hatch closure mirroring Session 4 PR #148 round-4 fix; no scope creep).
+- **D8** — `.env.local` is now never committed in the tracked tree; secrets-hygiene rule holds without exception. Test fixture filename `env.local.fixture` is the cross-service convention.
+- **I9** — direct mirror of Session 4's PR #148 round-4 solution; reduces cross-service drift on the test-runner pattern.
+- **I11** — same-commit LOG entry (this one).
+- **NOT I14** — shell + fixture rename + comment changes are NOT covered by I14's narrow allowance for `.md`-only / test-only / lint-format-only changes (test-only is closer but the runner script change is shell-code behavior). Coordinator manually merges via `gh pr merge <N> --squash` after Codex APPROVE + the PR #150 + secret-rotation merge gate clears.
+
+Pre-existing-but-flagged (still out of scope):
+- `env-local-incomplete/` fixture's test still passes for wrong reason (exit=1 from missing env file, not incomplete content). Round-10's mktemp port doesn't fix this — the fixture itself needs an `env.local.fixture` with a value that's intentionally empty/incomplete. Coordinator-queued template-sync follow-up territory.
+
+Same PR + branch. 2 files changed (1 rename + 1 script edit) + LOG round-10 subsection. No new files. No code-behavior change.
+
 ---
 
 ## 2026-05-22 — PR-B — Day-8 directory-RPC wrapper for `/api/v1/influencers` list + by-id (DRAFT, blocked on Session 4 directory ratification)
