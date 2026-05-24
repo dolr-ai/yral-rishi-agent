@@ -752,10 +752,12 @@ async def list_messages(
                     detail=f"before is not a valid UUID: {exc}",
                 ) from exc
 
-            # Subquery resolves the cursor UUID to a created_at timestamp;
-            # outer WHERE filters messages strictly older than the cursor.
-            # DESC-then-ASC ensures the page is chronological.
-            # id tiebreaker ensures determinism for same-timestamp rows.
+            # Subquery resolves the cursor UUID to a (created_at, id) pair;
+            # outer WHERE uses a compound row comparison so messages within
+            # the SAME timestamp batch are correctly partitioned by id.
+            # A created_at-only cursor would silently drop same-timestamp
+            # peers that precede the cursor message — compound comparison
+            # fixes this. DESC-then-ASC ensures the page is chronological.
             rows = await conn.fetch(
                 """
                 SELECT *
@@ -766,8 +768,8 @@ async def list_messages(
                     FROM messages
                     WHERE conversation_id = $1
                       AND role != 'system'
-                      AND created_at < (
-                          SELECT created_at
+                      AND (created_at, id) < (
+                          SELECT created_at, id
                           FROM messages
                           WHERE id = $2
                       )

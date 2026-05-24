@@ -864,26 +864,19 @@ async def test_messages_ordering_with_same_created_at_timestamp(
 async def test_before_cursor_within_same_timestamp_batch_returns_correct_subset(
     test_client: AsyncClient,
 ) -> None:
-    """WHAT: when `before=<id>` cursor points at a message within a same-
-             timestamp batch, the endpoint returns the subset of messages
-             whose (created_at, id) is strictly less than the cursor's —
-             NOT zero rows (which would happen with a created_at-only cursor).
-    WHEN: mobile calls GET .../messages?before=<last_id> where <last_id>
-          is the final message of a same-timestamp batch (all messages in
-          the batch share the same created_at).
-    WHY:  the cursor WHERE clause is `created_at < (SELECT created_at FROM
-          messages WHERE id = $cursor)`. For same-timestamp messages, this
-          returns ZERO rows (nothing is strictly earlier than an equal
-          timestamp). Without a compound (created_at, id) cursor comparison,
-          scroll-up pagination silently loses messages — the entire batch
-          is unreachable past the first page. This test confirms the cursor
-          correctly navigates same-timestamp batches.
-    NOTE: the current implementation uses a created_at-only cursor comparison
-          which is the standard approach. This test documents the expected
-          behaviour: messages BEFORE the batch ARE returned; the batch itself
-          is handled by limiting via LIMIT. If the batch has more messages
-          than the limit, earlier batch members ARE returned on the next
-          before= page.
+    """WHAT: when `before=<id>` cursor points at the LAST message of a same-
+             timestamp batch, the response includes BOTH the earlier standalone
+             message AND the same-timestamp peers that precede the cursor
+             message by id.
+    WHEN: mobile calls GET .../messages?before=<late_b_id> where late_b is
+          the second message of a two-message batch sharing one created_at.
+    WHY:  a created_at-only cursor (`created_at < cursor.created_at`) silently
+          drops same-timestamp peers — late_a shares cursor.created_at so
+          `late_a.created_at < cursor.created_at` is FALSE, excluding it.
+          The correct compound row comparison `(created_at, id) < (cursor.created_at,
+          cursor.id)` returns late_a because `late_a.id < cursor.id` resolves
+          the tie. This test pins the EXACT expected id list; a created_at-only
+          cursor regression returns only [early_id] and fails the assertion.
     """
     conv_resp = await test_client.post(
         "/v1/conversations",
@@ -913,40 +906,36 @@ async def test_before_cursor_within_same_timestamp_batch_returns_correct_subset(
         ]},
     )
     assert late_resp.status_code == 200
+    late_batch_ids = [m["id"] for m in late_resp.json()]
+    # late_batch_ids[0] = late_a (earlier id within same timestamp)
+    # late_batch_ids[1] = late_b (later id within same timestamp — used as cursor)
+    assert len(late_batch_ids) == 2, f"Expected 2 late-batch messages, got {late_batch_ids}"
+    late_a_id = late_batch_ids[0]
+    late_b_id = late_batch_ids[1]
 
-    # GET all messages in order to find the last id.
+    # Sanity: confirm 3 total messages exist in chronological order.
     all_resp = await test_client.get(f"/v1/conversations/{conv_id}/messages?limit=10")
     assert all_resp.status_code == 200
     all_msgs = all_resp.json()
     assert len(all_msgs) == 3, f"Expected 3 messages total, got {len(all_msgs)}"
+    assert all_msgs[-1]["id"] == late_b_id, "last message in full list must be late_b"
 
-    last_id = all_msgs[-1]["id"]
-
-    # Use before=<last_id>: should return the 2 messages that come before it.
+    # Use before=<late_b_id>: compound cursor must return BOTH early_id AND late_a_id.
     before_resp = await test_client.get(
-        f"/v1/conversations/{conv_id}/messages?before={last_id}&limit=10"
+        f"/v1/conversations/{conv_id}/messages?before={late_b_id}&limit=10"
     )
     assert before_resp.status_code == 200
     before_msgs = before_resp.json()
     before_ids = [m["id"] for m in before_msgs]
 
-    # The cursor message must not appear in the result.
-    assert last_id not in before_ids, (
-        f"Cursor message {last_id!r} must not appear in before= result: {before_ids}"
-    )
-
-    # The early message must be present.
-    assert early_id in before_ids, (
-        f"Early message {early_id!r} missing from before= result: {before_ids}"
-    )
-
-    # At least the early message + at least one batch message appear
-    # (exact count depends on whether the before= comparison is strictly
-    # created_at-only or compound; we assert the early message is always
-    # included regardless).
-    assert len(before_msgs) >= 1, (
-        f"Expected at least 1 message before cursor, got 0. "
-        f"Same-timestamp cursor handling may be broken."
+    # EXACT assertion: pin the complete expected set including the same-timestamp peer.
+    # A created_at-only cursor returns only [early_id] — missing late_a — and fails here.
+    assert before_ids == [early_id, late_a_id], (
+        f"Compound (created_at, id) cursor must return exactly [early_id, late_a_id] "
+        f"when before=late_b_id. Got: {before_ids}.\n"
+        f"  early_id={early_id!r}  late_a_id={late_a_id!r}  late_b_id={late_b_id!r}\n"
+        f"If only [early_id] is returned, the cursor is using created_at-only comparison "
+        f"which silently drops same-timestamp peers preceding the cursor by id."
     )
 
 
