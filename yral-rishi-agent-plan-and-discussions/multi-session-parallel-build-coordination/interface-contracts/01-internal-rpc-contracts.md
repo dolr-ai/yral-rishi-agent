@@ -278,36 +278,52 @@ The two calls fetch DIFFERENT data shapes. The `/v1/conversations/{id}` call is 
 
 2. **Timeout/fallback behavior**: per Session 3's PR-B2 implementation, user-memory unreachable / 404 / 5xx / timeout → public-api returns envelope-shaped 503 with `user_memory.call.failed=<mode>` Sentry tag. NO silent fallback to a stale or default influencer_id — failing loudly preserves the trust-boundary semantic.
 
-3. **CI/Sentry latency observability**: Session 5's daily Sentry baseline pull from chat-ai (per memory `project_v2_first_build_task_sentry_baseline_pull`) establishes the chat-ai latency baseline; v2 latency observability via Langfuse traces every send-message turn with cross-service-call breakdowns. The 50%-faster comparison fires per-PR via the per-service-ci latency check (Session 2's deliverable once skeleton expansion lands).
+3. **CI/Sentry latency observability**: Session 1's daily Sentry baseline pull from chat-ai (per CONSTRAINTS E1 + I7 + memory `project_v2_first_build_task_sentry_baseline_pull`) establishes the chat-ai latency baseline at `latency-baseline-capture-from-live-services-the-numbers-v2-must-beat/daily-baseline.csv`; v2 latency observability via Langfuse traces every `POST /api/v1/chat/conversations/{id}/messages` turn with cross-service-call breakdowns. The 50%-faster comparison is enforced via Gate A2 (the controlled benchmark runner described below), NOT per-PR in shared CI (per J2 zero-flake + Codex round-4 CONCERN).
 
 ### Measurable acceptance gate (CONCERN from PR #145 round-2 — addressed round-3)
 
 Codex correctly flagged that the p95 numbers above are designed budgets, not measured gates. Treating this architecture as safe requires a concrete pre-merge / pre-cutover acceptance condition with owners and fail-stop semantics. **This is the gate**:
 
-**Gate A — per-PR public-api integration-test benchmark (owner: Session 3, lives in `yral-rishi-agent-public-api/tests/integration/`)**
+The canonical send-message endpoint per `00-api-contract.md:35` is `POST /api/v1/chat/conversations/{id}/messages` (mobile-facing; matches yral-mobile's `ChatRemoteDataSource`). All references in the gates below use this exact path — PR #145 round-3 and round-4 mistakenly used `POST /v1/send-message` as a shorthand; round-5 corrects to the canonical contract path.
+
+**Gate A — per-PR public-api integration-test SMOKE benchmark (owner: Session 3, lives in `yral-rishi-agent-public-api/tests/integration/`)**
 
 Required by Phase 1 parity smoke (Day 12-13 target). Implementation:
 
-- Add an integration test that spins up real public-api + real user-memory-service + real Postgres via testcontainers, issues N=500 `POST /v1/send-message` calls (or the per-request `influencer_id` lookup path equivalent once PR #141 lands), and records the per-call latency contribution of the public-api → user-memory `GET /v1/conversations/{id}` hop in isolation.
-- FAIL the test if measured p95 of the isolated user-memory call exceeds **15ms** (the budgeted ceiling in #1 above).
-- FAIL the test if measured p95 of the full `POST /v1/send-message` round-trip exceeds **0.5× the chat-ai baseline** for the equivalent send-message endpoint, as read from the canonical baseline file maintained by Session 1 at `yral-rishi-agent-plan-and-discussions/latency-baseline-capture-from-live-services-the-numbers-v2-must-beat/daily-baseline.csv` (the Sentry-baseline-cron output owned by Session 1 per CONSTRAINTS E1 + I7 + multi-session-parallel-build-coordination/01-SESSION-SHARDING-AND-OWNERSHIP.md:70 — NOT in Session 5's territory; Session 5 owns user-memory-service + ETL scripts but the latency-baseline capture sits with Session 1's Sentry-baseline-cron). PR #145 round-3 misattributed this path to Session 5; round-4 corrects to Session 1.
-- Gate this integration test into the per-service CI workflow as a **required check** for PRs touching either public-api or user-memory-service.
+- Add an integration test that spins up real public-api + real user-memory-service + real Postgres via testcontainers, issues N=500 `POST /api/v1/chat/conversations/{id}/messages` calls (the per-request `influencer_id` lookup path once PR #141 lands), and records the per-call latency contribution of the public-api → user-memory `GET /v1/conversations/{id}` hop in isolation.
+- The test is a **SMOKE check at PR-CI tier, not a hard p95 fail-stop gate** (Codex round-4 correctly flagged that ms-scale p95 thresholds in shared GitHub-runner CI risk J2 zero-flake violations — GitHub-hosted runners have variable CPU + I/O contention). The PR-CI tier verifies INSTRUMENTATION + QUERY/INDEX USAGE + MOCKED-HOP BEHAVIOR:
+  - Asserts the public-api → user-memory call is INSTRUMENTED with a Langfuse span (test reads the in-process span exporter).
+  - Asserts the asyncpg query uses the conversation_id PK INDEX (test reads `EXPLAIN ANALYZE` output of the underlying SQL).
+  - Asserts the asyncpg connection POOL is reused across N=500 calls (test reads asyncpg's pool stats).
+  - Asserts the call shape matches the contract (Pydantic model validation).
+- The hard p95 latency thresholds (≤15ms isolated, ≤0.5× chat-ai baseline full) are NOT enforced at this tier — they move to Gate A2 (below) on a controlled benchmark runner.
+- Gate the SMOKE integration test into the per-service CI workflow as a **required check** for PRs touching either public-api or user-memory-service.
+
+**Gate A2 — controlled benchmark runner (owner: Session 1, lives in `yral-rishi-agent-plan-and-discussions/latency-baseline-capture-from-live-services-the-numbers-v2-must-beat/scripts/`)**
+
+The hard p95 latency thresholds run on a controlled, stable-resource runner — either self-hosted GitHub Actions on a dedicated worker, OR a scheduled job on rishi-4/5/6 cluster (resource-isolated). Required by Phase 1 parity smoke + before any Rishi-approved production traffic. Implementation:
+
+- Same N=500 `POST /api/v1/chat/conversations/{id}/messages` call pattern, but run on stable-resource hardware (NOT GitHub-hosted ephemeral runners).
+- FAIL if measured p95 of the isolated public-api → user-memory call exceeds **15ms** (the budgeted ceiling).
+- FAIL if measured p95 of the full `POST /api/v1/chat/conversations/{id}/messages` round-trip exceeds **0.5× the chat-ai baseline** for the same endpoint, as read from the canonical baseline file maintained by Session 1 at `yral-rishi-agent-plan-and-discussions/latency-baseline-capture-from-live-services-the-numbers-v2-must-beat/daily-baseline.csv` (the Sentry-baseline-cron output owned by Session 1 per CONSTRAINTS E1 + I7 + multi-session-parallel-build-coordination/01-SESSION-SHARDING-AND-OWNERSHIP.md:70).
+- Runs nightly on a schedule + on-demand via workflow_dispatch when a PR touches either public-api or user-memory-service code paths affecting the hop.
+- Surfaces results as a comment on the touching PR + as a Slack/Sentry alert on regression.
 
 **Gate B — pre-cutover production-shape rehearsal (owner: Session 4 + coordinator, lives in chaos-test folder)**
 
-Required by Phase 1 cutover decision (no scheduled date per A6). Implementation:
+Required before any Rishi-approved production traffic (no scheduled date per A6). Implementation:
 
-- Before any cutover decision, run a 1-hour shadow-traffic rehearsal at projected day-0 RPS (chat-ai current ~25K msgs/day = ~0.3 RPS sustained, ~2-5 RPS burst) against the live rishi-4/5/6 cluster.
+- Before any Rishi-approved production traffic, run a 1-hour shadow-traffic rehearsal at projected day-0 RPS (chat-ai current ~25K msgs/day = ~0.3 RPS sustained, ~2-5 RPS burst) against the live rishi-4/5/6 cluster.
 - Pull Langfuse p95 for the public-api → user-memory call span.
-- BLOCK cutover if measured p95 exceeds 15ms OR if total send-message p95 exceeds 0.5× chat-ai baseline. Coordinator surfaces this to Rishi as the cutover go/no-go criterion.
+- BLOCK Rishi-approved production traffic if measured p95 exceeds 15ms OR if total `POST /api/v1/chat/conversations/{id}/messages` p95 exceeds 0.5× chat-ai baseline. Coordinator surfaces this to Rishi as the go/no-go criterion (per A6, the decision sits with Rishi).
 
 **Revisit trigger — combine-candidate re-evaluation:**
 
-If Gate A or Gate B fails at the 15ms public-api → user-memory threshold (i.e., the call is hotter than budgeted), the post-cutover combine-candidate above (extending `/context` to subsume the lookup) becomes a Phase-2 must-do rather than a re-evaluation candidate. The decision triggers a one-day rework spike across Sessions 3/4/5.
+If Gate A2 or Gate B fails at the 15ms public-api → user-memory threshold (i.e., the call is hotter than budgeted), the post-cutover combine-candidate below (extending `/context` to subsume the lookup) becomes a Phase-2 must-do rather than a re-evaluation candidate. The decision triggers a one-day rework spike across Sessions 3/4/5.
 
-**Why per-PR Gate A is not pre-merge of this contract doc:** the contract doc ratifies the architectural shape. The benchmark requires the actual implementation code from PR #141 (per-request `influencer_id`) + Session 5's chat-ai baseline file to exist. Both are in flight today (Day 8); the gate lands as part of Session 3's integration-test batch by Day 11 at the latest, two days before the Day 12-13 parity smoke target. If Session 3 cannot land Gate A by Day 11, coordinator escalates to Rishi for either a scope slip or a Gate-B-only acceptance (riskier — measured at cutover time only, not per-PR).
+**Why per-PR Gate A (SMOKE) is not pre-merge of this contract doc:** the contract doc ratifies the architectural shape. The SMOKE check requires the actual implementation code from PR #141 (per-request `influencer_id`). PR #141 is in flight today (Day 8); the SMOKE check lands as part of Session 3's integration-test batch by Day 11 at the latest, two days before the Day 12-13 parity smoke target. Gate A2 (the hard p95 gate) depends on Session 1's benchmark-runner deliverable — separate work track, no Day 11 blocker.
 
-This acceptance gate replaces the vague "fires per-PR via the per-service-ci latency check" language in #3 above with concrete fail-stop thresholds, owners, and dates.
+This acceptance gate set replaces the vague "fires per-PR via the per-service-ci latency check" language in #3 above with concrete tiered fail-stop thresholds, owners, and J2-compliant test placement.
 
 **Combine candidate (NOT chosen for Phase 1)**: extend `user-memory's /context` endpoint to accept `conversation_id` instead of `influencer_id` + return BOTH the memory context AND the conversation's influencer_id in one shape. Then orchestrator's existing `/context` call subsumes the public-api lookup; public-api just forwards `conversation_id` to orchestrator + orchestrator does the single user-memory call. Cleaner single-hop architecture. NOT chosen for Phase 1 because:
 - Requires Session 5 to add `conversation_id` parameter handling to `/context`
