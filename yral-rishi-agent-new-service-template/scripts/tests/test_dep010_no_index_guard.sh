@@ -180,6 +180,91 @@ fi
 
 
 # ===========================================================================
+# Assertion 4 — path-specific .gitignore rule catches target-side path,
+# not template-side path (proves dual-side check has VALUE)
+# ===========================================================================
+
+# Codex round-5 caught a regression class the round-4 source-only
+# probe missed: a path-specific .gitignore rule like
+# `yral-rishi-agent-<service>/.../env.local.fixture` would catch a
+# SPAWNED-TARGET fixture path while leaving the template-side
+# fixture path unmatched. Source-only iteration would green-light
+# the spawn even though the destination's fixture would be silently
+# swallowed by git add at the next caller. The round-6 dual-side
+# check adds a TARGET-SIDE probe when the destination is in-repo.
+#
+# This assertion proves the asymmetric-rule scenario IS real (i.e.
+# the dual-side check ISN'T redundant) by setting up a sandbox with
+# a target-specific rule + verifying:
+#   (a) source-side path is NOT ignored (default check-ignore would
+#       have returned exit 1 → false negative for the regression class)
+#   (b) target-side path IS ignored (dual-side check correctly
+#       returns exit 0 → catches the regression)
+# If git's rule semantics ever change such that source-side path
+# IS also matched (or target-side path ISN'T), this test surfaces it.
+asymmetric_sandbox="$(mktemp -d -t dep010-asymmetric.XXXXXX)"
+# Reuse the EXIT trap by piggy-backing into the cleanup: chain another
+# trap that ALSO removes this sandbox alongside the first one.
+trap 'rm -rf "$sandbox_directory" "$asymmetric_sandbox"' EXIT
+cd "$asymmetric_sandbox"
+git init -q .
+git config user.email "dep010-asym-test@example.invalid"
+git config user.name "DEP-010 dual-side asymmetric-rule test"
+
+# Materialize the asymmetric scenario:
+# - .gitignore rule that ONLY matches paths under the spawned-target
+#   prefix (here: yral-rishi-agent-spawned-service/)
+# - Template-side fixture (NOT matched by the rule)
+# - Target-side fixture (matched by the rule, simulating what the
+#   spawn would produce post-rsync)
+mkdir -p yral-rishi-agent-new-service-template/scripts/tests/fixtures/valid
+mkdir -p yral-rishi-agent-spawned-service/scripts/tests/fixtures/valid
+touch yral-rishi-agent-new-service-template/scripts/tests/fixtures/valid/env.local.fixture
+touch yral-rishi-agent-spawned-service/scripts/tests/fixtures/valid/env.local.fixture
+echo "yral-rishi-agent-spawned-service/scripts/tests/fixtures/valid/env.local.fixture" > .gitignore
+
+# (a) Source-side: NOT ignored under the asymmetric rule (exit 1)
+if git check-ignore --no-index -q -- \
+        yral-rishi-agent-new-service-template/scripts/tests/fixtures/valid/env.local.fixture; then
+    FAIL=$((FAIL + 1))
+    echo "FAIL  asymmetric scenario: SOURCE-side path was reported as ignored — rule isn't actually target-specific?"
+else
+    # (b) Target-side: IS ignored under the asymmetric rule (exit 0)
+    if git check-ignore --no-index -q -- \
+            yral-rishi-agent-spawned-service/scripts/tests/fixtures/valid/env.local.fixture; then
+        PASS=$((PASS + 1))
+        echo "PASS  asymmetric .gitignore rule catches TARGET-side path, NOT source-side — dual-side check is load-bearing"
+    else
+        FAIL=$((FAIL + 1))
+        echo "FAIL  asymmetric scenario: TARGET-side path was NOT reported as ignored — git rule-matching semantics changed?"
+    fi
+fi
+
+
+# ===========================================================================
+# Assertion 5 — static grep: new-service.sh implements the dual-side check
+# ===========================================================================
+
+# Same filter-pipeline shape as assertion 3 (strips comments + echo/
+# printf lines so the assertion can't be false-passed by mentions of
+# the identifier in docs or operator-facing strings). The grep target
+# is `target_path_is_inside_repo` — the distinctive identifier I
+# introduced in new-service.sh's step 6 to gate the target-side probe.
+# If a future refactor removes the dual-side check or restructures
+# it without that identifier, this assertion fires.
+if echo "$filtered_lines" | grep -qF 'target_path_is_inside_repo'; then
+    PASS=$((PASS + 1))
+    echo "PASS  new-service.sh DEP-010 probe implements dual-side check (source + target via target_path_is_inside_repo gate)"
+else
+    FAIL=$((FAIL + 1))
+    echo "FAIL  new-service.sh DEP-010 probe is MISSING dual-side check — 'target_path_is_inside_repo' identifier not found on any executable line"
+    echo "      (Comment-only mentions are intentionally ignored. Either the dual-side check was removed,"
+    echo "       or the identifier was renamed without updating this assertion.)"
+    echo "      Path: $new_service_script"
+fi
+
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 

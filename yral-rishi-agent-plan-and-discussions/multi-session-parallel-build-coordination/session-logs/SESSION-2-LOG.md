@@ -3,6 +3,104 @@
 
 ---
 
+## 2026-05-24 — PR #135 round-6 fixup: dual-side DEP-010 check (source + target when in-repo) per Codex CONCERN on round-5
+
+Same PR (#135), stays DRAFT. Round-5 Codex returned ⚠️  CONCERN (not BLOCKER) — round-6 closes the source-only-iteration gap.
+
+**Codex's CONCERN (verbatim):**
+> "The DEP-010 guard now checks only the source template fixture path. For normal in-repo service spawns, a future path-specific .gitignore rule could ignore yral-rishi-agent-some-service/.../env.local.fixture while not ignoring yral-rishi-agent-new-service-template/.../env.local.fixture, so the guard would miss a real spawned-target regression."
+
+**Real refinement gap.** A future `.gitignore` rule like `yral-rishi-agent-payments-*/.../env.local.fixture` would catch a SPAWNED-TARGET fixture path while leaving the TEMPLATE-SIDE fixture path unmatched. The round-5 source-only iteration would green-light a spawn that produces a silently-gitignored fixture at the destination — the exact regression class DEP-010 was filed to prevent.
+
+**Fix:** when the destination is INSIDE `$REPO_ROOT` (the default case + `--target-directory` invocations pointing into the repo), ALSO probe the destination's repo-relative path. When the destination is OUTSIDE `$REPO_ROOT` (the spawn-smoke CI gate's `/tmp` destination), skip the destination-side probe — there's no source-repo `.gitignore` to evaluate at a foreign destination path.
+
+**Files touched (round-6):**
+
+1. **`yral-rishi-agent-new-service-template/scripts/new-service.sh`** — step 6 now runs a dual-side check:
+   - Renamed `relative_fixture_path` → `source_relative_fixture_path` (B1/B2 — disambiguates from the new target-side identifier; explicit-English semantic of which side is being probed).
+   - Added `target_path_is_inside_repo` detection via `[[ "$TARGET_PATH" == "$REPO_ROOT"/* ]]` on the already-canonicalized absolute paths (both resolved via `cd … && pwd` earlier in the script).
+   - Inside the existing `while` loop, the source-side `if git -C "$REPO_ROOT" check-ignore --no-index -q -- "$source_relative_fixture_path"` block stays unchanged. NEW: after the source-side branch, a second `if [ "$target_path_is_inside_repo" = "1" ]; then ...` block computes:
+     - `fixture_relative_to_template` = `${fixture_file#$TEMPLATE_PATH/}` (e.g. `scripts/tests/fixtures/valid/env.local.fixture`)
+     - `target_fixture_absolute_path` = `$TARGET_PATH/$fixture_relative_to_template`
+     - `target_relative_fixture_path` = `${target_fixture_absolute_path#$REPO_ROOT/}`
+     Then runs `git -C "$REPO_ROOT" check-ignore --no-index -q -- "$target_relative_fixture_path"` and fails loudly if exit 0 (= target-side gitignored). The failure message surfaces BOTH the source-side path (which is clean) AND the target-side path (which is caught) so the operator can audit the asymmetric rule.
+   - Added a dense B7 comment block above the dual-side check explaining the source-only-miss regression class Codex flagged + when the target-side branch is skipped + how detection works.
+
+2. **`yral-rishi-agent-new-service-template/scripts/tests/test_dep010_no_index_guard.sh`** — extended from 3 → 5 assertions:
+   - **Assertion 4 (NEW)**: sandbox proof that an asymmetric .gitignore rule (target-path-specific, like `yral-rishi-agent-spawned-service/scripts/tests/fixtures/valid/env.local.fixture`) catches the TARGET-side path while leaving the TEMPLATE-side path unmatched. Two sub-checks: (a) source-side path returns exit 1 (NOT ignored under the asymmetric rule) — proves the round-5 source-only check would have FALSE-NEGATIVED here; (b) target-side path returns exit 0 (IS ignored) — proves the dual-side check correctly catches the regression. Uses a separate `mktemp -d` sandbox (`asymmetric_sandbox`) with the EXIT trap chained to clean up both sandboxes.
+   - **Assertion 5 (NEW)**: static-grep on `new-service.sh` proves the dual-side check is implemented — greps for the distinctive identifier `target_path_is_inside_repo` on an executable line (reuses the round-5 filter pipeline that strips `#`/`echo`/`printf` lines). Fires if a future refactor removes the dual-side check or renames the gate identifier without updating this assertion.
+
+**Why I picked an identifier-grep over a sandbox integration test for assertion 5:** integration-testing new-service.sh's actual probe in the sandbox would require building a fake `$TEMPLATE_PATH` + `$REPO_ROOT` + `$TARGET_PATH` configuration that the spawner accepts as valid. That's a large rig for one assertion. The identifier-grep proves the same property (the gate exists + is wired to the dual-side logic) with a 1-line probe that's robust to git's actual semantics changing (assertions 1-2 + 4 cover the semantic correctness).
+
+**Local validation evidence:**
+
+Positive case (current `new-service.sh` with dual-side check):
+
+```
+$ bash test_dep010_no_index_guard.sh
+PASS  --no-index probe catches tracked-but-would-be-ignored case (exit 0)
+PASS  default probe (no --no-index) misses tracked case (exit 1, as expected) — this is why --no-index is load-bearing
+PASS  new-service.sh DEP-010 probe still uses 'check-ignore --no-index' on an executable line
+PASS  asymmetric .gitignore rule catches TARGET-side path, NOT source-side — dual-side check is load-bearing
+PASS  new-service.sh DEP-010 probe implements dual-side check (source + target via target_path_is_inside_repo gate)
+DEP-010 --no-index probe regression-class guard: 5 passed, 0 failed
+```
+
+**Negative-case verification** (proves assertion 5 fires when dual-side check is regressed): made a `mktemp -d` copy of `new-service.sh`, used `sed '/target_path_is_inside_repo/d'` to remove every line containing the gate identifier (deletes the variable definition, the gate `if`, and the comment mentions), ran the test against the patched copy:
+
+```
+PASS  --no-index probe catches tracked-but-would-be-ignored case (exit 0)
+PASS  default probe (no --no-index) misses tracked case (exit 1, as expected)
+PASS  new-service.sh DEP-010 probe still uses 'check-ignore --no-index' on an executable line
+PASS  asymmetric .gitignore rule catches TARGET-side path, NOT source-side
+FAIL  new-service.sh DEP-010 probe is MISSING dual-side check — 'target_path_is_inside_repo' identifier not found on any executable line
+DEP-010 --no-index probe regression-class guard: 4 passed, 1 failed
+exit=1
+```
+
+Assertion 5 correctly **FAILED** with the dual-side check removed. Round-5's test would have PASSED this regression — round-6 catches it.
+
+**Spawn-smoke end-to-end** (out-of-repo target, exercises target_path_is_inside_repo=0 branch / target-side skipped):
+
+```
+── PRE-FLIGHT ── DEP-010 no-index probe regression-class guard
+... 5/5 PASS ...
+── STEP 0 through STEP 7 ── 8/8 PASS
+test_spawn_smoke.sh — ALL STEPS PASSED
+```
+
+**Real in-repo spawn** (exercises target_path_is_inside_repo=1 branch / dual-side check runs against live `.gitignore`):
+
+```
+$ bash new-service.sh yral-rishi-agent-dual-side-check-smoke-victim
+Spawning yral-rishi-agent-dual-side-check-smoke-victim from yral-rishi-agent-new-service-template...
+Spawned ... at /Users/.../yral-rishi-agent-dual-side-check-smoke-victim
+exit=0
+```
+
+Dual-side check ran against the live repo's `.gitignore` (which correctly doesn't match any `yral-rishi-agent-*/scripts/tests/fixtures/valid/env.local.fixture` paths) and passed. The spawned smoke-victim was `rm -rf`'d immediately (creator-cleans-up; not committed).
+
+**No A1 hard-stop in this fixup** — pure probe-completeness fix + regression-class test extensions. The new identifiers (`target_path_is_inside_repo`, `source_relative_fixture_path`, `target_relative_fixture_path`, `target_fixture_absolute_path`, `fixture_relative_to_template`, `asymmetric_sandbox`) are all explicit-English per B1/B2/B5; no `tmp`/`rel`/`dir` shorthand.
+
+**Append-only SESSION-2-LOG entry** above the round-5 entry per I11 (rounds 1-5 entry bodies untouched).
+
+**Diff size (round-6 fixup alone, on top of round-5 commit `6be6a93`):**
+
+| File | Lines |
+|---|---|
+| `scripts/new-service.sh` (dual-side check + B7 comment block + rename) | ~+50/-20 |
+| `scripts/tests/test_dep010_no_index_guard.sh` (assertion 4 + 5 + chained EXIT trap) | ~+85 |
+| this LOG entry | ~95 (doc) |
+| **Round-6 net effect** | ~+165 (mostly the new assertion 4's sandbox setup + B7 comments) |
+
+**Constraints touched:** A2.1 (single concern: close the source-only-iteration gap + the regression-class test that proves it), B1/B2/B5 (all new identifiers explicit-English), B7 (dense comment blocks on every new line — the dual-side rationale, the asymmetric-rule sandbox setup, the identifier-grep choice), I11 (this append-only entry; rounds 1-5 entry bodies untouched).
+
+**Cross-session handoff:** unchanged. Coordinator's PR #139 (sibling workflow PR, currently DRAFT-and-APPROVE-ready) still queued; flips to ready-for-review after PR #135 merges.
+
+**Next:** Codex round-6 re-review. Coordinator anticipated this is the last round on PR #135 ("Codex's progressive narrowing has hit refinement-of-refinement territory"). On APPROVE → coordinator manually merges → PR #139 flips ready + merges → **DEP-014 (template skeleton expansion: asyncpg + redis client + /health/ready that probes both)** becomes my next-task.
+
+---
+
 ## 2026-05-23 — PR #135 round-5 fixup: tighten assertion-3 grep (Codex caught comment/echo false-positive in round-4 test)
 
 Same PR (#135), stays DRAFT. Round-4 Codex returned ⚠️  CONCERN (not BLOCKER) on the round-4 regression-class test's static-grep assertion.

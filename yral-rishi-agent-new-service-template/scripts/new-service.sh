@@ -348,34 +348,89 @@ mv "$TARGET_PATH/secrets.yaml.template" "$TARGET_PATH/secrets.yaml"
 # answering "would this path be ignored if it weren't tracked",
 # which IS the regression class DEP-010 was filed to prevent.
 #
+# DUAL-SIDE CHECK (caught by Codex on PR #135 round-5):
+# Source-side iteration alone misses path-specific .gitignore rules.
+# A future rule like `yral-rishi-agent-payments-*/.../env.local.fixture`
+# would catch a SPAWNED service's fixture path while leaving the
+# template-side fixture path unmatched. The source-side check would
+# then green-light a spawn that produces a silently-gitignored
+# fixture at the destination — the exact regression class DEP-010
+# was filed to prevent.
+#
+# Fix: when the destination is INSIDE the source repo (the default
+# case + `--target-directory` invocations pointing into the repo),
+# ALSO probe the destination's repo-relative path. When the
+# destination is OUTSIDE the source repo (the spawn-smoke CI gate's
+# /tmp destination), skip the destination-side probe — there's no
+# source-repo .gitignore to evaluate at a foreign destination path.
+#
+# Detect "inside repo" via path-prefix on the already-canonicalized
+# absolute paths (both $TARGET_PATH and $REPO_ROOT were resolved
+# via `cd ... && pwd` earlier in the script).
+target_path_is_inside_repo=0
+if [[ "$TARGET_PATH" == "$REPO_ROOT"/* ]]; then
+    target_path_is_inside_repo=1
+fi
+
 # `find ... -print0` + `while IFS= read -r -d ''` is the standard
 # null-delimited iteration pattern. It handles paths with spaces or
 # newlines correctly — $TEMPLATE_PATH lives under "/Users/.../Claude
 # Projects/..." on dev macs so the space-in-path case is real.
 while IFS= read -r -d '' fixture_file; do
+    # === SOURCE-SIDE CHECK ===
     # Convert the absolute path to a repo-relative path so the error
     # message below reads cleanly. `check-ignore` accepts either form
     # but the relative form is what an operator would copy-paste into
     # their own `git check-ignore` reproduction.
-    relative_fixture_path="${fixture_file#$REPO_ROOT/}"
+    source_relative_fixture_path="${fixture_file#$REPO_ROOT/}"
     # `--no-index` makes the probe answer the regression-class
     # question (would-be-ignored-if-untracked); see comment block
     # above. `-q` is silent + sets exit code only. `git -C "$REPO_ROOT"`
     # anchors the check in the source repo (the one whose gitignore
     # DEP-010 cares about).
-    if git -C "$REPO_ROOT" check-ignore --no-index -q -- "$relative_fixture_path"; then
+    if git -C "$REPO_ROOT" check-ignore --no-index -q -- "$source_relative_fixture_path"; then
         # Exit 0 from check-ignore means the path WOULD be ignored →
-        # DEP-010 bug regressed. Tell the operator EXACTLY which
-        # fixture tripped the check + the two most likely root causes
-        # so they can land the fix without re-reading the DEP. `exit 1`
-        # aborts the spawn loudly — better a noisy failure now than
-        # a silently-broken spawned service.
-        echo "Error: post-spawn DEP-010 check failed for $relative_fixture_path"
-        echo "  git check-ignore --no-index -q -- '$relative_fixture_path' returned exit 0"
-        echo "  (file WOULD be gitignored — silently swallowed by git add on next caller)."
-        echo "  Likely cause: rename back to .env.local OR new .gitignore"
-        echo "  rule catching env.local.fixture. See DEP-010."
+        # DEP-010 bug regressed on the source side. Tell the operator
+        # EXACTLY which fixture tripped the check + the two most likely
+        # root causes so they can land the fix without re-reading the
+        # DEP. `exit 1` aborts the spawn loudly — better a noisy
+        # failure now than a silently-broken spawned service.
+        echo "Error: post-spawn DEP-010 source-side check failed for $source_relative_fixture_path"
+        echo "  git check-ignore --no-index -q -- '$source_relative_fixture_path' returned exit 0"
+        echo "  (template fixture WOULD be gitignored — silently swallowed by git add on next caller)."
+        echo "  Likely cause: rename back to .env.local OR new broad .gitignore rule"
+        echo "  catching env.local.fixture. See DEP-010."
         exit 1
+    fi
+
+    # === TARGET-SIDE CHECK (only when destination is in-repo) ===
+    # Compute the fixture's path RELATIVE TO $TEMPLATE_PATH (e.g.
+    # `scripts/tests/fixtures/valid/env.local.fixture`), then attach
+    # that suffix to $TARGET_PATH to get the destination's absolute
+    # path. Convert to repo-relative for the check-ignore probe.
+    # Skip this branch when the destination is outside the source
+    # repo — there's no source-repo .gitignore to evaluate there.
+    if [ "$target_path_is_inside_repo" = "1" ]; then
+        fixture_relative_to_template="${fixture_file#$TEMPLATE_PATH/}"
+        target_fixture_absolute_path="$TARGET_PATH/$fixture_relative_to_template"
+        target_relative_fixture_path="${target_fixture_absolute_path#$REPO_ROOT/}"
+        if git -C "$REPO_ROOT" check-ignore --no-index -q -- "$target_relative_fixture_path"; then
+            # Exit 0 means a .gitignore rule matches the SPAWNED-
+            # TARGET fixture path even though the SOURCE-SIDE path
+            # is clean. This is the path-specific regression class
+            # Codex flagged on PR #135 round-5 — a rule like
+            # `yral-rishi-agent-<service>/.../env.local.fixture`
+            # would land here. Surface both paths in the error
+            # message so the operator can audit the offending rule.
+            echo "Error: post-spawn DEP-010 target-side check failed for $target_relative_fixture_path"
+            echo "  git check-ignore --no-index -q -- '$target_relative_fixture_path' returned exit 0"
+            echo "  (spawned-target fixture WOULD be gitignored — silently swallowed at git add)."
+            echo "  Source-side path '$source_relative_fixture_path' is NOT ignored — the rule"
+            echo "  is target-path-specific."
+            echo "  Likely cause: path-specific .gitignore rule like"
+            echo "  'yral-rishi-agent-<service>/.../env.local.fixture'. See DEP-010."
+            exit 1
+        fi
     fi
 done < <(find "$TEMPLATE_PATH" -name 'env.local.fixture' -type f -print0)
 
