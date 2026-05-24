@@ -74,11 +74,21 @@ SWARM_NAME_LIMIT=63
 
 # Print usage + exit non-zero.
 print_usage_and_exit() {
-    echo "Usage: $0 <new-service-name> [--dry-run]"
+    echo "Usage: $0 <new-service-name> [--dry-run] [--target-directory <directory>]"
     echo ""
     echo "Examples:"
     echo "  $0 yral-rishi-agent-hello-world"
     echo "  $0 yral-rishi-agent-payments-and-creator-earnings --dry-run"
+    echo "  $0 yral-rishi-agent-template-spawn-smoke-victim \\"
+    echo "      --target-directory /tmp/smoke-test"
+    echo ""
+    echo "Flags:"
+    echo "  --dry-run         Print what would happen; write nothing."
+    echo "  --target-directory <directory>"
+    echo "                    Spawn into <directory>/<service-name> instead of"
+    echo "                    <repo-root>/<service-name>. Used by scripts/tests/"
+    echo "                    test_spawn_smoke.sh so the CI gate can spawn outside"
+    echo "                    the repo (temp directory) without polluting git status."
     echo ""
     echo "Name rules (B3 + Swarm):"
     echo "  - must match pattern: $NAME_PATTERN"
@@ -93,10 +103,29 @@ print_usage_and_exit() {
 
 DRY_RUN=0
 TARGET_NAME=""
+# When non-empty, overrides the destination's parent directory. Default
+# behavior (empty value) keeps the historical $REPO_ROOT/<service-name>
+# layout — Phase-0 + Phase-1 spawns + the hello-world integration test
+# all use the default. `--target-directory` is the ONE caller (the spawn-smoke
+# CI gate, added 2026-05-23) that needs out-of-repo destinations so the
+# spawned victim doesn't pollute `git status` on the runner.
+TARGET_DIRECTORY_OVERRIDE=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run) DRY_RUN=1; shift ;;
+        --target-directory)
+            # Consume both the flag AND its required argument. Empty or
+            # missing path is a usage error — better to fail fast than
+            # spawn into "/" or the cwd by accident.
+            shift
+            if [ $# -eq 0 ] || [ -z "$1" ]; then
+                echo "Error: --target-directory requires a path argument"
+                print_usage_and_exit
+            fi
+            TARGET_DIRECTORY_OVERRIDE="$1"
+            shift
+            ;;
         -h|--help) print_usage_and_exit ;;
         --*) echo "Error: unknown flag $1"; print_usage_and_exit ;;
         *)
@@ -144,9 +173,26 @@ TARGET_SUFFIX_UNDERSCORED="${TARGET_SUFFIX_HYPHENATED//-/_}"
 # ===========================================================================
 
 # Use the repo root so the script works from any cwd inside the repo.
+# $REPO_ROOT is ALWAYS the source-template's repo (where the script is
+# checked in). $TARGET_PATH is the destination — may be inside the same
+# repo (default) or outside (when --target-directory is set; the spawn-
+# smoke CI gate uses a temp-directory destination).
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEMPLATE_PATH="$REPO_ROOT/$TEMPLATE_FOLDER"
-TARGET_PATH="$REPO_ROOT/$TARGET_NAME"
+# Pick the destination's parent: --target-directory override if set, else
+# $REPO_ROOT (the historical default). Resolving the override to an
+# absolute path (`cd … && pwd`) guarantees the rsync target is
+# unambiguous even when the caller passed a relative path.
+if [ -n "$TARGET_DIRECTORY_OVERRIDE" ]; then
+    if [ ! -d "$TARGET_DIRECTORY_OVERRIDE" ]; then
+        echo "Error: --target-directory path does not exist or is not a directory: $TARGET_DIRECTORY_OVERRIDE"
+        exit 1
+    fi
+    TARGET_PARENT="$(cd "$TARGET_DIRECTORY_OVERRIDE" && pwd)"
+else
+    TARGET_PARENT="$REPO_ROOT"
+fi
+TARGET_PATH="$TARGET_PARENT/$TARGET_NAME"
 
 if [ ! -d "$TEMPLATE_PATH" ]; then
     echo "Error: template folder not found at $TEMPLATE_PATH"
@@ -255,48 +301,138 @@ mv "$TARGET_PATH/secrets.yaml.template" "$TARGET_PATH/secrets.yaml"
 # (success → "add 'path'" line), or silently ignore it (empty
 # output or "ignored by .gitignore" error)? Anything other than
 # an "add '...'" line is a failure.
+# Iterate the SOURCE template's fixtures (always under $REPO_ROOT),
+# not the spawned destination's. Reason: when --target-directory places the
+# destination OUTSIDE the repo (the spawn-smoke CI gate's case), a
+# `git -C $REPO_ROOT` invocation against an absolute path outside the
+# worktree is meaningless. The actual invariant DEP-010 guards is
+# "template fixtures must not be silently swallowed by .gitignore" —
+# checking that on the source side is sufficient because rsync byte-
+# copies the file into the destination, so the destination inherits
+# whichever gitignore rules apply at the destination's own repo (the
+# same one when target stays in-repo; a separate gitignore when
+# --target-directory crosses repos, in which case the check semantic is
+# the source repo's, which IS the one DEP-010 cares about).
+#
+# CHECK PROBE: `git check-ignore -q` (NOT `git add --dry-run`).
+# Codex PR #121 round-7 originally chose `git add --dry-run` for this
+# block, with sound reasoning at the time — the destination-side
+# iteration walked NEWLY-RSYNCED files which were UNTRACKED, and
+# `add --dry-run` on an untracked-but-not-ignored file prints
+# "add '<path>'" while on an untracked-and-ignored file it prints
+# nothing. That mapping made `^add '` a clean SUCCESS signal.
+#
+# After the 2026-05-23 source-side refactor, the iteration walks
+# TRACKED files. `add --dry-run` on a tracked file is a no-op (the
+# file is already in the index; there's nothing to add) and prints
+# nothing — which falsely matches the "ignored" branch above. So
+# `add --dry-run` is the WRONG probe for source-side iteration.
+#
+# `git check-ignore --no-index -q -- <path>` measures the actual
+# invariant directly: exit 0 means "this path WOULD be gitignored",
+# exit 1 means "this path would NOT be gitignored". For DEP-010 we
+# want exit 1; inverting with `if ... then fail` reads cleanly.
+#
+# WHY `--no-index` IS LOAD-BEARING (caught by Codex on PR #135 round-3):
+# By default, `git check-ignore` consults the INDEX before the
+# gitignore rules. If a path is already TRACKED (which env.local.
+# fixture is, in the template's source tree), git treats it as
+# "tracked, not ignored" regardless of whether a gitignore rule
+# would match — git never auto-removes tracked files for new
+# gitignore rules. So a future .gitignore rule like `*.fixture`
+# that catches env.local.fixture would slip past a default
+# check-ignore probe: tracked → "not ignored" → green check →
+# silently broken spawns when downstream services rsync the
+# fixture out of the index. `--no-index` tells check-ignore to
+# evaluate gitignore semantics independent of the index state —
+# answering "would this path be ignored if it weren't tracked",
+# which IS the regression class DEP-010 was filed to prevent.
+#
+# DUAL-SIDE CHECK (caught by Codex on PR #135 round-5):
+# Source-side iteration alone misses path-specific .gitignore rules.
+# A future rule like `yral-rishi-agent-payments-*/.../env.local.fixture`
+# would catch a SPAWNED service's fixture path while leaving the
+# template-side fixture path unmatched. The source-side check would
+# then green-light a spawn that produces a silently-gitignored
+# fixture at the destination — the exact regression class DEP-010
+# was filed to prevent.
+#
+# Fix: when the destination is INSIDE the source repo (the default
+# case + `--target-directory` invocations pointing into the repo),
+# ALSO probe the destination's repo-relative path. When the
+# destination is OUTSIDE the source repo (the spawn-smoke CI gate's
+# /tmp destination), skip the destination-side probe — there's no
+# source-repo .gitignore to evaluate at a foreign destination path.
+#
+# Detect "inside repo" via path-prefix on the already-canonicalized
+# absolute paths (both $TARGET_PATH and $REPO_ROOT were resolved
+# via `cd ... && pwd` earlier in the script).
+target_path_is_inside_repo=0
+if [[ "$TARGET_PATH" == "$REPO_ROOT"/* ]]; then
+    target_path_is_inside_repo=1
+fi
+
 # `find ... -print0` + `while IFS= read -r -d ''` is the standard
 # null-delimited iteration pattern. It handles paths with spaces or
-# newlines correctly — `$TARGET_PATH` lives under "/Users/.../Claude
+# newlines correctly — $TEMPLATE_PATH lives under "/Users/.../Claude
 # Projects/..." on dev macs so the space-in-path case is real.
 while IFS= read -r -d '' fixture_file; do
-    # Convert the absolute path to a repo-relative path so the
-    # `git add --dry-run` invocation below resolves the same way a
-    # caller running `git add <path>` from $REPO_ROOT would. Without
-    # the strip, git would still work (git tolerates absolute paths
-    # under the worktree) but the error output below reads cleaner
-    # with repo-relative paths.
-    relative_fixture_path="${fixture_file#$REPO_ROOT/}"
-    # Probe what `git add` would actually do for this path. `--dry-run`
-    # never mutates the index; `2>&1` captures the "ignored by …"
-    # message git writes to stderr when a path is gitignored; `|| true`
-    # prevents `set -e` from aborting the spawn on a non-zero git exit
-    # (gitignored paths produce non-zero — we want to keep iterating
-    # so the error message below can surface all violations, not just
-    # the first).
-    dry_run_output="$(git -C "$REPO_ROOT" add --dry-run -- "$relative_fixture_path" 2>&1)" || true
-    # The exact tracking outcome the spawn cares about: would `git
-    # add` actually add the file? A success produces an `add '…'` line
-    # on stdout. Gitignored paths produce an "ignored by .gitignore"
-    # message (or empty output on some git versions); anything that
-    # isn't an `add '…'` line means the fixture would be silently
-    # swallowed at the next real `git add`. Codex PR #121 round-7
-    # chose this over `git check-ignore` because it surfaces the
-    # observable spawn outcome, not just whether a rule matches.
-    if ! echo "$dry_run_output" | grep -q "^add '"; then
-        # Failure path: tell the operator EXACTLY which fixture
-        # tripped the check + what git said + the two most likely
-        # root causes so they can land the fix without re-reading
-        # the DEP. `exit 1` aborts the spawn loudly — better a
-        # noisy failure now than a silently-broken spawned service.
-        echo "Error: post-spawn DEP-010 check failed for $relative_fixture_path"
-        echo "  git add --dry-run output: $dry_run_output"
-        echo "  Fixture would be silently ignored by .gitignore."
-        echo "  Likely cause: rename back to .env.local OR new .gitignore"
-        echo "  rule catching env.local.fixture. See DEP-010."
+    # === SOURCE-SIDE CHECK ===
+    # Convert the absolute path to a repo-relative path so the error
+    # message below reads cleanly. `check-ignore` accepts either form
+    # but the relative form is what an operator would copy-paste into
+    # their own `git check-ignore` reproduction.
+    source_relative_fixture_path="${fixture_file#$REPO_ROOT/}"
+    # `--no-index` makes the probe answer the regression-class
+    # question (would-be-ignored-if-untracked); see comment block
+    # above. `-q` is silent + sets exit code only. `git -C "$REPO_ROOT"`
+    # anchors the check in the source repo (the one whose gitignore
+    # DEP-010 cares about).
+    if git -C "$REPO_ROOT" check-ignore --no-index -q -- "$source_relative_fixture_path"; then
+        # Exit 0 from check-ignore means the path WOULD be ignored →
+        # DEP-010 bug regressed on the source side. Tell the operator
+        # EXACTLY which fixture tripped the check + the two most likely
+        # root causes so they can land the fix without re-reading the
+        # DEP. `exit 1` aborts the spawn loudly — better a noisy
+        # failure now than a silently-broken spawned service.
+        echo "Error: post-spawn DEP-010 source-side check failed for $source_relative_fixture_path"
+        echo "  git check-ignore --no-index -q -- '$source_relative_fixture_path' returned exit 0"
+        echo "  (template fixture WOULD be gitignored — silently swallowed by git add on next caller)."
+        echo "  Likely cause: rename back to .env.local OR new broad .gitignore rule"
+        echo "  catching env.local.fixture. See DEP-010."
         exit 1
     fi
-done < <(find "$TARGET_PATH" -name 'env.local.fixture' -type f -print0)
+
+    # === TARGET-SIDE CHECK (only when destination is in-repo) ===
+    # Compute the fixture's path RELATIVE TO $TEMPLATE_PATH (e.g.
+    # `scripts/tests/fixtures/valid/env.local.fixture`), then attach
+    # that suffix to $TARGET_PATH to get the destination's absolute
+    # path. Convert to repo-relative for the check-ignore probe.
+    # Skip this branch when the destination is outside the source
+    # repo — there's no source-repo .gitignore to evaluate there.
+    if [ "$target_path_is_inside_repo" = "1" ]; then
+        fixture_relative_to_template="${fixture_file#$TEMPLATE_PATH/}"
+        target_fixture_absolute_path="$TARGET_PATH/$fixture_relative_to_template"
+        target_relative_fixture_path="${target_fixture_absolute_path#$REPO_ROOT/}"
+        if git -C "$REPO_ROOT" check-ignore --no-index -q -- "$target_relative_fixture_path"; then
+            # Exit 0 means a .gitignore rule matches the SPAWNED-
+            # TARGET fixture path even though the SOURCE-SIDE path
+            # is clean. This is the path-specific regression class
+            # Codex flagged on PR #135 round-5 — a rule like
+            # `yral-rishi-agent-<service>/.../env.local.fixture`
+            # would land here. Surface both paths in the error
+            # message so the operator can audit the offending rule.
+            echo "Error: post-spawn DEP-010 target-side check failed for $target_relative_fixture_path"
+            echo "  git check-ignore --no-index -q -- '$target_relative_fixture_path' returned exit 0"
+            echo "  (spawned-target fixture WOULD be gitignored — silently swallowed at git add)."
+            echo "  Source-side path '$source_relative_fixture_path' is NOT ignored — the rule"
+            echo "  is target-path-specific."
+            echo "  Likely cause: path-specific .gitignore rule like"
+            echo "  'yral-rishi-agent-<service>/.../env.local.fixture'. See DEP-010."
+            exit 1
+        fi
+    fi
+done < <(find "$TEMPLATE_PATH" -name 'env.local.fixture' -type f -print0)
 
 
 # ===========================================================================

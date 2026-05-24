@@ -3,6 +3,533 @@
 
 ---
 
+## 2026-05-24 — PR #135 round-7 fixup: assertion 5 windowed-grep + filter per Codex CONCERN on round-6 (dead-code-with-identifier loophole)
+
+Same PR (#135), stays DRAFT. Round-6 Codex returned ⚠️  CONCERN (not BLOCKER) — narrow but real test-rigor gap.
+
+**Codex's CONCERN (verbatim):**
+> "Assertion 5 only greps for the `target_path_is_inside_repo` identifier, so it can pass even if a future refactor leaves that identifier present but stops actually checking the target fixture path."
+
+**Real gap.** Round-6's assertion 5 was a pure identifier grep — `echo "$filtered_lines" | grep -qF 'target_path_is_inside_repo'`. It correctly fires if the identifier disappears entirely. But it would FALSE-PASS if a future refactor:
+- Kept the `target_path_is_inside_repo=0` definition + the `target_path_is_inside_repo=1` setter (which sit at the top of step 6, before the while loop)
+- BUT removed the `if [ "$target_path_is_inside_repo" = "1" ]; then ... git check-ignore --no-index ...` block that actually USES the identifier inside the loop
+
+The identifier would still appear in the file → assertion 5 PASSES → regression ships.
+
+**Fix shape:** windowed grep + the round-5 filter, combining both checks (identifier present AND it sits near an executable check-ignore line).
+
+```bash
+target_gate_context_window="$(grep -B 2 -A 6 'target_path_is_inside_repo' "$new_service_script" \
+    | grep -vE '^[[:space:]]*(#|echo[[:space:]"'"'"']|printf[[:space:]])' \
+    || true)"
+if echo "$target_gate_context_window" | grep -qF 'check-ignore --no-index'; then
+    PASS
+else
+    FAIL  # identifier present but no nearby executable check-ignore
+fi
+```
+
+**Window sizing — why `-A 6` (not coordinator's suggested `-A 2`):**
+
+Mapped the actual line positions in `new-service.sh`:
+- Line 370: `target_path_is_inside_repo=0` (definition)
+- Line 372: `target_path_is_inside_repo=1` (setter inside `[[ ... ]]; then ... fi`)
+- Line 391: source-side check-ignore (~19-21 lines from #1/#2)
+- Line 413: `if [ "$target_path_is_inside_repo" = "1" ]; then` (guard inside while loop)
+- Line 417: target-side check-ignore (**4 lines below the guard at 413**)
+
+Coordinator's `-A 2` would catch only lines 414-415 from the guard — missing the check-ignore at 417 entirely → false NEGATIVE on the current correct code. `-A 6` catches lines 414-419, comfortably including 417, and adjustable via the noted "Adjust the grep window size if your code shape needs more context" allowance.
+
+`-B 2` catches the 2 lines before each match — sufficient to anchor without dragging in irrelevant adjacent blocks.
+
+**Filter reuse from round-5 (preserves Codex round-4's lesson):**
+
+The windowed output still contains comment lines + the operator-facing error `echo "  git check-ignore --no-index -q -- ..."` line at 426 (inside the if-block of the guard at 413). Without stripping, the inner grep would match the echo string and false-pass exactly the way round-4's assertion 3 did. Strip them via the same regex pipeline (anchored start-of-line `#` / `echo ` / `echo"` / `echo'` / `printf `).
+
+**Result:** assertion 5 fires when ANY of three regression classes occurs:
+1. `target_path_is_inside_repo` identifier removed entirely (existing round-6 behavior — empty window → inner grep fails)
+2. **NEW:** identifier remains but target check-ignore call is removed (window contains code, but no executable `check-ignore --no-index` in it)
+3. **NEW:** identifier remains + a comment/echo mention of `check-ignore --no-index` is in the window, but no real executable invocation (filter strips mentions; inner grep fails)
+
+**Files touched (round-7):** single file — `yral-rishi-agent-new-service-template/scripts/tests/test_dep010_no_index_guard.sh`. Production code (`new-service.sh`) untouched — round-6 dual-side shape is correct; only the test needed tightening. Same one-file-per-round discipline as round-5.
+
+**Local validation:**
+
+Positive case (current `new-service.sh` with full dual-side check):
+
+```
+$ bash test_dep010_no_index_guard.sh
+PASS  --no-index probe catches tracked-but-would-be-ignored case (exit 0)
+PASS  default probe (no --no-index) misses tracked case (exit 1, as expected)
+PASS  new-service.sh DEP-010 probe still uses 'check-ignore --no-index' on an executable line
+PASS  asymmetric .gitignore rule catches TARGET-side path, NOT source-side
+PASS  new-service.sh dual-side check wires 'target_path_is_inside_repo' to an executable 'check-ignore --no-index' invocation
+DEP-010 --no-index probe regression-class guard: 5 passed, 0 failed
+exit=0
+```
+
+**Negative-case verification — the EXACT regression class Codex named:** make a `mktemp -d` copy of `new-service.sh`, `sed`-delete every line from the guard `if [ "$target_path_is_inside_repo" = "1" ]; then` through its closing `    fi` (i.e. remove the entire target-side check-ignore block, including the inner check-ignore call + the failure-message echos + the gate `if`). KEEP the definition + setter at lines 370/372 intact (2 occurrences of the identifier remain in the patched file). Run the test against the patched copy:
+
+```
+PASS  --no-index probe catches tracked-but-would-be-ignored case (exit 0)
+PASS  default probe (no --no-index) misses tracked case (exit 1, as expected)
+PASS  new-service.sh DEP-010 probe still uses 'check-ignore --no-index' on an executable line
+PASS  asymmetric .gitignore rule catches TARGET-side path, NOT source-side
+FAIL  new-service.sh dual-side check: 'target_path_is_inside_repo' identifier present but no executable 'check-ignore --no-index' line within the ±2/+6 window around any occurrence
+DEP-010 --no-index probe regression-class guard: 4 passed, 1 failed
+exit=1
+```
+
+Identifier still present (`grep -c 'target_path_is_inside_repo' = 2`); zero executable check-ignore in any identifier's window (`grep -B 2 -A 6 'target_path_is_inside_repo' | grep -c 'check-ignore --no-index' = 0`); assertion 5 correctly FAILS.
+
+**Round-6's assertion 5 would have PASSED this patched copy** (identifier present → green) — round-7 closes the loophole.
+
+Plus `bash test_spawn_smoke.sh` → PRE-FLIGHT 5/5 + ALL 9 STEPS PASSED; `bash test_validate_secrets.sh` → still 5/5 PASS (siblings unaffected).
+
+**No A1 hard-stop in this fixup** — pure test-tightening, no behavior change in production code. The `target_gate_context_window` identifier is the only new name added, explicit-English per B1/B2/B5.
+
+**Append-only SESSION-2-LOG entry** above the round-6 entry per I11 (rounds 1-6 entry bodies untouched).
+
+**Diff size (round-7 fixup alone, on top of round-6 commit `c894dc9`):**
+
+| File | Lines |
+|---|---|
+| `scripts/tests/test_dep010_no_index_guard.sh` (assertion 5 + B7 comment rewrite) | ~+50/-15 |
+| this LOG entry | ~85 (doc) |
+| **Round-7 net effect** | very surgical — one assertion + its comment block |
+
+**Constraints touched:** A2.1 (single concern: close round-6's identifier-only-grep loophole; no other refactors folded in), B1/B2/B5 (`target_gate_context_window` is the only new identifier — explicit-English), B7 (new comment block above assertion 5 is dense — covers WHY windowed-grep, WHY `-A 6` window size with explicit line-distance reasoning, WHY filter pipeline reused from round-5, WHAT the three caught regression classes are), I11 (this append-only entry; rounds 1-6 entry bodies untouched).
+
+**Cross-session handoff:** unchanged. Coordinator's PR #139 (sibling workflow PR, Codex APPROVED + holding for #135) flips ready-for-review immediately after #135 merges.
+
+**Why this is likely the last round on PR #135:** Codex's progressive narrowing has gone from BLOCKERs (rounds 1-4) to CONCERNs (rounds 5-7), and round-7's specific catch is itself a refinement of round-6's refinement of round-5's refinement. Coordinator-level FYI: "If Codex round-7 returns yet another narrower CONCERN, coordinator override-merges with the CONCERN documented as a follow-up tightening — the gate IS load-bearing today; incremental refinement is bumping into diminishing returns territory."
+
+**Next:** Codex round-7 re-review. On APPROVE → coordinator manually merges PR #135 → PR #139 flips ready + merges → **DEP-014 (template skeleton expansion: asyncpg pool + redis.asyncio Sentinel-aware client + `/health/ready` that probes both)** becomes my next-task.
+
+---
+
+## 2026-05-24 — PR #135 round-6 fixup: dual-side DEP-010 check (source + target when in-repo) per Codex CONCERN on round-5
+
+Same PR (#135), stays DRAFT. Round-5 Codex returned ⚠️  CONCERN (not BLOCKER) — round-6 closes the source-only-iteration gap.
+
+**Codex's CONCERN (verbatim):**
+> "The DEP-010 guard now checks only the source template fixture path. For normal in-repo service spawns, a future path-specific .gitignore rule could ignore yral-rishi-agent-some-service/.../env.local.fixture while not ignoring yral-rishi-agent-new-service-template/.../env.local.fixture, so the guard would miss a real spawned-target regression."
+
+**Real refinement gap.** A future `.gitignore` rule like `yral-rishi-agent-payments-*/.../env.local.fixture` would catch a SPAWNED-TARGET fixture path while leaving the TEMPLATE-SIDE fixture path unmatched. The round-5 source-only iteration would green-light a spawn that produces a silently-gitignored fixture at the destination — the exact regression class DEP-010 was filed to prevent.
+
+**Fix:** when the destination is INSIDE `$REPO_ROOT` (the default case + `--target-directory` invocations pointing into the repo), ALSO probe the destination's repo-relative path. When the destination is OUTSIDE `$REPO_ROOT` (the spawn-smoke CI gate's `/tmp` destination), skip the destination-side probe — there's no source-repo `.gitignore` to evaluate at a foreign destination path.
+
+**Files touched (round-6):**
+
+1. **`yral-rishi-agent-new-service-template/scripts/new-service.sh`** — step 6 now runs a dual-side check:
+   - Renamed `relative_fixture_path` → `source_relative_fixture_path` (B1/B2 — disambiguates from the new target-side identifier; explicit-English semantic of which side is being probed).
+   - Added `target_path_is_inside_repo` detection via `[[ "$TARGET_PATH" == "$REPO_ROOT"/* ]]` on the already-canonicalized absolute paths (both resolved via `cd … && pwd` earlier in the script).
+   - Inside the existing `while` loop, the source-side `if git -C "$REPO_ROOT" check-ignore --no-index -q -- "$source_relative_fixture_path"` block stays unchanged. NEW: after the source-side branch, a second `if [ "$target_path_is_inside_repo" = "1" ]; then ...` block computes:
+     - `fixture_relative_to_template` = `${fixture_file#$TEMPLATE_PATH/}` (e.g. `scripts/tests/fixtures/valid/env.local.fixture`)
+     - `target_fixture_absolute_path` = `$TARGET_PATH/$fixture_relative_to_template`
+     - `target_relative_fixture_path` = `${target_fixture_absolute_path#$REPO_ROOT/}`
+     Then runs `git -C "$REPO_ROOT" check-ignore --no-index -q -- "$target_relative_fixture_path"` and fails loudly if exit 0 (= target-side gitignored). The failure message surfaces BOTH the source-side path (which is clean) AND the target-side path (which is caught) so the operator can audit the asymmetric rule.
+   - Added a dense B7 comment block above the dual-side check explaining the source-only-miss regression class Codex flagged + when the target-side branch is skipped + how detection works.
+
+2. **`yral-rishi-agent-new-service-template/scripts/tests/test_dep010_no_index_guard.sh`** — extended from 3 → 5 assertions:
+   - **Assertion 4 (NEW)**: sandbox proof that an asymmetric .gitignore rule (target-path-specific, like `yral-rishi-agent-spawned-service/scripts/tests/fixtures/valid/env.local.fixture`) catches the TARGET-side path while leaving the TEMPLATE-side path unmatched. Two sub-checks: (a) source-side path returns exit 1 (NOT ignored under the asymmetric rule) — proves the round-5 source-only check would have FALSE-NEGATIVED here; (b) target-side path returns exit 0 (IS ignored) — proves the dual-side check correctly catches the regression. Uses a separate `mktemp -d` sandbox (`asymmetric_sandbox`) with the EXIT trap chained to clean up both sandboxes.
+   - **Assertion 5 (NEW)**: static-grep on `new-service.sh` proves the dual-side check is implemented — greps for the distinctive identifier `target_path_is_inside_repo` on an executable line (reuses the round-5 filter pipeline that strips `#`/`echo`/`printf` lines). Fires if a future refactor removes the dual-side check or renames the gate identifier without updating this assertion.
+
+**Why I picked an identifier-grep over a sandbox integration test for assertion 5:** integration-testing new-service.sh's actual probe in the sandbox would require building a fake `$TEMPLATE_PATH` + `$REPO_ROOT` + `$TARGET_PATH` configuration that the spawner accepts as valid. That's a large rig for one assertion. The identifier-grep proves the same property (the gate exists + is wired to the dual-side logic) with a 1-line probe that's robust to git's actual semantics changing (assertions 1-2 + 4 cover the semantic correctness).
+
+**Local validation evidence:**
+
+Positive case (current `new-service.sh` with dual-side check):
+
+```
+$ bash test_dep010_no_index_guard.sh
+PASS  --no-index probe catches tracked-but-would-be-ignored case (exit 0)
+PASS  default probe (no --no-index) misses tracked case (exit 1, as expected) — this is why --no-index is load-bearing
+PASS  new-service.sh DEP-010 probe still uses 'check-ignore --no-index' on an executable line
+PASS  asymmetric .gitignore rule catches TARGET-side path, NOT source-side — dual-side check is load-bearing
+PASS  new-service.sh DEP-010 probe implements dual-side check (source + target via target_path_is_inside_repo gate)
+DEP-010 --no-index probe regression-class guard: 5 passed, 0 failed
+```
+
+**Negative-case verification** (proves assertion 5 fires when dual-side check is regressed): made a `mktemp -d` copy of `new-service.sh`, used `sed '/target_path_is_inside_repo/d'` to remove every line containing the gate identifier (deletes the variable definition, the gate `if`, and the comment mentions), ran the test against the patched copy:
+
+```
+PASS  --no-index probe catches tracked-but-would-be-ignored case (exit 0)
+PASS  default probe (no --no-index) misses tracked case (exit 1, as expected)
+PASS  new-service.sh DEP-010 probe still uses 'check-ignore --no-index' on an executable line
+PASS  asymmetric .gitignore rule catches TARGET-side path, NOT source-side
+FAIL  new-service.sh DEP-010 probe is MISSING dual-side check — 'target_path_is_inside_repo' identifier not found on any executable line
+DEP-010 --no-index probe regression-class guard: 4 passed, 1 failed
+exit=1
+```
+
+Assertion 5 correctly **FAILED** with the dual-side check removed. Round-5's test would have PASSED this regression — round-6 catches it.
+
+**Spawn-smoke end-to-end** (out-of-repo target, exercises target_path_is_inside_repo=0 branch / target-side skipped):
+
+```
+── PRE-FLIGHT ── DEP-010 no-index probe regression-class guard
+... 5/5 PASS ...
+── STEP 0 through STEP 7 ── 8/8 PASS
+test_spawn_smoke.sh — ALL STEPS PASSED
+```
+
+**Real in-repo spawn** (exercises target_path_is_inside_repo=1 branch / dual-side check runs against live `.gitignore`):
+
+```
+$ bash new-service.sh yral-rishi-agent-dual-side-check-smoke-victim
+Spawning yral-rishi-agent-dual-side-check-smoke-victim from yral-rishi-agent-new-service-template...
+Spawned ... at /Users/.../yral-rishi-agent-dual-side-check-smoke-victim
+exit=0
+```
+
+Dual-side check ran against the live repo's `.gitignore` (which correctly doesn't match any `yral-rishi-agent-*/scripts/tests/fixtures/valid/env.local.fixture` paths) and passed. The spawned smoke-victim was `rm -rf`'d immediately (creator-cleans-up; not committed).
+
+**No A1 hard-stop in this fixup** — pure probe-completeness fix + regression-class test extensions. The new identifiers (`target_path_is_inside_repo`, `source_relative_fixture_path`, `target_relative_fixture_path`, `target_fixture_absolute_path`, `fixture_relative_to_template`, `asymmetric_sandbox`) are all explicit-English per B1/B2/B5; no `tmp`/`rel`/`dir` shorthand.
+
+**Append-only SESSION-2-LOG entry** above the round-5 entry per I11 (rounds 1-5 entry bodies untouched).
+
+**Diff size (round-6 fixup alone, on top of round-5 commit `6be6a93`):**
+
+| File | Lines |
+|---|---|
+| `scripts/new-service.sh` (dual-side check + B7 comment block + rename) | ~+50/-20 |
+| `scripts/tests/test_dep010_no_index_guard.sh` (assertion 4 + 5 + chained EXIT trap) | ~+85 |
+| this LOG entry | ~95 (doc) |
+| **Round-6 net effect** | ~+165 (mostly the new assertion 4's sandbox setup + B7 comments) |
+
+**Constraints touched:** A2.1 (single concern: close the source-only-iteration gap + the regression-class test that proves it), B1/B2/B5 (all new identifiers explicit-English), B7 (dense comment blocks on every new line — the dual-side rationale, the asymmetric-rule sandbox setup, the identifier-grep choice), I11 (this append-only entry; rounds 1-5 entry bodies untouched).
+
+**Cross-session handoff:** unchanged. Coordinator's PR #139 (sibling workflow PR, currently DRAFT-and-APPROVE-ready) still queued; flips to ready-for-review after PR #135 merges.
+
+**Next:** Codex round-6 re-review. Coordinator anticipated this is the last round on PR #135 ("Codex's progressive narrowing has hit refinement-of-refinement territory"). On APPROVE → coordinator manually merges → PR #139 flips ready + merges → **DEP-014 (template skeleton expansion: asyncpg + redis client + /health/ready that probes both)** becomes my next-task.
+
+---
+
+## 2026-05-23 — PR #135 round-5 fixup: tighten assertion-3 grep (Codex caught comment/echo false-positive in round-4 test)
+
+Same PR (#135), stays DRAFT. Round-4 Codex returned ⚠️  CONCERN (not BLOCKER) on the round-4 regression-class test's static-grep assertion.
+
+**Codex's CONCERN (verbatim):**
+> "The static grep for 'check-ignore --no-index' will pass if that text remains only in comments or echo strings. Because new-service.sh now contains several comment mentions of that exact phrase, the test would not catch the actual command regressing."
+
+**Real gap:** `new-service.sh`'s round-4 edit added the literal phrase `check-ignore --no-index` to (a) the rewritten comment block above the probe, AND (b) the operator-facing error `echo "  git check-ignore --no-index -q -- ..."` line. The naive `grep -q 'check-ignore --no-index'` from round-4 would false-pass even if someone removed `--no-index` from the actual `if git -C "$REPO_ROOT" check-ignore --no-index` line — defeating the entire point of assertion 3 (the regression-class guard).
+
+**Picked Codex's (α) shape over (β):** (β) was the fixed-string `if git -C "$REPO_ROOT" check-ignore --no-index` anchor — strict, but brittle under legitimate refactors (variable rename like `REPO_ROOT` → `repo_root`, restructuring the git invocation). (α) was the comment-stripping shape. I went with a slight variant of (α) that ALSO strips `echo`/`printf` lines — because `new-service.sh`'s operator-facing error echo also contains the phrase. Resulting filter:
+
+```bash
+filtered_lines="$(grep -vE '^[[:space:]]*(#|echo[[:space:]"'"'"']|printf[[:space:]])' "$new_service_script" || true)"
+if echo "$filtered_lines" | grep -qF 'check-ignore --no-index'; then ...
+```
+
+The filter excludes:
+- lines starting with optional whitespace + `#` (any comment)
+- lines starting with optional whitespace + `echo ` / `echo"` / `echo'` (the trailing space/quote check word-boundaries `echo` so identifiers like `echotemp_var=foo` don't false-strip)
+- lines starting with optional whitespace + `printf ` (same word-boundary logic)
+
+What remains is real executable shell — if the phrase appears there, the probe is correctly invoking `--no-index`; if it doesn't, the probe regressed. Robust against future refactors (variable renames, restructuring) AND against the specific false-positive Codex named.
+
+**Files touched (round-5):**
+
+1. **`yral-rishi-agent-new-service-template/scripts/tests/test_dep010_no_index_guard.sh`** — rewrote assertion 3 to use the filter pipeline. Comment block above the assertion explains:
+   - Why a naive grep is broken (Codex's catch)
+   - Why we strip `#` / `echo` / `printf` lines specifically
+   - Why we don't use Codex's stricter option (β) — too brittle under refactors
+   - The exact regression class this assertion fires on
+
+No other files needed editing — the probe in `new-service.sh` is correct; only the TEST needed tightening.
+
+**Local validation evidence:**
+
+Positive case (current `new-service.sh`, with `--no-index` on the if-line):
+
+```
+$ bash test_dep010_no_index_guard.sh
+PASS  --no-index probe catches tracked-but-would-be-ignored case (exit 0)
+PASS  default probe (no --no-index) misses tracked case (exit 1, as expected)
+PASS  new-service.sh DEP-010 probe still uses 'check-ignore --no-index' on an executable line
+DEP-010 --no-index probe regression-class guard: 3 passed, 0 failed
+```
+
+**Negative-case verification** (the real proof of round-5's value): made a `mktemp -d` copy of `new-service.sh`, stripped `--no-index` from the actual `if` line via `sed` BUT LEFT THE COMMENT BLOCK + THE OPERATOR-FACING ECHO LINE BOTH UNCHANGED, ran the test against the patched copy:
+
+```
+$ sed '/^[[:space:]]*if git -C "\$REPO_ROOT" check-ignore --no-index/s/--no-index //' …
+$ bash test_dep010_no_index_guard.sh   # against the patched copy
+PASS  --no-index probe catches tracked-but-would-be-ignored case (exit 0)
+PASS  default probe (no --no-index) misses tracked case (exit 1, as expected)
+FAIL  new-service.sh DEP-010 probe is MISSING --no-index on any executable line — regression-class guard would re-open
+DEP-010 --no-index probe regression-class guard: 2 passed, 1 failed
+exit=1
+```
+
+Test correctly **FAILED** with the comment block + echo line both still containing the literal phrase `check-ignore --no-index`. Round-4's naive grep would have PASSED this case — round-5 closes the gap.
+
+Plus full spawn-smoke (`bash test_spawn_smoke.sh`) → **PRE-FLIGHT 3/3 + ALL 9 STEPS PASSED**.
+
+**No A1 hard-stop in this fixup** — pure test-tightening, no behavior change in production code (`new-service.sh` probe untouched). Test file is the only edit.
+
+**Append-only SESSION-2-LOG entry** above the round-4 entry per I11 (rounds 1-4 entry bodies untouched).
+
+**Diff size (round-5 fixup alone, on top of round-4 commit `2e31fbf`):**
+
+| File | Lines |
+|---|---|
+| `scripts/tests/test_dep010_no_index_guard.sh` (assertion 3 + comment rewrite) | ~+30/-10 |
+| this LOG entry | ~70 (doc) |
+| **Round-5 net effect** | extremely surgical |
+
+**Constraints touched:** A2.1 (single concern: test-tightening to close the comment/echo false-positive), B1/B2/B5 (`filtered_lines` is the only new identifier — explicit English), B7 (the new comment block above the assertion is dense — explains WHY, WHY NOT (β), and WHAT the filter excludes), I11 (this append-only entry; rounds 1-4 entries untouched).
+
+**Why round-4's grep didn't catch this myself:** I named the assertion "static-grep on new-service.sh proves the spawner still uses `check-ignore --no-index`" but treated the grep as a black-box pattern match rather than asking "what's IN new-service.sh that contains this phrase besides the executable line?" The dense B7 comments I added in round-4 (which deliberately contained the phrase to explain it) became the very thing that broke the assertion. Captured: a regression-class TEST has to consider all the places its target string might appear in the file under test — including the test's own surrounding documentation.
+
+**Cross-session handoff:** unchanged. Coordinator's PR #139 (sibling workflow PR) still queued; flips to ready after PR #135 merges.
+
+**Next:** Codex round-5 re-review. On APPROVE → coordinator manually merges PR #135 → PR #139 flips ready + merges → DEP-014 (template skeleton expansion) becomes my next-task.
+
+---
+
+## 2026-05-23 — PR #135 round-4 fixup: BLOCKER — `git check-ignore` probe needs `--no-index` (Codex caught tracking-state semantic gotcha) + regression-class test
+
+Same PR (#135), stays DRAFT. Round-3 Codex returned 🛑 BLOCKER on the DEP-010 probe semantics — a real correctness bug in the round-2 source-side refactor that round-3's cwd-independence change exposed for review.
+
+**Codex's BLOCKER (verbatim):**
+> "The source-side DEP-010 check uses `git check-ignore -q` on tracked template fixture files. Git does not report tracked files as ignored unless `--no-index` is used, so a future `.gitignore` rule that catches `env.local.fixture` would still pass this check and the smoke test would miss the exact regression class it is meant to guard."
+
+**The semantic gotcha (Codex's catch):** By default, `git check-ignore` consults the INDEX before the gitignore rules. If a path is already TRACKED (which `env.local.fixture` is in the template's source tree), git treats it as "tracked, not ignored" regardless of whether a gitignore rule would match — git never auto-removes tracked files for new gitignore rules. So a future `.gitignore` rule like `*.fixture` that catches `env.local.fixture` would slip past a default `check-ignore` probe: tracked → "not ignored" → green check → silently broken spawns when downstream services rsync the fixture out of the index. **`--no-index` tells `check-ignore` to evaluate gitignore semantics independent of the index state** — answering "would this path be ignored if it weren't tracked", which IS the regression class DEP-010 was filed to prevent.
+
+My round-2 comment block had explicitly said "Tracking state is irrelevant to the check" — exactly the wrong claim. The probe LOOKED correct because the live `.gitignore` doesn't currently match `env.local.fixture` (DEP-010 closed that on PR #133), but the probe wouldn't have caught the REGRESSION class it was named for. Codex earned this one.
+
+**Files touched (round-4):**
+
+1. **`yral-rishi-agent-new-service-template/scripts/new-service.sh`** — the actual probe fix at step 6:
+   - Changed `git -C "$REPO_ROOT" check-ignore -q -- "$relative_fixture_path"` → `git -C "$REPO_ROOT" check-ignore --no-index -q -- "$relative_fixture_path"`. The flag tells `check-ignore` to evaluate gitignore semantics independent of the index state.
+   - Rewrote the comment block above the probe to explain WHY `--no-index` is load-bearing (the tracking-state gotcha Codex caught + the regression-class question we actually want to answer). My round-2 comment that claimed "`--no-index` is intentionally NOT used" was inverted — the new comment block calls out the inversion explicitly so future readers don't repeat the mistake.
+   - Updated the operator-facing error message to include `--no-index` in the reproducer command (so an operator hitting the failure can copy-paste the exact command into their own terminal).
+
+2. **`yral-rishi-agent-new-service-template/scripts/tests/test_dep010_no_index_guard.sh` (new file)** — focused regression-class test with 3 assertions:
+   - **Assertion 1**: in a sandbox repo with a tracked `env.local.fixture` + a matching `*.fixture` gitignore rule, `git check-ignore --no-index -q -- env.local.fixture` returns exit 0 (= caught). Proves the round-4 fix's correctness.
+   - **Assertion 2**: same sandbox, `git check-ignore -q -- env.local.fixture` (without `--no-index`) returns exit 1 (= missed). Documents exactly the bug Codex flagged so a future reader understands why `--no-index` is required. If git's default semantics ever change, this assertion catches it.
+   - **Assertion 3**: static grep on `new-service.sh` proves the spawner still uses `check-ignore --no-index`. Fires the moment a future refactor drops the flag — which is the most likely way this regression class would re-appear. Tight pattern (`check-ignore --no-index` adjacent tokens) so unrelated `check-ignore` invocations don't false-pass.
+
+   The test uses a per-run sandbox (`mktemp -d` + `git init -q`) so the live repo's `.gitignore` isn't mutated. EXIT trap cleans up unconditionally. Sub-second; no Docker needed.
+
+3. **`yral-rishi-agent-new-service-template/scripts/tests/test_spawn_smoke.sh`** — added a **PRE-FLIGHT** block (above step 0) that invokes the new test. If it fails, the gate aborts before any Docker work — fail-fast on probe-correctness regression. Inline call (not a numbered step) because it's a precondition check, not a smoke-test step.
+
+4. **`yral-rishi-agent-new-service-template/.github/workflows/per-service-ci.yml`** — added a third `shell-tests` job step that invokes the new test, alongside the existing `test_validate_secrets.sh` + `test_gen_env_example.sh` steps. **This file lives INSIDE the template folder** (Session-2-scoped per the existing per-service-ci.yml header — it's the template's per-spawned-service CI workflow template, not the coordinator-owned root-level workflow). Every spawned service gets the regression-class guard in its own CI on every PR.
+
+**Local validation evidence:**
+
+- `bash yral-rishi-agent-new-service-template/scripts/tests/test_dep010_no_index_guard.sh` → **3/3 PASS**:
+  ```
+  PASS  --no-index probe catches tracked-but-would-be-ignored case (exit 0)
+  PASS  default probe (no --no-index) misses tracked case (exit 1, as expected) — this is why --no-index is load-bearing
+  PASS  new-service.sh DEP-010 probe still uses 'check-ignore --no-index'
+  ```
+- `bash yral-rishi-agent-new-service-template/scripts/tests/test_spawn_smoke.sh` → **PRE-FLIGHT 3/3 PASS + ALL 9 SPAWN-SMOKE STEPS PASSED** end-to-end on warm cache.
+- `bash yral-rishi-agent-new-service-template/scripts/tests/test_validate_secrets.sh` → still **5/5 PASS** (unaffected).
+
+**No A1 hard-stop in this fixup** — pure probe-correctness fix + regression-class test + 2 wire-up sites (`per-service-ci.yml` is INSIDE the template folder; both CI surfaces here are Session-2-scoped).
+
+**Append-only SESSION-2-LOG entry** above the round-3 entry per I11 (round-1, round-2, round-3 entry bodies untouched).
+
+**Diff size (round-4 fixup alone, on top of round-3 commit `2e26f0c`):**
+
+| File | Lines |
+|---|---|
+| `scripts/new-service.sh` (probe fix + comment rewrite) | ~+25/-15 |
+| `scripts/tests/test_dep010_no_index_guard.sh` (new file) | ~115 lines incl. dense B7 comments |
+| `scripts/tests/test_spawn_smoke.sh` (pre-flight wire-up) | ~+18 |
+| `.github/workflows/per-service-ci.yml` (shell-tests step) | ~+12 |
+| this LOG entry | ~75 (doc) |
+| **Round-4 net effect** | ~+170 (mostly new test + supporting docs) |
+
+**Constraints touched:** A2.1 (single concern: probe-correctness fix + the regression-class test that proves it), B1/B2/B5 (explicit-English names throughout — `sandbox_directory`, `new_service_script`, etc.; no `dir`/`tmp`/`cfg`), B7 (line-level role comments on every operational line in the new test + the rewritten probe comment block + per-service-ci.yml step + spawn-smoke pre-flight block), I9 (`per-service-ci.yml` lives INSIDE the template folder, Session-2-scoped per its existing header; no coordinator-workflow edits in this round), I11 (this append-only entry; rounds 1-3 entries untouched).
+
+**Why my round-2 comment got it wrong:** I treated `git check-ignore` as if it were a pure gitignore-rule probe, but git's actual default behavior consults the index first as an optimization. The index-consultation is documented in `git check-ignore --help` under the `--no-index` flag's description, but the default behavior is the surprising one for someone reasoning about "does this gitignore rule match this path." Codex caught this because Codex doesn't reason from a hand-wave; it reasons from the man page. Capturing in the LOG so future-me doesn't make the same hand-wave on a similar gotcha.
+
+**Cross-session handoff:** unchanged from rounds 1-3. Coordinator's sibling PR for the workflow files (PR #139 per their note) is still queued; flips to ready-for-review after PR #135 merges.
+
+**Next:** Codex round-4 re-review. On APPROVE → coordinator manually merges PR #135 → coordinator's sibling PR flips ready → DEP-014 (template skeleton expansion) becomes my next-task.
+
+---
+
+## 2026-05-23 — PR #135 round-3 fixup: cwd-independence (Codex CONCERN at line 246) — Option (a) — header claim now true verbatim
+
+Same PR (#135), stays DRAFT. Round-2 Codex returned ⚠️  CONCERN (not BLOCKER) — small but real doc-vs-behavior drift.
+
+**Codex's CONCERN (verbatim):**
+> "The file header says the smoke test works from any folder, but Step 2 invokes `new-service.sh` without first changing into the repo. `new-service.sh` uses `git rev-parse --show-toplevel`, so running this smoke script from outside the repo will fail."
+
+**Codex's fix options:** (a) resolve REPO_ROOT explicitly + `cd "$REPO_ROOT"` in a subshell around the spawn invocation, OR (b) narrow the header claim from "any folder" to "any cwd inside the repo".
+
+**Picked (a)** per coordinator's lean + 1000X discipline: the script now genuinely works from ANY cwd (including outside the repo); the header claim is true verbatim. (b) was the minimum-viable doc-fix; (a) is the structurally-correct fix.
+
+**Files touched (round-3):**
+
+1. **`yral-rishi-agent-new-service-template/scripts/tests/test_spawn_smoke.sh`** — 3 surgical edits:
+   - **Path-resolution block** (lines 66–82): added `REPO_ROOT="$(cd "$TEMPLATE_ROOT/.." && pwd)"` derived from the already-resolved TEMPLATE_ROOT chain (which itself derives from `dirname "$0"`, an absolute path). Comment above the line explains why we use this path-walk instead of `git rev-parse --show-toplevel` from cwd: the latter would fail or resolve to a different repo when invoked from outside the source repo.
+   - **Step 2 invocation** (the actual fix): wrapped `bash "$NEW_SERVICE_SH" ... --target-directory "$working_directory"` in a `( cd "$REPO_ROOT" && bash ... )` subshell. Comment explains that the subshell scope means the outer script's cwd is untouched (still wherever the operator invoked from), but new-service.sh's own `git rev-parse --show-toplevel` now resolves the right tree.
+   - **Header docblock — "WHERE THIS RUNS" section**: expanded the "Local mac" bullet to make the cwd-independence claim explicit (`Works from ANY cwd — including folders outside the source repo (e.g. cd /tmp && bash …/test_spawn_smoke.sh) — because path resolution below derives both TEMPLATE_ROOT and REPO_ROOT from "dirname "$0"", and the spawn invocation cd's into REPO_ROOT in a subshell before calling new-service.sh`). Header now matches runtime.
+
+**No A1 hard-stop in this fixup** — pure cwd-resolution hardening + doc precision. Behavior change is strictly broader (works from MORE cwd locations); no narrowing.
+
+**Local validation evidence:**
+
+Ran the script from `/tmp` (a directory NOT inside any git repo at all) to prove the fix:
+
+```
+$ cd /tmp && bash ~/Claude\ Projects/yral-rishi-agent-worktrees/session-2/yral-rishi-agent-new-service-template/scripts/tests/test_spawn_smoke.sh
+── STEP 0 ── PASS Docker daemon + compose v2 detected
+── STEP 1 ── PASS temp directory provisioned; cleanup trap armed
+── STEP 2 ── PASS spawn produced /var/folders/.../yral-rishi-agent-template-spawn-smoke-victim
+── STEP 3 ── PASS all 19 expected paths present; no literal .env.local; substitution ran
+── STEP 4 ── PASS compose stack up (service + postgres + pgbouncer + redis), detached
+── STEP 5 ── PASS /openapi.json returned 200 after 2s; response is a valid OpenAPI document
+── STEP 6 ── PASS service logs clean of unexpected errors
+── STEP 7 ── PASS teardown will run when this script exits
+════════════════════════════════════════════════════════
+  test_spawn_smoke.sh — ALL STEPS PASSED
+════════════════════════════════════════════════════════
+```
+
+**9/9 PASS from /tmp** confirms the Codex CONCERN is closed end-to-end. The pre-existing repo-cwd case (the round-2 validation) was retested by virtue of the same script working from /tmp — if the round-3 change had broken repo-cwd, it would have failed here too because both paths run the same subshell-cd code.
+
+**Diff size (round-3 fixup alone, on top of round-2 commit `bd538b5`):**
+- `test_spawn_smoke.sh`: +20 lines net (REPO_ROOT computation + comment + subshell wrap + header rewrite)
+- this LOG entry: ~50 lines (doc)
+- **Round-3 net effect**: extremely surgical — single-line behavior change wrapped in a subshell + supporting documentation.
+
+**Constraints touched:** A2.1 (round-3 IS a single-concern doc-vs-behavior reconciliation; nothing else folded in), B7 (the new comment block above REPO_ROOT computation + the new comment block above the subshell-wrap both carry WHY rationale), I11 (this append-only entry; round-1 + round-2 entries below untouched).
+
+**Why I picked (a) over (b):** (b) is a doc retreat; the script narrows its claim to match its limitation. (a) is the structural fix; the script genuinely gains the capability it claimed. Per 1000X-greenfield discipline, capability-gain beats capability-narrow when the gain is ~20 lines of code. Cost is negligible; runtime guarantee is meaningfully stronger.
+
+**Cross-session handoff:** none changed from round-1/round-2. Coordinator's sibling PR for the workflow files is still queued.
+
+**Next:** Codex round-3 re-review. On APPROVE → coordinator manually merges PR #135 → coordinator drives the sibling workflow PR → DEP-014 (template skeleton expansion) becomes my next-task.
+
+---
+
+## 2026-05-23 — PR #135 round-2 fixup: scope-split (revert .github/workflows/** edits) + dir→directory renames + B7 WHAT/WHEN/WHY function headers
+
+Same PR (#135), stays DRAFT. Round-1 Codex returned 4 BLOCKERs; 2 of them were **I9 scope-crossover violations** — my round-1 commit edited the coordinator-owned `.github/workflows/**` based on the coordinator's task-spec authorization, but **the template's CLAUDE.md says `.github/workflows/` is coordinator-only by I9, which only Rishi can override**. The task-spec authorization didn't have that override; Codex correctly enforced. Symmetric resolution to PR #134's same-day split: revert the workflow edits, scope back to template-only, coordinator opens a sibling PR for the workflow files.
+
+**Coordinator's own quote acknowledging the spec overreach:**
+> "Apology for the spec overreach. My earlier task spec said 'Add the workflow to the auto-merge required-checks set' + 'A new GitHub Actions workflow: .github/workflows/template-spawn-smoke.yml' — both implicitly authorized you to edit coordinator scope. Per the CLAUDE.md at the template's root, .github/workflows/ is coordinator-only — Codex correctly enforced. Same lesson I learned on PR #134 today. The discipline matters."
+
+**Files touched (round-2):**
+
+1. **`git rm .github/workflows/template-spawn-smoke.yml`** — moved to coordinator's sibling PR. Round-1 added it; round-2 deletes it from this PR.
+2. **`git checkout origin/main -- .github/workflows/auto-merge-small-session-fix-prs.yml`** — restored to the unmodified main state. Round-1 added 2 edits (workflow_run entry + new PATH_SCOPED_REQUIRED_CHECK_NAMES loop); round-2 reverts both. Coordinator's sibling PR re-applies both with a stricter shape per Codex's item-2 feedback (default-block when template paths touched + spawn-smoke check absent).
+3. **`yral-rishi-agent-new-service-template/scripts/new-service.sh`** — B1/B2/B5 renames per Codex's list (examples, not exhaustive; coordinator told me to find ALL `dir`/`DIR` occurrences I introduced):
+   - `--target-dir` → `--target-directory` (flag CLI surface; 7 occurrences in args, comments, help text, dry-run preview)
+   - `TARGET_DIR_OVERRIDE` → `TARGET_DIRECTORY_OVERRIDE` (variable; 5 occurrences)
+   - usage placeholder `DIR` → `<directory>` (help text)
+   - "tempdir destination" prose → "temp-directory destination" (comment)
+4. **`yral-rishi-agent-new-service-template/scripts/tests/test_spawn_smoke.sh`** — B1/B2/B5 renames + B7 WHAT/WHEN/WHY function headers:
+   - Renames: `TESTS_DIR` → `TESTS_DIRECTORY`, `SCRIPTS_DIR` → `SCRIPTS_DIRECTORY`, `--target-dir` → `--target-directory` in invocation + comments, "temp dir" / "tempdir" prose → "temp directory" throughout (header, step 1 banner, step_pass output, cleanup function's comment, step 4 comment). `$TMPDIR` is kept as-is (OS-provided env-var name, not an identifier we control); comment now explicitly notes this distinction.
+   - B7 headers: 3-5-line `WHAT / WHEN / WHY` blocks immediately above each of `cleanup`, `step_banner`, `step_pass`, `step_fail`. WHAT = one sentence on what the function does; WHEN = when it's invoked; WHY = what regression class it guards against / why it exists at all. Existing line-level role comments INSIDE the function bodies are preserved.
+
+**Why `dir` is a real B1/B2/B5 violation and not borderline:** B2's allowlist requires unambiguous English. `dir` is shorthand for "directory"; expanding it is the same lesson as PR #133 round-2's `tmp` → `temporary_fixture_directory` + `rel` → `relative_fixture_path` from yesterday. Codex's call was correct.
+
+**Why Codex's item-2 logic-gap fix moves to the sibling PR:** the fix Codex suggested ("default-block when template paths touched + spawn-smoke check absent") lives in `.github/workflows/auto-merge-small-session-fix-prs.yml` — coordinator-owned. The round-1 commit's path-scoped-array shape was a softer enforcement; coordinator chose the stricter shape (default-block) for the sibling PR. Either shape requires a coordinator-scope edit, so it's out of this PR's reach.
+
+**Local re-validation (post-renames + post-B7-headers):**
+
+- `bash yral-rishi-agent-new-service-template/scripts/new-service.sh -h` → help text reflects renamed flag + placeholder + multi-line wrap for the long `--target-directory <directory>` description.
+- `bash yral-rishi-agent-new-service-template/scripts/tests/test_spawn_smoke.sh` → **ALL 9 STEPS PASSED** end-to-end. Cache-warm build this time (~30s for step 4 vs ~3 min cold yesterday). Step-1 banner now reads "Per-run temp directory + cleanup trap"; step-2 banner reads "Spawn fresh service via new-service.sh --target-directory" — all renamed surfaces visible in the operator output.
+- Pure rename + doc-density work — no behavior change in either script.
+
+**Diff size (round-2 fixup alone, on top of round-1 commit `2441657`):**
+- `git rm` of new workflow file: -120 lines (file deletion)
+- revert of auto-merge YAML: -61 lines (round-1's PATH_SCOPED_REQUIRED_CHECK_NAMES block + workflow_run entry undone)
+- new-service.sh renames: ~0 net (variable name swaps + help-text rewrites; line count comparable)
+- test_spawn_smoke.sh renames: ~0 net (same)
+- test_spawn_smoke.sh B7 function headers: ~45 lines added (4 WHAT/WHEN/WHY blocks)
+- this LOG entry: ~60 lines (doc, not strict-code)
+- **Round-2 net effect**: PR's total diff drops from +865/-34 to roughly +685/-15 (smaller PR, tighter scope).
+
+**Constraints touched:** A2.1 (round-2 IS the single-concern split + var-rename + B7 fixup; nothing else folded in), B1/B2/B5 (`dir` → `directory` violations closed), B7 (WHAT/WHEN/WHY function headers added; existing line-level role comments preserved), I9 (scope-crossover violation closed via `.github/workflows/**` revert), I11 (this append-only entry; round-1 entry above untouched).
+
+**Cross-session handoff:** coordinator's sibling PR (their next-task; not mine). After both PRs land — this one (template-only) and coordinator's (workflow files) — the spawn-smoke gate becomes live with the stricter default-block semantic per Codex's feedback.
+
+**Next:** DEP-014 — template skeleton expansion (asyncpg + redis.asyncio + `/health/ready` probing both). Same plan as round-1; gates on this PR + coordinator's sibling PR both landing.
+
+---
+
+## 2026-05-23 — Template spawn-smoke CI gate (D1 from 2026-05-23 architectural audit) + DEP-014 filed
+
+**Branch:** `session-2/template-spawn-smoke-ci-gate` (off `origin/main` `322b24a` — the freshly-merged DEP-010 PR-A squash commit)
+
+**Why:** the 2026-05-22 cascade had 3 root causes (DEP-010 fixture-rename + shared-config Redis-sentinel hostnames + Redis AUTH client-wiring), and all 3 propagated from the template to 4+ spawned services because the template was never end-to-end-smoke-tested before being spawned-from. D1 from Rishi's 2026-05-23 architectural audit was: build a CI gate that exercises the template end-to-end on every template-touching PR so future template-rooted bugs surface at template-CI time rather than after they've cascaded.
+
+**Design-phase push-backs surfaced to coordinator BEFORE writing code (all 4 approved):**
+
+1. **Bundled PR (~165 strict-code lines) per A2.1 stop-for-confirm.** The 4 pieces (script + workflow + auto-merge wiring + `--target-dir` flag) have no independent value; splitting would be process-for-process's-sake. Coordinator confirmed: A2.1's spirit is "stop + check on multi-step changes," which the design-eyeball satisfied.
+2. **Dropped Sentinel sidecar from the CI compose.** Template skeleton doesn't import Redis Sentinel today; the sidecar would be dead weight. Defer until DEP-014's skeleton expansion lands.
+3. **Gate doesn't catch 2 of 3 cascade bug classes** (shared-config Redis-sentinel hostnames + Redis AUTH wiring) — template skeleton's `app/main.py` doesn't connect to Redis or Postgres, so those drifts don't surface at boot. Filed DEP-014 in the same PR.
+4. **Step-6 semantic refactor** (iterate `$TEMPLATE_PATH` instead of `$TARGET_PATH`) to make the post-spawn DEP-010 check work under out-of-repo destinations (`--target-dir` to a tempdir). Strictly equivalent for the in-repo destination case + necessary for the CI tempdir case.
+
+**Rishi typed-YES authorization (via coordinator chat 2026-05-23):**
+> "BUNDLED PR (Option A) — APPROVED … pieces ARE genuinely dependent (workflow needs script; script needs flag; auto-merge gate entry needs both). … With this explicit confirmation, A2.1 is satisfied. ~165 lines bundled = OK."
+
+**Files touched (5 strict-code changes + 2 doc):**
+
+1. **`yral-rishi-agent-new-service-template/scripts/new-service.sh`** — added `--target-dir <path>` flag. When set, destination becomes `<target-dir>/<service-name>` (canonicalized via `cd … && pwd` to absolute) instead of the historical `$REPO_ROOT/<service-name>`. Step 6 (post-spawn DEP-010 check) now iterates the SOURCE template's fixtures under `$TEMPLATE_PATH` instead of the destination's `$TARGET_PATH` — necessary so the check works when destination is outside the repo. Probe changed from `git add --dry-run -- <path>` (which is a no-op on tracked files + thus a false-positive failure under source-side iteration) to `git check-ignore -q -- <path>` (which directly measures the actual invariant "is this path gitignored", independent of tracking state). Comment block above the probe explains the swap + cites Codex's PR #121 round-7 reasoning + why it doesn't apply to source-side iteration.
+
+2. **`yral-rishi-agent-new-service-template/scripts/tests/test_spawn_smoke.sh` (new file)** — 9-step end-to-end gate:
+   - Step 0: pre-flight (Docker daemon + compose v2 available)
+   - Step 1: per-run `mktemp -d` working dir + `EXIT` trap arming
+   - Step 2: spawn fresh victim via `new-service.sh yral-rishi-agent-template-spawn-smoke-victim --target-dir <temp>` (exercises new-service.sh's post-spawn step 6 end-to-end — satisfies PR #133's Codex CONCERN)
+   - Step 3: layout assertions on spawned tree (19 expected paths incl. 8 F8 docs + `env.local.fixture` × 2; negative-asserts no literal `.env.local`; substitution sanity check)
+   - Step 4: `docker compose up --build -d` (cold-cache ~3-4 min build; warm-cache ~30s)
+   - Step 5: poll `http://localhost:8000/openapi.json` (60s budget; 30 × 2s attempts) + verify response is a valid OpenAPI document (presence of `"openapi":` field — relaxed from `contains-victim-name` because of a known cosmetic gap in `app/main.py:title="yral-rishi-agent service template"` per SESSION-2 Day-3 PR-5 LOG; tightenable when DEP-014's skeleton expansion or a separate cosmetic-cleanup PR fixes the title)
+   - Step 6: scan service container logs for unexpected `ERROR`/`CRITICAL` lines (whitelisting Sentry no-DSN + Langfuse-disabled + LANGFUSE_PUBLIC_KEY-not-set startup messages as expected no-ops)
+   - Steps 7+8: teardown via `EXIT` trap (`docker compose down -v --remove-orphans` + `rm -rf <temp>`) — fires on every exit path (success, failure, signal)
+   - Step 9: green banner + exit 0
+   - `EXIT` trap also dumps `compose ps` + last 50 service-log lines + last 20 postgres-log lines on non-zero exit BEFORE teardown so CI logs preserve the failure state.
+
+3. **`.github/workflows/template-spawn-smoke.yml` (new file)** — `name: "Template Spawn Smoke"` workflow, path-scoped on `yral-rishi-agent-new-service-template/**` (+ the workflow file itself). Single ubuntu-latest job named `"Verify template spawn smoke (build + boot + openapi)"` (the JOB name is what shows up in `statusCheckRollup` + the auto-merge required-check array references). 15-min timeout cap. Uses `docker/setup-buildx-action@v3` with GHA cache so warm builds finish in ~30s.
+
+4. **`.github/workflows/auto-merge-small-session-fix-prs.yml`** — two surgical edits to wire spawn-smoke into the required-check set:
+   - Added `"Template Spawn Smoke"` to the `on.workflow_run.workflows` array so completions re-trigger auto-merge evaluation
+   - Added new `PATH_SCOPED_REQUIRED_CHECK_NAMES` array (separate from the existing always-run `REQUIRED_CHECK_NAMES`) with one entry: the spawn-smoke job name. Path-scoped semantic: present-and-SUCCESS → pass; present-and-running → wait; present-and-failure → block; absent → SKIP (path filter didn't match for this PR — the check legitimately did not run, so absence is acceptable). This shape is required because adding a path-scoped check to the always-run array would freeze every non-template PR out of auto-merge (the existing logic treats "absent from rollup" as "not yet present, blocking" — correct for always-run linters, wrong for path-scoped checks). ~25 lines added including the bash loop for the new semantic. Coordinator authorized the auto-merge-workflow edit explicitly in the spawn-smoke task spec ("Add the workflow to the auto-merge required-checks set").
+
+5. **`yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/cross-session-dependencies.md`** — filed DEP-014 (template skeleton lacks Postgres/Redis client wiring + a Redis/Postgres-touching `/health/ready`). Surfaces the capability gap that prevents this gate from catching the 2 ancillary cascade bug classes. Sized as a single ~150-200-line PR with 3 pieces (asyncpg pool init + redis.asyncio Sentinel-aware init + `/health/ready` that probes both); A1 hard-stop applies for any secrets.yaml additions. Owner: Session 2 (this session). Coordinator-confirmed as the immediate next-task post-merge.
+
+**Doc changes (don't count toward strict-code line budget):**
+
+- `cross-session-dependencies.md` — DEP-014 entry (~95 lines)
+- this LOG entry — append-only per I11
+
+**Local validation evidence (Mac dev, 2026-05-23):**
+
+- `bash yral-rishi-agent-new-service-template/scripts/tests/test_spawn_smoke.sh` → **ALL 9 STEPS PASSED** end-to-end. Two iterations got here: round-1 hit the `git add --dry-run`-on-tracked-files no-op false positive (caught by source-side iteration; fixed by switching probe to `git check-ignore -q`); round-2 hit the over-strict openapi.json content check (caught the known cosmetic title-substitution gap; relaxed to `"openapi":` field presence).
+- `PATH=/opt/homebrew/bin:$PATH bash test_validate_secrets.sh` → still **5/5 PASS** (sibling test unaffected).
+- Cleanup verified: no leftover containers (`docker ps --filter name=yral-rishi-agent-template-spawn-smoke`), no leftover temp dirs (`/tmp/spawn-smoke.*` matches empty).
+
+**Diff size (strict-code lines, excluding LOG entry + DEP-014):**
+
+| File | Lines added |
+|---|---|
+| `scripts/new-service.sh` (`--target-dir` flag + step-6 source+probe refactor) | ~35 |
+| `scripts/tests/test_spawn_smoke.sh` (new file) | ~80 |
+| `.github/workflows/template-spawn-smoke.yml` (new file) | ~25 (excluding header docblock) |
+| `.github/workflows/auto-merge-small-session-fix-prs.yml` (path-scoped check loop) | ~25 |
+| **Total strict-code** | **~165** |
+
+Crosses A2.1's 100-line threshold; explicit Rishi YES recorded per A2.1's stop-for-confirm rule (above).
+
+**Constraints touched:** A2.1 (single concern: template-spawn-smoke gate; bundling 4 dependent pieces with explicit Rishi YES), B1/B2 (explicit-English names throughout — `working_directory`, `spawned_service_path`, `path_scoped_present_count`, `relative_fixture_path`, etc.; no `tmp`/`cfg`/`cmd`/`rel`), B7 (line-level role comments on every operational shell + YAML line with non-obvious WHY), D1 (the architectural-audit decision this PR closes), F1/F16 (path-scoped per-folder triggers preserve monorepo CI minute budget), I9 (new workflow file lives at the natural place; the auto-merge edit is the ONLY coordinator-workflow modification + was explicitly authorized in the task spec), I10/I2/J4 (CI gate must be trusted + green for template PRs to merge), I11 (this same-commit LOG entry).
+
+**Not eligible for I14 auto-merge** — adds new workflow + new shell script + modifies the auto-merge-small-session-fix-prs.yml required-check set (behavior-changing CI machinery, not `.md`-only or test-only). Coordinator manually merges via `gh pr merge <N> --squash` after Codex APPROVE. ~165 strict-code lines bundled per A2.1 single-concern (4 pieces with no independent value; splitting would be process-for-process's-sake).
+
+**Cross-session handoff:** none. This PR's coverage benefits every Session's future template-touching PR equally; Session 3 + 4 don't need to do anything to consume the gate.
+
+**Next:** DEP-014 — template skeleton expansion (asyncpg + redis.asyncio + `/health/ready`). Coordinator-confirmed as the immediate next-task post-merge.
+
+---
+
 ## 2026-05-23 — DEP-010 PR-A round-2 fixup: 2 var renames + B7 line-level role comments on both DEP-010 blocks
 
 Same PR (#133), stays DRAFT. Round-1 Codex returned 3 BLOCKERs — all real B1/B2/B7 violations, mechanical fixes:
