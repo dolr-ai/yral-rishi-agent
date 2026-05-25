@@ -131,41 +131,62 @@ async def run_turn(
     *,
     user_id: str,
     conversation_id: str,
-    message_content: str,
+    user_message: str,
     client_message_id: Optional[str],
     media_urls: Optional[list[str]],
+    influencer_id: Optional[str],
     request_id: str,
     idempotency_key: str,
 ) -> httpx.Response:
     """POST one chat turn to the Session-4 orchestrator.
 
-    WHAT: builds the request body per the internal-rpc contract, attaches
-          the 5 internal-call headers, awaits httpx.AsyncClient.post()
-          against the configured path, returns the raw httpx.Response so
-          the chat handler can interpret status + JSON body.
+    WHAT: builds the request body per the post-PR-#131 internal-rpc
+          contract, attaches the 5 internal-call headers, awaits
+          httpx.AsyncClient.post() against the configured path,
+          returns the raw httpx.Response so the chat handler can
+          interpret status + JSON body.
     WHEN: invoked from chat_routes.send_message() on every cache-miss
           message-send turn.
     WHY:  single place that knows the orchestrator's wire shape; the
           chat handler stays thin (auth, idempotency, error mapping)
           and the wire details live here.
+
+    PR-B2 body-shape sync: post-PR-#131 the orchestrator's
+    RunTurnRequest dropped `user_id` (now header-only per Codex
+    round-4 BLOCKER 2), renamed `message_content` → `user_message`,
+    and added optional `influencer_id`. The PR-B2 trust-boundary
+    contract: `influencer_id` is the result of public-api's
+    user-memory-service lookup against the conversation_id —
+    NEVER a client-supplied value.
     """
     settings = get_settings()
     client = get_orchestrator_client()
 
+    # Body shape per the post-PR-#131 RunTurnRequest model:
+    # `conversation_id` + `user_message` + optional `media_urls` +
+    # optional `client_message_id` + optional `influencer_id`.
+    # `user_id` is intentionally NOT in the body — orchestrator reads
+    # it from the X-User-Id header (Codex round-4 BLOCKER 2 on
+    # orchestrator side; the header is the authoritative source so
+    # public-api forwards it via the headers dict below).
     body = {
-        "user_id": user_id,
         "conversation_id": conversation_id,
-        # Per the file header — orchestrator-side ai_influencer_id
-        # lookup lands when Session 5's Day-9 ETL ports conversation
-        # data + Day-5+ wires the conversation table. Day-4C sends a
-        # fixed placeholder so the wire call works.
-        "ai_influencer_id": "placeholder-day-4c-pending-conversation-lookup",
-        "message_content": message_content,
-        # Empty string when mobile didn't send client_message_id; the
-        # contract field is required-string, so null isn't valid. Empty
-        # string matches chat-ai's current behavior for orphan messages.
-        "client_message_id": client_message_id or "",
+        "user_message": user_message,
+        # `None` passes through verbatim; orchestrator's RunTurnRequest
+        # has `client_message_id: str | None = None`. The pre-PR-#131
+        # empty-string coercion is gone — Pydantic-side validation
+        # accepts None now.
+        "client_message_id": client_message_id,
         "media_urls": media_urls,
+        # PR-B2 per-request `influencer_id` — sourced from the
+        # conversation row via the user-memory-service lookup the
+        # chat handler does BEFORE this call. None when the lookup
+        # couldn't resolve an influencer (e.g., legacy conversation
+        # row missing the field); the orchestrator's PR-B1 optional-
+        # field semantics fall back to the env-var default in that
+        # case. PR-B3 (Session 4) will remove the env fallback +
+        # require this field.
+        "influencer_id": influencer_id,
     }
 
     headers = {

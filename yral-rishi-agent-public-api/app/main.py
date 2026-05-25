@@ -93,6 +93,13 @@ from app.orchestrator_client import close_orchestrator_client, init_orchestrator
 # instead of returning canned stubs.
 from app.directory_client import close_directory_client, init_directory_client
 
+# PR-B2 user-memory client — third lifespan-managed singleton (after
+# orchestrator + directory). chat_routes.send_message uses this to
+# look up the conversation BEFORE the orchestrator call so the
+# per-request `influencer_id` is derived from a trusted source (the
+# conversation row), NOT from any client-controlled input.
+from app.user_memory_client import close_user_memory_client, init_user_memory_client
+
 
 # Run Sentry init now, at module import time. After this line, every
 # unhandled exception below is shipped to sentry.rishi.yral.com (per A7).
@@ -128,11 +135,18 @@ async def lifespan(_app: FastAPI):
     # of orchestrator_client's pattern). Powers /api/v1/influencers
     # list + by-id reads.
     init_directory_client()
+    # PR-B2: allocate the user-memory httpx.AsyncClient singleton.
+    # chat_routes.send_message uses this to look up the conversation
+    # BEFORE the orchestrator call (trust-boundary derivation of the
+    # per-request `influencer_id`).
+    init_user_memory_client()
     yield
     # --- shutdown -------------------------------------------------------
-    # Day-8: drain pending directory-bound connections (run BEFORE
-    # orchestrator close — order doesn't matter for correctness but the
-    # symmetric stack-unwinding shape reads cleanly).
+    # PR-B2: drain pending user-memory-bound connections (unwound in
+    # reverse-startup order so each tier's downstream pools close
+    # before the upstream that may have queued work against them).
+    await close_user_memory_client()
+    # Day-8: drain pending directory-bound connections.
     await close_directory_client()
     # Day-4C: drain pending orchestrator-bound connections gracefully
     # before SIGTERM ends the process.

@@ -369,6 +369,54 @@ class Settings(BaseSettings):
     # that bounded storage holds across normal traffic patterns.
     idempotency_dedup_ttl_seconds: int = 86400
 
+    # -- User-memory-service RPC (per
+    # interface-contracts/01-internal-rpc-contracts.md — PR-B2) -----------
+    # The Session-5 user-memory-service base URL public-api looks up
+    # the conversation row against (BEFORE every orchestrator call) to
+    # derive the per-request `ai_influencer_id` from the conversation
+    # record. The trust-boundary mechanism: `ai_influencer_id` is
+    # ONLY ever sourced from this lookup; client-supplied
+    # `influencer_id` in body/query/header is rejected before reaching
+    # the orchestrator. Swarm DNS name `<stack>_<service>` per
+    # project.config.
+    user_memory_base_url: str = (
+        "http://yral-rishi-agent-user-memory-service_service:8000"
+    )
+
+    # The path template under user_memory_base_url for the by-id
+    # endpoint. Post-PR #132 (Session 5 D2 merged 2026-05-23T12:36:58Z)
+    # the on-main contract declares this single-id GET shape; the chat
+    # handler calls it directly instead of the list-then-filter
+    # approach the original PR-B2 plan would have used. The
+    # X-User-Id header carries the tenant-isolation key — user-memory
+    # returns 404 (never 403) when the conversation doesn't belong
+    # to the caller, refusing to leak existence of other users'
+    # conversations.
+    user_memory_get_by_id_path_template: str = (
+        "/v1/conversations/{conversation_id}"
+    )
+
+    # End-to-end timeout for one user-memory call. 0.5 s (500 ms) per
+    # Codex PR #141 round-6 CONCERN — the previous 5-second total
+    # held the send-message hot path for 5 s on a degraded user-
+    # memory, violating CONSTRAINTS E1 (user-interactive endpoints
+    # MUST be 50% faster than chat-ai). user-memory is a simple
+    # DB-backed by-id lookup with no LLM compute — 500 ms is the
+    # aggressive end of the 200-500 ms band Codex suggested and
+    # leaves headroom for Postgres p95 + the network hop. A
+    # degraded user-memory now fail-fasts to 503 instead of holding
+    # mobile requests, which is the correct trade per E1.
+    user_memory_request_timeout_seconds: float = 0.5
+
+    # Connect-only timeout. 0.2 s (200 ms) per Codex PR #141 round-6
+    # CONCERN — the previous 2-second connect ceiling exceeded the
+    # new 0.5-second total request timeout (nonsense given the
+    # request timeout MUST upper-bound the connect timeout). 200 ms
+    # is enough to distinguish "container missing" from "slow first
+    # response" on the in-cluster network while preserving the
+    # fail-fast envelope-shaped 503.
+    user_memory_connect_timeout_seconds: float = 0.2
+
     # -- Influencer-and-profile-directory RPC (per
     # interface-contracts/01-internal-rpc-contracts.md + DEP-013) ---------
     # The Session-4 influencer-directory base URL public-api proxies

@@ -2,6 +2,123 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-25 — PR #141 round-7 — Codex post-squash verdict: 2 BLOCKERs + 2 CONCERNs closed (B2 runtime + trust-boundary security + scaffold ack + E1 timeout)
+
+### Action
+Codex re-evaluated PR #141 against current main after the round-6 squash-rebase landed at `5c43f3b`. Verdict: 2 BLOCKERs + 2 CONCERNs. Round-7 closes all 4. Past the 5-round cap, but both BLOCKERs are runtime/security per the cap-rule's "override only for paperwork" carve-out (PR #154) — keep iterating until Codex APPROVE.
+
+**BLOCKER 1 (B2 runtime code) — `app/api/chat_routes.py:505` area.** The new user-memory-hop error handlers used `exc` as the exception variable name + `exc_type` as a Sentry context key. PR #154's carve-out made B2 runtime-only — this is runtime production code, so the carve-out doesn't apply. Renamed across the 7 occurrences in my additions (only the user-memory hop's two `except` blocks; pre-existing `exc` references in `app/main.py` exception handlers + the Day-4C orchestrator-path handlers NOT touched per "fix what you ship"). Diff grep against `origin/main` confirms 0 `exc` / `exc_type` tokens in my additions.
+
+| Site | Before | After |
+|---|---|---|
+| chat_routes.py L509 | `except (httpx.TimeoutException, httpx.ConnectError) as exc:` | `... as exception:` |
+| L515 | `isinstance(exc, httpx.ConnectError)` | `isinstance(exception, httpx.ConnectError)` |
+| L522 | `"exc_type": type(exc).__name__` | `"exception_type": type(exception).__name__` |
+| L526 | `f"... error: {exc}"` | `f"... error: {exception}"` |
+| L584 | `except (ValueError, TypeError) as exc:` | `... as exception:` |
+| L592 | `"exc": str(exc)` | `"exception": str(exception)` |
+| L596 | `f"... dict: {exc}"` | `f"... dict: {exception}"` |
+
+**BLOCKER 2 (industry — trust boundary security gap) — `app/api/chat_routes.py:613` area.** Round-6 validated only that `ai_influencer_id` was str-or-None — it did NOT verify that user-memory's 200 response actually matched the request. A user-memory implementation bug (wrong-row response) or a cross-tenant regression on the user-memory side would propagate into public-api without detection. Round-7 adds 2 verification assertions BEFORE the `derived_influencer_id` read:
+
+1. **Returned `id` must match URL-path `conversation_id`**. Mismatch → envelope-shaped 503 + Sentry `level="error"` with `user_memory.call.failed=id_mismatch`. Signals a user-memory implementation bug returning the wrong row for the by-id lookup.
+
+2. **Returned `user_id` must match JWT-authenticated `user.user_id`**. Mismatch → envelope-shaped 503 + Sentry **`level="fatal"`** (pages on-call immediately) with `user_memory.call.failed=user_id_mismatch_cross_tenant`. This is a CROSS-TENANT LEAK signal — user-memory returned another user's conversation row for this caller, despite the by-id endpoint's claimed tenant-isolation contract.
+
+Both Sentry contexts deliberately record only `*_type` rather than the leaked values themselves (H6 PII discipline — do not echo the leaked user_id / id into Sentry, which is searchable and retained). Both checks happen BEFORE the `ai_influencer_id` read so a wrong-row response NEVER influences orchestrator routing.
+
+**2 new regression tests** in `tests/contract/test_orchestrator_proxy.py` prove the assertions fire + orchestrator gets 0 calls when triggered:
+
+- `test_send_message_returns_503_when_user_memory_id_does_not_match_url_conversation_id` — user-memory returns a row whose `id` is `"some-OTHER-conversation-id-from-a-different-row"`. Asserts 503 + envelope + `mock_orchestrator_happy.await_count == 0`.
+- `test_send_message_returns_503_when_user_memory_user_id_indicates_cross_tenant_leak` — user-memory returns a row whose `user_id` is `"some-OTHER-user-id-not-the-caller"`. Same 3 assertions.
+
+Test count: 18 pre-round-7 → 20 post-round-7.
+
+**CONCERN 1 (test scaffold — informational ack) — `tests/integration/test_gate_a1_send_message_smoke.py:45`.** Codex flagged that the round-6 Gate A1 scaffold tests are module-skipped + raise `NotImplementedError`, so they do not protect the new public-api → user-memory behavior in CI. This is INTENTIONAL per PR #145 (real implementation lands Day 11-13). Round-7 expands the module-level scaffold comment to explicitly say `INTENTIONAL SCAFFOLD — implementation lands by Day 11-13` + names the contract-level unit tests in `tests/contract/test_orchestrator_proxy.py` that cover the boundary at the unit-test tier in the meantime. No code change beyond the comment.
+
+**CONCERN 2 (industry — E1 timeout violation) — `app/config.py:399`.** Round-6's 5-second `user_memory_request_timeout_seconds` (+ 2-second connect) would hold the send-message hot path for up to 5 s on a degraded user-memory, directly violating CONSTRAINTS E1 (user-interactive endpoints MUST be 50% faster than chat-ai). Round-7:
+
+- `user_memory_request_timeout_seconds: 5.0 → 0.5` (500 ms total — aggressive end of Codex's suggested 200-500 ms band; leaves Postgres p95 headroom for a simple DB-backed by-id lookup with no LLM compute).
+- `user_memory_connect_timeout_seconds: 2.0 → 0.2` (200 ms connect — the prior 2 s exceeded the new 500 ms total request timeout, which is nonsensical; 200 ms still distinguishes "container missing" from "slow first response" on the in-cluster network).
+
+Comments on both fields document the round-7 rationale + reference Codex CONCERN 2.
+
+### Files touched (round-7)
+- `yral-rishi-agent-public-api/app/api/chat_routes.py` — BLOCKER 1 `exc` → `exception` rename (7 sites) + BLOCKER 2 two new verification assertions with Sentry-tagged 503 envelopes (added ~58 lines).
+- `yral-rishi-agent-public-api/app/config.py` — CONCERN 2 timeout values dropped + comment refresh on both fields.
+- `yral-rishi-agent-public-api/tests/contract/test_orchestrator_proxy.py` — 2 new regression tests for BLOCKER 2 (added ~58 lines).
+- `yral-rishi-agent-public-api/tests/integration/test_gate_a1_send_message_smoke.py` — CONCERN 1 INTENTIONAL-SCAFFOLD module-comment expansion.
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-state/SESSION-3-STATE.md` — `Updated:` line + LAST THING I DID refresh.
+- This LOG subsection.
+
+### Verified locally
+- `python3 -c "import ast"` on all 4 touched Python files → AST OK.
+- `git diff origin/main -- yral-rishi-agent-public-api/app/api/chat_routes.py | grep -E '^\\+' | grep -E '\\bexc\\b|exc_type'` → empty (B2 sweep clean against my diff).
+- Existing tests not regressed (no body changes to pre-round-7 tests; `_HAPPY_CONVERSATION` fixture's `id` + `user_id` fields already match `SEND_MESSAGE_PATH` + `TEST_USER_ID`, so the new boundary checks pass for the happy path).
+
+### Cap-rule note
+Round 7 is past the 5-round cap (PR #154). BLOCKERs are runtime/security — the cap-rule's "only override for paperwork" carve-out keeps this iteration in-bounds. Once Codex APPROVE on round-7 scope, coordinator can squash-merge per the same path as PR #137's override-merge.
+
+---
+
+## 2026-05-25 — PR #141 round-6 — adopt PR #145 ratified architecture (drop "narrow exception" framing) + scaffold Gate A1 SMOKE check
+
+### Action
+Coordinator unblocked PR #141 with three back-to-back merges this morning:
+
+- **PR #145 (architectural ratification)** merged at 10:13 UTC — adds 189 lines to `interface-contracts/01-internal-rpc-contracts.md` ratifying the binding Phase-1 decision: `public-api → user-memory direct call`. Also adds `.github/workflows/gate-a2-pull-request-benchmark.yml` (Gate A2-PR placeholder) + a 4-line `01-SESSION-SHARDING-AND-OWNERSHIP.md` update + a 1-line `lint-scope-violations.yml` tweak.
+- **PR #137 (Redis-AUTH wiring)** merged at 10:51 UTC via coordinator override under the new 5-round cap. Paperwork-only items at round-19 (3 test-docstring attribution scope-fixes + 1 validator-strengthening for empty-credential URLs) accepted into the squash; activation path (Session 1 confirms secret rotation → Session 3 flips compose default) unchanged.
+- **PR #154 (audit-recs adoption)** merged at 11:19 UTC — adds `setup-isolated-session-worktrees.sh` + 4-line `CONSTRAINTS.md` update. Key carve-outs: **B2/B7 → runtime-only scope** (test files only need plain-English names + 1-line WHAT/WHEN/WHY per J3 minimum); **5-round Codex cap** with coordinator-override path; worktree-setup script.
+
+PR #141 was unblocked by PR #145's merge — the round-1 Codex CONCERN that raised the architectural question is now closed by ratification.
+
+### Round-6 changes
+
+**STATE refresh** (`session-state/SESSION-3-STATE.md`):
+- `Updated:` line rewritten — drops the 2026-05-23 PR-B2-round-1 wording; new wording references the 3-merge sequence + 12-files / +1352 / -28 / 7-commits diff state.
+- `START-OF-SESSION SUMMARY` rewritten — the **"PR-B2 (2026-05-23) added one narrow exception to the 'no direct Session 5 calls' rule"** framing replaced with the ratified-architecture reference. New wording cites `01-internal-rpc-contracts.md` section "Architectural decision — Phase-1 ratification (2026-05-24)" as the binding decision + names Gate A1 (public-api side) / Gate A_user_memory (Session 5 side) as the cross-session test-ownership separation per PR #145 round-8 CONCERN.
+- `LAST THING I DID` paragraph replaced with the round-6 entry referencing the 3-PR-merge sequence + the Gate A1 scaffold.
+
+**Gate A1 scaffold** (`yral-rishi-agent-public-api/tests/integration/`):
+- `__init__.py` — empty package marker.
+- `conftest.py` — 4 ephemeral-port-fake fixtures with WHAT/WHEN/WHY docstrings + `pytest.skip` bodies:
+  - `user_memory_fake_server` — local HTTP server accepting `GET /v1/conversations/{id}` + recording request shape.
+  - `orchestrator_fake_server` — local HTTP server accepting `POST /v1/turn` + emitting canonical MessageDto.
+  - `yral_billing_fake_server` — Phase-1 forward-compat fake (public-api does not call billing today; chat-handler grep returns only comments + a response-model mirror).
+  - `langfuse_in_process_span_exporter` — in-process span exporter for the instrumentation assertion at PR #145 line 303.
+- `test_gate_a1_send_message_smoke.py` — module-level `pytestmark = pytest.mark.skip(...)` keeps CI green; 5 scaffold tests carrying acceptance criteria in docstrings:
+  1. `test_send_message_smoke_envelope_maps_to_api_response_message_dto` — envelope parity-lock per `00-api-contract.md:35`.
+  2. `test_send_message_smoke_user_memory_request_path_and_4_headers` — RPC request shape per PR #145 line 304 (path + X-User-Id / X-Internal-Caller / X-Trace-Id / X-Request-Id).
+  3. `test_send_message_smoke_user_memory_response_model_parses_cleanly` — contract-level Pydantic validation, not implementation peek.
+  4. `test_send_message_smoke_user_memory_call_carries_langfuse_span` — instrumentation assertion per PR #145 line 303 (in-process Langfuse span exporter).
+  5. `test_send_message_smoke_user_memory_timeout_maps_to_503_envelope` — timeout/5xx → envelope-shaped 503 + orchestrator + yral-billing fakes receiving ZERO requests (short-circuit contract).
+
+**PR #154 carve-out applied to scaffold**: scaffold test files + conftest use plain-English test/fixture names + 1-line WHAT/WHEN/WHY docstrings (J3 minimum). The full B7 import-role-comment ceremony does NOT apply per the runtime-only scope adoption.
+
+**SMOKE-only scope**: no p95 thresholds at PR-CI tier per J2 (controlled latency gates A2-PR + A2-NIGHTLY + B carry the real p95 enforcement; A2-PR placeholder workflow exists at `.github/workflows/gate-a2-pull-request-benchmark.yml` on main, awaiting Session 1's benchmark script).
+
+### Why module-level skip vs implementing the bodies now?
+Coordinator scope: "create scaffold under `yral-rishi-agent-public-api/tests/integration/`". Implementation step is queued for Day 12-13 Phase 1 parity smoke target. Filling the bodies now would over-extend round-6's scope + couple the scope-fix work to library choice (pytest-httpserver vs respx vs aiohttp.web — PR #145 spec leaves the choice open). Module-level skip + acceptance-criterion-bearing docstrings + named fixtures = the scaffold contract; Day-12-13 step picks a library + fills bodies without re-discovering the spec.
+
+### Files touched (round-6)
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-state/SESSION-3-STATE.md` — `Updated:` line + START-OF-SESSION SUMMARY + LAST THING I DID refresh.
+- `yral-rishi-agent-public-api/tests/integration/__init__.py` — NEW empty package marker.
+- `yral-rishi-agent-public-api/tests/integration/conftest.py` — NEW (4 fixtures + module docstring).
+- `yral-rishi-agent-public-api/tests/integration/test_gate_a1_send_message_smoke.py` — NEW (5 acceptance-criterion-bearing skipped tests + module docstring).
+- This LOG subsection.
+
+### Verified locally
+- `python3 -c "import ast; ast.parse(open(...).read())` on the 3 new Python files → AST OK.
+- No CI breakage expected: module-level `pytest.mark.skip` keeps every new test out of the active run; conftest fixtures only fire when consumed.
+
+### Bundled PR #137 follow-up
+The coordinator-flagged follow-up to refresh `SESSION-3-STATE.md` `Updated:` line wording (the post-#137-merge main version still says "still DRAFT through round-19", factually stale post-merge) is subsumed by this round-6 STATE refresh — when PR #141 merges, main's STATE line gets the new wording automatically. No separate follow-up PR needed.
+
+### Next
+Codex round-6 review. Past 5-round-cap exhaustion candidate now that the runtime-only B2/B7 scope significantly narrows the per-round surface area.
+
+---
+
 ## 2026-05-25 — PR #137 round-19: test-docstring scope-fix sweep + validator strengthening for empty-credential URLs (Codex round-18 verdict)
 
 ### Action
@@ -544,6 +661,139 @@ Verified locally:
 - `python3 -c "import ast"` on `config.py` + `redis_client.py` + `health_routes.py` → OK.
 
 Same PR + branch. 5 files touched + this LOG subsection. **No code-behavior change** (round-17 is documentation consistency only — the activation path is unchanged; only the WRITTEN ATTRIBUTION is corrected from Session 1 → Session 3 for the compose flip, while keeping Session 1's role as the secret-rotation-state confirmer).
+
+---
+
+## 2026-05-23 — PR-B2 — per-request `influencer_id` forwarding from public-api → orchestrator, derived via user-memory by-id lookup (DRAFT)
+
+### Action
+PR-B2 ships the public-api half of the 3-PR per-request `influencer_id` wiring plan (PR-B1 = Session 4 orchestrator widen, merged #131; PR-B2 = this PR; PR-B3 = Session 4 drops env fallback + makes influencer_id required, future). On every `send_message` turn, public-api now:
+1. Looks up the conversation via `user_memory_client.get_conversation(conversation_id=URL_path, user_id=JWT_derived, request_id=...)` — Session 5's by-id endpoint merged at PR #132 (2026-05-23T12:36:58Z).
+2. Extracts `ai_influencer_id` from the response.
+3. Forwards it to `orchestrator_client.run_turn(influencer_id=<conversation-derived>, ...)`.
+
+**Trust boundary**: `influencer_id` is ONLY ever sourced from this lookup. Client-supplied `influencer_id` in request body / query string / X-Influencer-Id header is dropped. The contract test `test_send_message_ignores_forged_influencer_id_on_every_surface` forges all three surfaces simultaneously + asserts the orchestrator AsyncMock receives the conversation-derived value, NOT the forged client value.
+
+Same PR also syncs `orchestrator_client.run_turn`'s body shape to the post-PR-#131 `RunTurnRequest` model (necessary — without the rename, every orchestrator call 422'd):
+- `message_content` → `user_message` (rename matches PR-#131's body field).
+- `user_id` DROPPED from body (orchestrator reads it from `X-User-Id` header per Codex round-4 BLOCKER 2 on the orchestrator side; the header is the authoritative source, public-api forwards it via the headers dict).
+- `ai_influencer_id` placeholder constant REMOVED — replaced by per-request `influencer_id` parameter sourced from the user-memory lookup.
+- `client_message_id` empty-string coercion REMOVED — None passes through verbatim (post-PR-#131 RunTurnRequest accepts None).
+
+### Approach swap (α → β) mid-implementation
+Original PR-B2 plan (locked 2026-05-23 morning) used approach (α) — list-by-user + client-side filter — because no by-id endpoint was declared in `01-internal-rpc-contracts.md`. Coordinator pasted Session 5 a request for the by-id endpoint as part of their #132 round-2 + Codex's concurrency-test CONCERN (bundled as round-3). PR #132 merged 2026-05-23T12:36:58Z WITH the by-id endpoint. Coordinator confirmed swap-to-β option; this PR shipped against (β) directly — no follow-up cleanup needed.
+
+The by-id endpoint's tenant-isolation contract is load-bearing for the trust boundary: returns 404 for not-found / soft-deleted / wrong-user (NEVER 403 — refuses to leak existence of other users' conversations). Public-api translates that 404 into its own envelope-shaped 404 + skips the orchestrator call entirely (load-bearing short-circuit asserted in `test_send_message_returns_404_envelope_when_user_memory_404`).
+
+### Files touched
+- `yral-rishi-agent-public-api/app/user_memory_client.py` — NEW. Third lifespan-managed httpx singleton (mirror of `orchestrator_client.py` + `directory_client.py` verbatim). One public function: `get_conversation(*, user_id, request_id, conversation_id) → httpx.Response`. 4 internal-call headers (X-User-Id + X-Internal-Caller + X-Request-Id + X-Trace-Id; no X-Idempotency-Key on stateless GETs). B7 priority order: public surface first, lifecycle hooks middle, private helpers last.
+- `yral-rishi-agent-public-api/app/config.py` — 5 new pydantic-settings fields under "User-memory-service RPC" section: `user_memory_base_url`, `user_memory_get_by_id_path_template`, `user_memory_request_timeout_seconds=5.0`, `user_memory_connect_timeout_seconds=2.0`. Matches the orchestrator + directory precedent verbatim (env-vars, not shared-config.yaml).
+- `yral-rishi-agent-public-api/app/main.py` — lifespan startup adds `init_user_memory_client()` (3rd singleton); shutdown adds `await close_user_memory_client()` (reverse-startup order — user-memory closes first, then directory, then orchestrator).
+- `yral-rishi-agent-public-api/app/orchestrator_client.py` — `run_turn` signature + body rewritten per post-PR-#131 RunTurnRequest: param rename `message_content` → `user_message`, body field DROPPED `user_id` (now header-only), body field REMOVED `ai_influencer_id` placeholder, new optional `influencer_id` parameter that flows into the body, `client_message_id` None-passes-through verbatim.
+- `yral-rishi-agent-public-api/app/api/chat_routes.py` — `send_message` handler adds Step 2b (user-memory lookup + influencer_id derivation) between the F10 cache lookup (Step 2) and the orchestrator call (Step 3). Failure mapping mirrors the orchestrator-failure pattern: connect/timeout → 503, non-200 non-404 → 503, bad-shape → 503; 404 → public-api envelope-shaped 404 + orchestrator skip (load-bearing short-circuit). Step 3's run_turn call updated for the post-PR-#131 keyword arguments.
+- `yral-rishi-agent-public-api/tests/contract/test_orchestrator_proxy.py` — autouse `mock_user_memory_happy` fixture (so the 11 existing tests don't break on the new user-memory dep); new `_HAPPY_CONVERSATION` data fixture with `_TRUSTED_INFLUENCER_ID` sentinel; 8 new J1-HOT tests:
+  1. `test_send_message_forwards_trusted_influencer_id_from_conversation` — happy-path derivation
+  2. `test_send_message_ignores_forged_influencer_id_on_every_surface` — **THE trust-boundary test** (forges body + query + header simultaneously)
+  3. `test_send_message_passes_post_pr_131_body_shape_to_orchestrator` — wire-shape regression guard
+  4. `test_send_message_returns_404_envelope_when_user_memory_404` — tenant-isolation + orchestrator-skip short-circuit
+  5. `test_send_message_returns_503_envelope_when_user_memory_unreachable` — connect-error mapping + orchestrator-skip
+  6. `test_send_message_returns_503_envelope_when_user_memory_5xx` — non-200 mapping + orchestrator-skip
+  7. `test_send_message_returns_503_envelope_when_user_memory_bad_shape` — schema-drift mapping + orchestrator-skip
+  8. `test_send_message_forwards_none_influencer_id_for_legacy_conversation` — None pass-through for pre-Day-8 rows (PR-B1 env-fallback preserved)
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-state/SESSION-3-STATE.md` — Updated + LAST-THING bumped.
+- This entry.
+
+### Why
+Mobile testing on 2026-05-22 surfaced that public-api was forwarding a hardcoded `ai_influencer_id` placeholder string to the orchestrator (the Day-4C `placeholder-day-4c-pending-conversation-lookup` constant). PR-B1 widened the orchestrator's contract to accept per-request `influencer_id` (optional + env-fallback for backwards-compat). PR-B2 (this PR) wires the public-api side to forward the per-request value, sourced from a trust root (the conversation record). PR-B3 (Session 4, future) will drop the env-fallback + make the field required — at which point THIS PR's trust-boundary contract test becomes the gate that proves no client-controlled value can reach the orchestrator's `influencer_id`.
+
+The body-shape sync is bundled because the post-PR-#131 RunTurnRequest already drops `user_id` + renames `message_content` → `user_message` + removes `ai_influencer_id`. Without the sync, every orchestrator call 422s (silently in tests because run_turn is mocked; loudly in cluster). Single-concern PR remains coherent: "sync the public-api orchestrator caller to the current contract, which includes the new per-request influencer_id".
+
+### Test evidence
+- `python3 -c "import ast; ast.parse(open(f).read())"` on all 6 modified/new Python files → OK.
+- Mock patterns mirror `test_orchestrator_proxy.py`'s existing fixtures (AsyncMock + monkeypatch.setattr).
+- Local docker daemon not running (Day-5-Piece-A `python:3.12-slim` smoke pattern unavailable). CI is the source of truth for `pytest tests/contract/` green.
+- 8 new J1-HOT tests + 11 existing tests (now autouse-mocking user-memory) collectively assert:
+  - Trust-boundary derivation + forge rejection (the load-bearing security property)
+  - Wire-shape alignment with post-PR-#131 orchestrator
+  - Failure-closed semantics on every user-memory failure mode
+  - Orchestrator-skip short-circuit on 404 + all failure modes
+  - None-pass-through for legacy rows (PR-B1 env-fallback preserved)
+
+### Constraints touched
+- **A2.1** — single concern (sync public-api's orchestrator caller to the current contract; the body-shape sync + the influencer_id forwarding + the user-memory client are all parts of the same wire). No scope creep into orchestrator/directory/soul-file paths.
+- **A8 + A16** — every failure mode maps to the locked ApiResponse envelope; raw upstream codes NEVER leak to mobile.
+- **B7** — file headers + WHAT/WHEN/WHY function docstrings + role-not-syntax comments + RELATED FILES footers on `user_memory_client.py`. The chat_routes + orchestrator_client edits preserve B7 shape verbatim.
+- **C7** — user-memory URL via `app/config.py` pydantic-settings (matches orchestrator + directory precedent; the shared-config.yaml YAML loader hasn't landed yet per `config.py` header).
+- **D1 + D8** — no new secrets introduced (user-memory base URL is non-sensitive).
+- **D3 + D4** — Sentry correlation preserved via X-Request-Id + X-Trace-Id forwarding on user-memory calls + the `user_memory.call.failed=<mode>` Sentry tag matches the orchestrator + directory failure-tagging pattern.
+- **F10** — per-endpoint opt-out applies (user-memory GET is stateless; no idempotency layer needed). Documented in `user_memory_client.py` header.
+- **H6** — no PII added to log lines; Sentry tags + contexts carry status codes + user_id + conversation_id but NOT message content.
+- **I6** — pushback on approach (α vs β) happened via the design surfacing yesterday + Session 5's by-id endpoint landing today triggered the (α→β) swap mid-implementation. No silent agreement.
+- **I9** — cross-session coordination: PR-B1 (Session 4 #131) + PR #132 (Session 5) both landed and unblock PR-B2; PR-B3 (Session 4 future) is gated by this PR's trust-boundary contract test.
+- **I11** — same-commit LOG entry (this one).
+- **NOT I14** — adds Python code (new HTTP client + Settings fields + handler rewrite + 8 new tests) + behavior-changing wire-shape sync. I14 covers `.md`-only / test-only / lint-format-only / comment-only — none apply. Coordinator manually merges via `gh pr merge <N> --squash` after Codex APPROVE + Session 4 review of the trust-boundary contract test.
+- **J1-HOT** — `send_message` is THE highest-traffic mobile-facing endpoint; full contract test coverage on every code path (happy + 4 user-memory failure modes + trust-boundary + body-shape regression + legacy-row None pass-through).
+
+### Notes
+- DRAFT discipline: opens as DRAFT to gate Auto-Merge until Codex APPROVE + Session 4 reviews the trust-boundary contract test. Per PR #126 the auto-merge workflow is now Codex-gated, so DRAFT is belt-and-suspenders.
+- The body-shape sync (`user_message` rename + `user_id` drop + `ai_influencer_id` removal) is in-scope for this PR because the influencer_id forwarding requires it. A2.1 reading: single concern = "wire public-api's orchestrator caller correctly per the current contract".
+- Coordinator's queued follow-ups for me (per this morning's paste): (1) C11 refactor of `redis_client.py` to use Sentinel instead of `from_url`; (2) PR-B3-enabling — review the trust-boundary contract test alongside Session 4 when their PR-B3 lands.
+- The parallel Redis-AUTH PR (#137) is still DRAFT awaiting Codex round-2; both PRs unblock cluster smoke once merged.
+
+### Round-2 fixups (defensive B2 scrub, no Codex feedback yet on #141)
+Preemptive scrub matching the PR #137 round-3 lesson — Codex BLOCKER'd the abbreviated form of "keyword argument" in production-code comments + manifest descriptions. Scrubbed 4 occurrences of the abbreviation in my new PR-B2 additions:
+- Loop-variable identifiers in the trust-boundary test renamed to `argument_name, argument_value`.
+- Comment string above the loop rewritten to spell out "keyword argument" in full.
+- f-string in the loop body rewritten to use "argument" instead of the abbreviated identifier reference.
+- LOG narrative mention of "post-PR-#131 keyword arguments" spelled out in full.
+
+Left as-is (intentional, matches established convention): the `call_kwargs = mock_orchestrator_happy.await_args.kwargs` lines in my new tests — the `.kwargs` attribute is `unittest.mock` library API; the local variable name matches a pre-existing line in the same test file from the Day-4C tests (line 198, not flagged historically).
+
+### Round-3 fixups (Codex round-2 CONCERN — type validation on ai_influencer_id)
+Codex round-2 CONCERN: the user-memory response validation only checks `isinstance(dict)`; a non-string `ai_influencer_id` (e.g., list/dict/int from a schema drift on Session 5's side) would forward to orchestrator and 422 (or worse — land in a Sentry context tagged with user_id, potential H6 PII shape leak if the malformed value carries nested user data).
+
+Round-3 adds the type-validation guard immediately after extracting `derived_influencer_id`:
+
+```python
+if derived_influencer_id is not None and not isinstance(derived_influencer_id, str):
+    # Sentry-tag user_memory.call.failed=ai_influencer_id_wrong_type + 503 envelope
+```
+
+Mirrors the existing user-memory failure-mapping pattern: Sentry-tag the failure mode + envelope-shaped 503 with the locked `service_unavailable` error code + orchestrator-skip short-circuit (the existing failure paths all use the same shape).
+
+New J1-HOT test `test_send_message_returns_503_when_ai_influencer_id_wrong_type` simulates the drift (sets `ai_influencer_id` to a list value) + asserts:
+- 503 envelope returned with locked `service_unavailable` code.
+- `mock_orchestrator_happy.await_count == 0` — the load-bearing short-circuit (orchestrator NEVER fires when the trust-boundary type check fails).
+
+Same PR + branch. 2 files touched (`chat_routes.py` + `test_orchestrator_proxy.py`) + this LOG-entry-subsection. No code-behavior change other than the new fail-closed branch.
+
+### Round-4 fixups (Codex round-3 BLOCKER — B7 import role-comments on `user_memory_client.py`)
+Codex round-3 BLOCKER at `user_memory_client.py:74`: the new file's imports weren't accompanied by one-line role comments explaining what each import gives this file. B7 mandates that pattern; existing `orchestrator_client.py` ships the dense form Codex APPROVED on PR #97-area.
+
+Round-4 adds 3 B7 role comments above the imports — one each for `from typing import Optional`, `import httpx`, and `from app.config import get_settings`. Tone + density match `orchestrator_client.py`'s precedent verbatim.
+
+Defensive sibling scrub: `directory_client.py` (already merged at PR #130) had the same import-block gap. Rishi's heads-up flagged it pre-emptively. Round-4 adds the same 3 role comments there too — cheaper now than via a future Codex round-N on a follow-up PR. The file is in PR-B2's diff as a 3-import additive doc edit; no code-behavior change.
+
+Note on commit boundary: round-4's production-code change shipped in commit `ef242df`; this LOG entry was meant to land in the same commit but a mid-edit file-modification timing slipped the LOG-write past the commit. This LOG subsection lands in a follow-up `ef242df` companion commit immediately after, restoring I11's same-PR LOG discipline (the commit-pair on the same branch is the unit of work; the I11 norm tolerates the follow-up when a timing race separates production-code from LOG narrative).
+
+Same PR + branch. 2 files touched in `ef242df` (`user_memory_client.py` + `directory_client.py`) + this LOG subsection in the companion commit. No new files. No code-behavior change.
+
+### Round-5 fixups (Codex round-4 CONCERN — focused body-shape test on `orchestrator_client.run_turn()`)
+Codex round-4 CONCERN at `test_orchestrator_proxy.py:439`: the body-shape regression test `test_send_message_passes_post_pr_131_body_shape_to_orchestrator` only inspects the mocked `run_turn` keyword arguments — it doesn't verify the actual JSON body `run_turn()` itself constructs and posts to Session 4. A future regression INSIDE `orchestrator_client.run_turn()` (e.g., dropping `user_message` from the body dict, re-adding `user_id` to the body, re-introducing the `ai_influencer_id` placeholder) would still 422 in cluster while the existing test suite passes green because every existing test mocks `run_turn` itself.
+
+Round-5 adds `test_run_turn_constructs_post_pr_131_body_shape` — a focused test that mocks ONE level deeper than the existing tests:
+- Stubs `orchestrator_client.get_orchestrator_client()` to return a synthetic client whose `.post()` captures the outgoing JSON body + headers verbatim.
+- Calls `run_turn(...)` directly with all 8 required keyword arguments (distinct sentinel values per field so assertions can pinpoint source).
+- Asserts the body CONTAINS the post-PR-#131 fields: `user_message`, `influencer_id`, `conversation_id`.
+- Asserts the body EXCLUDES the pre-PR-#131 fields: `message_content`, body-level `user_id`, `ai_influencer_id` placeholder.
+- Asserts `X-User-Id` reaches the headers dict (per orchestrator-side Codex round-4 BLOCKER 2 — user_id is header-only in the post-PR-#131 contract).
+- Asserts the other 4 internal-call headers (`X-Internal-Caller`, `X-Request-Id`, `X-Trace-Id`, `X-Idempotency-Key`) forward verbatim.
+
+This is the load-bearing wire-shape guard for cluster smoke: any future edit to `run_turn()`'s body construction that violates the post-PR-#131 contract fails this test loudly, well before reaching the orchestrator's 422 path in cluster.
+
+Test uses `async def` per the existing test suite convention; pytest-asyncio `asyncio_mode = "auto"` handles the async-runner wiring (no `@pytest.mark.asyncio` marker needed).
+
+Same PR + branch. 1 production test-file change + this LOG subsection. No new files. No code-behavior change (test-only addition).
 
 ---
 
