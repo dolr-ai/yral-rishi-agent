@@ -264,7 +264,7 @@ async def create_or_get_conversation(
         # ORDER BY DESC reverses the ASC index efficiently for the most-recent row.
         # sequence_in_conversation tiebreaker (migration 004) ensures deterministic
         # "last" message within a same-timestamp batch — highest sequence = most recent.
-        last_msg_row = await connection.fetchrow(
+        last_message_row = await connection.fetchrow(
             """
             SELECT id, conversation_id, role, content, client_message_id,
                    media_urls, created_at, count_toward_paywall
@@ -276,10 +276,10 @@ async def create_or_get_conversation(
             """,
             conv_row["id"],
         )
-        last_msg = (
-            _row_to_message_response(last_msg_row) if last_msg_row else None
+        last_message = (
+            _row_to_message_response(last_message_row) if last_message_row else None
         )
-        return _row_to_conversation_response(conv_row, last_msg)
+        return _row_to_conversation_response(conv_row, last_message)
 
 
 @router.post(
@@ -316,7 +316,7 @@ async def append_messages(
     # Validate + coerce early — gives a clean 422 before any DB call if
     # the caller passes a malformed UUID (e.g. a plain string slug).
     try:
-        conv_uuid = uuid.UUID(conversation_id)
+        conversation_uuid = uuid.UUID(conversation_id)
     except ValueError as exc:
         raise HTTPException(
             status_code=422,
@@ -331,7 +331,7 @@ async def append_messages(
         # ambiguously to 500.
         exists = await connection.fetchval(
             "SELECT id FROM conversations WHERE id = $1",
-            conv_uuid,
+            conversation_uuid,
         )
         if exists is None:
             raise HTTPException(
@@ -362,7 +362,7 @@ async def append_messages(
                 FROM messages
                 WHERE conversation_id = $1
                 """,
-                conv_uuid,
+                conversation_uuid,
             )
             # sequence_counter tracks the next ordinal to assign to a NEWLY inserted row.
             sequence_counter = sequence_start
@@ -419,7 +419,7 @@ async def append_messages(
                               client_message_id, media_urls, created_at,
                               count_toward_paywall
                     """,
-                    conv_uuid,
+                    conversation_uuid,
                     item.role,
                     item.content,
                     item.client_message_id,
@@ -443,7 +443,7 @@ async def append_messages(
                         WHERE conversation_id = $1
                           AND client_message_id = $2
                         """,
-                        conv_uuid,
+                        conversation_uuid,
                         item.client_message_id,
                     )
 
@@ -467,7 +467,7 @@ async def append_messages(
                     WHERE id = $2
                     """,
                     new_row_count,
-                    conv_uuid,
+                    conversation_uuid,
                 )
 
         # --- 4. Build response — filter system messages -----------------
@@ -558,9 +558,9 @@ async def list_conversations_by_user(
         for row in rows:
             # Build the last_message from the `msg_*` columns if present.
             # msg_id is NULL when the conversation has no non-system messages.
-            last_msg: Optional[MessageResponse] = None
+            last_message: Optional[MessageResponse] = None
             if row["msg_id"] is not None:
-                last_msg = MessageResponse(
+                last_message = MessageResponse(
                     id=str(row["msg_id"]),
                     conversation_id=str(row["msg_conversation_id"]),
                     role=row["msg_role"],
@@ -571,7 +571,7 @@ async def list_conversations_by_user(
                     count_toward_paywall=row["msg_count_toward_paywall"],
                 )
 
-            result.append(_row_to_conversation_response(row, last_msg))
+            result.append(_row_to_conversation_response(row, last_message))
 
         return result
 
@@ -623,7 +623,7 @@ async def get_conversation_by_id(
     Returns 200 + ConversationResponse on success.
     """
     try:
-        conv_uuid = uuid.UUID(conversation_id)
+        conversation_uuid = uuid.UUID(conversation_id)
     except ValueError as exc:
         raise HTTPException(
             status_code=422,
@@ -643,7 +643,7 @@ async def get_conversation_by_id(
             WHERE id = $1
               AND soft_deleted_at IS NULL
             """,
-            conv_uuid,
+            conversation_uuid,
         )
 
         # --- 2. Tenant isolation check -----------------------------------
@@ -663,7 +663,7 @@ async def get_conversation_by_id(
         # for a single conversation. ORDER BY created_at DESC, sequence_in_conversation DESC
         # uses the same tiebreaker as list_messages for same-timestamp batches
         # (migration 004 — deterministic insertion-order sequence vs random UUID).
-        last_msg_row = await connection.fetchrow(
+        last_message_row = await connection.fetchrow(
             """
             SELECT id, conversation_id, role, content, client_message_id,
                    media_urls, created_at, count_toward_paywall
@@ -673,11 +673,11 @@ async def get_conversation_by_id(
             ORDER BY created_at DESC, sequence_in_conversation DESC
             LIMIT 1
             """,
-            conv_uuid,
+            conversation_uuid,
         )
-        last_msg = _row_to_message_response(last_msg_row) if last_msg_row else None
+        last_message = _row_to_message_response(last_message_row) if last_message_row else None
 
-    return _row_to_conversation_response(row, last_msg)
+    return _row_to_conversation_response(row, last_message)
 
 
 @router.get(
@@ -735,7 +735,7 @@ async def list_messages(
     Returns 422 if conversation_id or `before` is not a valid UUID.
     """
     try:
-        conv_uuid = uuid.UUID(conversation_id)
+        conversation_uuid = uuid.UUID(conversation_id)
     except ValueError as exc:
         raise HTTPException(
             status_code=422,
@@ -749,7 +749,7 @@ async def list_messages(
         # when the conversation_id is wrong.
         exists = await connection.fetchval(
             "SELECT id FROM conversations WHERE id = $1",
-            conv_uuid,
+            conversation_uuid,
         )
         if exists is None:
             raise HTTPException(
@@ -778,7 +778,7 @@ async def list_messages(
                 ) sub
                 ORDER BY sub.created_at ASC, sub.sequence_in_conversation ASC
                 """,
-                conv_uuid,
+                conversation_uuid,
                 limit,
             )
         else:
@@ -807,7 +807,7 @@ async def list_messages(
                   AND conversation_id = $2
                 """,
                 before_uuid,
-                conv_uuid,
+                conversation_uuid,
             )
             if cursor_exists is None:
                 raise HTTPException(
@@ -843,7 +843,7 @@ async def list_messages(
                 ) sub
                 ORDER BY sub.created_at ASC, sub.sequence_in_conversation ASC
                 """,
-                conv_uuid,
+                conversation_uuid,
                 before_uuid,
                 limit,
             )

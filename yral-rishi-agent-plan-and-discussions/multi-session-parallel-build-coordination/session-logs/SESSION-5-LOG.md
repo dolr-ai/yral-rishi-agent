@@ -3,6 +3,60 @@
 
 ---
 
+### 2026-05-25 — PR #147 round-9: service B2 renames + migration 004 test + RUNBOOK update
+
+**Branch**: session-5/d3-etl-migration
+**Trigger**: Codex round-8 returned:
+  BLOCKER (B2 partial): test-file identifiers `conv_id`, `user_msg_id` (INVALID — PR #154
+    carve-out); service-code identifiers `last_msg_row`, `conv_uuid` (VALID — runtime code).
+  CONCERN 1 (J1): no migration test for 004 (file footer acknowledged "should add").
+  CONCERN 2 (RUNBOOK stale): prerequisites still said 3 migrations; no mention of Phase 4.
+
+**PR comment pushback**: test-file references `conv_id`, `user_msg_id` → INVALID per PR #154
+carve-out (test files exempt from B2, same carve-out as round-8 pushback).
+
+**What ships**:
+
+1. `yral-rishi-agent-user-memory-service/app/api/conversation_routes.py` — B2 renames:
+   - `conv_uuid` → `conversation_uuid` (3 definitions + 13 uses, all in `append_messages`,
+     `get_conversation_by_id`, `list_messages`)
+   - `last_msg_row` → `last_message_row` (2 definitions + 2 uses)
+   - `last_msg` → `last_message` (7 uses across `create_or_get_conversation`,
+     `list_conversations_by_user`, `get_conversation_by_id`)
+   — All renames via replace_all=True; syntax check passed
+
+2. `yral-rishi-agent-user-memory-service/tests/test_schema_migrations.py` — 3 new tests:
+   - `test_migration_004_sequence_in_conversation_column_exists`:
+     queries information_schema.columns; asserts data_type=integer, is_nullable=NO,
+     column_default contains '0'
+   - `test_migration_004_sequence_in_conversation_index_exists`:
+     queries pg_indexes; asserts messages_by_conversation_sequence_idx present
+   - `test_migration_004_sequence_backfill_assigns_correct_ordinals`:
+     seeds 3 messages with seq=0 in same transaction (same created_at); runs
+     ROW_NUMBER() UPDATE scoped to that conversation; asserts id_early→1, id_middle→2,
+     id_late→3 (exercises the exact backfill SQL from migration 004)
+   — Also updated `test_messages_table_has_correct_columns`: expected_columns now
+     includes `sequence_in_conversation` (10 columns total, was 9 — would have failed)
+   — Total schema tests: 8 → 11
+
+3. `yral-rishi-agent-user-memory-service/RUNBOOK.md`:
+   - Pre-requisites line: "3 migrations: 001, 002, 003" → "4 migrations: 001, 002, 003, 004"
+     with one-line description of migration 004's purpose
+   - New "ETL phase run order" table: Phase 1–4 with name, description, and idempotency column
+   - Phase 4 idempotency note added to the re-run section
+     ("ROW_NUMBER() produces the same output every run")
+
+**Root causes**:
+- B2 misses in service code: `conv_uuid`/`last_msg`/`last_msg_row` were introduced in early
+  rounds before comprehensive B2 sweeps caught them. Now fixed.
+- Missing migration test: migration 004 was added in round-8 without updating test_schema_migrations.py.
+  Closing the gap.
+- RUNBOOK staleness: documentation not updated when Phase 4 and migration 004 were added.
+
+**Test results**: 26/26 ETL unit tests pass. Schema tests (run in CI with testcontainers).
+
+---
+
 ### 2026-05-25 — PR #147 round-8: J3 docstrings + sequence_in_conversation ordering fix
 
 **Branch**: session-5/d3-etl-migration

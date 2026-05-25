@@ -1,15 +1,15 @@
 # ---------------------------------------------------------------------------
-# test_schema_migrations.py — Alembic upgrade/downgrade round-trip test.
+# test_schema_migrations.py — Alembic upgrade/downgrade round-trip tests
+#   + per-migration column/index/backfill assertions.
 #
-# ⭐ START HERE: this file runs ONE end-to-end test —
-# `test_alembic_upgrade_then_downgrade_round_trips_cleanly` — which:
-#   1. Confirms `upgrade head` (run by conftest's session fixture) created
-#      BOTH the `conversations` and `messages` tables.
-#   2. Runs `alembic downgrade base` to reverse the migration.
-#   3. Confirms BOTH tables are gone (only `alembic_version` remains).
-#   4. Runs `alembic upgrade head` AGAIN to restore the schema so
-#      subsequent tests in the session see the correct empty-but-migrated
-#      state.
+# ⭐ START HERE: this file contains:
+#   1. `test_alembic_upgrade_then_downgrade_round_trips_cleanly` — full
+#      round-trip (upgrade head → downgrade base → upgrade head) to confirm
+#      every downgrade() is reversible.
+#   2. Column + constraint existence tests for migrations 001–004.
+#   3. `test_migration_003_unique_indexes_exist` — verifies both dedup indexes.
+#   4. `test_migration_004_*` — verifies sequence_in_conversation column +
+#      index + ROW_NUMBER() backfill correctness (3 tests).
 #
 # WHY THIS TEST EXISTS?
 # Per H11 spirit + the Day-4 directive's "Schema: alembic upgrade +
@@ -204,7 +204,8 @@ async def test_messages_table_has_correct_columns(
           the Deliverable 2 route handlers to 500 on every insert or select.
     """
     # Expected columns per 001_initial_schema.upgrade() (7 base columns)
-    # + 002_add_message_fields.upgrade() (2 additional columns).
+    # + 002_add_message_fields.upgrade() (2 additional columns)
+    # + 004_add_sequence_in_conversation.upgrade() (1 additional column).
     # Each name is the exact SQL identifier used in the CREATE TABLE /
     # ALTER TABLE statement.
     expected_columns = {
@@ -218,6 +219,8 @@ async def test_messages_table_has_correct_columns(
         # Added by 002_add_message_fields:
         "client_message_id",
         "count_toward_paywall",
+        # Added by 004_add_sequence_in_conversation:
+        "sequence_in_conversation",
     }
 
     async with database_pool.acquire() as conn:
@@ -427,6 +430,169 @@ async def test_migration_003_unique_indexes_exist(
     )
 
 
+@pytest.mark.asyncio
+async def test_migration_004_sequence_in_conversation_column_exists(
+    database_pool: asyncpg.Pool,
+) -> None:
+    """WHAT: verify the sequence_in_conversation column was added to messages
+             by migration 004 with the correct type, NOT NULL constraint, and
+             DEFAULT 0 sentinel value.
+    WHEN: after conftest's session fixture runs `alembic upgrade head` (which
+          applies 001 → 002 → 003 → 004 in sequence).
+    WHY:  conversation_routes.py's append_messages reads MAX(sequence_in_conversation)
+          and inserts with sequence_counter+1. If the column is missing or has the
+          wrong type, every append_messages call fails with a Postgres column-not-found
+          error. DEFAULT 0 is the sentinel that ETL Phase 4 replaces via ROW_NUMBER();
+          a wrong default would silently give migrated messages non-zero sequences
+          before Phase 4 runs.
+    """
+    async with database_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT column_name, data_type, is_nullable, column_default
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'messages'
+              AND column_name = 'sequence_in_conversation'
+            """,
+        )
+
+    assert row is not None, (
+        "sequence_in_conversation column not found in messages table. "
+        "Check that 004_add_sequence_in_conversation.upgrade() ran without error."
+    )
+    assert row["data_type"] == "integer", (
+        f"sequence_in_conversation must be INTEGER type, got: {row['data_type']!r}. "
+        "The ORDER BY tiebreaker requires an integer type for correct numeric ordering."
+    )
+    assert row["is_nullable"] == "NO", (
+        "sequence_in_conversation must be NOT NULL — append_messages always assigns "
+        "a value at insert time; NULL would break the ORDER BY contract."
+    )
+    assert row["column_default"] is not None and "0" in row["column_default"], (
+        f"sequence_in_conversation DEFAULT must be 0 (ETL Phase 4 sentinel), "
+        f"got: {row['column_default']!r}."
+    )
+
+
+@pytest.mark.asyncio
+async def test_migration_004_sequence_in_conversation_index_exists(
+    database_pool: asyncpg.Pool,
+) -> None:
+    """WHAT: verify messages_by_conversation_sequence_idx was created by migration 004.
+    WHEN: after conftest's session fixture runs `alembic upgrade head`.
+    WHY:  list_messages ORDER BY (created_at, sequence_in_conversation) relies on
+          this index for efficient query execution. Without the index, the DESC-then-ASC
+          subquery pattern requires a full messages scan per conversation — acceptable
+          for small tables but catastrophic at 3.3M rows.
+    """
+    async with database_pool.acquire() as conn:
+        message_indexes = await conn.fetch(
+            "SELECT indexname FROM pg_indexes "
+            "WHERE schemaname = 'public' AND tablename = 'messages';",
+        )
+    message_index_names = {row["indexname"] for row in message_indexes}
+
+    assert "messages_by_conversation_sequence_idx" in message_index_names, (
+        "messages_by_conversation_sequence_idx not found in pg_indexes. "
+        "Check that 004_add_sequence_in_conversation.upgrade() ran without error and "
+        "that alembic upgrade head reached migration 004."
+    )
+
+
+@pytest.mark.asyncio
+async def test_migration_004_sequence_backfill_assigns_correct_ordinals(
+    database_pool: asyncpg.Pool,
+) -> None:
+    """WHAT: verify the ROW_NUMBER() backfill SQL assigns 1-based ordinals in
+             (created_at ASC, id ASC) order within each conversation.
+    WHEN: a fresh conversation is created with messages that have DEFAULT 0
+          sequences; the backfill UPDATE is then run manually; the resulting
+          sequence values are asserted.
+    WHY:  the migration's step 2 backfill runs on existing rows at migration
+          time, but the testcontainers DB starts empty so the migration's own
+          backfill runs on zero rows. This test exercises the backfill SQL
+          directly on pre-seeded data to confirm the ROW_NUMBER() OVER
+          (PARTITION BY conversation_id ORDER BY created_at ASC, id ASC)
+          logic is correct before it runs on 3.3M production rows.
+    """
+    import uuid as _uuid
+
+    async with database_pool.acquire() as conn:
+        # Insert a conversation to use as the FK anchor.
+        conversation_row = await conn.fetchrow(
+            "INSERT INTO conversations (user_id, influencer_id, conversation_type) "
+            "VALUES ('backfill-test-user', 'backfill-test-inf', 'ai_chat') RETURNING id;",
+        )
+        conversation_id = conversation_row["id"]
+
+        # Insert 3 messages with explicit sequence_in_conversation = 0 (mimicking
+        # freshly migrated rows that haven't been backfilled yet).
+        # Use different UUIDs so they have a defined id sort order within the
+        # same created_at (we'll verify ROW_NUMBER uses id as the tiebreaker).
+        message_id_early = _uuid.UUID("10000000-0000-0000-0000-000000000001")
+        message_id_middle = _uuid.UUID("20000000-0000-0000-0000-000000000002")
+        message_id_late = _uuid.UUID("30000000-0000-0000-0000-000000000003")
+
+        # Wrap in a transaction to ensure all 3 messages share the same NOW()
+        # (identical created_at). This exercises the id tiebreaker in ROW_NUMBER.
+        async with conn.transaction():
+            await conn.execute(
+                "INSERT INTO messages (id, conversation_id, role, content, sequence_in_conversation) "
+                "VALUES ($1, $2, 'user', 'first', 0), "
+                "       ($3, $2, 'assistant', 'second', 0), "
+                "       ($4, $2, 'user', 'third', 0);",
+                message_id_early, conversation_id,
+                message_id_middle, message_id_late,
+            )
+
+        # Run the same backfill SQL as migration 004's step 2.
+        # WHERE messages.id IN (...) scopes it to our test rows only.
+        await conn.execute(
+            """
+            UPDATE messages
+            SET sequence_in_conversation = sub.rn
+            FROM (
+                SELECT id,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY conversation_id
+                           ORDER BY created_at ASC, id ASC
+                       ) AS rn
+                FROM messages
+                WHERE conversation_id = $1
+            ) sub
+            WHERE messages.id = sub.id
+            """,
+            conversation_id,
+        )
+
+        # Fetch the updated sequences in id order to assert the mapping.
+        updated_rows = await conn.fetch(
+            "SELECT id, sequence_in_conversation FROM messages "
+            "WHERE conversation_id = $1 ORDER BY id ASC;",
+            conversation_id,
+        )
+
+    # ROW_NUMBER() assigns 1-based ordinals ordered by (created_at, id ASC).
+    # All 3 rows share the same created_at (same transaction); id order resolves:
+    #   message_id_early  (10000000-...) → rn = 1
+    #   message_id_middle (20000000-...) → rn = 2
+    #   message_id_late   (30000000-...) → rn = 3
+    id_to_sequence = {row["id"]: row["sequence_in_conversation"] for row in updated_rows}
+
+    assert id_to_sequence[message_id_early] == 1, (
+        f"message_id_early should have sequence 1 (smallest id in batch), "
+        f"got {id_to_sequence[message_id_early]}"
+    )
+    assert id_to_sequence[message_id_middle] == 2, (
+        f"message_id_middle should have sequence 2, got {id_to_sequence[message_id_middle]}"
+    )
+    assert id_to_sequence[message_id_late] == 3, (
+        f"message_id_late should have sequence 3 (largest id in batch), "
+        f"got {id_to_sequence[message_id_late]}"
+    )
+
+
 # ===========================================================================
 # RELATED FILES:
 #   conftest.py                          — spins testcontainers-postgres,
@@ -439,6 +605,10 @@ async def test_migration_003_unique_indexes_exist(
 #   ../app/migrations/versions/003_add_dedup_indexes.py
 #                                        — adds unique indexes verified by
 #                                          test_migration_003_unique_indexes_exist
+#   ../app/migrations/versions/004_add_sequence_in_conversation.py
+#                                        — adds sequence_in_conversation column
+#                                          + index + ROW_NUMBER() backfill;
+#                                          verified by tests above
 #   ../alembic.ini                       — Alembic config used by _run_alembic
 #   ../app/migrations/env.py             — Alembic env.py dispatched by
 #                                          `alembic downgrade/upgrade`

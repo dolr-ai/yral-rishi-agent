@@ -135,7 +135,11 @@ explicit Rishi YES before running ANY of the steps below.
 
 ### Pre-requisites
 
-1. `alembic upgrade head` has been run on the v2 user-memory DB (all 3 migrations: 001, 002, 003).
+1. `alembic upgrade head` has been run on the v2 user-memory DB (all 4 migrations: 001, 002, 003, **004**).
+   Migration 004 (`004_add_sequence_in_conversation`) adds the `sequence_in_conversation` column,
+   backfills existing rows (none in a fresh DB), and creates `messages_by_conversation_sequence_idx`.
+   The ETL's Phase 4 `backfill_sequence_in_conversation()` step sets the correct ROW_NUMBER() ordinals
+   for all migrated messages after they are loaded.
 2. A **read-only** Postgres connection string for chat-ai's DB is available.
 3. `POSTGRES_CONNECTION_STRING_USER_MEMORY_SERVICE` Swarm secret is live.
 4. Row count snapshot taken on chat-ai BEFORE the run:
@@ -163,9 +167,28 @@ python3 etl-scripts/chat_ai_to_user_memory_etl.py --dry-run
 # Full run (coordinator executes after Rishi YES):
 python3 etl-scripts/chat_ai_to_user_memory_etl.py
 
-# If the run is interrupted, it's safe to re-run (ON CONFLICT DO NOTHING is idempotent):
+# If the run is interrupted, it's safe to re-run:
+#   Phase 1 + 2: ON CONFLICT (id) DO NOTHING — already-loaded rows are skipped.
+#   Phase 3: UPDATE WHERE message_count = 0 — already-updated conversations are skipped.
+#   Phase 4: ROW_NUMBER() UPDATE on ALL messages (idempotent — assigns the same
+#            ordinals every time). Re-running Phase 4 is harmless.
 python3 etl-scripts/chat_ai_to_user_memory_etl.py
 ```
+
+### ETL phase run order
+
+The script runs 4 phases automatically in this order:
+
+| Phase | Name | Description | Idempotent? |
+|-------|------|-------------|-------------|
+| 1 | `migrate_conversations` | Keyset-paginated COPY + INSERT from chat-ai → v2 | Yes — `ON CONFLICT (id) DO NOTHING` |
+| 2 | `migrate_messages` | Same pattern for 3.3M messages | Yes — `ON CONFLICT (id) DO NOTHING` |
+| 3 | `update_message_counts` | Bulk UPDATE `conversations.message_count` WHERE = 0 | Yes — skips already-updated rows |
+| 4 | `backfill_sequence_in_conversation` | ROW_NUMBER() window UPDATE assigns ordinals | Yes — ROW_NUMBER() produces the same output every run |
+
+Phase 4 sets `sequence_in_conversation` on all migrated messages to enable deterministic
+ordering within same-timestamp batches (see migration 004). Re-running the ETL script
+will harmlessly re-apply Phase 4 with identical ordinals.
 
 ### Verify after the run
 
