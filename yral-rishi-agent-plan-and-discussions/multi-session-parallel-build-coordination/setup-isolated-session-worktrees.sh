@@ -77,8 +77,19 @@ for SESSION_NUMBER in 1 2 3 4 5; do
     WORKTREE_PATH="$WORKTREES_PARENT_DIRECTORY/session-$SESSION_NUMBER"
 
     if [ -d "$WORKTREE_PATH" ]; then
-        echo "session-$SESSION_NUMBER: worktree already exists at $WORKTREE_PATH — skipping."
-        continue
+        # Verify it's actually a registered git worktree, not just a stray
+        # directory that happens to have the right name. Codex round-4
+        # CONCERN correctly flagged that silently skipping a name-collision
+        # would leave the operator thinking setup completed when it didn't.
+        if git -C "$COORDINATOR_REPO_PATH" worktree list --porcelain | grep -qF "worktree $WORKTREE_PATH"; then
+            echo "session-$SESSION_NUMBER: registered worktree already exists at $WORKTREE_PATH — skipping."
+            continue
+        else
+            echo "ERROR: session-$SESSION_NUMBER: directory $WORKTREE_PATH exists but is NOT a registered git worktree."
+            echo "       Remove the stray directory + re-run, OR investigate why it exists outside git's worktree tracking."
+            echo "       Refusing to proceed (a stray dir cannot be made into a worktree without manual cleanup)."
+            exit 1
+        fi
     fi
 
     # Create the worktree with a DETACHED HEAD at the latest main commit.
