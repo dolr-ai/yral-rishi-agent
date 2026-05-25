@@ -11,37 +11,48 @@
 # 📖 EXPLAINED FOR A NON-PROGRAMMER
 # Git can have multiple "checked-out copies" of the same repo sharing one
 # .git database. Before this script: all sessions + coordinator shared one
-# checked-out copy at /Users/rishichadha/Claude Projects/yral-rishi-agent/.
-# When coordinator switched to PR #145's branch to edit, every session
-# working in that same path got pulled onto PR #145's branch too — drift!
-# After this script: coordinator stays at the original path, each session
-# gets its own checked-out copy. No drift.
+# checked-out copy. When coordinator switched to a feature branch to edit,
+# every session working in that same path got pulled onto that branch too
+# — drift. After this script: coordinator stays at the original path, each
+# session gets its own checked-out copy at a sibling path. No drift.
 #
 # 🔗 HOW IT FITS
 # - Triggered: ONE-TIME setup, run by Rishi after the 2026-05-25 audit
-# - Result: 5 new directories at /Users/rishichadha/Claude Projects/
+# - Result: 5 new directories at <parent-of-coordinator-repo>/
 #   yral-rishi-agent-worktrees/session-N/ (for N in 1..5)
-# - Each session's launch prompt is updated to cd into its own worktree
-# - Coordinator continues to work in the original /yral-rishi-agent/ path
+# - Each session's launch prompt should be updated to cd into its own
+#   worktree (see "Session launch-prompt update" follow-up note below)
+# - Coordinator continues to work in the original repo path
 #
 # ⭐ START HERE
-# Just run this script ONCE:
+# From inside the coordinator repo, just run:
 #   bash yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/setup-isolated-session-worktrees.sh
 #
 # RELATED FILES
 # - 01-SESSION-SHARDING-AND-OWNERSHIP.md (each session's owned-paths)
-# - .claude/agents/session-N-*.md (per-session launch prompts to update)
+# - .claude/agents/session-N-*.md (per-session launch prompts to update —
+#   follow-up DEP; see "Follow-up" note at the bottom of this script)
 #
 # ===========================================================================
 
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# Configuration — where everything lives
+# Derive paths from the current git repo — NO hardcoded user-specific paths
 # ---------------------------------------------------------------------------
+#
+# The script is invoked from inside the coordinator repo (any path inside
+# it works since git rev-parse walks up to find the top). The worktrees go
+# in a sibling directory named yral-rishi-agent-worktrees, matching the
+# convention sessions already use.
+#
+# Codex round-1 BLOCKER 2026-05-25 correctly flagged the prior hardcoded
+# `/Users/rishichadha/...` paths as no-hardcoded-IPs/values violations + as
+# breaking the script for any other developer. Round-2 derives both paths
+# at runtime.
 
-COORDINATOR_REPO_PATH="/Users/rishichadha/Claude Projects/yral-rishi-agent"
-WORKTREES_PARENT_DIR="/Users/rishichadha/Claude Projects/yral-rishi-agent-worktrees"
+COORDINATOR_REPO_PATH="$(git rev-parse --show-toplevel)"
+WORKTREES_PARENT_DIRECTORY="$(dirname "$COORDINATOR_REPO_PATH")/yral-rishi-agent-worktrees"
 
 
 # ---------------------------------------------------------------------------
@@ -49,15 +60,13 @@ WORKTREES_PARENT_DIR="/Users/rishichadha/Claude Projects/yral-rishi-agent-worktr
 # ---------------------------------------------------------------------------
 
 if [ ! -d "$COORDINATOR_REPO_PATH/.git" ]; then
-    echo "ERROR: $COORDINATOR_REPO_PATH does not look like a git repo."
-    echo "Adjust COORDINATOR_REPO_PATH at the top of this script."
+    echo "ERROR: $COORDINATOR_REPO_PATH does not look like a git repo (no .git directory)."
+    echo "Run this script from inside the coordinator repo."
     exit 1
 fi
 
-cd "$COORDINATOR_REPO_PATH"
-
-# Ensure parent dir exists
-mkdir -p "$WORKTREES_PARENT_DIR"
+# Ensure the worktrees parent directory exists.
+mkdir -p "$WORKTREES_PARENT_DIRECTORY"
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +74,7 @@ mkdir -p "$WORKTREES_PARENT_DIR"
 # ---------------------------------------------------------------------------
 
 for SESSION_NUMBER in 1 2 3 4 5; do
-    WORKTREE_PATH="$WORKTREES_PARENT_DIR/session-$SESSION_NUMBER"
+    WORKTREE_PATH="$WORKTREES_PARENT_DIRECTORY/session-$SESSION_NUMBER"
 
     if [ -d "$WORKTREE_PATH" ]; then
         echo "session-$SESSION_NUMBER: worktree already exists at $WORKTREE_PATH — skipping."
@@ -75,7 +84,7 @@ for SESSION_NUMBER in 1 2 3 4 5; do
     # Create the worktree checked out at the latest main commit. The session
     # can switch to its own branch (session-N/<feature>) from there.
     echo "session-$SESSION_NUMBER: creating worktree at $WORKTREE_PATH (checked out at main)..."
-    git worktree add "$WORKTREE_PATH" main
+    git -C "$COORDINATOR_REPO_PATH" worktree add "$WORKTREE_PATH" main
 done
 
 
@@ -85,17 +94,21 @@ done
 
 echo ""
 echo "===== All worktrees ====="
-git worktree list
+git -C "$COORDINATOR_REPO_PATH" worktree list
 
 echo ""
 echo "===== Done ====="
 echo ""
 echo "Each session should now launch in its own worktree:"
 for SESSION_NUMBER in 1 2 3 4 5; do
-    echo "  Session $SESSION_NUMBER:  cd '$WORKTREES_PARENT_DIR/session-$SESSION_NUMBER'"
+    echo "  Session $SESSION_NUMBER:  cd '$WORKTREES_PARENT_DIRECTORY/session-$SESSION_NUMBER'"
 done
 echo ""
 echo "Coordinator stays at: $COORDINATOR_REPO_PATH"
 echo ""
-echo "Each session's launch prompt in .claude/agents/session-N-*.md"
-echo "should be updated to cd into its own worktree path."
+echo "FOLLOW-UP REQUIRED: update each session's launch prompt in"
+echo ".claude/agents/session-N-*.md to cd into its own worktree path"
+echo "BEFORE running git operations. Without that update, sessions will"
+echo "still default to the coordinator path on next launch. Tracked as a"
+echo "separate small coordinator-housekeeping PR — running this script"
+echo "alone is necessary but NOT sufficient for full drift isolation."
