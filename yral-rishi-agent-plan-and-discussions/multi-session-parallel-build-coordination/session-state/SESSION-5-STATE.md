@@ -1,5 +1,5 @@
 # Session 5 STATE — ETL + Tests + Memory
-> Updated: 2026-05-25 (D3 — PR #147 round-9: service B2 renames + migration test + RUNBOOK)
+> Updated: 2026-05-25 (D3 — PR #147 round-10: race-condition fix on sequence_in_conversation)
 
 ## ⭐ START-OF-SESSION SUMMARY (read first when resuming)
 
@@ -9,41 +9,56 @@ I am Session 5. Phase 1 scope: conversation history persistence for
 Three Phase-1 deliverables:
 - D1 (DONE — PR #127 merged a39e54c): Schema + Alembic migration
 - D2 (DONE — PR #132 merged fffeadc): 5 RPC endpoints (5 rounds)
-- D3 (IN PR #147 — round-9 commit pending): ETL plan + script + RUNBOOK + DEP-015
+- D3 (IN PR #147 — round-10 commit pushed): ETL plan + script + RUNBOOK + DEP-015
 
 ## LAST THING I DID
 
-PR #147 round-9 commit — Codex round-8 findings:
+PR #147 round-10 commit — Codex round-9 race condition concern:
 
-**(1) B2/B1 BLOCKER (partial) — pushed back on test refs, fixed service code**
-- `conv_id`, `user_msg_id` in TEST file → INVALID per PR #154 carve-out. PR comment posted.
-- `conv_uuid` → `conversation_uuid` (3 definitions + 13 uses) in conversation_routes.py
-- `last_msg_row` → `last_message_row` (2 definitions + 2 uses)
-- `last_msg` → `last_message` (7 uses in list_conversations_by_user, create_or_get_conversation, get_conversation_by_id)
+**(1) Migration 005 — UNIQUE constraint closes race window**
+- New: `005_add_sequence_unique_constraint.py` (down_revision = 004)
+  - Step 1: ROW_NUMBER() backfill (deduplicates any pre-005 collisions)
+  - Step 2: DROP INDEX messages_by_conversation_sequence_idx (004's composite index)
+  - Step 3: CREATE UNIQUE INDEX messages_conversation_sequence_unique_idx ON messages (conversation_id, sequence_in_conversation)
+  - Step 4: ALTER TABLE ADD CONSTRAINT messages_conversation_sequence_unique UNIQUE USING INDEX …
+  - downgrade: DROP CONSTRAINT (also drops index) + restore 004's composite index
 
-**(2) J1 migration test CONCERN — fixed**
-- `test_schema_migrations.py`: 3 new migration 004 tests:
-  - `test_migration_004_sequence_in_conversation_column_exists`: checks INTEGER NOT NULL DEFAULT 0
-  - `test_migration_004_sequence_in_conversation_index_exists`: checks pg_indexes entry
-  - `test_migration_004_sequence_backfill_assigns_correct_ordinals`: seeds rows with seq=0, runs backfill SQL, asserts 1-based ordinals by (created_at, id ASC) order
-- `test_messages_table_has_correct_columns`: updated expected_columns to include `sequence_in_conversation` (was 9 columns, now 10 — would have failed)
+**(2) conversation_routes.py — atomic inline-subquery INSERT + savepoint retry**
+- Added `_SEQUENCE_RETRY_LIMIT = 5` module constant
+- Added `_insert_message_with_sequence_retry()` helper:
+  - Inline subquery: `COALESCE(MAX(sequence_in_conversation), 0) + 1 WHERE conversation_id = $1`
+  - asyncpg SAVEPOINT (nested transaction) wraps each INSERT
+  - Catches `UniqueViolationError` where `constraint_name == "messages_conversation_sequence_unique"`
+  - Retries up to `_SEQUENCE_RETRY_LIMIT` times; re-raises any other UniqueViolationError
+- Replaced `sequence_start`/`sequence_counter` SELECT-then-INSERT loop with
+  single call to `_insert_message_with_sequence_retry()` per message
+- Updated 4 stale index-name comments (messages_by_conversation_sequence_idx → correct names)
 
-**(3) RUNBOOK stale CONCERN — fixed**
-- Pre-requisites: "3 migrations: 001, 002, 003" → "4 migrations: 001, 002, 003, **004**"
-- Added ETL phase run order table (Phase 1–4) with idempotency column
-- Added Phase 4 idempotency note in re-run section
-- Mentioned Phase 4 `backfill_sequence_in_conversation()` and its ROW_NUMBER() behaviour
+**(3) test_schema_migrations.py — fix seeds + add 005 test**
+- Renamed `test_migration_004_sequence_in_conversation_index_exists` →
+  `test_migration_005_sequence_unique_index_exists`:
+  - Asserts `messages_conversation_sequence_unique_idx` IS in pg_indexes
+  - Asserts `messages_by_conversation_sequence_idx` is NOT (dropped by 005)
+- Fixed `test_migration_004_sequence_backfill_assigns_correct_ordinals`:
+  seed sequences changed from 0, 0, 0 → 100, 200, 300 (UNIQUE constraint violated 0,0,0)
+- Updated file header (001–005) + RELATED FILES footer
 
-Total user-memory-service tests: 8 schema (→ 11 with 3 new) + 26 route = **37 tests**
-ETL unit tests: **26** unchanged
+**(4) test_conversation_routes.py — concurrent race test**
+- New: `test_append_messages_concurrent_calls_preserve_all_messages`
+  - `asyncio.gather` fires two concurrent POST .../messages for same conversation_id
+  - Both must return 200 (no 500 from unhandled UniqueViolationError)
+  - DB query via `database_pool` asserts 2 rows with distinct sequences ≥ 1
+
+Total user-memory-service tests: 11 schema + 27 route = **38 tests**
+ETL unit tests: **26** (26/26 passing — verified)
 
 ## CURRENT TASK
 
-Pushed round-9 commit to session-5/d3-etl-migration. Awaiting Codex round-9 verdict.
+Pushed round-10 commit to session-5/d3-etl-migration. Awaiting Codex round-10 verdict.
 
 ## NEXT 3 PLANNED ACTIONS
 
-1. Codex round-9 clears → PR #147 merges → D3 DONE
+1. Codex round-10 clears → PR #147 merges → D3 DONE
 2. Wait for Day-9 (2026-05-31): coordinator surfaces A14 approval checklist to Rishi,
    runs ETL under YES, logs in live-data-pulls-log.md
 3. Phase 2 (pgvector semantic memory): spawn user-memory-service Phase 2 branch with
@@ -56,7 +71,7 @@ Pushed round-9 commit to session-5/d3-etl-migration. Awaiting Codex round-9 verd
 
 ## PENDING PRs (mine)
 
-- PR #147 (open, round-9): ETL plan + script + RUNBOOK + DEP-015 + 9 rounds of fixes
+- PR #147 (open, round-10): ETL plan + script + RUNBOOK + DEP-015 + 10 rounds of fixes
 - PR #132 (MERGED): D2 — 5 RPC endpoints
 - PR #127 (MERGED): D1 — schema + Alembic migration
 

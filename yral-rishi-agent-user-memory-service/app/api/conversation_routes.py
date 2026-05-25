@@ -86,6 +86,17 @@ from app.database import get_pool
 # other routes rely on Swarm overlay trust (C3, §E6).
 router = APIRouter(prefix="/v1", tags=["conversations"])
 
+# Maximum retries when two concurrent append_messages calls collide on the
+# messages_conversation_sequence_unique constraint (migration 005).
+# Under READ COMMITTED isolation the inline-subquery INSERT in
+# _insert_message_with_sequence_retry can still produce two concurrent callers
+# that read the same MAX before either commits. The UNIQUE constraint rejects
+# the second writer; the retry reads the updated MAX from the committed row
+# and inserts the correct next sequence on the following attempt.
+# 5 retries tolerates up to 4 simultaneous collisions — normal traffic never
+# approaches that; the limit guards against infinite loops from bugs.
+_SEQUENCE_RETRY_LIMIT = 5
+
 
 # ===========================================================================
 # Helper functions — datetime formatting + row → model converters
@@ -192,6 +203,109 @@ def _row_to_conversation_response(
 
 
 # ===========================================================================
+# Sequence-assignment helper — used by append_messages
+# ===========================================================================
+
+
+async def _insert_message_with_sequence_retry(
+    connection: asyncpg.Connection,
+    conversation_uuid: uuid.UUID,
+    role: str,
+    content: str,
+    client_message_id: Optional[str],
+    media_urls_json: Optional[str],
+    gemini_json: Optional[str],
+    count_toward_paywall: bool,
+) -> Optional[asyncpg.Record]:
+    """Insert one message with an atomic inline-sequence subquery; retry on collision.
+
+    WHAT: inserts a single message row. sequence_in_conversation is computed
+          inline via a correlated scalar subquery:
+            COALESCE(MAX(sequence_in_conversation), 0) + 1
+            FROM messages WHERE conversation_id = $1
+          The subquery and the INSERT execute as one atomic Postgres statement —
+          no separate SELECT round-trip. Each call is wrapped in a Postgres
+          SAVEPOINT (nested `async with connection.transaction():` inside the
+          caller's outer transaction). If a concurrent transaction inserts the
+          same sequence first, Postgres raises UniqueViolationError on
+          messages_conversation_sequence_unique (migration 005). The savepoint
+          is rolled back and the INSERT retries; on retry the subquery re-reads
+          MAX from the committed row and produces the correct next ordinal.
+    WHEN: called once per message item inside append_messages's outer
+          transaction. Batch inserts (multiple messages in one call) benefit
+          from same-transaction visibility: message N + 1 sees message N's
+          freshly inserted row via MAX() because they share the same transaction.
+    WHY:  the prior approach (SELECT MAX then loop with sequence_counter) had a
+          TOCTOU race under READ COMMITTED isolation: two concurrent callers
+          both read the same MAX before either committed, then both inserted
+          the same next sequence. The inline subquery collapses SELECT + INSERT
+          into one statement, dramatically narrowing the race window. The UNIQUE
+          constraint on (conversation_id, sequence_in_conversation) is the hard
+          safety net: any race that slips through produces a UniqueViolationError
+          that this function catches and retries rather than silently corrupting
+          the ordering contract.
+
+    Returns None only when the client_message_id dedup fires (ON CONFLICT DO
+    NOTHING — the row already exists from a previous write; mobile retry case).
+    Raises asyncpg.UniqueViolationError if all _SEQUENCE_RETRY_LIMIT retries
+    are exhausted (indicates pathological concurrency — should never occur in
+    normal traffic).
+    Raises the original exception unchanged for any UniqueViolationError not
+    on messages_conversation_sequence_unique (e.g. a logic bug elsewhere).
+    """
+    for attempt in range(_SEQUENCE_RETRY_LIMIT):
+        try:
+            # asyncpg creates a Postgres SAVEPOINT when connection.transaction()
+            # is nested inside an already-open outer transaction. If the INSERT
+            # raises UniqueViolationError, asyncpg issues ROLLBACK TO SAVEPOINT,
+            # unwinding only this insert — the outer transaction and any other
+            # messages already inserted in this batch remain intact.
+            async with connection.transaction():
+                return await connection.fetchrow(
+                    """
+                    INSERT INTO messages
+                        (conversation_id, role, content, client_message_id,
+                         media_urls, gemini_metadata, count_toward_paywall,
+                         sequence_in_conversation)
+                    VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7,
+                            (SELECT COALESCE(MAX(sequence_in_conversation), 0) + 1
+                             FROM messages
+                             WHERE conversation_id = $1))
+                    ON CONFLICT (conversation_id, client_message_id)
+                    WHERE client_message_id IS NOT NULL
+                    DO NOTHING
+                    RETURNING id, conversation_id, role, content,
+                              client_message_id, media_urls, created_at,
+                              count_toward_paywall
+                    """,
+                    conversation_uuid,
+                    role,
+                    content,
+                    client_message_id,
+                    media_urls_json,
+                    gemini_json,
+                    count_toward_paywall,
+                )
+        except asyncpg.UniqueViolationError as conflict:
+            # Only retry sequence collisions. Any other unique constraint
+            # violation (e.g. a bug in the client_message_id path that makes
+            # it past ON CONFLICT DO NOTHING) must propagate immediately so
+            # it is not silently swallowed.
+            if conflict.constraint_name != "messages_conversation_sequence_unique":
+                raise
+            if attempt >= _SEQUENCE_RETRY_LIMIT - 1:
+                # All retries exhausted — re-raise so the caller gets a
+                # meaningful error rather than silently dropping the message.
+                raise
+            # else: continue to next attempt; the next iteration creates a new
+            # savepoint and re-reads MAX from the now-committed concurrent row.
+    # Unreachable: every code path above either returns or raises.
+    raise RuntimeError(  # pragma: no cover
+        "_insert_message_with_sequence_retry loop exited without returning"
+    )
+
+
+# ===========================================================================
 # Route handlers
 # Declaration order matters for FastAPI's router: the literal-segment route
 # GET /by-user/{user_id} is declared BEFORE the parameterised-segment routes
@@ -260,8 +374,11 @@ async def create_or_get_conversation(
         )
 
         # --- Fetch the last non-system message for the response -------------
-        # Index: messages_by_conversation_sequence_idx (conversation_id, created_at, sequence_in_conversation)
-        # ORDER BY DESC reverses the ASC index efficiently for the most-recent row.
+        # Indexes: messages_by_conversation_time_idx (conversation_id, created_at)
+        #          + messages_conversation_sequence_unique_idx (conversation_id, sequence_in_conversation)
+        # ORDER BY (created_at DESC, sequence_in_conversation DESC) uses both indexes:
+        # time_idx for the conversation_id + created_at scan; the UNIQUE index for
+        # MAX sequence lookups within same-timestamp batches.
         # sequence_in_conversation tiebreaker (migration 004) ensures deterministic
         # "last" message within a same-timestamp batch — highest sequence = most recent.
         last_message_row = await connection.fetchrow(
@@ -346,27 +463,6 @@ async def append_messages(
             result_rows: list[asyncpg.Record] = []
             new_row_count: int = 0
 
-            # sequence_in_conversation: per-conversation monotonic counter that
-            # provides a deterministic tiebreaker when two messages share the same
-            # created_at (the normal case for batch inserts — user + assistant in
-            # one transaction both get the same NOW()). Without this, the tiebreaker
-            # would be UUIDv4 (random), giving ~50% chance the assistant reply sorts
-            # before the user message.
-            # We read MAX() once before the loop; each new INSERT advances the counter.
-            # On ON CONFLICT DO NOTHING (retry), the counter is not advanced — the
-            # conflicted row already has its original sequence from the first write.
-            # Index: messages_by_conversation_sequence_idx supports ORDER BY with this.
-            sequence_start = await connection.fetchval(
-                """
-                SELECT COALESCE(MAX(sequence_in_conversation), 0)
-                FROM messages
-                WHERE conversation_id = $1
-                """,
-                conversation_uuid,
-            )
-            # sequence_counter tracks the next ordinal to assign to a NEWLY inserted row.
-            sequence_counter = sequence_start
-
             for item in body.messages:
                 # Serialise JSONB columns to JSON strings for asyncpg.
                 # Explicit json.dumps ensures correct serialisation
@@ -382,43 +478,26 @@ async def append_messages(
                     else None
                 )
 
-                # --- Idempotency via ON CONFLICT DO NOTHING ---------------
-                # The partial unique index messages_client_message_id_dedup_idx
-                # covers (conversation_id, client_message_id) WHERE
-                # client_message_id IS NOT NULL.
+                # --- Atomic inline-sequence INSERT with collision retry ----
+                # _insert_message_with_sequence_retry assigns the next
+                # sequence_in_conversation via a correlated scalar subquery
+                # inside the INSERT statement — no separate SELECT round-trip.
+                # Each call is wrapped in a Postgres SAVEPOINT so a
+                # UniqueViolationError on messages_conversation_sequence_unique
+                # (migration 005) rolls back only the failed insert, leaves
+                # the outer transaction alive, and retries with a fresh MAX read.
+                # See _insert_message_with_sequence_retry for the full race analysis.
                 #
-                # When client_message_id IS NULL (assistant / system messages):
-                #   The partial index predicate excludes these rows; the
-                #   INSERT always succeeds (no conflict possible).
+                # Batch correctness: within the same outer transaction each
+                # subsequent INSERT sees the previous inserts' rows via MAX(),
+                # so messages are assigned sequential ordinals (1, 2, 3 ...).
                 #
-                # When client_message_id IS NOT NULL (user messages with dedup ID):
-                #   If a row with the same (conv_id, client_message_id) exists,
-                #   DO NOTHING fires: RETURNING yields nothing (None).
-                #   We then SELECT the existing row and return it so the caller
-                #   gets the same message_id as the original write — safe retry.
-                #
-                # sequence_in_conversation: pre-increment before the INSERT so
-                # the tentative next sequence is ready. If the INSERT fires
-                # DO NOTHING (retry), the counter is *not* rolled back — the
-                # existing row already holds its original sequence and the counter
-                # advance is simply unused (a harmless gap). Gaps are acceptable:
-                # ordering correctness requires monotonicity, not contiguity.
-                sequence_counter += 1
-
-                row = await connection.fetchrow(
-                    """
-                    INSERT INTO messages
-                        (conversation_id, role, content, client_message_id,
-                         media_urls, gemini_metadata, count_toward_paywall,
-                         sequence_in_conversation)
-                    VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8)
-                    ON CONFLICT (conversation_id, client_message_id)
-                    WHERE client_message_id IS NOT NULL
-                    DO NOTHING
-                    RETURNING id, conversation_id, role, content,
-                              client_message_id, media_urls, created_at,
-                              count_toward_paywall
-                    """,
+                # ON CONFLICT DO NOTHING (client_message_id idempotency):
+                # if a row with the same (conversation_id, client_message_id)
+                # exists, RETURNING yields None; we SELECT the existing row
+                # below so the caller gets the original message_id back.
+                row = await _insert_message_with_sequence_retry(
+                    connection,
                     conversation_uuid,
                     item.role,
                     item.content,
@@ -426,7 +505,6 @@ async def append_messages(
                     media_urls_json,
                     gemini_json,
                     item.count_toward_paywall,
-                    sequence_counter,
                 )
 
                 is_new = row is not None
@@ -723,9 +801,11 @@ async def list_messages(
                not random UUIDv4).
             2. outer query: ORDER BY created_at ASC, sequence_in_conversation ASC —
                re-orders the page chronologically; ASC matches insertion order.
-          The messages_by_conversation_sequence_idx index
-          (conversation_id, created_at ASC, sequence_in_conversation ASC) supports
-          both scans efficiently.
+          The messages_by_conversation_time_idx index (conversation_id, created_at)
+          and the messages_conversation_sequence_unique_idx index
+          (conversation_id, sequence_in_conversation) together support
+          both scans efficiently (migration 005 superseded the 3-column composite
+          index from migration 004 with these two targeted indexes).
           The sequence_in_conversation tiebreaker closes the non-determinism gap:
           within a same-timestamp group (same-transaction batch), rows are always
           returned in insertion order (user message before assistant reply) on every
@@ -762,7 +842,7 @@ async def list_messages(
             # in chronological order (DESC to select, then ASC to order page).
             # sequence_in_conversation DESC / ASC tiebreaker (migration 004)
             # ensures deterministic insertion-order within same-timestamp batches.
-            # Index: messages_by_conversation_sequence_idx (conversation_id, created_at, sequence_in_conversation)
+            # Index: messages_by_conversation_time_idx (conversation_id, created_at)
             rows = await connection.fetch(
                 """
                 SELECT *
@@ -860,6 +940,10 @@ async def list_messages(
 #                                    — unique indexes required by ON CONFLICT
 #                                      in create_or_get_conversation +
 #                                      append_messages
+#   ../migrations/versions/005_add_sequence_unique_constraint.py
+#                                    — UNIQUE constraint on (conversation_id,
+#                                      sequence_in_conversation) caught by
+#                                      _insert_message_with_sequence_retry
 #   ../../tests/test_conversation_routes.py
 #                                    — route-level tests (httpx + testcontainers)
 #   ../../../../yral-rishi-agent-conversation-turn-orchestrator/app/run_turn.py

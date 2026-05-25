@@ -3,6 +3,72 @@
 
 ---
 
+### 2026-05-25 — PR #147 round-10: race-condition fix on sequence_in_conversation
+
+**Branch**: session-5/d3-etl-migration
+**Trigger**: Codex round-9 returned a REAL race-condition CONCERN on `append_messages`:
+  the SELECT MAX() + INSERT loop was non-atomic under READ COMMITTED isolation —
+  two concurrent callers both read the same MAX before either committed, then both
+  INSERTed the same next sequence. Migration 004 had no UNIQUE constraint to catch
+  this; rows silently collided.
+
+**What ships**:
+
+1. `yral-rishi-agent-user-memory-service/app/migrations/versions/005_add_sequence_unique_constraint.py` (NEW):
+   - down_revision = "004_add_sequence_in_conversation"
+   - Step 1: ROW_NUMBER() backfill (deduplicates any pre-005 collisions; same SQL as 004)
+   - Step 2: DROP INDEX messages_by_conversation_sequence_idx (004's 3-column composite)
+   - Step 3: CREATE UNIQUE INDEX messages_conversation_sequence_unique_idx
+             ON messages (conversation_id, sequence_in_conversation)
+   - Step 4: ALTER TABLE messages ADD CONSTRAINT messages_conversation_sequence_unique
+             UNIQUE USING INDEX messages_conversation_sequence_unique_idx
+   - downgrade(): DROP CONSTRAINT (also drops backing index) + recreate 004's composite index
+
+2. `yral-rishi-agent-user-memory-service/app/api/conversation_routes.py`:
+   - `_SEQUENCE_RETRY_LIMIT = 5` constant (module-level, after router declaration)
+   - `_insert_message_with_sequence_retry()` helper function (between helpers and route handlers):
+     - Inline scalar subquery: `COALESCE(MAX(sequence_in_conversation), 0) + 1 WHERE conversation_id = $1`
+       embedded in VALUES clause of INSERT — no separate SELECT round-trip
+     - Wrapped in `async with connection.transaction():` (SAVEPOINT) so a
+       UniqueViolationError rolls back only the current message, not the outer batch transaction
+     - Catches `asyncpg.UniqueViolationError` where `constraint_name == "messages_conversation_sequence_unique"`
+     - Retries up to 5 times (any other UniqueViolationError is re-raised immediately)
+   - `append_messages`: removed `sequence_start`/`sequence_counter` SELECT-then-INSERT loop;
+     replaced with `await _insert_message_with_sequence_retry(...)` per message
+   - 4 stale index-name comments updated (messages_by_conversation_sequence_idx → correct names)
+   - RELATED FILES footer: added migration 005 entry
+
+3. `yral-rishi-agent-user-memory-service/tests/test_schema_migrations.py`:
+   - `test_migration_004_sequence_in_conversation_index_exists` renamed to
+     `test_migration_005_sequence_unique_index_exists`:
+     - Asserts `messages_conversation_sequence_unique_idx` IS in pg_indexes
+     - Asserts `messages_by_conversation_sequence_idx` is NOT (dropped by 005)
+     - Updated docstring to explain why old index is gone
+   - `test_migration_004_sequence_backfill_assigns_correct_ordinals`: seeds changed
+     from `sequence=0, 0, 0` (would violate UNIQUE constraint from 005) to `100, 200, 300`
+     (distinct values; backfill still assigns 1, 2, 3 via ROW_NUMBER())
+   - File header updated (001–005); RELATED FILES updated
+   Total schema tests: 11 (unchanged count, one rename + seed fix)
+
+4. `yral-rishi-agent-user-memory-service/tests/test_conversation_routes.py`:
+   - New test: `test_append_messages_concurrent_calls_preserve_all_messages`
+     - `asyncio.gather` fires two concurrent POST .../messages for the same conversation_id
+     - Both callers append one message each (user + assistant roles, different content)
+     - Asserts both responses are HTTP 200 (retry absorbs the UniqueViolationError)
+     - Direct DB query via `database_pool` fixture: asserts exactly 2 rows with
+       distinct sequence_in_conversation values, both ≥ 1
+   Total route tests: 26 → 27
+
+**Pre-push verification**: 26/26 ETL unit tests pass. Schema + route tests run in CI.
+
+**Root causes**:
+- TOCTOU race: SELECT MAX then INSERT is two separate statements; READ COMMITTED isolation
+  lets both concurrent transactions read the same MAX before either commits.
+- Migration 004 had no UNIQUE constraint to catch the collision — silent data corruption.
+- Fix: inline subquery + UNIQUE constraint + savepoint retry = no gap between read and write.
+
+---
+
 ### 2026-05-25 — PR #147 round-9: service B2 renames + migration 004 test + RUNBOOK update
 
 **Branch**: session-5/d3-etl-migration

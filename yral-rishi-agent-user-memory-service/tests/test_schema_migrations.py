@@ -6,10 +6,13 @@
 #   1. `test_alembic_upgrade_then_downgrade_round_trips_cleanly` — full
 #      round-trip (upgrade head → downgrade base → upgrade head) to confirm
 #      every downgrade() is reversible.
-#   2. Column + constraint existence tests for migrations 001–004.
+#   2. Column + constraint existence tests for migrations 001–005.
 #   3. `test_migration_003_unique_indexes_exist` — verifies both dedup indexes.
 #   4. `test_migration_004_*` — verifies sequence_in_conversation column +
-#      index + ROW_NUMBER() backfill correctness (3 tests).
+#      ROW_NUMBER() backfill correctness (2 tests; the original index test
+#      was superseded by migration 005 — see test_migration_005_* below).
+#   5. `test_migration_005_sequence_unique_index_exists` — verifies that
+#      migration 005's UNIQUE index superseded migration 004's composite index.
 #
 # WHY THIS TEST EXISTS?
 # Per H11 spirit + the Day-4 directive's "Schema: alembic upgrade +
@@ -476,15 +479,23 @@ async def test_migration_004_sequence_in_conversation_column_exists(
 
 
 @pytest.mark.asyncio
-async def test_migration_004_sequence_in_conversation_index_exists(
+async def test_migration_005_sequence_unique_index_exists(
     database_pool: asyncpg.Pool,
 ) -> None:
-    """WHAT: verify messages_by_conversation_sequence_idx was created by migration 004.
-    WHEN: after conftest's session fixture runs `alembic upgrade head`.
-    WHY:  list_messages ORDER BY (created_at, sequence_in_conversation) relies on
-          this index for efficient query execution. Without the index, the DESC-then-ASC
-          subquery pattern requires a full messages scan per conversation — acceptable
-          for small tables but catastrophic at 3.3M rows.
+    """WHAT: verify migration 005 created messages_conversation_sequence_unique_idx
+             (the UNIQUE index backing messages_conversation_sequence_unique) and
+             that the original migration 004 composite index is gone.
+    WHEN: after conftest's session fixture runs `alembic upgrade head` (which
+          applies 001 → 002 → 003 → 004 → 005 in sequence).
+    WHY:  migration 005 drops messages_by_conversation_sequence_idx (004's 3-column
+          composite index) and replaces it with messages_conversation_sequence_unique_idx
+          (a 2-column UNIQUE index). The UNIQUE index is the constraint backing that
+          _insert_message_with_sequence_retry checks by name in its retry guard:
+            `if conflict.constraint_name != "messages_conversation_sequence_unique": raise`
+          If the unique index is missing, the UNIQUE constraint is absent and the
+          race condition silently reappears — duplicate sequences, broken ordering.
+          If the old composite index is still present, migration 005 downgrade()
+          will fail when trying to CREATE it again (duplicate name).
     """
     async with database_pool.acquire() as conn:
         message_indexes = await conn.fetch(
@@ -493,10 +504,20 @@ async def test_migration_004_sequence_in_conversation_index_exists(
         )
     message_index_names = {row["indexname"] for row in message_indexes}
 
-    assert "messages_by_conversation_sequence_idx" in message_index_names, (
-        "messages_by_conversation_sequence_idx not found in pg_indexes. "
-        "Check that 004_add_sequence_in_conversation.upgrade() ran without error and "
-        "that alembic upgrade head reached migration 004."
+    # Migration 005's unique index must exist.
+    assert "messages_conversation_sequence_unique_idx" in message_index_names, (
+        "messages_conversation_sequence_unique_idx not found in pg_indexes. "
+        "Check that 005_add_sequence_unique_constraint.upgrade() ran without error "
+        "and that alembic upgrade head reached migration 005. Without this index, "
+        "the UniqueViolationError retry guard in _insert_message_with_sequence_retry "
+        "has no constraint to catch."
+    )
+
+    # Migration 004's original composite index must have been dropped by migration 005.
+    assert "messages_by_conversation_sequence_idx" not in message_index_names, (
+        "messages_by_conversation_sequence_idx should have been dropped by migration 005. "
+        "If it still exists, migration 005's DROP INDEX step did not run — check "
+        "005_add_sequence_unique_constraint.upgrade()."
     )
 
 
@@ -526,10 +547,16 @@ async def test_migration_004_sequence_backfill_assigns_correct_ordinals(
         )
         conversation_id = conversation_row["id"]
 
-        # Insert 3 messages with explicit sequence_in_conversation = 0 (mimicking
-        # freshly migrated rows that haven't been backfilled yet).
+        # Insert 3 messages with explicit sequence_in_conversation = 100, 200, 300
+        # (mimicking freshly migrated rows that haven't been backfilled yet, but
+        # using distinct values to satisfy the UNIQUE constraint from migration 005).
         # Use different UUIDs so they have a defined id sort order within the
         # same created_at (we'll verify ROW_NUMBER uses id as the tiebreaker).
+        # WHY not 0, 0, 0: migration 005 adds UNIQUE (conversation_id, sequence_in_conversation);
+        # three rows with the same sequence in the same conversation would violate
+        # the constraint. Distinct non-contiguous values (100, 200, 300) simulate
+        # "pre-backfill" rows that haven't been assigned correct ordinals yet
+        # without triggering the uniqueness guard.
         message_id_early = _uuid.UUID("10000000-0000-0000-0000-000000000001")
         message_id_middle = _uuid.UUID("20000000-0000-0000-0000-000000000002")
         message_id_late = _uuid.UUID("30000000-0000-0000-0000-000000000003")
@@ -539,9 +566,9 @@ async def test_migration_004_sequence_backfill_assigns_correct_ordinals(
         async with conn.transaction():
             await conn.execute(
                 "INSERT INTO messages (id, conversation_id, role, content, sequence_in_conversation) "
-                "VALUES ($1, $2, 'user', 'first', 0), "
-                "       ($3, $2, 'assistant', 'second', 0), "
-                "       ($4, $2, 'user', 'third', 0);",
+                "VALUES ($1, $2, 'user', 'first', 100), "
+                "       ($3, $2, 'assistant', 'second', 200), "
+                "       ($4, $2, 'user', 'third', 300);",
                 message_id_early, conversation_id,
                 message_id_middle, message_id_late,
             )
@@ -607,8 +634,13 @@ async def test_migration_004_sequence_backfill_assigns_correct_ordinals(
 #                                          test_migration_003_unique_indexes_exist
 #   ../app/migrations/versions/004_add_sequence_in_conversation.py
 #                                        — adds sequence_in_conversation column
-#                                          + index + ROW_NUMBER() backfill;
+#                                          + ROW_NUMBER() backfill; column
 #                                          verified by tests above
+#   ../app/migrations/versions/005_add_sequence_unique_constraint.py
+#                                        — drops 004's composite index; adds
+#                                          UNIQUE constraint on (conversation_id,
+#                                          sequence_in_conversation); verified
+#                                          by test_migration_005_* above
 #   ../alembic.ini                       — Alembic config used by _run_alembic
 #   ../app/migrations/env.py             — Alembic env.py dispatched by
 #                                          `alembic downgrade/upgrade`

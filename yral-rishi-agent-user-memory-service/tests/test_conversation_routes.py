@@ -1269,10 +1269,113 @@ async def test_get_conversation_by_id_returns_none_last_message_for_new_conversa
 
 
 # ===========================================================================
+# POST /v1/conversations/{id}/messages — concurrent sequence race (round-10)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_append_messages_concurrent_calls_preserve_all_messages(
+    test_client: AsyncClient,
+    database_pool: asyncpg.Pool,
+) -> None:
+    """WHAT: two concurrent POST .../messages calls for the same conversation
+             each append exactly one message; both return 200; the DB ends up
+             with 2 messages that have distinct sequence_in_conversation values.
+    WHEN: two asyncio tasks fire POST .../messages simultaneously for the
+          same conversation_id (asyncio.gather — tasks interleave at every
+          await boundary).
+    WHY:  pins the race-condition fix from round-10. The pre-005 SELECT-MAX +
+          INSERT approach let two concurrent callers both read MAX=0 before
+          either committed, then both tried to INSERT sequence=1. Without the
+          UNIQUE constraint (migration 005), both inserts would succeed and
+          the conversation would have two messages with sequence=1 — broken
+          ordering contract. With migration 005 and the inline-subquery +
+          savepoint retry in _insert_message_with_sequence_retry, one caller's
+          INSERT commits with sequence=1; the other retries after the savepoint
+          rollback, reads MAX=1, and inserts sequence=2.
+          This test asserts: (a) both HTTP calls return 200 (no 500 from
+          unhandled UniqueViolationError), and (b) the DB has exactly 2 messages
+          with distinct non-zero sequence values — the only valid outcome of a
+          correct concurrent insert.
+    """
+    import asyncio
+
+    # Create a fresh conversation for this race test.
+    conversation_response = await test_client.post(
+        "/v1/conversations",
+        json={
+            "user_id": "user-race-test",
+            "ai_influencer_id": "inf-race-test",
+            "conversation_type": "ai_chat",
+        },
+    )
+    assert conversation_response.status_code == 200
+    conv_id = conversation_response.json()["id"]
+
+    # Fire two concurrent POST .../messages requests for the same conversation.
+    # asyncio.gather runs both coroutines concurrently — they interleave at each
+    # `await` point (pool.acquire, savepoint entry, INSERT, commit). Under the
+    # pre-005 approach, both callers would race to read the same MAX(sequence)=0
+    # before either committed; the second would silently produce a duplicate.
+    # Under the current approach, one INSERT commits with sequence=1 and the
+    # other's savepoint is rolled back on UniqueViolationError; the retry reads
+    # MAX=1 and inserts sequence=2 — both callers return 200.
+    response_a, response_b = await asyncio.gather(
+        test_client.post(
+            f"/v1/conversations/{conv_id}/messages",
+            json={"messages": [{"role": "user", "content": "concurrent message A"}]},
+        ),
+        test_client.post(
+            f"/v1/conversations/{conv_id}/messages",
+            json={"messages": [{"role": "assistant", "content": "concurrent message B"}]},
+        ),
+    )
+
+    assert response_a.status_code == 200, (
+        f"Concurrent call A returned {response_a.status_code}: {response_a.text}. "
+        "The savepoint retry in _insert_message_with_sequence_retry must absorb "
+        "the UniqueViolationError and return 200, not propagate a 500."
+    )
+    assert response_b.status_code == 200, (
+        f"Concurrent call B returned {response_b.status_code}: {response_b.text}. "
+        "Same requirement — retry must prevent 500 on sequence collision."
+    )
+
+    # Inspect the DB directly to verify both messages landed with distinct sequences.
+    # database_pool connects to the same testcontainers Postgres as the app pool.
+    async with database_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, sequence_in_conversation FROM messages "
+            "WHERE conversation_id = $1 ORDER BY sequence_in_conversation ASC;",
+            uuid.UUID(conv_id),
+        )
+
+    assert len(rows) == 2, (
+        f"Expected exactly 2 messages after concurrent appends, got {len(rows)}. "
+        f"If 0: both inserts failed. If 1: one was lost. If > 2: inserts duplicated. "
+        f"Rows: {[dict(r) for r in rows]}"
+    )
+
+    sequences = [row["sequence_in_conversation"] for row in rows]
+    assert len(set(sequences)) == 2, (
+        f"Expected 2 DISTINCT sequence_in_conversation values, got {sequences}. "
+        f"Duplicate sequences mean the race fix did not work — both concurrent "
+        f"inserts wrote the same ordinal."
+    )
+    assert min(sequences) >= 1, (
+        f"Minimum sequence must be >= 1 (0 is the pre-backfill sentinel value). "
+        f"Got sequences: {sequences}. Check _insert_message_with_sequence_retry's "
+        f"inline subquery: COALESCE(MAX(...), 0) + 1 must never produce 0."
+    )
+
+
+# ===========================================================================
 # RELATED FILES:
 #   conftest.py                  — test_client fixture (pool injection + httpx)
 #   ../app/api/conversation_routes.py
-#                                — the 5 route handlers under test
+#                                — the 5 route handlers under test; includes
+#                                  _insert_message_with_sequence_retry (round-10)
+#                                  and _SEQUENCE_RETRY_LIMIT constant
 #   ../app/api/models.py         — request + response shapes asserted above
 #   ../app/migrations/versions/001_initial_schema.py
 #                                — base schema (conversations + messages)
@@ -1284,4 +1387,8 @@ async def test_get_conversation_by_id_returns_none_last_message_for_new_conversa
 #   ../app/migrations/versions/004_add_sequence_in_conversation.py
 #                                — adds sequence_in_conversation column;
 #                                  required by ordering + cursor tests above
+#   ../app/migrations/versions/005_add_sequence_unique_constraint.py
+#                                — UNIQUE constraint on (conversation_id,
+#                                  sequence_in_conversation); required by
+#                                  concurrent race test above
 # ===========================================================================
