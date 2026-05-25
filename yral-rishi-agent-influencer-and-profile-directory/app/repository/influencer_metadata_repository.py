@@ -142,20 +142,34 @@ def _record_to_model(record: asyncpg.Record) -> InfluencerMetadata:
 
 
 async def get_by_id(influencer_id: str) -> InfluencerMetadata | None:
-    """Return the influencer matching `id = $1`, or None if missing.
+    """Return the catalog-visible influencer matching `id = $1`, or None.
 
-    WHAT: SELECT against `influencer_metadata` keyed on the primary key.
+    WHAT: SELECT against `influencer_metadata` keyed on the primary key,
+          filtered to `is_active <> 'discontinued'`. Returns ANY non-
+          discontinued row (`active` or `coming_soon`).
     WHEN: called once per `GET /v1/influencers/{id}` request.
     WHY:  by-id lookup is the by-far-most-frequent read path (every
           orchestrator chat turn that lands on a real influencer
           eventually triggers one via public-api). PK index makes this
           O(1) on row count.
 
+          The `is_active <> 'discontinued'` filter enforces the catalog
+          authority (per Chunk B coordinator routing 2026-05-25): the
+          public catalog never surfaces discontinued rows. Filtering at
+          this layer instead of the endpoint layer makes "discontinued
+          rows are invisible to the catalog" a property of the data
+          access surface itself — adding a new catalog endpoint cannot
+          accidentally surface them, because the SQL would never
+          return them.
+
     Returns:
-        The `InfluencerMetadata` model if a row exists; `None` if the
-        influencer doesn't exist. The endpoint layer (Chunk B) maps
-        `None` → HTTP 404 with the documented `not_found` error code
-        per the parity contract.
+        The `InfluencerMetadata` model if a non-discontinued row exists;
+        `None` if the influencer doesn't exist OR is discontinued. The
+        endpoint layer (Chunk B) maps both cases to HTTP 404 with the
+        documented `not_found` error code per the parity contract — the
+        404 is intentionally indistinguishable between "no such id" and
+        "discontinued" so an external probe can't enumerate which ids
+        the catalog has soft-deleted vs never had.
     """
     pool = get_pool()
 
@@ -163,7 +177,7 @@ async def get_by_id(influencer_id: str) -> InfluencerMetadata | None:
         f"""
         SELECT {_CONTRACT_COLUMNS_FOR_SELECT}
         FROM influencer_metadata
-        WHERE id = $1
+        WHERE id = $1 AND is_active <> 'discontinued'
         """,
         influencer_id,
     )
@@ -178,12 +192,11 @@ async def list_paginated(
     limit: int,
     offset: int,
 ) -> list[InfluencerMetadata]:
-    """Return up-to-`limit` influencers starting at `offset`, ordered by `id` ASC.
+    """Return up-to-`limit` catalog-visible influencers, ordered by `id` ASC.
 
-    WHAT: paginated SELECT with no WHERE filter — returns ALL
-          influencers, both active + discontinued. Mobile filters
-          discontinued client-side based on `is_active` per the
-          contract.
+    WHAT: paginated SELECT filtered to `is_active <> 'discontinued'`,
+          returning rows with `is_active IN ('active', 'coming_soon')`.
+          Ordered by `id` ASC. Discontinued rows never appear.
     WHEN: called once per `GET /v1/influencers?limit=N&offset=M`
           request.
     WHY:  flat list-RPC matching the proposed DEP-013 contract shape
@@ -194,6 +207,16 @@ async def list_paginated(
           guarantee on a bare SELECT). The PK index covers the ORDER BY
           so this is an index-ordered scan, not a sort.
 
+          The `is_active <> 'discontinued'` filter enforces the catalog
+          authority (per Chunk B coordinator routing 2026-05-25): the
+          public catalog never surfaces discontinued rows. Filtering at
+          the SQL layer (not the endpoint layer) means pagination bounds
+          are correct — `limit=20, offset=0` returns up to 20
+          catalog-visible rows, not 20-minus-N-discontinued rows. The
+          partial trending index doesn't cover this scan but the PK
+          index does (sequential id scan); the predicate is evaluated
+          per row.
+
     Args:
         limit: max rows to return; endpoint validates 1 ≤ limit ≤ 100
                per the mobile contract bounds (Chunk B).
@@ -201,9 +224,10 @@ async def list_paginated(
                 (Chunk B).
 
     Returns:
-        A list of `InfluencerMetadata` instances, length 0..limit. Empty
-        list when `offset` exceeds the table's row count (mobile derives
-        "no more pages" from `len(items) < limit`).
+        A list of `InfluencerMetadata` instances, length 0..limit, none
+        of which are discontinued. Empty list when `offset` exceeds the
+        catalog-visible row count (mobile derives "no more pages" from
+        `len(items) < limit`).
     """
     pool = get_pool()
 
@@ -211,6 +235,7 @@ async def list_paginated(
         f"""
         SELECT {_CONTRACT_COLUMNS_FOR_SELECT}
         FROM influencer_metadata
+        WHERE is_active <> 'discontinued'
         ORDER BY id ASC
         LIMIT $1 OFFSET $2
         """,

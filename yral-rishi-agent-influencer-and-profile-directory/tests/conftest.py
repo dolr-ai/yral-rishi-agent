@@ -10,15 +10,18 @@
 # app's pool and Alembic can both find it, yields the connection
 # details, then tears the container down on session end.
 #
-# FIXTURE HIERARCHY (PR-D1 Chunk A round-2 — no endpoint fixtures yet):
+# FIXTURE HIERARCHY (PR-D1 Chunk B):
 #   postgres_container (scope=session)
 #     └── postgres_connection_string (scope=session)
 #           └── run_alembic_upgrade (scope=session, autouse=True)
-#                 └── database_pool (scope=function)
-#                       └── clean_app_settings_cache (scope=function)
-#
-# Chunk B will add a `test_client` fixture for FastAPI endpoint tests
-# (mirrors Session-5's user-memory-service `test_client` shape).
+#                 ├── database_pool (scope=function)
+#                 │     └── used by repository tests for direct asyncpg
+#                 │       access against the testcontainer
+#                 ├── test_client (scope=function)
+#                 │     └── used by Chunk B endpoint tests; injects a
+#                 │       per-test pool into app.database._pool +
+#                 │       drives the ASGI lifespan via LifespanManager
+#                 └── clean_app_settings_cache (scope=function)
 #
 # WHY testcontainers + NOT docker-compose?
 # The compose Postgres is for `uvicorn`-running development sessions.
@@ -53,6 +56,8 @@ from pathlib import Path
 
 import asyncpg
 import pytest
+from asgi_lifespan import LifespanManager
+from httpx import ASGITransport, AsyncClient
 from testcontainers.postgres import PostgresContainer
 
 
@@ -229,6 +234,83 @@ async def database_pool(
 
     # Close the pool cleanly when the test exits.
     await pool.close()
+
+
+@pytest.fixture()
+async def test_client(
+    postgres_connection_string: str,
+) -> AsyncIterator[AsyncClient]:
+    """Yield an httpx AsyncClient wired to the FastAPI app + testcontainer pool.
+
+    WHAT: creates a fresh asyncpg pool for this test, injects it into
+          `app.database._pool` BEFORE the ASGI lifespan fires, then
+          yields an httpx.AsyncClient backed by ASGITransport. The
+          client sends real HTTP-shaped requests to the FastAPI app
+          entirely in-process (no network socket, no uvicorn).
+    WHEN: per test that explicitly requests `test_client` (Chunk B
+          endpoint tests).
+    WHY:  exercises the full HTTP contract — path params, query params,
+          required headers, JSON response shapes, status codes —
+          without running a real server. Mirrors Session-5
+          user-memory-service's `test_client` shape verbatim per
+          cross-service consistency.
+
+    ASGI LIFESPAN
+    httpx.ASGITransport alone does NOT drive ASGI lifespan events
+    (startup / shutdown). Without explicit lifespan management, the
+    FastAPI `lifespan` context never runs, so `init_pool()` is never
+    called from startup AND `close_pool()` never runs at teardown.
+    `asgi_lifespan.LifespanManager` wraps the FastAPI app and
+    explicitly sends `lifespan.startup` and `lifespan.shutdown` ASGI
+    messages.
+
+    Pool lifecycle:
+      1. Fixture creates pool + sets `app.database._pool = pool`.
+      2. TRUNCATE clears the catalog table for clean per-test state.
+      3. `LifespanManager.__aenter__` fires lifespan.startup →
+         `init_pool()` sees `_pool is not None` → returns early
+         (injection wins; the idempotency check in init_pool is the
+         load-bearing pre-condition for this pattern).
+      4. Tests run via the AsyncClient.
+      5. `AsyncClient.__aexit__` finishes all in-flight requests.
+      6. `LifespanManager.__aexit__` fires lifespan.shutdown →
+         `close_pool()` closes the injected pool + sets `_pool = None`.
+    """
+    import app.database as database_module
+    from app.main import app as fastapi_app
+
+    # Create a dedicated pool for this test. statement_cache_size=0
+    # matches the production pool config in app/database.py for
+    # pgBouncer transaction-mode compatibility (same setting the
+    # `database_pool` fixture above uses).
+    pool = await asyncpg.create_pool(
+        dsn=postgres_connection_string,
+        min_size=1,
+        max_size=4,
+        statement_cache_size=0,
+    )
+
+    # Empty the catalog so every test starts with clean state.
+    async with pool.acquire() as connection:
+        await connection.execute("TRUNCATE influencer_metadata;")
+
+    # Inject the pool BEFORE the LifespanManager fires startup. The
+    # init_pool() idempotency check (`if _pool is not None: return`)
+    # turns the lifespan's startup call into a no-op so the app uses
+    # this testcontainer pool rather than connecting to a real cluster.
+    database_module._pool = pool
+
+    async with LifespanManager(fastapi_app):
+        transport = ASGITransport(
+            app=fastapi_app, raise_app_exceptions=True
+        )
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            yield client
+
+    # After LifespanManager.__aexit__: close_pool() has run + the pool
+    # is closed + `_pool` is None. No further teardown needed.
 
 
 # ===========================================================================

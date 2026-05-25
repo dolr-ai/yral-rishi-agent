@@ -2,6 +2,100 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-25 — PR-D1 Chunk B opened (DRAFT): GET /v1/influencers + GET /v1/influencers/{id} endpoints + wire-shape response model + endpoint tests
+
+### Status
+**Chunk B opened DRAFT on branch `session-4/influencer-directory-chunk-b-endpoints`.** Coordinator paste 2026-05-25 ~12:05 UTC routed Chunk B as next-up (path chosen via AskUserQuestion Rishi typed-YES) over the alternate orchestrator OPENROUTER routing wiring PR. Reason from coordinator paste: PR #141 (Session 3 public-api PR-B2) currently iterating + mocks the influencer-directory upstream; once #141 merges, public-api needs the REAL endpoints to call — without Chunk B, Motorola smoke gets mocked data on the catalog route.
+
+### Scope (single PR, ~500 lines tight per new PR-size discipline)
+
+**1. Wire-shape response model — `app/models/influencer_response.py` (NEW):**
+ONE Pydantic class `InfluencerResponse` with `extra="forbid"` enforcing the 9-field `InfluencerDto` wire shape verbatim from `interface-contracts/00-api-contract.md:107-119`. Classmethod `from_persistence(InfluencerMetadata) -> InfluencerResponse` projects the 14-field persistence model onto the 9-field wire shape. This is the round-8 "DO NOT SERIALIZE DIRECTLY" header instruction in `app/models/influencer_metadata.py` materialised.
+
+Two wire-vocabulary policy decisions captured in this PR:
+- **`is_active` mapping** — persistence is tri-state `("active" | "coming_soon" | "discontinued")`; wire is 2-value `("active" | "discontinued")`. Both `active` AND `coming_soon` map to wire `"active"` (mobile treats coming_soon-as-active for Phase 1; future PR may widen the wire vocabulary if mobile gains a distinct coming-soon UX). `discontinued` is never reachable through catalog reads (filtered at the repository layer); the Literal includes it for type-completeness so a future admin endpoint can reuse the model without widening.
+- **`avatar_url` coercion** — persistence is `str | None` (chat-ai allows NULL); wire is `str` (contract pins non-null). NULL → `""` empty-string fallback. For Phase-1 parity this is a no-op (every chat-ai-ported influencer has an avatar). Conservative choice that doesn't leak nullability into the wire shape.
+
+**2. Repository catalog-authority filter — `app/repository/influencer_metadata_repository.py` (MODIFIED):**
+`get_by_id` + `list_paginated` now apply `WHERE is_active <> 'discontinued'` at the SQL layer. This shifts the "no discontinued in the catalog" authority from "endpoint layer responsibility" (the round-8 stance, mirrored in the persistence model header) to "data-access layer authority" (Chunk B's stance). Rationale: filtering at SQL keeps pagination semantics correct — `limit=20, offset=0` returns up to 20 catalog-visible rows, not 20-minus-N-discontinued rows — without forcing every endpoint to remember the filter. `list_trending` already filtered to `is_active='active'` (stricter; partial-index-aligned); unchanged.
+
+**3. Route module — `app/api/influencer_routes.py` (NEW) + `app/api/__init__.py` (NEW):**
+APIRouter with prefix `/v1` mounting 2 routes:
+- `GET /v1/influencers?limit=<1..100>&offset=<>=0>` → flat `list[InfluencerResponse]` (DEP-013 contract shape; no `total_count` wrapper; mobile derives "no more pages" from `len(items) < limit`).
+- `GET /v1/influencers/{id}` → `InfluencerResponse` or 404 (indistinguishable between missing + discontinued per privacy / soft-delete-enumeration protection).
+
+Both routes require the canonical 4 internal-call headers per `01-internal-rpc-contracts.md:147-156`: `X-User-Id` + `X-Internal-Caller` + `X-Request-Id` + `X-Trace-Id`. Declared once as module-level `Annotated` type aliases so the routes share them verbatim. FastAPI 422s when any is missing. The mesh-trust model (C3 overlay `yral-v2-internal`) is the actual authorisation boundary; the headers are observability + per-request user binding.
+
+**`/trending` endpoint deferred** per coordinator's optional carve-out. The repository's `list_trending` method exists + tested; the route handler + its endpoint tests land in a follow-up PR. Skipping keeps Chunk B tight + matches Phase-1 mobile parity (mobile may not hit trending on the parity smoke).
+
+**4. Lifespan wiring — `app/main.py` (MODIFIED):**
+Startup opens the asyncpg pool via `init_pool()`; shutdown closes it via `close_pool()` then flushes Langfuse. `include_router(influencer_router)` mounts the routes. File-header docstring rewritten to describe the actual Chunk B state. Title changed from "yral-rishi-agent service template" → "yral-rishi-agent-influencer-and-profile-directory".
+
+**5. Endpoint test suite — `tests/test_influencer_routes.py` (NEW, 14 tests):**
+List endpoint:
+- Happy path — 3 rows → 200 + 3 rows
+- Pagination (limit=2 offset=2 from 5 rows)
+- Empty result when offset > row count
+- Catalog authority — discontinued filtered, coming_soon surfaced with `is_active="active"` wire mapping
+- 422 on missing X-User-Id / missing X-Internal-Caller / out-of-range limit / negative offset
+
+By-id endpoint:
+- Happy path — 200 + full 9-field shape
+- 404 on missing id
+- 404 on discontinued id (indistinguishable from missing)
+- coming_soon → `is_active="active"` on wire
+- NULL avatar_url → `""` on wire
+- 422 on missing X-User-Id
+
+New `test_client` fixture in `conftest.py` mirrors user-memory-service's shape verbatim: httpx.ASGITransport + asgi_lifespan.LifespanManager + per-test asyncpg pool injection into `app.database._pool` before lifespan startup (init_pool idempotency check makes the lifespan startup a no-op).
+
+**6. Repository test update — `tests/test_influencer_metadata_repository.py` (MODIFIED):**
+The round-7 test `test_list_paginated_does_not_filter_by_is_active_because_status_filtering_is_an_endpoint_layer_concern` asserted the OPPOSITE behaviour from Chunk B's authority. Renamed → `test_list_paginated_excludes_discontinued_rows_but_surfaces_active_and_coming_soon_per_catalog_authority` with seeded `active` + `coming_soon` + `discontinued` rows and assertion that the response contains the 2 non-discontinued rows. New test `test_get_by_id_returns_none_when_the_row_exists_but_is_discontinued_per_catalog_authority` pins the 404-on-discontinued behaviour at the data layer. File-header coverage block updated.
+
+**7. Dev dep — `pyproject.toml` (MODIFIED):**
+Added `asgi-lifespan==2.1.0` (was deferred in PR #148 round-3 with a NOTE pinning this exact addition path; Chunk B's `test_client` fixture is the consumer). Same pinned version as user-memory-service.
+
+### Files touched (Chunk B)
+NEW (3):
+- `app/api/__init__.py`
+- `app/api/influencer_routes.py`
+- `app/models/influencer_response.py`
+- `tests/test_influencer_routes.py`
+
+MODIFIED (5):
+- `app/main.py` — lifespan + router + header docstring
+- `app/repository/influencer_metadata_repository.py` — catalog-authority filter on 2 methods
+- `tests/conftest.py` — `test_client` fixture
+- `tests/test_influencer_metadata_repository.py` — flip the round-7 contradicting test + add discontinued-by-id test + file-header update
+- `pyproject.toml` — `asgi-lifespan==2.1.0` dev dep
+
+This LOG addendum + STATE refresh (per I11).
+
+### Constraints touched
+- **A2.1** — single concern: Chunk B (read endpoints + their response shape).
+- **A4 + A8 + D2** — wire shape mirrors `InfluencerDto` contract verbatim; persistence shape stays the chat-ai-port superset.
+- **A16** — JSON `MessageResponse` shape pattern preserved (no SSE on read endpoints).
+- **DEP-013** — Session 4 ratifies the proposed `GET /v1/influencers?limit&offset → list[InfluencerResponse]` contract shape verbatim.
+- **E6** — `X-User-Id` is forwarded from public-api after JWT validation; the directory trusts without re-validating (defence-in-depth ratified via internal-rpc-contracts §Authentication-between-services).
+- **F3** — per-service Postgres SCHEMA on shared `yral_v2`; unchanged.
+- **F12** — asyncpg + Pydantic 2.x; no ORM.
+- **I9** — Session-4-owned service folder only; no public-api / orchestrator / soul-file touches.
+- **I11** — same-commit code + LOG + STATE.
+- **I14** — **NOT auto-merge eligible** (Python routes + repository behaviour change).
+- **J3** — endpoint test names are plain-English sentence-style (per round-7 J3 closure + the new PR #154 carve-out making this minimum-bar rather than full-B7-ceremony).
+- **B2 + B7** — runtime code follows the precedent push-back patterns (`_log`, `op`/`sa`); test code per PR #154 carve-out (relaxed).
+
+### Pre-push sanity
+- `python3 -m py_compile` clean across all 9 touched / new .py files.
+- Local pytest skipped: system Python is 3.14, service pins `>=3.12,<3.13`. CI pytest run is the authoritative test gate.
+
+### Next
+- Push DRAFT PR.
+- Codex round-1 review.
+- Coordinator routing on any BLOCKERs / CONCERNs (or override-merge if clean per the new 5-round cap).
+
+---
+
 ## 2026-05-25 — PR-D1 Chunk A MERGED as PR #148 (squash `106f075b` at 11:56 UTC) — close-the-loop tracking entry
 
 ### Status

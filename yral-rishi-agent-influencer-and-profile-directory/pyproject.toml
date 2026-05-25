@@ -150,11 +150,16 @@ dev = [
     # PR-D1 round-2 per Codex J1/J3 BLOCKER on the missing test suite.
     "testcontainers[postgres]==4.10.0",
 
-    # NOTE: `asgi-lifespan` (httpx AsyncClient lifespan-event driver for
-    # FastAPI endpoint tests) is deliberately NOT added in this PR per
-    # A2.1 (avoid speculative dependencies). It lands in Chunk B alongside
-    # the endpoint tests that actually consume it, matching the pinned
-    # version user-memory-service uses (`asgi-lifespan==2.1.0`).
+    # asgi-lifespan — drives ASGI lifespan events (startup/shutdown)
+    # when running the FastAPI app in-process via httpx.ASGITransport
+    # for endpoint tests. Without it, the `lifespan` context never
+    # runs, so `init_pool()` never fires from startup AND the
+    # pre-injected test pool never gets through the idempotency check
+    # cleanly. Pinned same version as user-memory-service per
+    # cross-service consistency. Added in Chunk B alongside the
+    # endpoint test suite that consumes it (the PR-D1 Chunk A deferred-
+    # dep note pinned this exact addition path).
+    "asgi-lifespan==2.1.0",
 ]
 
 # ===========================================================================

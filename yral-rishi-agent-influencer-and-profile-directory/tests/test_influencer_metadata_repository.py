@@ -14,21 +14,28 @@
 #
 # COVERAGE PER METHOD:
 #   get_by_id(influencer_id):
-#     - Returns the row when it exists.
+#     - Returns the row when it exists + is non-discontinued.
 #     - Returns None when no row matches.
+#     - Returns None when the row exists but is discontinued (catalog
+#       authority — see Chunk B PR file-header comment in the
+#       repository module + the coordinator routing 2026-05-25).
 #     - All 9 contract-shape columns round-trip via the Pydantic model.
 #
 #   list_paginated(limit, offset):
-#     - Returns ALL rows when offset=0 + limit > row count.
+#     - Returns matching rows when offset=0 + limit > row count.
 #     - Honors offset (skips first N).
 #     - Honors limit (truncates to N).
 #     - Returns empty list when offset >= row count.
 #     - Ordered by `id ASC` deterministically.
-#     - Returns BOTH active and discontinued rows (filtering is the
-#       caller's job per the contract).
+#     - Filters out discontinued rows per catalog authority (Chunk B
+#       coordinator routing 2026-05-25). `is_active='active'` + `is_active=
+#       'coming_soon'` rows surface; `is_active='discontinued'` rows do
+#       not.
 #
 #   list_trending(limit):
-#     - Filters to is_active='active' only.
+#     - Filters to is_active='active' only (stricter than list_paginated;
+#       trending excludes coming_soon too because the partial index
+#       covers active rows only).
 #     - Orders by follower_count DESC.
 #     - Honors limit.
 #
@@ -305,18 +312,24 @@ async def test_list_paginated_returns_an_empty_list_when_the_offset_exceeds_the_
 
 
 @pytest.mark.asyncio
-async def test_list_paginated_does_not_filter_by_is_active_because_status_filtering_is_an_endpoint_layer_concern(
+async def test_list_paginated_excludes_discontinued_rows_but_surfaces_active_and_coming_soon_per_catalog_authority(
     database_pool: asyncpg.Pool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """WHAT: list_paginated returns rows regardless of `is_active`
-          value — filtering of discontinued influencers happens
-          mobile-side per the parity contract.
-    WHEN: mobile renders the full catalog; the `is_active` field tells
-          mobile which rows to grey-out / hide.
-    WHY:  a repository regression that filtered to is_active='active'
-          would drop the 263 discontinued chat-ai rows from the
-          catalog without warning. Pins the no-filter behaviour.
+    """WHAT: list_paginated returns rows with `is_active IN ('active',
+          'coming_soon')` and never returns rows with `is_active=
+          'discontinued'`. The catalog authority lives in the SQL
+          query (WHERE is_active <> 'discontinued') so the endpoint
+          layer can trust the repo's output without re-filtering.
+    WHEN: mobile renders the public catalog via `GET /v1/influencers`.
+    WHY:  pins the catalog-authority behaviour added in Chunk B (PR
+          coordinator routing 2026-05-25). A regression that removed
+          the WHERE filter would leak discontinued rows into the
+          mobile catalog. A regression that tightened the filter to
+          `is_active='active'` would hide pre-launch coming_soon
+          influencers from the catalog. This test asserts BOTH
+          sides — coming_soon IS surfaced; discontinued IS NOT —
+          so neither regression can land silently.
     """
     import app.database as database_module
     monkeypatch.setattr(database_module, "_pool", database_pool)
@@ -328,6 +341,11 @@ async def test_list_paginated_does_not_filter_by_is_active_because_status_filter
     )
     await _insert_test_influencer(
         database_pool,
+        identifier="influencer-coming-soon-row",
+        is_active="coming_soon",
+    )
+    await _insert_test_influencer(
+        database_pool,
         identifier="influencer-discontinued-row",
         is_active="discontinued",
     )
@@ -336,9 +354,49 @@ async def test_list_paginated_does_not_filter_by_is_active_because_status_filter
         limit=20, offset=0
     )
 
+    # 2 of the 3 inserted rows surface; the discontinued row is
+    # filtered out by the catalog-authority WHERE clause.
     assert len(results) == 2
     is_active_values = {row.is_active for row in results}
-    assert is_active_values == {"active", "discontinued"}
+    assert is_active_values == {"active", "coming_soon"}
+    assert "discontinued" not in is_active_values
+
+
+@pytest.mark.asyncio
+async def test_get_by_id_returns_none_when_the_row_exists_but_is_discontinued_per_catalog_authority(
+    database_pool: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WHAT: get_by_id returns None when the matching row exists in the
+          DB but has `is_active='discontinued'`. The catalog authority
+          (WHERE id = $1 AND is_active <> 'discontinued') treats a
+          discontinued row as not-in-catalog so the endpoint layer's
+          404 path fires.
+    WHEN: a mobile client requests `GET /v1/influencers/{id}` for an
+          id that was previously surfaced + has since been
+          discontinued (admin / content-moderation flow).
+    WHY:  pins the 404-on-discontinued behaviour at the data layer. A
+          regression that dropped the AND clause would surface
+          discontinued rows to mobile, breaking the catalog-authority
+          guarantee. Also: the 404 is intentionally
+          indistinguishable from "no such id" so an external probe
+          can't enumerate which ids have been soft-deleted vs never
+          existed (privacy + churn-data protection).
+    """
+    import app.database as database_module
+    monkeypatch.setattr(database_module, "_pool", database_pool)
+
+    await _insert_test_influencer(
+        database_pool,
+        identifier="influencer-discontinued-row",
+        is_active="discontinued",
+    )
+
+    result = await influencer_metadata_repository.get_by_id(
+        "influencer-discontinued-row"
+    )
+
+    assert result is None
 
 
 
