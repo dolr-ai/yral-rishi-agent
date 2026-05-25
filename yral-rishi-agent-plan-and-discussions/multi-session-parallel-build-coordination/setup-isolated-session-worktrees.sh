@@ -81,10 +81,17 @@ for SESSION_NUMBER in 1 2 3 4 5; do
         continue
     fi
 
-    # Create the worktree checked out at the latest main commit. The session
-    # can switch to its own branch (session-N/<feature>) from there.
-    echo "session-$SESSION_NUMBER: creating worktree at $WORKTREE_PATH (checked out at main)..."
-    git -C "$COORDINATOR_REPO_PATH" worktree add "$WORKTREE_PATH" main
+    # Create the worktree with a DETACHED HEAD at the latest main commit.
+    # Git only allows each branch to be checked out in ONE worktree at a
+    # time, so we cannot check out `main` in 5 different worktrees. Detach
+    # lets each session start at main's commit + then create its own
+    # session-N/<feature> branch off that commit.
+    #
+    # Codex round-2 BLOCKER 2026-05-25 correctly flagged the prior
+    # `git worktree add ... main` command as broken for session 2+ because
+    # main was already checked out somewhere.
+    echo "session-$SESSION_NUMBER: creating detached worktree at $WORKTREE_PATH at main's commit..."
+    git -C "$COORDINATOR_REPO_PATH" worktree add --detach "$WORKTREE_PATH" main
 done
 
 
