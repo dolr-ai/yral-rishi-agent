@@ -336,6 +336,38 @@ Verified locally:
 
 Same PR + branch. 2 files touched + this LOG subsection. No code-behavior change.
 
+### Round-14 fixups (Codex round-13 verdict: 1 BLOCKER B7 import role-comments + 1 CONCERN setup/invocation split)
+Codex round-13 verdict on commit `bc3e0d8` returned 1 BLOCKER + 1 CONCERN.
+
+**BLOCKER (B7 import role-comments) — `app/config.py:40`**: round-8 added `from urllib.parse import urlparse` + `from pydantic import field_validator` without B7's per-import one-line role comment. Round-14 added multi-line role-comment blocks above each:
+- `urlparse` — parses URL into scheme/netloc/path/etc. parts; used by the round-8 `_reject_password_in_redis_url` validator to detect credential-bearing `user:pass@host` segments that redis-py would silently prefer over the `password=` argument. Round-11 feature flag gates the rejection branch; urlparse remains the parsing primitive either way.
+- `field_validator` — pydantic v2 decorator that hooks the validator method into the Settings field-validation pipeline at construction time; enforces the passwordless-URL contract at the earliest possible diagnosis point (boot, not first-Redis-call).
+
+**CONCERN (test isolation) — `scripts/tests/test_validate_secrets.sh:79`**: round-10's ported `assert_exit_code` ran SETUP (mktemp/cp/mv/cd) + INVOCATION (validator) in a SINGLE `set -e` subshell whose combined exit code was captured into `actual`. A setup failure exiting with 1 due to disk-full / permissions / etc. would have masqueraded as the validator's `EXIT_MISSING_VALUE` (exit 1) — wrongly satisfying the missing-env-local + env-local-incomplete cases. Same risk for exit-2 setup failures vs `EXIT_TOOLING_ERROR`.
+
+Round-14 splits the helper into 3 phases:
+1. **SETUP** in the function body (not a subshell) with explicit per-step `if ! command; then FAIL counter ↑ + named-step error message + cleanup + return; fi` guards. Each setup step (`mktemp`, `cp`, `mv`) reports a distinct FAIL message naming the failing step (`SETUP: mktemp failed before validator could run` etc.).
+2. **INVOCATION** in a tight subshell whose ONLY job is `cd $tmpdir + bash $validator` — any non-zero exit here is unambiguously the validator's exit code (SETUP already proven successful above).
+3. **ASSERTION** compares `actual` vs `expected` as before.
+
+Cleanup is explicit `rm -rf $tmpdir` at every return path (4 paths total — 3 setup-failure returns + 1 normal path). No subshell EXIT trap needed any more; `trap RETURN` would be equivalent for bash 4+ but explicit cleanup at the return points reads more clearly.
+
+The 5 existing test cases (1 happy + 4 failure-mode) pass identically — SETUP succeeds for all 5 → INVOCATION exit codes flow through unchanged → assertions resolve as before. The defensive split only changes behavior on PATHOLOGICAL setup failures (which we want surfaced, not masked).
+
+### Files touched (round-14)
+- `yral-rishi-agent-public-api/app/config.py` — 2 multi-line role-comment blocks added above the round-8 `urlparse` + `field_validator` imports. Imports themselves unchanged.
+- `yral-rishi-agent-public-api/scripts/tests/test_validate_secrets.sh` — `assert_exit_code` body restructured into SETUP/INVOCATION/ASSERTION phases (per above). Comment blocks explain the round-14 split + the round-13-CONCERN it addresses.
+- This LOG subsection.
+
+Verified locally:
+- `bash scripts/tests/test_validate_secrets.sh` → **5 passed, 0 failed** (behavior unchanged for happy + 4 failure-mode tests; only the pathological-setup-failure path changes).
+- `bash -n` shell-syntax check on the modified script → clean.
+- `python3 -c "import ast"` on config.py → OK.
+
+**Note on commit boundary**: round-14's production-code changes shipped in commit `e51af7b`; this LOG subsection was meant to land in the same commit but a mid-edit Anthropic-API classifier timing-outage slipped the LOG-write past the commit. This LOG entry lands in a follow-up companion commit immediately after, restoring I11's same-PR LOG discipline (same pattern as PR #141's round-4 LOG companion).
+
+Same PR + branch. 2 files touched in `e51af7b` + this LOG subsection in the companion commit. No code-behavior change on the existing 5 test cases; pathological-setup path now correctly distinct from validator exit codes.
+
 ---
 
 ## 2026-05-22 — PR-B — Day-8 directory-RPC wrapper for `/api/v1/influencers` list + by-id (DRAFT, blocked on Session 4 directory ratification)
