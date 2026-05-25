@@ -135,11 +135,21 @@ class Settings(BaseSettings):
     # the pre-round-8 credential-bearing `redis://:<password>@<host>`
     # form keeps working in production without a boot-time crash.
     #
-    # After PR #150 + secret rotation land + coordinator confirms,
-    # Session 1 flips this flag to TRUE in a small follow-up PR.
-    # That activates the validator + locks in the passwordless-URL
-    # contract going forward. Belt-and-suspenders: validator code
-    # lives in main but doesn't fire until enabled.
+    # After PR #150 + Session 1's secret-rotation operator-action
+    # land + Session 1 confirms the deployed REDIS_URL secret is in
+    # passwordless shape, **Session 3** flips this flag's
+    # docker-compose default from `false` to `true` in a small
+    # follow-up PR (the flag's `enforce_passwordless_redis_url`
+    # env-var lives in `docker-compose.swarm.yml`'s `environment:`
+    # block — public-api owns that file per I9 + the agent-
+    # definition session split, so Session 1 cannot edit it). The
+    # division of labor: Session 1 OWNS the cluster + secret-
+    # rotation operator-action and confirms when the deployed
+    # REDIS_URL is passwordless; Session 3 OWNS the public-api
+    # compose flip from `:-false` → `:-true` triggered by that
+    # confirmation. Activating the flag locks in the passwordless-
+    # URL contract going forward. Belt-and-suspenders: validator
+    # code lives in main but doesn't fire until enabled.
     #
     # Pattern precedent: same shadow-mode-rollout idiom v2 uses for
     # the JWT strict signature validation (per memory
@@ -217,10 +227,13 @@ class Settings(BaseSettings):
               been rotated to the passwordless shape.
         """
         # Feature flag OFF (the default): no-op. The validator stays
-        # in main but doesn't fire until Session 1 flips the flag TRUE
-        # after PR #150 + secret rotation land. Closes Codex round-9
-        # BLOCKER 3 — soft merge-order gate (comment + PR body) was
-        # judged insufficient; feature flag is the real mechanism.
+        # in main but doesn't fire until Session 3 flips the flag's
+        # docker-compose default to TRUE in a small follow-up PR
+        # (after Session 1's PR #150 + secret-rotation operator-
+        # action land + Session 1 confirms the deployed REDIS_URL is
+        # passwordless). Closes Codex round-9 BLOCKER 3 — soft
+        # merge-order gate (comment + PR body) was judged insufficient;
+        # feature flag is the real mechanism.
         if not info.data.get("enforce_passwordless_redis_url", False):
             return value
         # Empty URL is technically valid (defaults to

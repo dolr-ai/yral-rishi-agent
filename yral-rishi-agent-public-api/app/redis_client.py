@@ -93,9 +93,13 @@ def get_redis() -> redis.Redis:
     # surfaces at boot rather than at the first Redis call —
     # gated behind the `enforce_passwordless_redis_url` feature
     # flag (defaults FALSE so this PR is safe to merge before
-    # Session 1's secret rotation; Session 1 flips the flag TRUE in
-    # a follow-up after PR #150 + rotation land). `REDIS_PASSWORD`
-    # is the sole AUTH source.
+    # Session 1's secret rotation; **Session 3** flips the flag's
+    # docker-compose default to TRUE in a small follow-up PR
+    # after PR #150 + Session 1's rotation land + Session 1
+    # confirms the deployed REDIS_URL is passwordless — Session 1
+    # confirms the secret state, Session 3 owns the public-api
+    # compose flip per I9 + agent-definition session split).
+    # `REDIS_PASSWORD` is the sole AUTH source.
     return redis.Redis.from_url(
         settings.redis_url,
         decode_responses=False,

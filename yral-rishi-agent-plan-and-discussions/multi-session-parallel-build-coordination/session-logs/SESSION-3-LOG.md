@@ -259,7 +259,7 @@ Codex round-9 verdict on commit `3f79c25` returned 3 BLOCKERs:
 
 **BLOCKER 3 (industry — production safety, soft merge-order gate insufficient)**: Codex won't accept comment + PR body as the BLOCKER-1 (round-7) mitigation. Round-11 implements option (a) — the feature-flag pattern.
 
-New `enforce_passwordless_redis_url: bool = False` Settings field declared BEFORE `redis_url` (pydantic v2 declaration-order matters for `info.data` visibility in field validators). Validator gates the rejection branch on `info.data.get("enforce_passwordless_redis_url", False)` — when False (default), no-op + URL passes through; when True, the round-8 rejection logic fires. PR #137 ships with the flag OFF, so it's safe to merge BEFORE PR #150 + secret rotation; Session 1 flips the flag TRUE in a small follow-up after the rotation. Pattern precedent: v2's JWT strict signature validation shadow-mode rollout (per memory `feedback_jwt_signature_validation_with_shadow_rollout`).
+New `enforce_passwordless_redis_url: bool = False` Settings field declared BEFORE `redis_url` (pydantic v2 declaration-order matters for `info.data` visibility in field validators). Validator gates the rejection branch on `info.data.get("enforce_passwordless_redis_url", False)` — when False (default), no-op + URL passes through; when True, the round-8 rejection logic fires. PR #137 ships with the flag OFF, so it's safe to merge BEFORE PR #150 + secret rotation; the activation path is documented round-by-round (round-11 first framed it as "Session 1 flips" — corrected in round-17 to Session 3 flipping the public-api compose default after Session 1 confirms the deployed secret rotation, per the I9 ownership split). Pattern precedent: v2's JWT strict signature validation shadow-mode rollout (per memory `feedback_jwt_signature_validation_with_shadow_rollout`).
 
 Round-9's `MERGE-ORDER PRE-FLIGHT` comment block above the validator removed (no longer the load-bearing mechanism — the feature flag is). PR body's MERGE ORDER GATE section replaced with a "validator behind feature flag" section explaining the new mechanism + the Session-1-follow-up that flips the flag TRUE.
 
@@ -290,7 +290,7 @@ Verified locally:
 - `python3 -c "import ast; ast.parse(...)"` on `config.py` + `test_health_routes.py` → OK.
 - Production-file B2 sweep on diff additions: clean (only `/dev/null` UNIX path literal remains, which is not a B2-suspect identifier).
 
-Same PR + branch. 7 files touched + this LOG subsection. **Behavior change**: validator is now gated behind a feature flag; default-FALSE means existing credential-bearing REDIS_URL secrets keep working until Session 1 flips the flag TRUE in the follow-up.
+Same PR + branch. 7 files touched + this LOG subsection. **Behavior change**: validator is now gated behind a feature flag; default-FALSE means existing credential-bearing REDIS_URL secrets keep working until the activation follow-up PR lands (round-11 first labeled this as Session 1's responsibility — round-17 corrects to Session 3 per the I9 compose-ownership split, after Session 1 confirms secret rotation is complete).
 
 ### Round-12 fixups (Codex round-11 verdict: 1 BLOCKER + 1 CONCERN)
 Codex round-11 verdict on commit `56e2a90` returned 1 BLOCKER + 1 CONCERN.
@@ -413,7 +413,7 @@ Codex round-15 verdict on commit `af40ad6` returned 1 BLOCKER + 1 CONCERN.
 
 Round-16 added multi-line role-comment blocks above each occurrence. The `Settings` repetitions share an annotation-by-reference pattern: the first 2 occurrences carry the full WHY paragraph (in the `redis_client` block); the later 4 reference back via "see the per-import comment on the redis_client block above" + a one-line WHY specific to that test's use of the field values.
 
-**CONCERN (rollout path incomplete) — `app/config.py:125`**: round-11's `enforce_passwordless_redis_url: bool = False` Settings field needed an operational way to flip the env var in deployed public-api containers. The PR body said "Session 1 flips the flag TRUE in a follow-up after PR #150 + secret rotation," but Session 1 doesn't own public-api files (I9 boundary — Session 3 owns `docker-compose.swarm.yml`); without the env var wired here, there's literally no rollout path that doesn't require Session 1 to violate I9.
+**CONCERN (rollout path incomplete) — `app/config.py:125`**: round-11's `enforce_passwordless_redis_url: bool = False` Settings field needed an operational way to flip the env var in deployed public-api containers. The round-11 PR body + role-comments said "Session 1 flips the flag TRUE in a follow-up after PR #150 + secret rotation," but Session 1 doesn't own public-api files (I9 boundary — Session 3 owns `docker-compose.swarm.yml`); without the env var wired in compose, there's literally no rollout path that doesn't require Session 1 to violate I9. The round-16 fix wires the env var into both compose files; round-17 corrects the WRITTEN INSTRUCTION across config.py + LOG narrative to say the activation PR is Session 3's, with Session 1 confirming the secret-rotation state as the precondition.
 
 Round-16 fix: wire `ENFORCE_PASSWORDLESS_REDIS_URL: ${ENFORCE_PASSWORDLESS_REDIS_URL:-false}` into the production compose's `environment:` block + `ENFORCE_PASSWORDLESS_REDIS_URL: "false"` (literal, no override) into `docker-compose.yml`'s local dev `environment:` block. Multi-line role-comment block above each entry documents:
 - The Codex round-9 BLOCKER 3 → round-11 feature-flag → round-15 CONCERN → round-16 wiring narrative.
@@ -434,6 +434,37 @@ Verified locally:
 - PyYAML not available locally; compose-file YAML parse will validate in CI (the inserted entries follow the existing `KEY: ${VAR:-default}` shape of `ENVIRONMENT` / `LOG_LEVEL` above).
 
 Same PR + branch. 3 files touched + this LOG subsection. **No code-behavior change** (B7 fix is comment-only; compose entries default to `false` so deployed behavior is unchanged until Session 3's separate activation PR lands).
+
+### Round-17 fixups (Codex round-16 verdict: 1 BLOCKER scope inconsistency + 1 CONCERN STATE staleness)
+Codex round-16 verdict on commit `c00e96c` returned 1 BLOCKER + 1 CONCERN.
+
+**BLOCKER (scope inconsistency) — `app/config.py:145`**: round-11 + round-15 role-comments said "Session 1 flips this flag to TRUE in a small follow-up PR" — but the flag's env var lives in `docker-compose.swarm.yml` which Session 3 owns per I9 + the agent-definition session split. Session 1 editing public-api compose files would BE the I9 violation the round-15 CONCERN explicitly warned against. Round-16's NEW comment on `docker-compose.swarm.yml` already correctly attributed the activation PR to Session 3 — the round-11 + round-15 mentions in `config.py` (+ `redis_client.py` + `health_routes.py` + LOG narrative) had become out-of-sync with the corrected story.
+
+Round-17 fix: rewrite the activation-path attribution across all 4 production-code role-comment occurrences + 3 LOG narrative mentions to consistently say:
+
+> Session 1 OWNS the cluster + the secret-rotation operator-action + confirms when the deployed REDIS_URL is in passwordless shape; **Session 3** OWNS the public-api compose flip from `:-false` → `:-true` triggered by that confirmation in a small follow-up PR (per I9 + the agent-definition session split — Session 1 can't edit public-api compose).
+
+The 4 production-code edits:
+- `app/config.py` — `FEATURE FLAG` block above `enforce_passwordless_redis_url` declaration + the validator docstring's feature-flag-off no-op comment.
+- `app/redis_client.py` — `PASSWORDLESS-URL CONTRACT` block above the `password=` forwarding callsite.
+- `app/api/health_routes.py` — matching `PASSWORDLESS-URL CONTRACT` block on the Sentinel-path callsite.
+
+The 3 LOG narrative edits (round-11 + round-15 entries) preserve historical accuracy by acknowledging the original framing + naming round-17 as the correction point, rather than overwriting the past round content silently.
+
+**CONCERN (STATE staleness) — `SESSION-3-STATE.md:4`**: the round-13 STATE refresh has been stale through rounds 14-16 (each round added content but didn't bump the snapshot). Round-17 refreshes both the `Updated:` one-liner and the round-by-round arc summary to reflect the current commit count (16 → 17 in progress), file count (12), insertion/deletion totals (+1063 / -89), and the round-14 / round-15 / round-16 additions (B7 import role-comments + setup/invocation split; guarded cleanup helper + env-local-incomplete fixture + message-contains assertion helper; B7 function-local import role-comments + compose env-var wiring).
+
+### Files touched (round-17)
+- `yral-rishi-agent-public-api/app/config.py` — 2 rewrites: FEATURE FLAG block (lines ~138-153 area) + validator-docstring no-op comment (lines ~229-233 area). Round-17 attribution: Session 3 flips compose default; Session 1 confirms secret state.
+- `yral-rishi-agent-public-api/app/redis_client.py` — PASSWORDLESS-URL CONTRACT block (lines ~94-99 area) rewritten with the same Session-3-owns-compose / Session-1-confirms-secret split.
+- `yral-rishi-agent-public-api/app/api/health_routes.py` — matching block rewritten on the Sentinel-path callsite (lines ~295-300 area).
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-3-LOG.md` — 3 narrative mentions in round-11 + round-15 entries rephrased to acknowledge the original framing was corrected in round-17 + this round-17 subsection.
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-state/SESSION-3-STATE.md` — `Updated:` one-liner refreshed to current round-17 cumulative state.
+
+Verified locally:
+- `bash scripts/tests/test_validate_secrets.sh` → **5 passed, 0 failed** (round-17 is comment-only; no behavior change).
+- `python3 -c "import ast"` on `config.py` + `redis_client.py` + `health_routes.py` → OK.
+
+Same PR + branch. 5 files touched + this LOG subsection. **No code-behavior change** (round-17 is documentation consistency only — the activation path is unchanged; only the WRITTEN ATTRIBUTION is corrected from Session 1 → Session 3 for the compose flip, while keeping Session 1's role as the secret-rotation-state confirmer).
 
 ---
 

@@ -293,10 +293,15 @@ async def _check_redis_reachable() -> bool:
             # Settings construction time by the `app/config.py`
             # `_reject_password_in_redis_url` validator, gated behind
             # the `enforce_passwordless_redis_url` feature flag
-            # (defaults FALSE; Session 1 flips TRUE after PR #150 +
-            # secret rotation). Same contract enforced symmetrically
-            # on the `redis.Redis.from_url()` callsite in
-            # `app/redis_client.py`.
+            # (defaults FALSE; **Session 3** flips the flag's
+            # docker-compose default to TRUE in a small follow-up PR
+            # after PR #150 + Session 1's secret-rotation operator-
+            # action land + Session 1 confirms the deployed REDIS_URL
+            # is passwordless — Session 1 owns the cluster + secret
+            # state, Session 3 owns the public-api compose flip per
+            # I9 + agent-definition session split). Same contract
+            # enforced symmetrically on the `redis.Redis.from_url()`
+            # callsite in `app/redis_client.py`.
             primary_client = sentinel_client.master_for(
                 master_name,
                 socket_timeout=_HEALTH_PROBE_TIMEOUT_SECONDS,
