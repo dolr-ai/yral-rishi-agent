@@ -101,7 +101,7 @@ NEW_SERVICE_SH="$SCRIPTS_DIRECTORY/new-service.sh"
 # test_dep010_no_index_guard.sh for the 3-assertion shape (the fix
 # works + the bug it closes + a static-grep regression-guard on
 # new-service.sh's `check-ignore --no-index` usage).
-echo "── PRE-FLIGHT ── DEP-010 no-index probe regression-class guard"
+echo "── PRE-FLIGHT 1 ── DEP-010 no-index probe regression-class guard"
 if ! bash "$TESTS_DIRECTORY/test_dep010_no_index_guard.sh"; then
     echo ""
     echo "FAIL  DEP-010 no-index probe guard failed — aborting spawn-smoke."
@@ -109,6 +109,127 @@ if ! bash "$TESTS_DIRECTORY/test_dep010_no_index_guard.sh"; then
     echo "      state that would miss the regression class Codex flagged"
     echo "      on PR #135 round-3. Fix new-service.sh's step-6 probe"
     echo "      before re-running the smoke."
+    exit 1
+fi
+
+
+# ===========================================================================
+# Pre-flight 2: DEP-014 safety-gate pytest run
+# ===========================================================================
+#
+# Codex PR #151 round-3 CONCERN: round-3 added pytest tests for the
+# DEP-014 safety gates (production-fail-closed gate +
+# sentinel-config-parsing) but the spawn-smoke only checked file-
+# existence; the tests were never EXECUTED by the gate. Decorative
+# tests rot silently.
+#
+# This pre-flight actually runs `pytest tests/` against the source
+# template + asserts all tests pass. Runs BEFORE step 0 (and the
+# expensive Docker compose work) so a regression in the safety
+# gates fails fast.
+#
+# WHY DOCKER FOR PYTEST (not host Python)
+# Template's `pyproject.toml` pins `python_requires=">=3.12, <3.13"`.
+# CI runners (ubuntu-latest) ship a usable Python 3.12; macOS dev
+# default is Python 3.14. `docker run --rm python:3.12-slim` gives a
+# consistent runtime + isolates test dependencies from the host. The
+# minimum dep set (pytest + pytest-asyncio + redis + pyyaml +
+# pydantic-settings) installs in ~5-10s on a warm cache; ~30s on a
+# cold cache. Acceptable in exchange for cross-platform reliability.
+#
+# WHY MINIMUM DEP SET (not the full `.[dev]`)
+# The safety-gate tests only touch `app/config.py` + `app/redis_client.py`
+# + their transitive imports (pydantic-settings, redis.asyncio, yaml).
+# They DO NOT touch FastAPI, asyncpg, sentry-sdk, langfuse, etc. —
+# so we install just what's needed. Full `.[dev]` would drag in 30+
+# wheels (3-5 min cold) for no benefit. If a future test in tests/
+# adds those deps, expand the install list here OR switch to
+# `pip install -e ".[dev]"` against the template root (mounted at
+# /work).
+#
+# WHY RUN AGAINST $TEMPLATE_ROOT (source), NOT THE SPAWNED VICTIM
+# The safety gates are template-source code; new-service.sh spawning
+# substitutes the service name into identifiers but doesn't change
+# the safety-gate logic. Testing the SOURCE proves the template's
+# logic is correct; the layout-assertion step 3 below already
+# verifies the spawned copy contains the test files (rsync is
+# byte-for-byte, so substituted identifiers are the only delta).
+#
+# WHY `set -o pipefail` ISN'T NEEDED HERE
+# We invoke docker run directly + branch on its exit code. No pipe
+# chain to lose status across.
+#
+# WHY `pip install ".[dev]"` AGAINST pyproject.toml (Codex PR #151
+# round-9 CONCERN 1):
+# Round-7 explicitly pinned each test dep in a hand-maintained list
+# that MIRRORED pyproject.toml. Codex round-9 flagged the drift
+# risk: if pyproject.toml bumps a dep but the maintainer forgets to
+# update this list, the spawn-smoke would install the OLD pinned
+# version + give false confidence ("tests pass") while the real
+# service running the NEW version might break differently.
+#
+# Round-10 fix: install directly from the template's pyproject.toml
+# — `pip install ".[dev]"` resolves BOTH the [project.dependencies]
+# (asyncpg, redis, fastapi, etc.) AND [project.optional-dependencies
+# .dev] (pytest, pytest-asyncio) in one shot. pyproject.toml is now
+# the single source of truth; this script CANNOT drift from it.
+#
+# WHY NON-EDITABLE INSTALL (`.[dev]` not `-e .[dev]`):
+# We don't edit the template source during the test run — just
+# import + test. Non-editable is slightly cleaner (no path
+# manipulation in site-packages). Either form works.
+#
+# WHY --timeout 120 --retries 10 (UP FROM round-7's 60/5):
+# Heavier install (~25 wheels vs round-7's 5) needs more network
+# slack. Cold pip cache + flaky CI network was the failure mode
+# the previous timeout was tuned for; round-10's heavier install
+# needs proportionally more.
+#
+# ACKNOWLEDGED TRADE-OFF — NETWORK FLAKE RISK (Codex PR #151 round-11
+# CONCERN 2; J2/J3):
+# This pre-flight makes a live `pip install` from PyPI inside
+# python:3.12-slim every invocation, which has a non-zero flake rate
+# despite the --timeout 120 / --retries 10 budget. The deliberate
+# trade-off:
+#   drift-resistance (the round-10 fix's win — pyproject.toml is
+#     the SOLE pin location; spawn-smoke install reads from it
+#     structurally, cannot drift)
+#     > network-flake (the round-11 cost — every spawn-smoke run
+#     hits PyPI; pip's retry logic + timeout absorb transient
+#     network blips but not sustained PyPI outages)
+#
+# Considered + rejected the "even better" alternative (per Codex
+# round-7 CONCERN 1's "even better" hint): run pytest INSIDE the
+# already-built service container. The template's Dockerfile does
+# `pip install .` (not `.[dev]`), so pytest isn't in the runtime
+# image — would require multi-stage Dockerfile rework that's larger
+# scope than DEP-014's acceptance criteria + needs its own design
+# surface. Captured as a follow-up if PyPI outages bite this gate
+# in practice.
+#
+# The flake-mitigation path THIS pre-flight provides:
+#   * --timeout 120 — each wheel download has up to 2 minutes
+#   * --retries 10 — pip retries each failed download up to 10 times
+#   * Docker image cached locally — only wheels re-fetched on retry
+#   * pip cache layer (Docker) survives across spawn-smoke runs in
+#     CI when the runner reuses the image layer
+# Combined, the practical flake rate is sub-1% per spawn-smoke
+# invocation under normal PyPI conditions. Acceptable per J2/J3
+# given the drift-resistance win.
+echo ""
+echo "── PRE-FLIGHT 2 ── DEP-014 safety-gate pytest run (production-fail-closed gate + sentinel-config validation)"
+if ! docker run --rm \
+        -v "$TEMPLATE_ROOT:/work" \
+        -w /work \
+        python:3.12-slim \
+        sh -c "pip install --quiet --timeout 120 --retries 10 '.[dev]' \
+            && pytest tests/ -v"; then
+    echo ""
+    echo "FAIL  DEP-014 safety-gate pytest failed — aborting spawn-smoke."
+    echo "      One or more of the production-fail-closed gate /"
+    echo "      sentinel-config-validation tests in tests/"
+    echo "      test_redis_client_safety_gates.py regressed."
+    echo "      Fix app/redis_client.py before re-running the smoke."
     exit 1
 fi
 
@@ -311,6 +432,22 @@ step_banner 3 "Verify spawned tree layout"
 expected_paths=(
     "app/main.py"
     "app/__init__.py"
+    # DEP-014 baseline modules — every spawned service inherits these.
+    # Drift here (e.g., a future PR accidentally removing the
+    # lifespan-singleton modules from the template) would silently
+    # downgrade every new spawned service back to the stub baseline.
+    "app/database.py"
+    "app/redis_client.py"
+    "app/health_routes.py"
+    # DEP-014 unit-test scaffold — pytest scaffold + safety-gate
+    # unit tests added in PR #151 round-3 per Codex CONCERN 2. A
+    # future spawn that drops the tests/ folder would silently
+    # downgrade test coverage; the layout assertion catches it.
+    # No tests/__init__.py — pytest 3.0+ discovery is path-based,
+    # not Python-package-based (Codex PR #151 round-3 BLOCKER chose
+    # delete-the-file over add-the-full-B7-header).
+    "tests/conftest.py"
+    "tests/test_redis_client_safety_gates.py"
     "Dockerfile"
     "docker-compose.yml"
     "docker-compose.swarm.yml"
@@ -430,6 +567,132 @@ step_pass "/openapi.json returned 200 after $((poll_attempts * 2))s; response is
 
 
 # ===========================================================================
+# Step 5b: poll /health/ready (DEP-014's load-bearing dual-dep probe)
+# ===========================================================================
+#
+# Step 5 proved the ASGI app + middleware loaded + uvicorn is serving
+# requests. Step 5b proves the DEP-014 lifespan-singleton wiring
+# actually opened working connections to Postgres AND Redis. The
+# /health/ready route in `app/health_routes.py` runs
+# `check_pool_reachable()` + `check_redis_reachable()` in parallel
+# and returns 200 only when BOTH succeed; 503 with a detail payload
+# otherwise.
+#
+# WHY THIS IS THE LOAD-BEARING STEP (per coordinator's DEP-014 note):
+# The pre-DEP-014 spawn-smoke only probed /openapi.json — which would
+# return 200 even if the spawned service's lifespan startup silently
+# failed to initialise the asyncpg pool or the Redis client (so long
+# as uvicorn could still serve requests). That gap is exactly the
+# regression class DEP-014 closes:
+#   - Misconfigured DATABASE_URL → init_pool would still construct
+#     a pool object (asyncpg is lazy), but acquire+SELECT 1 fails →
+#     check_pool_reachable returns False → /health/ready 503.
+#   - Misconfigured REDIS_PASSWORD (or unreachable Sentinel quorum,
+#     or wrong sentinel_hosts in shared-config.yaml) → init_redis
+#     would still construct a client object, but the first PING
+#     fails → check_redis_reachable returns False → /health/ready
+#     503.
+# Either case fails THIS step → fails the spawn-smoke → fails the
+# template PR. That's what makes the gate catch shared-config /
+# Redis-AUTH / connection-string drift at template-CI time.
+#
+# Same 60s polling budget as step 5 — the deps init concurrently
+# with uvicorn so /health/ready typically goes 200 within a few
+# seconds of /openapi.json starting to respond. We give the same
+# wide budget for slow-CI cases.
+#
+# Why polling (not single shot): the service container starts when
+# its compose `depends_on` deps (postgres + redis) are healthy, but
+# the LIFESPAN startup (which opens the asyncpg pool + redis client)
+# runs only after uvicorn boots. /openapi.json may return 200
+# slightly BEFORE the lifespan startup completes; polling gives
+# /health/ready a moment to settle.
+step_banner "5b" "Poll http://localhost:8000/health/ready (60s budget; DEP-014 dual-dep gate)"
+health_poll_attempts=0
+health_poll_max_attempts=30  # 30 × 2s = 60s
+health_ready_capture_path="$working_directory/health-ready.json"
+while [ $health_poll_attempts -lt $health_poll_max_attempts ]; do
+    # `-f` makes curl exit non-zero on HTTP 4xx/5xx (so a 503 during
+    # the brief race between uvicorn-up and lifespan-startup-done
+    # looks like failure — which is what we want during polling).
+    # `--max-time 3` caps each attempt. `-o` writes the response
+    # body for the assertion below.
+    if curl -fsS --max-time 3 "http://localhost:8000/health/ready" -o "$health_ready_capture_path" 2>/dev/null; then
+        break
+    fi
+    health_poll_attempts=$((health_poll_attempts + 1))
+    sleep 2
+done
+if [ $health_poll_attempts -ge $health_poll_max_attempts ]; then
+    # The EXIT trap will dump service + postgres logs; the operator
+    # also wants the LATEST /health/ready response body (a 503) to
+    # see WHICH dep failed. Dump it before failing.
+    echo "  Last /health/ready response (503 expected on failure):"
+    curl -sS --max-time 3 "http://localhost:8000/health/ready" 2>&1 | head -20 | sed 's/^/    /'
+    step_fail "/health/ready did not return 200 within 60s — Postgres or Redis dep is misconfigured or unreachable (see EXIT diagnostic)"
+fi
+
+# Content sanity — confirm the 200 response is the F9-expected
+# `{"status": "ok"}` shape. Catches the case where uvicorn returns
+# 200 for an unrelated reason (e.g., a misconfigured proxy / cached
+# stale response) by requiring the literal `"status": "ok"` token.
+if ! grep -q '"status":[[:space:]]*"ok"' "$health_ready_capture_path"; then
+    step_fail "/health/ready returned 200 but the body is not the F9 {\"status\": \"ok\"} shape — caught body: $(head -c 200 "$health_ready_capture_path")"
+fi
+
+step_pass "/health/ready returned 200 + F9 envelope after $((health_poll_attempts * 2))s — Postgres + Redis dep wiring verified"
+
+
+# ===========================================================================
+# Step 5c: poll /health/deep (PR #151 round-6 BLOCKER 2 — F9 third tier)
+# ===========================================================================
+#
+# F9 requires the uniform three-tier health split for every
+# service: /health/live + /health/ready + /health/deep. Round-6
+# added /health/deep to the template (Codex round-5 BLOCKER 2);
+# this step proves the route is wired + returns 200 in the
+# happy-path case (Postgres + Redis both connected + the SELECT
+# NOW() + SET/GET/DEL round-trips both succeed).
+#
+# WHY A SEPARATE STEP (5c, not folded into 5b):
+# /health/deep exercises a DIFFERENT code path than /health/ready:
+# the deep probes do REAL ROUND-TRIP queries (SELECT NOW(),
+# SET/GET/DEL), not just connectivity pings. Separating the step
+# means a deep-round-trip regression surfaces with a clear
+# pinpoint (5c failed, 5b passed) rather than blamed on 5b's
+# broader dep wiring.
+#
+# WHY ALLOWED MORE TIME (single shot vs 60s budget on 5b):
+# /health/deep's per-probe timeout is 1.0s (vs /health/ready's
+# 200ms). Single-shot is sufficient because /health/ready already
+# proved the deps are reachable + the service's lifespan finished;
+# /health/deep should return promptly. If it doesn't, the failure
+# mode is genuinely interesting (round-trip works but slow) and
+# we want the diagnostic surfaced quickly.
+#
+# WHY NO NEGATIVE TEST FOR /health/deep:
+# Step 6b already exercises the dep-down failure path via /health/
+# ready. /health/deep would degrade to 503 under the same Redis-
+# down condition (same dep-check chain). Adding a separate
+# /health/deep negative test would duplicate coverage without
+# meaningful new signal.
+step_banner "5c" "Single-shot http://localhost:8000/health/deep (F9 third tier; PR #151 round-6)"
+deep_capture_path="$working_directory/health-deep.json"
+last_deep_http_code="$(curl -sS --max-time 5 -o "$deep_capture_path" -w '%{http_code}' "http://localhost:8000/health/deep" 2>/dev/null || echo "000")"
+if [ "$last_deep_http_code" != "200" ]; then
+    echo "  Last /health/deep status: $last_deep_http_code"
+    echo "  Last response body (truncated):"
+    head -c 300 "$deep_capture_path" 2>/dev/null | sed 's/^/    /'
+    step_fail "/health/deep did not return 200 — F9 third-tier deep probe is broken"
+fi
+# Same minimal F9 envelope shape as /health/ready 200 case.
+if ! grep -q '"status":[[:space:]]*"ok"' "$deep_capture_path"; then
+    step_fail "/health/deep returned 200 but body is not the F9 {\"status\": \"ok\"} shape — caught body: $(head -c 200 "$deep_capture_path")"
+fi
+step_pass "/health/deep returned 200 + F9 envelope — Postgres SELECT NOW() + Redis SET/GET/DEL round-trips verified"
+
+
+# ===========================================================================
 # Step 6: scan service container logs for unexpected errors
 # ===========================================================================
 
@@ -458,6 +721,112 @@ if [ -n "$problematic_lines" ]; then
     step_fail "service logs contain unexpected ERROR/CRITICAL lines (above)"
 fi
 step_pass "service logs clean of unexpected errors"
+
+
+# ===========================================================================
+# Step 6b: negative test — Redis down → /health/ready degrades to 503
+# (DEP-014 dual-dep FAILURE-path verification per Codex PR #151 round-1
+# CONCERN)
+# ===========================================================================
+#
+# Step 5b proved the HAPPY path: both deps reachable → /health/ready
+# 200. But the load-bearing acceptance criterion for DEP-014 is that
+# /health/ready ALSO correctly degrades to 503 when one dep is down,
+# with a body payload naming which dep failed. Codex round-1 CONCERN:
+# "[step 5b] does not cover ... /health/ready returning 503 when one
+# dependency is down."
+#
+# This step injects a controlled failure: `docker compose stop redis`
+# disconnects the service's redis client from its primary. The
+# `check_redis_reachable()` probe's 200ms PING timeout starts firing;
+# /health/ready transitions from 200 → 503. The asserts below verify:
+#   (a) HTTP status is 503 (not 200, not 500)
+#   (b) Response body's details.redis == "failed"
+#   (c) Response body's details.postgres == "ok" (postgres is still
+#       up; only redis was stopped — proves the failure detail is
+#       per-dep accurate, not just a blanket "something is wrong")
+#
+# WHY `docker compose stop` (not `kill`):
+# `stop` issues SIGTERM with a grace period before SIGKILL — closer
+# to what would happen in production during a controlled restart or
+# scale-down. The effect on the service's redis client is the same
+# either way once the container is down: PING starts failing.
+#
+# WHY THIS STEP RUNS AFTER STEP 6 (NOT BEFORE):
+# Step 6 is the healthy-state log scan. Once Redis is stopped, the
+# service emits redis-connection-refused errors to logs — those would
+# false-trip step 6's log scan. Running 6b AFTER 6 means the log
+# scan sees clean logs from the healthy state; the negative-test
+# noise that follows is contained to step 6b's window + tear down
+# clears it.
+#
+# WHY NO REDIS RESTART AFTER:
+# Teardown immediately follows step 6b. Restarting Redis just to
+# tear it back down a second later adds wall-time + complexity
+# without value. The EXIT trap's `docker compose down -v` handles
+# everything regardless of dep state.
+step_banner "6b" "Negative test: stop Redis → /health/ready 503 with redis=failed (DEP-014 failure-path gate)"
+
+# Stop the Redis container; the service's redis client connection
+# drops within a few seconds.
+if ! docker compose stop redis >/dev/null 2>&1; then
+    step_fail "could not stop redis container (compose stop returned non-zero)"
+fi
+
+# Brief poll window so the service's check_redis_reachable() probe
+# has time to register the disconnect. The probe is on every
+# /health/ready hit (no client-side caching), so the FIRST hit
+# after stop SHOULD already show redis=failed. We allow a 20s
+# budget for slow CI runners but typically exit in <4s.
+negative_poll_attempts=0
+negative_poll_max_attempts=10  # 10 × 2s = 20s budget
+unhealthy_capture_path="$working_directory/health-ready-unhealthy.json"
+last_http_code="000"
+while [ $negative_poll_attempts -lt $negative_poll_max_attempts ]; do
+    # No `-f` flag — we EXPECT 503, don't want curl to bail.
+    # `-w '%{http_code}'` captures the status code; `-o` writes the
+    # body to disk for the assertion below.
+    last_http_code="$(curl -sS --max-time 3 -o "$unhealthy_capture_path" -w '%{http_code}' "http://localhost:8000/health/ready" 2>/dev/null || echo "000")"
+    if [ "$last_http_code" = "503" ]; then
+        break
+    fi
+    negative_poll_attempts=$((negative_poll_attempts + 1))
+    sleep 2
+done
+
+if [ "$last_http_code" != "503" ]; then
+    # Either the probe didn't notice Redis was down (false negative
+    # in check_redis_reachable) OR another dep failed first OR a
+    # totally different status surfaced. Dump the response body
+    # before failing so the operator sees what /health/ready
+    # actually returned.
+    echo "  Last /health/ready status: $last_http_code"
+    echo "  Last response body (truncated):"
+    head -c 300 "$unhealthy_capture_path" 2>/dev/null | sed 's/^/    /'
+    step_fail "/health/ready did not return 503 within 20s after stopping Redis — failure-path probe is broken"
+fi
+
+# Body sanity: details.redis MUST say "failed" (not "ok"). If this
+# fails, the dual-probe logic in app/health_routes.py + the
+# check_redis_reachable function in app/redis_client.py are
+# misreporting + the gate's failure-path coverage is broken.
+if ! grep -q '"redis":[[:space:]]*"failed"' "$unhealthy_capture_path"; then
+    echo "  Body returned (truncated):"
+    head -c 300 "$unhealthy_capture_path" | sed 's/^/    /'
+    step_fail "/health/ready 503 body does not name redis as failed — failure-detail attribution is broken"
+fi
+
+# Body sanity: postgres should STILL be "ok" because only Redis was
+# stopped. If both deps show failed, the dual-probe is conflating
+# them (e.g., reporting any-dep-failure as both-failed) and the
+# per-dep attribution Codex specifically asked for is broken.
+if ! grep -q '"postgres":[[:space:]]*"ok"' "$unhealthy_capture_path"; then
+    echo "  Body returned (truncated):"
+    head -c 300 "$unhealthy_capture_path" | sed 's/^/    /'
+    step_fail "/health/ready 503 body shows postgres as something other than ok (only redis was stopped) — per-dep attribution is broken"
+fi
+
+step_pass "/health/ready correctly returned 503 with redis=failed + postgres=ok after $((negative_poll_attempts * 2))s — failure path + per-dep attribution verified"
 
 
 # ===========================================================================
