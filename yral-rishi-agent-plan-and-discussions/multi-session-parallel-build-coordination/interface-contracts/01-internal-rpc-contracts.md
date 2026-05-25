@@ -352,11 +352,20 @@ The gate runs in TWO modes for J2 zero-flake compliance — stable hardware ALON
 - **Session 1 deliverable note**: When choosing MOCK_LLM_FIXED_LATENCY_MS, derive the typical chat-ai LLM-call p95 contribution from **AGGREGATED Sentry performance data** (per A14 + I7, which pre-authorize aggregated Sentry perf reads). Likely 50-200ms for Gemini Flash / 100-400ms for OpenRouter routing paths based on Sentry's transaction-duration histograms broken down by route. Pick the median of those, OR the lower value to be conservative (a lower mock = stricter gate). **DO NOT** query Langfuse traces — Langfuse traces include prompts/responses/PII and A14 only pre-authorizes aggregated Sentry perf reads, NOT live trace reads. (Codex round-17 BLOCKER correctly flagged round-16's Langfuse-trace instruction as an A14 violation; round-18 corrects to Sentry aggregated reads.) Document the chosen value's source in the Gate A2-PR workflow file's comment block so future maintainers know what it approximates.
 - Marked as a REQUIRED check in the merge protection rule for the send-message hot path — implementation PR cannot merge until Gate A2-PR passes. J2 zero-flake compliance comes from BOTH stable hardware AND deterministic mock LLM.
 
-**Gate A2-PR explicit scope (clarifying Codex round-18 CONCERN)**: this gate validates **v2 infrastructure cost ≤ chat-ai infrastructure cost** by holding the LLM contribution CONSTANT (via mock) on the v2 side. It does NOT validate v2's real-world provider-routing latency — that's caught by Gate A2-NIGHTLY (real Gemini/OpenRouter calls with week-over-week drift alerts) + Gate B (pre-production-traffic shadow rehearsal at projected RPS). The 3-gate scope split:
-  - **Gate A2-PR** = "v2 infra ≤ chat-ai infra" (LLM neutralized via mock; merge-blocking per E1)
-  - **Gate A2-NIGHTLY** = "v2 real-world doesn't drift week-over-week" (real LLM, telemetry not gating)
+**Gate A2-PR explicit scope (clarifying Codex round-18 CONCERN)**: this gate validates **v2 infrastructure cost ≤ chat-ai infrastructure cost** by holding the LLM contribution CONSTANT (via mock) on the v2 side. It does NOT validate v2's real-world provider-routing latency — that gap is now closed by Gate A2-PROVIDER-PR below (Codex round-24 BLOCKER, correctly flagged). The 4-gate scope split:
+  - **Gate A2-PR** = "v2 infra ≤ chat-ai infra" (LLM neutralized via mock; merge-blocking per E1; fires on infra-affecting paths)
+  - **Gate A2-PROVIDER-PR** = "v2 real-LLM round-trip ≤ chat-ai full baseline" (real LLM provider; merge-blocking per E1; fires ONLY on PRs touching LLM-routing/client/model files — see filter below). Added round-25 to close the round-24 BLOCKER gap: a PR changing provider routing / model selection / llm_client behavior would not trigger Gate A2-PR (mock LLM neutralizes provider differences); Gate A2-PROVIDER-PR catches that class of change with real-provider measurement.
+  - **Gate A2-NIGHTLY** = "v2 real-world doesn't drift week-over-week" (real LLM, telemetry not gating; fires on schedule, all paths)
   - **Gate B** = "v2 full system at day-0 RPS meets latency floor" (real LLM + real cluster + projected load; pre-production-traffic at Rishi's A6 discretion)
 A regression in any one tier surfaces a different class of bug. Treating them as overlapping is wrong — they're complementary.
+
+**Gate A2-PROVIDER-PR file filter** (path filter for the LLM-affecting subset of hot-path PRs; Session 1 implements as a separate workflow file mirroring Gate A2-PR's structure but with real-LLM run):
+  - `yral-rishi-agent-conversation-turn-orchestrator/app/llm_client/**` (provider routing rules, model selection, OpenAI/Gemini/OpenRouter client wrappers)
+  - `yral-rishi-agent-conversation-turn-orchestrator/app/prompts/**` (system-prompt construction — affects token count + latency)
+  - `yral-rishi-agent-soul-file-library/app/**` (Soul File composition — token count affects LLM latency)
+  - `yral-rishi-agent-plan-and-discussions/llm_routing_rule` (the per-influencer routing matrix file, wherever it ends up)
+  - The Gate A2-PROVIDER-PR workflow file itself (self-protection per round-23 pattern)
+Threshold: same `0.5 × chat-ai-baseline-p95` (no MOCK subtraction; real LLM on both sides — apples-to-apples). Fail-stop semantics identical to Gate A2-PR.
 
 **Gate A2-NIGHTLY (telemetry, NOT merge-blocking, real LLM provider)**:
 - Run nightly on a schedule (catches baseline-drift + real-provider latency regressions early)

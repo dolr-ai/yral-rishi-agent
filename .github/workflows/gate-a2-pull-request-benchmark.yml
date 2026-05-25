@@ -62,6 +62,22 @@ on:
     # non-hot-path changes (see "Detect hot-path file changes" step).
   workflow_dispatch:
     # Manual re-run capability for debugging; NOT the primary trigger.
+    # Requires an explicit `ref` input (e.g. branch name or SHA) because
+    # github.event.pull_request.head.sha is undefined for non-pull-request
+    # runs (Codex round-24 CONCERN, correctly flagged). The benchmark
+    # checkout step below uses inputs.ref when present, otherwise falls
+    # back to the pull request head SHA. The hot-path-detect step also
+    # uses inputs.base_ref when present for the diff base.
+    inputs:
+      ref:
+        description: 'Branch name or SHA to benchmark (required for manual runs).'
+        required: true
+        type: string
+      base_ref:
+        description: 'Diff base for hot-path detection (default: main).'
+        required: false
+        type: string
+        default: 'main'
 
 permissions:
   contents: read
@@ -73,10 +89,13 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - name: Check out pull request branch
+      - name: Check out pull request branch or manual-dispatch ref
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          # On pull_request: use the PR head SHA.
+          # On workflow_dispatch: use the explicit inputs.ref required for
+          # manual runs (Codex round-24 CONCERN fix).
+          ref: ${{ github.event.pull_request.head.sha || inputs.ref }}
           fetch-depth: 0
 
       - name: Detect hot-path file changes
@@ -85,8 +104,13 @@ jobs:
           # Detect whether this pull request touches any hot-path file.
           # Keep this list in sync with the Gate A2-PR section in
           # interface-contracts/01-internal-rpc-contracts.md.
-          git fetch origin main
-          CHANGED_FILES=$(git diff --name-only origin/main...HEAD)
+          # On pull_request: diff base is origin/main (the PR's target branch).
+          # On workflow_dispatch: diff base is inputs.base_ref (default 'main')
+          # so the same hot-path-detection logic works for manual runs (Codex
+          # round-24 CONCERN fix).
+          DIFF_BASE="${{ inputs.base_ref || 'main' }}"
+          git fetch origin "$DIFF_BASE"
+          CHANGED_FILES=$(git diff --name-only "origin/$DIFF_BASE...HEAD")
           # NOTE — the regex also covers the gate's OWN files (the benchmark
           # script directory + this workflow file). PRs that modify the gate
           # itself MUST trigger the gate, otherwise the gate could be silently
