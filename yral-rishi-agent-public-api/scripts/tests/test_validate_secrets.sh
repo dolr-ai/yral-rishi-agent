@@ -76,48 +76,80 @@ assert_exit_code() {
     local label=$3
 
     local fixture_dir="$TESTS_DIR/fixtures/$fixture"
-    local actual=0
-    # Run the validator inside a SUBSHELL so the EXIT trap below scopes
-    # cleanup to this single assertion. A subshell exit also can't leak
-    # `set -e` semantics back into the outer test driver.
-    (
-        # Strict mode inside the subshell so any intermediate failure
-        # (mktemp, cp, mv, cd) aborts cleanly. The outer `|| actual=$?`
-        # captures the resulting exit code.
-        set -e
-        # Materialize a per-assertion working directory. The validator
-        # reads `.env.local` from the current working directory; we
-        # never want that literal name to exist in the tracked tree
-        # (DEP-010), so it lives only inside this throw-away
-        # directory for the duration of the run.
-        temporary_fixture_directory="$(mktemp -d)"
-        # Cleanup fires on EVERY subshell exit path — success, failure,
-        # signal — so leaked /tmp/tmp.XXXXXX directories can't
-        # accumulate across test runs.
-        trap 'rm -rf "$temporary_fixture_directory"' EXIT
-        # Copy the checked-in fixture (with `env.local.fixture` as
-        # the env-shaped file's name) into the throw-away directory.
-        # The trailing `/.` form preserves dotfiles + directory
-        # contents without nesting.
-        cp -R "$fixture_dir/." "$temporary_fixture_directory/"
-        # Rename `env.local.fixture` → `.env.local` ONLY inside the
-        # throw-away directory, only when the fixture ships one.
-        # Fixtures that intentionally lack an environment-variable
-        # file (missing-env-local, malformed-yaml, no-secrets-yaml)
-        # skip the rename — the `[ -f ... ]` guard keeps `cp`
-        # semantics aligned with the original layout where each
-        # fixture was the validator's working directory directly.
-        if [ -f "$temporary_fixture_directory/env.local.fixture" ]; then
-            mv "$temporary_fixture_directory/env.local.fixture" \
-               "$temporary_fixture_directory/.env.local"
-        fi
-        # `cd` into the throw-away directory so the validator's
-        # working-directory-relative reads (`.env.local`,
-        # `secrets.yaml`) hit the fixture copy, not anything else on
-        # disk.
-        cd "$temporary_fixture_directory" && bash "$SCRIPT_UNDER_TEST"
-    ) >/dev/null 2>&1 || actual=$?
 
+    # -------- SETUP phase ------------------------------------------------
+    # Round-14 (Codex round-13 CONCERN): keep setup steps OUTSIDE the
+    # subshell that captures the validator's exit code. Earlier rounds
+    # ran setup + invocation inside one `set -e` subshell whose
+    # combined exit code was captured into `actual` — a `mktemp`/`cp`/
+    # `mv`/`cd` failure exiting with 1 would have masqueraded as the
+    # validator's exit 1 (EXIT_MISSING_VALUE), wrongly satisfying the
+    # missing-env-local / env-local-incomplete cases.
+    #
+    # Per-step explicit checks now flag setup failures with a distinct
+    # FAIL message naming the failing step; the validator only runs
+    # once setup is known-good. Cleanup happens via explicit
+    # `rm -rf` at every return path below (no subshell EXIT trap
+    # needed now that setup is in the function body).
+
+    # Materialize a per-assertion working directory. The validator
+    # reads `.env.local` from the current working directory; we
+    # never want that literal name to exist in the tracked tree
+    # (DEP-010), so it lives only inside this throw-away
+    # directory for the duration of the run.
+    local temporary_fixture_directory
+    if ! temporary_fixture_directory="$(mktemp -d 2>/dev/null)"; then
+        FAIL=$((FAIL + 1))
+        echo "FAIL  $label  (SETUP: mktemp failed before validator could run)"
+        return
+    fi
+
+    # Copy the checked-in fixture (with `env.local.fixture` as the
+    # env-shaped file's name) into the throw-away directory. The
+    # trailing `/.` form preserves dotfiles + directory contents
+    # without nesting.
+    if ! cp -R "$fixture_dir/." "$temporary_fixture_directory/" 2>/dev/null; then
+        FAIL=$((FAIL + 1))
+        echo "FAIL  $label  (SETUP: cp from $fixture_dir failed)"
+        rm -rf "$temporary_fixture_directory"
+        return
+    fi
+
+    # Rename `env.local.fixture` → `.env.local` ONLY inside the
+    # throw-away directory, only when the fixture ships one.
+    # Fixtures that intentionally lack an environment-variable file
+    # (missing-env-local, malformed-yaml, no-secrets-yaml) skip the
+    # rename — the `[ -f ... ]` guard keeps `cp` semantics aligned
+    # with the original layout where each fixture was the
+    # validator's working directory directly.
+    if [ -f "$temporary_fixture_directory/env.local.fixture" ]; then
+        if ! mv "$temporary_fixture_directory/env.local.fixture" \
+               "$temporary_fixture_directory/.env.local" 2>/dev/null; then
+            FAIL=$((FAIL + 1))
+            echo "FAIL  $label  (SETUP: mv env.local.fixture → .env.local failed)"
+            rm -rf "$temporary_fixture_directory"
+            return
+        fi
+    fi
+
+    # -------- INVOCATION phase -------------------------------------------
+    # Run the validator inside a single-purpose subshell whose ONLY
+    # job is to `cd` + invoke the script. Any non-zero exit here is
+    # unambiguously the validator's exit code (setup has already been
+    # proven successful above); a `cd` failure here would surface as
+    # exit 1 but is structurally impossible — `mktemp -d` returned a
+    # writable directory + nothing else has happened to it. Output is
+    # suppressed so the test harness's stdout stays scoped to PASS /
+    # FAIL lines.
+    local actual=0
+    (cd "$temporary_fixture_directory" && bash "$SCRIPT_UNDER_TEST") >/dev/null 2>&1 || actual=$?
+
+    # Cleanup — explicit (no subshell EXIT trap any more). Runs before
+    # the assertion so the throw-away directory is gone regardless of
+    # PASS/FAIL outcome.
+    rm -rf "$temporary_fixture_directory"
+
+    # -------- ASSERTION phase --------------------------------------------
     if [ "$actual" -eq "$expected" ]; then
         PASS=$((PASS + 1))
         echo "PASS  $label  (exit=$actual)"

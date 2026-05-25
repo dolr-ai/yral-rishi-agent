@@ -37,9 +37,26 @@
 # ---------------------------------------------------------------------------
 
 from functools import lru_cache
+
+# urllib.parse.urlparse — parses a URL into scheme/netloc/path/etc.
+# parts. Used by the round-8 `_reject_password_in_redis_url`
+# validator below to detect credential-bearing `user:pass@host`
+# segments in `REDIS_URL` (which the redis-py URL parser would
+# silently prefer over the `password=` keyword argument). The
+# round-11 feature flag gates whether the validator's rejection
+# branch fires; either way urlparse is the parsing primitive.
 from urllib.parse import urlparse
 
+# pydantic.field_validator — pydantic v2 decorator that hooks a
+# class method into the field-validation pipeline at Settings
+# construction time. Used by the round-8 + round-11
+# `_reject_password_in_redis_url` validator below to enforce the
+# passwordless-URL contract at boot (the earliest possible
+# diagnosis point) instead of letting a misconfigured URL surface
+# as a silent runtime credential-precedence confusion when
+# `REDIS_PASSWORD` rotates.
 from pydantic import field_validator
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
