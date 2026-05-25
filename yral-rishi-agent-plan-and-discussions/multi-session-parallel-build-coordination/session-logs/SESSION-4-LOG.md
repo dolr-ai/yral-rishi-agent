@@ -2,6 +2,78 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-24 — PR #152 round-1 fixup: drop incorrect "auto-merge eligible per I14" claim (Codex BLOCKER)
+
+### Status
+**Round-1 fixup pushed to PR #152 — DRAFT stays on.** Codex round-1 returned a 🛑 BLOCKER on SESSION-4-STATE.md's claim that the PR is "auto-merge eligible per I14." I14 explicitly excludes secrets files; PR #152 touches `secrets.yaml`, so the I14 path is closed regardless of how declarative the diff looks. Coordinator confirmed.
+
+### What's changing
+- `SESSION-4-STATE.md` top-of-file `> Updated:` line for 2026-05-24: appended a new round-1 fixup line on top documenting the correction; corrected the prior 2026-05-24 line's tail clause from "auto-merge eligible per I14" → "standard Rishi/coordinator review required — I14 explicitly excludes secrets files".
+- `SESSION-4-STATE.md` LAST THING I DID paragraph for 2026-05-24: same correction with a "round-1 corrected an earlier overreach" clarifier so the git-history reader sees the intent path.
+- This LOG addendum.
+
+### Root cause (so this doesn't recur)
+Self-quoted I14 wording from prior PRs without re-reading CONSTRAINTS for this specific file class. The I14 exclusion list reads (effectively) "secrets / behavior-changing config" — `secrets.yaml` is the canonical example. The mistake was treating "declarative manifest" as a sufficient condition for I14 eligibility; the file-class exclusion is independent of declarative-vs-imperative.
+
+### Files touched (round-1)
+- `SESSION-4-STATE.md` — text-only correction.
+- This LOG entry.
+- **NO change to `yral-rishi-agent-conversation-turn-orchestrator/secrets.yaml` or `.env.example`** — functional content of the PR unchanged.
+
+### Constraints touched
+- **A2.1** — single-concern scope unchanged (text-only).
+- **I11** — same-commit doc + LOG + STATE pairing.
+- **I14** — corrected: this PR is **NOT auto-merge eligible**. Standard Rishi/coordinator review required.
+
+### Next
+- Codex re-review on the round-1 fixup.
+- If APPROVE → coordinator marks Ready + manually merges via `gh pr merge 152 --squash`.
+
+---
+
+## 2026-05-24 — PR-D8-orchestrator-openrouter-mirror: add OPENROUTER_API_KEY entry to orchestrator/secrets.yaml (DEP-017 unblock for Session 1's PR #150)
+
+### Status
+**Small dedicated PR pushed (branch `session-4/orchestrator-secrets-openrouter-mirror-dep-017`), opened DRAFT.** Coordinator paste 2026-05-24 routed this in parallel with PR #148 round-5 work — different file, different service scope, ~30-line single-concern diff. Codex blocked Session 1's PR #150 (cluster manifest + DEP-016/017) on cross-session edit + sessions-can't-set-RESOLVED rules, and explicitly directed sequence path: Session 4 authors the orchestrator/secrets.yaml mirror in its OWN PR first, then coordinator opens the small doc-only DEP-017 OPEN → RESOLVED PR, then PR #150 merges last carrying just DEP-016.
+
+### What's changing
+- `yral-rishi-agent-conversation-turn-orchestrator/secrets.yaml` — inserted OPENROUTER_API_KEY entry immediately after GEMINI_API_KEY (between line 244 and the RELATED FILES footer at the original line 246). Schema mirrors GEMINI_API_KEY verbatim: same field order (`description` → `required_in` → `source` → `rotation_policy` → `consumed_by` → `classification` → `notes`), same `required_in: [ci, production]` (local is optional — same as GEMINI), same `blast_radius: high` / `access_pattern: write-only-from-our-side`. Body text per the coordinator's paste-ready spec; A10-routing-paths language documents the two reasons traffic reaches OpenRouter (Tara via `llm_routing_rule` + any influencer with `is_nsfw=TRUE`); the 2026-05-23 Phase-2→Phase-1 correction is captured in the description so future readers understand why this isn't deferred.
+- `yral-rishi-agent-conversation-turn-orchestrator/.env.example` — regenerated via `bash scripts/gen-env-example.sh`, closing the D8 drift gap in the same commit (lessons-learned from PR #136 round-4: never ship a `secrets.yaml` change without the matching `.env.example` regen).
+
+### Why a small dedicated PR (not folded into PR #148)
+- PR #148 is in `yral-rishi-agent-influencer-and-profile-directory` scope; this PR is in `yral-rishi-agent-conversation-turn-orchestrator` scope. Different services, different per-service-ci workflows.
+- Single concern (one new manifest entry + its generated companion); ~48 lines net.
+- Should merge in 1 Codex round if schema mirrors GEMINI's correctly (no schema improvisation).
+
+### Files touched (this PR)
+- `yral-rishi-agent-conversation-turn-orchestrator/secrets.yaml` — +33 lines (OPENROUTER_API_KEY block).
+- `yral-rishi-agent-conversation-turn-orchestrator/.env.example` — +15 lines (generator output).
+- This LOG entry + STATE refresh.
+
+### Constraints touched
+- **A2.1** — single concern: one new secret manifest entry.
+- **B7** — file-header / role-comment discipline already established in orchestrator/secrets.yaml; new block carries the same comment-banner pattern (`# OPENROUTER_API_KEY — ...` with the 75-char `-` underline) used for the other 5 entries.
+- **D8** — adds OPENROUTER_API_KEY to the per-service manifest; `.env.example` regenerated in the same commit so the drift gate stays green.
+- **DEP-017** — this PR is the prerequisite for moving DEP-017 OPEN → RESOLVED. Coordinator owns the follow-up doc-only PR after this lands.
+- **I11** — same-commit doc + LOG + STATE pairing.
+- **I14** — **auto-merge eligible** per coordinator's paste-ready note. Diff is a per-service secrets-manifest declarative entry + its generated `.env.example` companion (no runtime code change — the actual `app/llm_client/openrouter.py` consumer lands Day-6+). PR opens DRAFT for Codex round-1; coordinator flips to Ready once verdict surfaces clean.
+
+### Pre-push sanity
+- `bash scripts/tests/test_gen_env_example.sh` → 3/3 PASS.
+- `bash scripts/tests/test_validate_secrets.sh` → 5/5 PASS.
+- `bash scripts/gen-env-example.sh` → "OK: regenerated .env.example from secrets.yaml." (no drift after regen).
+
+### Next
+- Codex round-1 review on the small PR.
+- If APPROVE → coordinator marks Ready + merges via `gh pr merge --squash` (auto-merge per I14).
+- Coordinator then opens DEP-017 OPEN → RESOLVED doc-only PR.
+- Session 1's PR #150 (cluster manifest + DEP-016) merges last per the sequence path.
+
+### Parallel context
+- PR #148 round-5 (commit `497d25f`) is in-flight on the influencer-directory branch — that work proceeds independently; this small PR neither blocks nor is blocked by #148.
+
+---
+
 ## 2026-05-23 — PR #136 round-4 fixup: regenerate `.env.example` from `secrets.yaml` per D8 drift discipline (Codex BLOCKER on round-3)
 
 ### Status
