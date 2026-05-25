@@ -368,6 +368,39 @@ Verified locally:
 
 Same PR + branch. 2 files touched in `e51af7b` + this LOG subsection in the companion commit. No code-behavior change on the existing 5 test cases; pathological-setup path now correctly distinct from validator exit codes.
 
+### Round-15 fixups (Codex round-14 verdict: 1 BLOCKER A1 cleanup guard + 1 CONCERN env-local-incomplete fixture)
+Codex round-14 verdict returned 1 BLOCKER + 1 CONCERN.
+
+**BLOCKER (A1 — deletion attempt without path-shape guard) — `scripts/tests/test_validate_secrets.sh:111`**: round-14's 4 bare `rm -rf "$temporary_fixture_directory"` calls at function-return paths had no defensive check proving the path was mktemp-generated. Correct in practice (the variable is assigned from `mktemp -d` 2 lines above), but a future refactor that re-assigns the variable to a cwd-relative path would have triggered rm -rf on arbitrary content with no warning. A1 treats deletion attempts without clear guards as hard-stop territory.
+
+Round-15 adds `cleanup_temporary_fixture_directory(dir_to_remove)` helper with full B7 WHAT/WHEN/WHY header. The guard accepts the 3 mktemp shapes encountered in practice (Linux/BSD `/tmp/tmp.X*`, macOS `/var/folders/*/T/tmp.X*`, explicit `${TMPDIR}tmp.X*` for CI) and REFUSES with a loud `REFUSING TO DELETE: '<path>' does not match mktemp scratch-directory pattern (A1 hard-stop)` message + `return 1` on any other shape. Replaced all 4 bare `rm -rf` callsites with `cleanup_temporary_fixture_directory "$temporary_fixture_directory"`.
+
+**CONCERN (env-local-incomplete passed for wrong reason) — `scripts/tests/test_validate_secrets.sh:25`**: round-10's runner left the env-local-incomplete case passing for the WRONG reason — the fixture had no `.env.local` AND no `env.local.fixture`, so the validator emitted `✗ MISSING` for the (single declared) secret + exited 1 → matched the `assert_exit_code 1`. Same exit code fires for missing-file AND missing-value, so the test couldn't distinguish them. A future regression that broke the partial-`.env.local` read would still satisfy the bare exit-code check.
+
+Round-15 fix has two parts:
+
+(a) **Fixture creation**: new `scripts/tests/fixtures/env-local-incomplete/env.local.fixture` with `SAMPLE_DATABASE_URL` set + `SAMPLE_REDIS_PASSWORD` intentionally blank. The fixture's existing `secrets.yaml` already declares both secrets as `required_in: [local]`, so the validator will report one `✓ present` + one `✗ MISSING`.
+
+(b) **New helper + strengthened assertion**: added `assert_exit_code_and_message_contains(expected_exit_code, fixture, label, message_pattern)` with full B7 header. Same SETUP/INVOCATION/cleanup machinery as `assert_exit_code` (including the round-14 phase split + the round-15 guarded cleanup), plus captures the validator's combined stdout+stderr (instead of suppressing it) and asserts both the exit code AND that the output matches the supplied grep regex.
+
+The new case-3 assertion uses pattern `present in .env.local` — the LOAD-BEARING distinguisher between missing-file (validator can't open the file → emits ONLY `✗ MISSING` lines for every required secret) and incomplete-content (validator successfully opens + reads → emits `✓ present in .env.local` for the populated secret + `✗ MISSING in .env.local` for the blank one). The `present` marker proves the file was READ. A future regression that removes `env.local.fixture` from the env-local-incomplete fixture directory now fails the test (output won't contain `present in .env.local`) instead of silently passing.
+
+### Files touched (round-15)
+- `yral-rishi-agent-public-api/scripts/tests/fixtures/env-local-incomplete/env.local.fixture` — NEW. 2 lines: `SAMPLE_DATABASE_URL=postgresql://test:test@localhost:5432/test` + `SAMPLE_REDIS_PASSWORD=` (intentionally blank).
+- `yral-rishi-agent-public-api/scripts/tests/test_validate_secrets.sh`:
+  - Added `cleanup_temporary_fixture_directory()` helper with B7 header (above `assert_exit_code`).
+  - Replaced 4 bare `rm -rf "$temporary_fixture_directory"` callsites with `cleanup_temporary_fixture_directory "$temporary_fixture_directory"`.
+  - Added `assert_exit_code_and_message_contains()` helper with B7 header (after `assert_exit_code`). Mirrors the SETUP/INVOCATION/cleanup pattern verbatim but captures combined output + asserts the grep regex.
+  - Case-3 (`env-local-incomplete`) switched from `assert_exit_code 1 ...` to `assert_exit_code_and_message_contains 1 ... "present in .env.local"`.
+- This LOG subsection.
+
+Verified locally:
+- `bash scripts/tests/test_validate_secrets.sh` → **5 passed, 0 failed** — including the newly-strengthened case 3 which now PASSES FOR THE RIGHT REASON (`exit=1 + output matches /present in .env.local/`).
+- `bash -n` shell-syntax check → clean.
+- A1 guard manually exercised: tested `cleanup_temporary_fixture_directory /tmp/foo-not-mktemp` returns 1 with REFUSING-TO-DELETE message (sanity check; not in the test suite since the suite never exercises pathological paths).
+
+Same PR + branch. 1 new file (fixture) + 1 modified file (test runner) + this LOG subsection. **Behavior change on case 3**: now correctly distinguishes incomplete-content from missing-file (previously masked); the other 4 cases behave identically. A1 cleanup guard is defensive — fires only on pathological future-refactor paths; no behavior change for current code path.
+
 ---
 
 ## 2026-05-22 — PR-B — Day-8 directory-RPC wrapper for `/api/v1/influencers` list + by-id (DRAFT, blocked on Session 4 directory ratification)

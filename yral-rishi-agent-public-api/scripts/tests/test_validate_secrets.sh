@@ -42,6 +42,45 @@ FAIL=0
 # Helpers
 # ===========================================================================
 
+# cleanup_temporary_fixture_directory — guarded rm -rf restricted to
+# paths that match the expected `mktemp -d` scratch-directory shape.
+#
+# WHAT: takes one positional argument (the path to remove); refuses
+#       to run rm -rf unless the path looks mktemp-generated. The
+#       guard accepts the 3 mktemp shapes we encounter in practice:
+#         - Linux + most BSDs: `/tmp/tmp.XXXXXX...`
+#         - macOS (per-user TMPDIR): `/var/folders/<a>/<b>/T/tmp.XXXX`
+#         - explicit $TMPDIR set (e.g. CI): `${TMPDIR}tmp.XXXX`
+#       Any other shape (system directory, source-tree path, an
+#       empty string, etc.) returns 1 with a loud REFUSING-TO-DELETE
+#       message naming the offending path so a future regression
+#       surfaces immediately.
+# WHEN: called by assert_exit_code (+ assert_exit_code_and_message_
+#       contains) at every test-return path to clean up the per-call
+#       mktemp scratch directory.
+# WHY:  closes Codex PR #137 round-14 BLOCKER (A1 hard-stop on
+#       deletion attempts without path-shape guard). Round-14's
+#       bare `rm -rf "$temporary_fixture_directory"` at 4 return
+#       points was correct in practice but had no defensive check
+#       proving the path was mktemp-generated; a future refactor
+#       that assigned a different (e.g. cwd-relative) path to the
+#       variable would have caused rm -rf on arbitrary content with
+#       no warning. The pattern guard makes the intent explicit +
+#       fail-loud on shape mismatch.
+cleanup_temporary_fixture_directory() {
+    local dir_to_remove="$1"
+    case "$dir_to_remove" in
+        /tmp/tmp.*|/var/folders/*/T/tmp.*|"${TMPDIR:-/dev/null/}"tmp.*)
+            rm -rf "$dir_to_remove"
+            ;;
+        *)
+            echo "REFUSING TO DELETE: '$dir_to_remove' does not match mktemp scratch-directory pattern (A1 hard-stop)" >&2
+            return 1
+            ;;
+    esac
+}
+
+
 # assert_exit_code — run validate-secrets.sh against a runtime copy
 # of a checked-in fixture directory + assert the resulting exit
 # code matches the expected value.
@@ -111,7 +150,7 @@ assert_exit_code() {
     if ! cp -R "$fixture_dir/." "$temporary_fixture_directory/" 2>/dev/null; then
         FAIL=$((FAIL + 1))
         echo "FAIL  $label  (SETUP: cp from $fixture_dir failed)"
-        rm -rf "$temporary_fixture_directory"
+        cleanup_temporary_fixture_directory "$temporary_fixture_directory"
         return
     fi
 
@@ -127,7 +166,7 @@ assert_exit_code() {
                "$temporary_fixture_directory/.env.local" 2>/dev/null; then
             FAIL=$((FAIL + 1))
             echo "FAIL  $label  (SETUP: mv env.local.fixture → .env.local failed)"
-            rm -rf "$temporary_fixture_directory"
+            cleanup_temporary_fixture_directory "$temporary_fixture_directory"
             return
         fi
     fi
@@ -144,10 +183,11 @@ assert_exit_code() {
     local actual=0
     (cd "$temporary_fixture_directory" && bash "$SCRIPT_UNDER_TEST") >/dev/null 2>&1 || actual=$?
 
-    # Cleanup — explicit (no subshell EXIT trap any more). Runs before
-    # the assertion so the throw-away directory is gone regardless of
-    # PASS/FAIL outcome.
-    rm -rf "$temporary_fixture_directory"
+    # Cleanup — explicit (no subshell EXIT trap any more). Runs
+    # before the assertion so the throw-away directory is gone
+    # regardless of PASS/FAIL outcome. Guarded mktemp-pattern
+    # rm -rf per round-15's A1 fix.
+    cleanup_temporary_fixture_directory "$temporary_fixture_directory"
 
     # -------- ASSERTION phase --------------------------------------------
     if [ "$actual" -eq "$expected" ]; then
@@ -156,6 +196,88 @@ assert_exit_code() {
     else
         FAIL=$((FAIL + 1))
         echo "FAIL  $label  (expected exit=$expected, got=$actual)"
+    fi
+}
+
+
+# assert_exit_code_and_message_contains — same as assert_exit_code,
+# plus asserts the validator's combined stdout/stderr contains a
+# supplied regex pattern.
+#
+# WHAT: takes 4 positional arguments — expected_exit_code ($1),
+#       fixture_subdirectory_name ($2), human_readable_label ($3),
+#       message_pattern_grep_regex ($4). Runs the same SETUP /
+#       INVOCATION / cleanup machinery as assert_exit_code (with
+#       the cleanup_temporary_fixture_directory guard), but captures
+#       the validator's combined output (instead of suppressing it
+#       via `>/dev/null 2>&1`) and asserts both the exit code AND
+#       that the output matches the regex.
+# WHEN: used for the env-local-incomplete case where the bare-exit-
+#       code assertion is INSUFFICIENT — missing-file and missing-
+#       value paths both exit 1 (EXIT_MISSING_VALUE), so a future
+#       regression that removes env.local.fixture from the
+#       env-local-incomplete fixture directory would still satisfy
+#       a bare assert_exit_code 1. The message-pattern check
+#       distinguishes the two: with the fixture present, the
+#       validator emits per-secret `SAMPLE_*: ... ✗ MISSING` lines
+#       proving it READ the partial `.env.local`; without the
+#       fixture, the same exit code fires but those per-secret
+#       lines are missing.
+# WHY:  closes Codex PR #137 round-14 CONCERN — round-10's runner
+#       left env-local-incomplete passing for the wrong reason
+#       (missing file vs incomplete content). Round-15 adds the
+#       env.local.fixture WITH one value intentionally blank +
+#       this assertion proves the validator successfully read it.
+assert_exit_code_and_message_contains() {
+    local expected=$1
+    local fixture=$2
+    local label=$3
+    local message_pattern=$4
+
+    local fixture_dir="$TESTS_DIR/fixtures/$fixture"
+
+    # SETUP — same explicit per-step guards as assert_exit_code.
+    local temporary_fixture_directory
+    if ! temporary_fixture_directory="$(mktemp -d 2>/dev/null)"; then
+        FAIL=$((FAIL + 1))
+        echo "FAIL  $label  (SETUP: mktemp failed before validator could run)"
+        return
+    fi
+    if ! cp -R "$fixture_dir/." "$temporary_fixture_directory/" 2>/dev/null; then
+        FAIL=$((FAIL + 1))
+        echo "FAIL  $label  (SETUP: cp from $fixture_dir failed)"
+        cleanup_temporary_fixture_directory "$temporary_fixture_directory"
+        return
+    fi
+    if [ -f "$temporary_fixture_directory/env.local.fixture" ]; then
+        if ! mv "$temporary_fixture_directory/env.local.fixture" \
+               "$temporary_fixture_directory/.env.local" 2>/dev/null; then
+            FAIL=$((FAIL + 1))
+            echo "FAIL  $label  (SETUP: mv env.local.fixture → .env.local failed)"
+            cleanup_temporary_fixture_directory "$temporary_fixture_directory"
+            return
+        fi
+    fi
+
+    # INVOCATION — capture combined stdout+stderr (NOT suppressed)
+    # so the message-pattern check below can grep it.
+    local actual=0
+    local validator_output
+    validator_output="$(cd "$temporary_fixture_directory" && bash "$SCRIPT_UNDER_TEST" 2>&1)" || actual=$?
+
+    cleanup_temporary_fixture_directory "$temporary_fixture_directory"
+
+    # ASSERTION — exit code first; if it matches, message pattern
+    # second. Both must pass for PASS.
+    if [ "$actual" -ne "$expected" ]; then
+        FAIL=$((FAIL + 1))
+        echo "FAIL  $label  (expected exit=$expected, got=$actual)"
+    elif ! echo "$validator_output" | grep -qE "$message_pattern"; then
+        FAIL=$((FAIL + 1))
+        echo "FAIL  $label  (exit matched but output missing pattern: $message_pattern)"
+    else
+        PASS=$((PASS + 1))
+        echo "PASS  $label  (exit=$actual + output matches /$message_pattern/)"
     fi
 }
 
@@ -172,9 +294,24 @@ assert_exit_code 0 "valid" \
 assert_exit_code 1 "missing-env-local" \
     "missing .env.local → exit 1 (EXIT_MISSING_VALUE)"
 
-# 3. .env.local has an empty required value — exit 1
-assert_exit_code 1 "env-local-incomplete" \
-    "incomplete .env.local → exit 1"
+# 3. .env.local has an empty required value — exit 1 PLUS the
+#    validator's per-secret `✓ present in .env.local` line for the
+#    populated secret. Round-15 added an env.local.fixture with
+#    SAMPLE_DATABASE_URL set + SAMPLE_REDIS_PASSWORD intentionally
+#    blank. The message-pattern `present in .env.local` is the
+#    load-bearing distinguisher between the missing-file case (case
+#    2, where the validator can't open .env.local + emits ONLY
+#    `✗ MISSING` lines for every required secret) and this
+#    incomplete-content case (where the validator successfully
+#    opens + reads the partial .env.local, emits `✓ present` for
+#    SAMPLE_DATABASE_URL + `✗ MISSING` for SAMPLE_REDIS_PASSWORD).
+#    Without this strengthening the case-3 test passed for the
+#    wrong reason (missing-file output masquerading as missing-
+#    value coverage, since both share exit 1). Closes Codex PR
+#    #137 round-14 CONCERN.
+assert_exit_code_and_message_contains 1 "env-local-incomplete" \
+    "incomplete .env.local: validator READ partial file + 1 secret present + 1 missing → exit 1" \
+    "present in .env.local"
 
 # 4. malformed YAML — exit 2
 assert_exit_code 2 "malformed-yaml" \
