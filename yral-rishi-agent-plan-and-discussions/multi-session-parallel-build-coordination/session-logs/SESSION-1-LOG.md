@@ -1,6 +1,63 @@
 # Session 1 LOG — Infra & Cluster
 > Append-only diary. Most recent entries at TOP. Auto-appended by `.claude/hooks/post-tool-use.sh` on every git commit. Manual milestone entries welcome.
 
+## 2026-05-24 — PR #150: Phase 1 OPENROUTER_API_KEY in cluster secrets-manifest + DEP-016 (Redis ACL rotation production-readiness) + DEP-017 (Session 4 orchestrator/secrets.yaml mirror routing)
+
+### Action
+
+Bundled session-1 PR re-implementing 3 items routed from closed coordinator PRs #143 + #149 (both hit I9 BLOCKER — `bootstrap-scripts-for-the-v2-docker-swarm-cluster/**` is Session 1's documented write scope per `01-SESSION-SHARDING-AND-OWNERSHIP.md`).
+
+1. **Cluster manifest entry** — added `OPENROUTER_API_KEY` to `bootstrap-scripts-for-the-v2-docker-swarm-cluster/secrets-manifest.yaml` under a new `# ─── External LLM provider API keys (per CONSTRAINTS A10) ───` sub-section header. Schema mirrors the simpler-shape exemplars `GHCR_PULL_TOKEN` + `GOOGLE_CHAT_WEBHOOK_URL` field-by-field (no schema invention — the failure mode of coordinator's PR #143 round-3 Codex BLOCKER). Phase 1 scope per the 2026-05-23 correction: chat-ai uses OpenRouter for Tara today, A8 feature parity requires v2 to do the same from Phase 1.
+2. **DEP-016 entry** — Session 1 to validate Redis 7 ACL dual-password rotation as production-ready canonical method before v2 takes any Rishi-approved production traffic. Captured from PR #138 round-4 Codex BLOCKER (the all-5-services-simultaneous rotation pattern is dev-safe but production-unsafe; ACL dual-password is the long-term HA-safe answer). Production-readiness gate, not a cutover deadline — per A6, cutover timing stays at Rishi's discretion.
+3. **DEP-017 entry** — Session 4 to add `OPENROUTER_API_KEY` to orchestrator's per-service `secrets.yaml` per D8 hygiene (every cluster-manifest secret a service consumes must also be declared in that service's own secrets.yaml). Option (b) routing per coordinator: cluster manifest + DEP-017 in this PR; Session 4 picks up the per-service mirror in their own small follow-up PR with their existing schema voice. DEP-017 reservation released by closed PR #143; re-claimed here.
+
+### Round-2 corrections (Codex round-1 verdict: 1 CONCERN, no BLOCKERs)
+
+**CONCERN (constraint, secrets-manifest.yaml:565):** classification framing inconsistency — cluster manifest had `sensitivity: medium` while the DEP-017 suggested per-service entry framed `blast_radius: high`. An external LLM key burns quota + bills + should be treated as high-impact uniformly across both manifests.
+
+**Fix:** bumped cluster manifest `sensitivity: medium` → `sensitivity: high`. `blast_radius: external_llm_quota_burn` + `access_pattern: write-only-from-our-side` unchanged (those were already in the entry per the `GHCR_PULL_TOKEN` + `GOOGLE_CHAT_WEBHOOK_URL` 3-field schema). Now the cluster manifest's sensitivity dimension aligns with DEP-017's high-impact framing.
+
+**MECHANICAL (Lint State Hygiene):** SESSION-1-LOG.md was not updated in the round-1 commit (`678befe`). Per I11, every commit on a `session-N/*` branch must update `SESSION-N-LOG.md` in the same commit. This entry closes that gap retroactively + makes the round-2 commit I11-compliant.
+
+**Round-3 fold-in:** trimmed two LOG sub-sections ("Why this PR landed under session-1 ownership" + "Cross-session DEP routing option (b)") that fully duplicated PR body content, bringing cumulative diff from 201 to ~193 lines to restore I14 `<200` compliance. Coordinator-routed per the I14-vs-I11 structural tension queued for post-feature-parity policy fix (the `<200` cap was sized pre-I11; LOG-required PRs effectively cap at ~140 of substantive change).
+
+**Round-3 REVISED — option-a pivot (subsequently retracted in round-4):** Codex round-2 verdict was 🛑 BLOCKER (constraint D8) on the same shape Codex rejected on closed PR #143 — "the cluster-level OPENROUTER_API_KEY declaration names the orchestrator as a consumer, but the orchestrator per-service secrets.yaml mirror is not present yet. D8 treats missing per-service secret declarations as a hard secrets-hygiene violation." Coordinator pivoted to option-a (bundle the Session 4 orchestrator/secrets.yaml mirror in THIS PR) but that pivot was itself BLOCKER'd in Codex round-3 — see round-4 below.
+
+**Round-4 — sequence pivot per Codex round-3 explicit direction.** Codex round-3 returned two BLOCKERs on the option-a bundle: (1) 🛑 scope on `orchestrator/secrets.yaml` — Session 1 cannot edit Session 4-owned files; the I9 carve-out claim is not in the ownership rules; (2) 🛑 scope on `cross-session-dependencies.md:1150` — sessions append to OPEN; only coordinator moves entries to RESOLVED. Codex's explicit top-3 direction: "Sequence the D8 fix safely: Session 4 lands the per-service mirror first, then this PR merges as the cluster-manifest side." Round-4 retracts both cross-session bits: (a) `yral-rishi-agent-conversation-turn-orchestrator/secrets.yaml` reverted to origin/main (drops the Session 4 edit from PR #150's diff entirely); (b) DEP-017 moved back from RESOLVED to OPEN with updated narrative reflecting the sequence path (Session 4 authors mirror in dedicated PR; coordinator moves DEP-017 to RESOLVED in a follow-up coordinator-scoped doc-only PR after Session 4's PR merges; PR #150 merges after that). This is the I8/scope boundary working as designed.
+
+**Round-4 — I14 overage resolves naturally.** With orchestrator/secrets.yaml reverted, cumulative drops from 205 to ~145 lines (well under I14's `<200` cap). The explicit-acknowledgment workaround falls away — no longer needed. The structural I11+I14 cap-policy fix remains queued post-feature-parity per `project_v2_architectural_audit_decisions_2026_05_23` D2/D3/D4, but is no longer load-bearing for this PR.
+
+### Constraints touched
+
+- **A2.1** — single concern: bundled secrets-manifest entry + companion DEPs. No code changes, no compose changes.
+- **A10** — `OPENROUTER_API_KEY` is the Tara + NSFW routing path's auth secret; description explicitly enumerates the two routing paths that send to OpenRouter (Tara via per-influencer rule; any `is_nsfw=TRUE` influencer).
+- **C6** — no literal IPs added; placement-pinning conventions unchanged.
+- **D7** — secrets manifest schema preserved verbatim (matched `GHCR_PULL_TOKEN` + `GOOGLE_CHAT_WEBHOOK_URL` field-by-field; no schema invention).
+- **D8** — per-service hygiene mirror routed to Session 4 in a separate dedicated PR per the round-4 sequence pivot (Codex round-3 explicit direction). DEP-017 stays OPEN until Session 4's mirror PR merges + coordinator moves DEP-017 to RESOLVED in a follow-up doc-only PR.
+- **I8 / I9** — `bootstrap-scripts-for-the-v2-docker-swarm-cluster/**` correctly authored by Session 1; closed PRs #143 + #149 violated I9 and this PR restores correct ownership. Round-3-revised's I9-carve-out claim on Session 4's `yral-rishi-agent-conversation-turn-orchestrator/secrets.yaml` was BLOCKER'd by Codex round-3 and retracted in round-4 — the I9 carve-out is not in the ownership rules, so the cross-session edit reverts to origin/main. The sessions-can't-move-to-RESOLVED boundary (I8/scope protocol) is similarly respected via the round-4 DEP-017 OPEN restoration.
+- **I11** — every round's commit pairs with an updated LOG entry. Round-1's gap (commit `678befe` had no LOG entry) is closed retroactively in round-2.
+- **I14** — `.yml` + `.md` only. Round-1: 142 lines. Round-2: 201 lines (I11 LOG entry pushed over cap). Round-3 (LOG trim): 191 lines. Round-3-revised (option-a Session 4 mirror bundle): 205 lines, OVER the `<200` cap. Round-4 (retraction): ~145 lines, well under cap. The PR #119-style explicit-acknowledgment workaround naturally falls away with the retraction; the structural I11+I14 cap-policy fix remains queued post-feature-parity but no longer load-bearing here.
+
+### Files touched (final, post-round-4 retraction)
+
+- `bootstrap-scripts-for-the-v2-docker-swarm-cluster/secrets-manifest.yaml` — new `OPENROUTER_API_KEY` entry (round 1) + sensitivity `medium → high` (round 2 Codex CONCERN fix).
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/cross-session-dependencies.md` — DEP-016 + DEP-017 entries at top of OPEN (round 1, conflict-resolved against upstream DEP-014 which landed via PR #135); DEP-017 moved RESOLVED in round-3-revised then moved BACK to OPEN in round-4 (Codex BLOCKER on sessions-can't-set-RESOLVED). DEP-017's OPEN narrative updated to reflect the round-4 sequence pivot.
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-1-LOG.md` — this entry (round 2 I11 gap fix + round 3 LOG trim + round 3-revised pivot narrative + round 4 retraction narrative).
+- ~~`yral-rishi-agent-conversation-turn-orchestrator/secrets.yaml`~~ — added in round 3-revised, **reverted to origin/main in round 4** per Codex round-3 BLOCKER (Session 1 cannot edit Session 4 files). Mirror entry routes to Session 4 in their own dedicated PR per the sequence path.
+
+### Worktree-drift recurrence (operator note, not a constraint violation)
+
+The shared `/Users/rishichadha/Claude Projects/yral-rishi-agent/` directory got switched off my `session-1/...` branch twice during this PR work (once before round-1 commit, once before round-2 commit) by coordinator's parallel `git switch` operations. Each recurrence handled via `git stash → git switch session-1/... → git stash pop` (round 1) or `git switch session-1/...` direct (round 2, no working-tree mods to stash). Root cause logged in memory `feedback_laptop_shutdown_coordination_collision`. No new memory write needed.
+
+### Sub-followups (none for me; routing handoffs only)
+
+- **DEP-016 work** — Session 1 (me) eventually. No calendar date; before any Rishi-approved production traffic (A6 discretion).
+- **DEP-017 work** — Session 4 authors orchestrator/secrets.yaml mirror in a separate dedicated PR (~30 lines, declaration-only). Coordinator routing it to Session 4 in a parallel paste. Once that mirror PR merges, coordinator moves DEP-017 OPEN → RESOLVED in a follow-up coordinator-scoped doc-only PR (I8 protocol: sessions raise OPEN; coordinator moves to RESOLVED). PR #150 merges after.
+- **OpenRouter `app/llm_client/openrouter.py` consumer code** — Session 4. Lands in a separate PR after the per-service secrets.yaml mirror merges.
+- **Isolated session worktrees + dir-locking protocol** — coordinator-housekeeping queue, promoted ABOVE the I14/I11 cap-formalization fix. Three drift incidents on PR #150 alone is bleeding velocity. Target end state: each Session N owns its own worktree path; no session ever touches another session's worktree path. Surface to Rishi after current Codex round wave settles.
+
+---
+
 ## 2026-05-21 — OPERATOR ACTION: alembic upgrade head against soul_file_library on Patroni leader rishi-5 (Day-7 close-out for Session 4's soul-file-library)
 
 ### Action

@@ -3,6 +3,121 @@
 
 ## OPEN
 
+### DEP-016 — Session 1 to validate Redis 7 ACL dual-password rotation as production-ready canonical method BEFORE v2 takes any Rishi-approved production traffic
+
+Raised: 2026-05-24 by Coordinator (PR #138 override-merge action item — Codex correctly flagged the all-5-services-simultaneous rotation pattern as production-unsafe but coordinator accepted dev-cluster reality for v2-today scope).
+
+What:    PR #138's REDIS_PRIMARY_PASSWORD rotation_runbook documents
+         a rolling-update-all-5-services-simultaneously shape. That
+         shape WORKED on the 2026-05-22 dev-cluster incident response
+         (Sentinel quorum held, no FAILOVER) and is what we executed
+         honestly. But for production traffic that shape creates a
+         brief mixed-password window (Sentinel-failover-to-stale-
+         credentialed-replica risk + replication breakage risk).
+
+         Codex's two production-safe shapes: (1) Redis 7 ACL dual-
+         password rotation (zero-downtime; requires ACL config the
+         cluster doesn't have today), (2) Maintenance-window with
+         write-pause + sentinel-failover-disabled (production-safe
+         but requires planned downtime per rotation). HA-safe long-
+         term answer is (1).
+
+Why:     Before v2 takes any Rishi-approved production traffic, the
+         rotation runbook must document a production-safe path. The
+         current runbook is honest about being dev-cluster-only;
+         this DEP captures the production-hardening work, not a
+         scheduled gate (per A6, cutover timing stays at Rishi's
+         discretion).
+
+Blocks:  No hard runtime block today (v2 is pre-production; dev
+         cluster only). Soft block on any Rishi-approved production
+         traffic — before v2 takes production traffic at Rishi's
+         discretion, Session 1's ACL dual-password validation should
+         be complete. Production-readiness gate, not a cutover
+         deadline.
+
+ETA needed: Before any Rishi-approved production traffic (no calendar
+         deadline — at Rishi's A6 discretion).
+
+Suggested resolution: (a) Validate Redis 7 ACL dual-password support
+         on current cluster. (b) Update `redis-sentinel-install.sh`
+         to bootstrap with ACL SETUSER. (c) Update
+         `REDIS_PRIMARY_PASSWORD` rotation_runbook to make ACL dual-
+         password the primary path; demote all-5-simultaneous to
+         "dev-cluster-only emergency path". (d) Document migration
+         from `--requirepass` to ACL config as a separate one-time
+         cluster-state change. (e) Dry-run the ACL dual-password
+         rotation on dev cluster.
+
+How spotted: PR #138 round-4 Codex BLOCKER on 2026-05-24 — Codex
+         correctly identified the production-unsafe rotation shape.
+         Coordinator override-merged with dev-cluster-only framing
+         + filed this DEP for the production-hardening work (at
+         Rishi's A6 discretion).
+
+
+### DEP-017 — Session 4 to add `OPENROUTER_API_KEY` to orchestrator's per-service `secrets.yaml` (D8 hygiene mirror of cluster-manifest entry landing in PR #150)
+
+Raised: 2026-05-24 by Session 1 (companion to cluster-manifest entry added in PR #150; previously reserved by closed PR #143 — reservation released, re-claimed here).
+
+What:    PR #150 adds `OPENROUTER_API_KEY` to
+         `bootstrap-scripts-for-the-v2-docker-swarm-cluster/secrets-manifest.yaml`
+         as a Phase 1 secret (consumed_by:
+         [yral-rishi-agent-conversation-turn-orchestrator/app/llm_client/openrouter.py]).
+         Per D8, every secret a service consumes MUST also be declared
+         in that service's own `secrets.yaml`. Session 4 owns
+         `yral-rishi-agent-conversation-turn-orchestrator/secrets.yaml`
+         and must add the OPENROUTER_API_KEY entry there.
+
+         Schema to mirror: GEMINI_API_KEY block in the same file
+         (currently at ~line 220). Same field order, same description
+         style, same notes pattern. Per-service schema is 2-field
+         classification (no `sensitivity`), string `source` descriptions,
+         and `required_in: [ci, production]` as a YAML list.
+
+Why:     D8 hygiene is CI-enforced. Without the mirror, orchestrator's
+         compose-level secret loading won't have OPENROUTER_API_KEY
+         available at runtime even though the cluster manifest declares
+         it — the per-service manifest is what drives the actual env-var
+         wiring.
+
+Blocks:  PR #150's cluster-manifest entry technically merges fine in
+         isolation (the cluster manifest is just a declaration), but
+         Codex's D8 read requires both sides to co-exist before the
+         routing code consumes them. Soft sequencing dependency:
+         Session 4's mirror PR must land before PR #150 merges, OR
+         coordinator merges with a typed-YES override (not recommended;
+         the sequence is short).
+
+         Any Session 4 PR that wires the actual Tara/NSFW routing
+         through OpenRouter (the orchestrator code change that calls
+         openrouter.ai per A10) cannot land until the mirror entry
+         exists in its `secrets.yaml`.
+
+ETA needed: Before PR #150 merges. Session 4 mirror PR is ~30 lines
+         (declaration-only); should be fast.
+
+Suggested resolution: SEQUENCE per Codex round-3 direction on PR #150:
+         (1) Coordinator routes the orchestrator/secrets.yaml mirror
+         work to Session 4 in a separate dedicated PR (~30 lines);
+         (2) Session 4 authors + merges that mirror PR;
+         (3) Coordinator moves DEP-017 OPEN → RESOLVED in a follow-up
+         coordinator-scoped doc-only PR (matches the I8 / scope-
+         boundary protocol: sessions raise OPEN; coordinator moves
+         to RESOLVED);
+         (4) PR #150 (this cluster-manifest + DEP-016 + DEP-017-open
+         PR) merges after step 3.
+
+How spotted: Coordinator PR #143 round-3 Codex BLOCKER 2026-05-24 (D8
+         missing-per-service-mirror) + PR #150 round-2 Codex BLOCKER
+         (same D8 violation when DEP-routed via option-b) + PR #150
+         round-3-revised Codex BLOCKER (scope — Session 1 can't edit
+         Session 4-owned files; sessions can't set DEPs to RESOLVED).
+         Final routing per Codex round-3's top-3 explicit direction:
+         "Sequence the D8 fix safely: Session 4 lands the per-service
+         mirror first, then this PR merges as the cluster-manifest side."
+
+
 ### DEP-014 — Template skeleton lacks Postgres/Redis client wiring + a Redis/Postgres-touching /health/ready; spawn-smoke CI gate cannot catch shared-config / Redis-AUTH / connection-string drift at template time until that wiring lands
 
 Raised: 2026-05-23 by Session 2 (filed in the same PR that lands the spawn-smoke CI gate)
