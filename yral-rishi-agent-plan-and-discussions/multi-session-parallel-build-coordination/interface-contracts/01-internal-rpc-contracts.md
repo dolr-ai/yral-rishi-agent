@@ -363,7 +363,7 @@ A regression in any one tier surfaces a different class of bug. Treating them as
   - `yral-rishi-agent-conversation-turn-orchestrator/app/llm_client/**` (provider routing rules, model selection, OpenAI/Gemini/OpenRouter client wrappers)
   - `yral-rishi-agent-conversation-turn-orchestrator/app/prompts/**` (system-prompt construction — affects token count + latency)
   - `yral-rishi-agent-soul-file-library/app/**` (Soul File composition — token count affects LLM latency)
-  - `yral-rishi-agent-plan-and-discussions/llm_routing_rule` (the per-influencer routing matrix file, wherever it ends up)
+  - (Future: the per-influencer LLM routing matrix file path — to be added to this list when the routing-matrix file's location is decided + lands on main. Until then, this filter is intentionally omitted; the file doesn't exist yet so omitting it from the path filter doesn't weaken the gate. Codex round-25 CONCERN correctly flagged round-24's placeholder "wherever it ends up" wording — placeholder paths in a merge-blocking E1 gate are unsafe.)
   - The Gate A2-PROVIDER-PR workflow file itself (self-protection per round-23 pattern)
 Threshold: same `0.5 × chat-ai-baseline-p95` (no MOCK subtraction; real LLM on both sides — apples-to-apples). Fail-stop semantics identical to Gate A2-PR.
 
