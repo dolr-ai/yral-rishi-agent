@@ -2,6 +2,54 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-25 — PR-D1 Chunk A MERGED as PR #148 (squash `106f075b` at 11:56 UTC) — close-the-loop tracking entry
+
+### Status
+**PR #148 MERGED.** Round-10 push (`9a69ffb`) landed BEFORE coordinator's override-merge at 11:56:00 UTC, so the squash-merge picked up round-10's content in full. Coordinator verified on main commit `106f075b` (Session 4 tracking-closeout PR is a sibling to that verification):
+
+- `yral-rishi-agent-influencer-and-profile-directory/docker-compose.yml` has `POSTGRES_CONNECTION_STRING_INFLUENCER_AND_PROFILE_DIRECTORY` wired (env block + 3 comment references; 0 stale `DATABASE_URL` refs).
+- `yral-rishi-agent-influencer-and-profile-directory/docker-compose.swarm.yml` has the source/target mount block + top-level external-secret declaration.
+- `alembic.ini` header updated to drop the "downgrade base reverts migrations" claim + forward-only A1 narrative + IrreversibleMigrationError reference.
+
+### Override-merge rationale (per coordinator, on PR #148 with typed Rishi YES at ~11:55 UTC)
+PR #154 + #155 (merged earlier 2026-05-25) added the **5-round Codex cap** rule as a CONSTRAINTS I10 amendment AND the **B2/B7 runtime-only scope carve-out**. PR #148 round-10's verdict BLOCKERs were:
+- B2 `_DEFAULT_MIN_POOL_SIZE` / `_DEFAULT_MAX_POOL_SIZE` / `_log` in `app/database.py` runtime code — precedent: soul-file-library + user-memory-service main-tree both use these.
+- B7-imports (bare `from alembic import op` / `import sqlalchemy as sa`) in `001_initial_schema.py` runtime code — same precedent.
+- Codex truncation (tooling-limit, not a content issue).
+
+All three fall under either the runtime-precedent push-back-with-citation pattern (Q2 standing) OR a tooling-limit category that the 5-round cap rule explicitly resolves via override-merge.
+
+### What landed on main via this PR
+**Service folder: yral-rishi-agent-influencer-and-profile-directory** (Phase 1 critical-path piece for the influencer directory; 8th merge today):
+- `alembic.ini` + `app/migrations/env.py` + `app/migrations/versions/001_initial_schema.py` (17-column schema: 9 InfluencerDto + 5 chat-ai-port + 3 v2-only audit; 6 indexes; tri-state `is_active`; downgrade raises `IrreversibleMigrationError`).
+- `app/database.py` (asyncpg pool with `_DEFAULT_MIN_POOL_SIZE` / `_DEFAULT_MAX_POOL_SIZE`).
+- `app/models/influencer_metadata.py` (14-field `InfluencerMetadata` Pydantic INTERNAL-PERSISTENCE model with the round-8 🛑 "DO NOT SERIALIZE DIRECTLY" header instructing Chunk B to add a separate response-shape model).
+- `app/repository/influencer_metadata_repository.py` (3 read methods: `get_by_id` / `list_paginated` / `list_trending`; `_record_to_model` + `_parse_jsonb_value` JSONB-ambiguity helpers).
+- `tests/test_schema_migrations.py` (4 tests) + `tests/test_influencer_metadata_repository.py` (9 tests, J3 sentence-style names).
+- `scripts/validate-secrets.sh` with `--env-file` flag (round-9 A1 closure) + `scripts/tests/test_validate_secrets.sh` zero-filesystem-mutation rewrite (round-9 A1 closure).
+- `secrets.yaml` + `.env.example` per D8.
+- `docker-compose.yml` + `docker-compose.swarm.yml` with `POSTGRES_CONNECTION_STRING_INFLUENCER_AND_PROFILE_DIRECTORY` wired (round-10 BLOCKER closure).
+
+### What's next for Session 4 (per coordinator paste 2026-05-25)
+Two options surfaced, no urgency on either:
+- **Chunk B (endpoints)** — per round-8's "DO NOT SERIALIZE DIRECTLY" header instruction: next PR adds per-route response models that filter to `InfluencerDto` fields (drop non-DTO fields like `personality_traits` + `name` + `initial_greeting` + `suggested_messages` + `metadata`; map tri-state `is_active` back to contract vocabulary; decide nullable-vs-non-nullable `avatar_url` policy at the endpoint layer). Adds the `/v1/influencers` + `/v1/influencers/{id}` + `/v1/influencers/trending` routes that public-api (PR #141, currently iterating) consumes. **Recommendation: pick this one** — natural continuation of Chunk A; round-8 header in `app/models/influencer_metadata.py` was specifically written to brief Chunk B implementers; unblocks public-api's eventual consumption.
+- **Orchestrator OPENROUTER_API_KEY routing wiring** (separate Session 4 PR) — connects the OPENROUTER_API_KEY mirror landed in PR #152 (`yral-rishi-agent-conversation-turn-orchestrator/secrets.yaml`) to the actual Tara/NSFW routing code in `app/llm_client/openrouter.py`. Phase 1 scope per A10. Different service folder, smaller diff, no public-api dependency.
+
+### Files touched (this PR — close-the-loop tracking only)
+- This LOG addendum.
+- SESSION-4-STATE.md refresh.
+
+### Constraints touched
+- **A2.1** — single concern: post-merge tracking close-out for PR #148.
+- **I11** — same-commit doc + LOG + STATE pairing.
+- **I14** — **auto-merge eligible** (.md-only diff; per PR #154 carve-out, .md docs are explicitly exempt from B2/B7 nit-flagging too).
+
+### Next
+- Open a small DRAFT PR with this LOG/STATE update for coordinator auto-merge via I14.
+- Pick between Chunk B (endpoints) and orchestrator OPENROUTER routing — coordinator-routable per the next session/turn.
+
+---
+
 ## 2026-05-25 — PR-D1 Chunk A round-10: close 1 BLOCKER (Postgres secret wired into 2 compose files) + 1 CONCERN (alembic.ini forward-only header); PR #154 B2/B7 carve-outs land
 
 ### Status
