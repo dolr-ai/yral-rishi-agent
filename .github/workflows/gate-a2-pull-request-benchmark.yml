@@ -87,7 +87,12 @@ jobs:
           # interface-contracts/01-internal-rpc-contracts.md.
           git fetch origin main
           CHANGED_FILES=$(git diff --name-only origin/main...HEAD)
-          HOT_PATH_REGEX='^(yral-rishi-agent-public-api/|yral-rishi-agent-user-memory-service/|yral-rishi-agent-conversation-turn-orchestrator/app/|shared-library-code-used-by-every-v2-service/|.*shared-config\.yaml$|yral-rishi-agent-new-service-template/app/|yral-rishi-agent-new-service-template/pyproject\.toml$|yral-rishi-agent-plan-and-discussions/latency-baseline-capture-from-live-services-the-numbers-v2-must-beat/daily-baseline\.csv$)'
+          # NOTE — the regex also covers the gate's OWN files (the benchmark
+          # script directory + this workflow file). PRs that modify the gate
+          # itself MUST trigger the gate, otherwise the gate could be silently
+          # weakened by a self-modifying PR. Codex round-23 BLOCKER correctly
+          # flagged that round-22's regex left the gate self-unprotected.
+          HOT_PATH_REGEX='^(yral-rishi-agent-public-api/|yral-rishi-agent-user-memory-service/|yral-rishi-agent-conversation-turn-orchestrator/app/|shared-library-code-used-by-every-v2-service/|.*shared-config\.yaml$|yral-rishi-agent-new-service-template/app/|yral-rishi-agent-new-service-template/pyproject\.toml$|yral-rishi-agent-plan-and-discussions/latency-baseline-capture-from-live-services-the-numbers-v2-must-beat/daily-baseline\.csv$|yral-rishi-agent-plan-and-discussions/latency-baseline-capture-from-live-services-the-numbers-v2-must-beat/scripts/|\.github/workflows/gate-a2-pull-request-benchmark\.yml$)'
           if echo "$CHANGED_FILES" | grep -qE "$HOT_PATH_REGEX"; then
               echo "hot_path=true" >> "$GITHUB_OUTPUT"
               echo "Hot-path file(s) detected — running E1 benchmark gate."
@@ -116,11 +121,15 @@ jobs:
           # depends on it. Hot-path pull requests will block on this
           # until Session 1's script lands + this step is wired to it.
           #
-          # Override path: until the script lands, coordinator override-
-          # merges hot-path pull requests with explicit Rishi YES per the
-          # I10/I14 process trail (same pattern as pull request #138 +
-          # pull request #150 override-merges already documented).
+          # NOTE — this workflow does NOT endorse any override path. E1 is
+          # a hard merge-blocking constraint. If a specific hot-path PR
+          # needs to merge before Session 1's script lands, that is a
+          # one-off Rishi-typed-YES exception per the I10 process trail
+          # (the kind of exception Rishi alone can grant); the workflow's
+          # job is to fail loudly, not to document a "standard" recovery
+          # path. Codex round-23 BLOCKER correctly flagged round-22's
+          # baked-in override-merge language as conflicting with E1.
           echo "::error::Gate A2 benchmark script NOT YET WRITTEN by Session 1."
           echo "::error::See interface-contracts/01-internal-rpc-contracts.md section 'Gate A2-PR' for the contract."
-          echo "::error::Coordinator override-merge with Rishi YES is the current bridge until the script lands."
+          echo "::error::Per E1, hot-path PRs must wait for the script to land before merging."
           exit 1
