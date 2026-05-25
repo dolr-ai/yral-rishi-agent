@@ -177,16 +177,29 @@ services:
     # `docker secret create <name> <file>` (or via Session 1's
     # cluster-bootstrap automation). The app reads them as files from
     # /run/secrets/<name>.
-    # Day-7 deploy alignment: this service is the Day-1 spawn scaffold
-    # (no Postgres + no Redis consumers in app/ yet — those land in
-    # Day-8+ when the influencer-routes + Redis cache layer ship).
-    # Mount ONLY the secrets the template's middlewares actually read
-    # at startup (Sentry + Langfuse). Postgres + Redis secret mounts
-    # re-add the day the consumers ship.
+    # Day-7 deploy alignment: at Day-7 deploy time this service had no
+    # Postgres + no Redis consumers in app/, so both secret mounts
+    # were trimmed (Swarm validates every declared secret exists in
+    # the cluster store, so mounting unused secrets blocks deploys).
+    # PR #148 Chunk A ships the Postgres consumer (app/database.py +
+    # Alembic migrations); the Postgres mount is re-added below.
+    # Redis still has no consumer in app/ today; its mount re-adds
+    # the day the cache layer ships (Day-8+ per the API contract's
+    # `GET /api/v1/influencers` Cache-Control 300s note).
     #
     # Explicit uid/gid 1001 per mount per Session-3 PR-#108 fix so the
     # non-root user the Dockerfile creates can read the secret files.
     secrets:
+      # Postgres connection string for the influencer-and-profile-
+      # directory schema on the shared `yral_v2` Patroni cluster per
+      # F3. Consumed by app/database.py at startup (asyncpg pool) +
+      # by Alembic's env.py during `alembic upgrade head` (one-shot
+      # migration job, separate from the service container).
+      - source: POSTGRES_CONNECTION_STRING_INFLUENCER_AND_PROFILE_DIRECTORY
+        target: POSTGRES_CONNECTION_STRING_INFLUENCER_AND_PROFILE_DIRECTORY
+        uid: "1001"
+        gid: "1001"
+        mode: 0400
       - source: SENTRY_DSN
         target: SENTRY_DSN
         uid: "1001"
@@ -235,6 +248,8 @@ networks:
 # `secrets.yaml` (per CONSTRAINTS D8, added in PR 3). new-service.sh
 # generates the `secrets:` block above from secrets.yaml automatically.
 secrets:
+  POSTGRES_CONNECTION_STRING_INFLUENCER_AND_PROFILE_DIRECTORY:
+    external: true
   SENTRY_DSN:
     external: true
   LANGFUSE_PUBLIC_KEY:

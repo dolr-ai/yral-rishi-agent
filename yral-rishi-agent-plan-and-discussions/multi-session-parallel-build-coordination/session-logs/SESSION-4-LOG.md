@@ -2,6 +2,77 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-25 — PR-D1 Chunk A round-10: close 1 BLOCKER (Postgres secret wired into 2 compose files) + 1 CONCERN (alembic.ini forward-only header); PR #154 B2/B7 carve-outs land
+
+### Status
+**Round-10 fixup pushed to PR #148 — DRAFT stays on; 2 commits now (round-9 squash + round-10 fixup).** Codex round-9 verdict: **1 BLOCKER + 1 CONCERN**, no more A1 or B2 dir-var BLOCKERs (round-9 closures all landed). Per Q2 standing instruction + the new PR #154 B2/B7 carve-out reference: if round-10 verdict has ONLY B2 + B7 re-flags (now exempt for test files + shell scripts + .md docs per PR #154), coordinator override-merges.
+
+### PR #154 carve-out landed (coordinator update 2026-05-25)
+Coordinator merged PR #154 which adds B2 + B7 carve-outs for test files + shell scripts + .md docs. Codex's per-PR re-flags on these file classes should stop on round-10's verdict. Carve-out memory absorbed.
+
+### What's changing (round-10)
+
+**BLOCKER closure (Postgres secret wiring into 2 compose files):**
+Codex round-9 BLOCKER: "The new required Postgres secret is declared and consumed by `app/database.py` and Alembic, but the visible diff does not wire it into production/local runtime manifests such as docker-compose.yml + docker-compose.swarm.yml."
+
+Diagnosis: the compose files were inherited from the Day-1 template scaffold, before this PR added the Postgres consumer. docker-compose.yml mounted `DATABASE_URL` (template default, wrong name); docker-compose.swarm.yml mounted no Postgres secret at all (template's Day-7-comment said "Postgres + Redis secret mounts re-add the day the consumers ship" — that day is now).
+
+Pattern source: `yral-rishi-agent-soul-file-library/docker-compose.yml + docker-compose.swarm.yml` (sibling Session-4 service with the same shape; public-api compose has no Postgres consumer today so its mount didn't apply here).
+
+`docker-compose.yml` changes:
+- L91 env-var rename: `DATABASE_URL` → `POSTGRES_CONNECTION_STRING_INFLUENCER_AND_PROFILE_DIRECTORY` (matches secrets.yaml declaration + `app/database.py`'s `validation_alias` per D8).
+- L75-78 role-comment block rewritten: now documents the D8 manifest-alignment + the pgBouncer port-6432 rationale; same shape as soul-file's L92-95 comment.
+- L140 + L205 comment-references to `DATABASE_URL` updated to the new env-var name so future readers don't get confused by a stale shorthand.
+- Net: 4 of 4 `DATABASE_URL` mentions (1 env var + 3 comments) are now the per-service name; `grep -n "DATABASE_URL" docker-compose.yml` returns 0 hits.
+
+`docker-compose.swarm.yml` changes:
+- L180-185 Day-7 narrative rewritten: now records "PR #148 Chunk A ships the Postgres consumer; the Postgres mount is re-added below" + preserves the Redis-still-trimmed note (Redis cache layer ships Day-8+ per the API contract).
+- L189 secrets-mount block: `POSTGRES_CONNECTION_STRING_INFLUENCER_AND_PROFILE_DIRECTORY` added as the first mount entry with role-comment naming both consumers (asyncpg pool in `app/database.py` at startup + Alembic's `env.py` during `alembic upgrade head`). Mount uses the same `uid: "1001" / gid: "1001" / mode: 0400` shape as the existing 3 secrets (per Session-3 PR-#108 fix for non-root container reads).
+- L237 top-level external secrets declaration: `POSTGRES_CONNECTION_STRING_INFLUENCER_AND_PROFILE_DIRECTORY: external: true` added as the first entry (alphabetical) so `docker stack deploy` validates its existence at deploy time + fails fast if Session 1 hasn't bootstrapped the Swarm secret.
+
+**CONCERN closure (alembic.ini header forward-only narrative):**
+Codex round-9 CONCERN: alembic.ini header at line 10 said "`alembic downgrade base` (revert all migrations)" — false post-round-6, when `downgrade()` was rewritten to `raise IrreversibleMigrationError` for state-consistency. The header is the first thing a new operator reads when figuring out the migration tool; a stale claim there would misroute them into running a command that intentionally fails.
+
+`alembic.ini` changes:
+- L10-11 reworded: drops the "revert all migrations" claim; adds a paragraph stating downgrade is INTENTIONALLY NON-FUNCTIONAL per A1 + references `IrreversibleMigrationError` in `001_initial_schema.py`.
+- New paragraph captures the round-5 silent-no-op shape vs the round-6 raise shape + why raise (state-consistency: alembic_version row stays at `001_initial_schema` because the raise aborts before alembic writes the version update).
+- New paragraph documents the proper rollback path (separate `002_drop_*.py` migration + typed Rishi YES + deletion-report block).
+
+### Expected re-flag status (per Q2 + PR #154 carve-out)
+**B2** (`_DEFAULT_MIN_POOL_SIZE`, `_DEFAULT_MAX_POOL_SIZE`, `_log` in `app/database.py`): file-header NAMING OVERRIDE block stands. **B7-imports** (bare `from alembic import op` / `import sqlalchemy as sa` in `001_initial_schema.py`): file-header IMPORTS OVERRIDE block stands. PR #154 added carve-outs for test files + shell scripts + .md docs — these are the file classes Codex was repeatedly flagging, so round-10's verdict should show fewer or no re-flags. If round-10 returns ONLY these (or none), coordinator override-merges per Q2.
+
+### Files touched (round-10)
+- `yral-rishi-agent-influencer-and-profile-directory/alembic.ini` — header forward-only narrative (CONCERN closure).
+- `yral-rishi-agent-influencer-and-profile-directory/docker-compose.yml` — env-var rename + 3 comment updates (BLOCKER closure).
+- `yral-rishi-agent-influencer-and-profile-directory/docker-compose.swarm.yml` — Day-7 narrative update + Postgres secret mount + external-secrets-block entry (BLOCKER closure).
+- This LOG addendum + STATE refresh.
+
+### Constraints touched
+- **A1** — alembic.ini header now accurately reflects the forward-only migration discipline; no longer misroutes operators into running a command that intentionally fails.
+- **A2.1** — single concern: close 1 BLOCKER + 1 CONCERN from Codex round-9.
+- **D8** — Postgres secret now wired into BOTH runtime manifests; secrets.yaml manifest is the source of truth + both compose files now match the per-service env-var name verbatim.
+- **F3** — per-service Postgres SCHEMA on the shared `yral_v2` Patroni cluster (consumed via per-service connection string in the swarm secret); compose mount block aligns with the F3 isolation model.
+- **I11** — same-commit doc + LOG + STATE pairing.
+- **I14** — still **NOT auto-merge eligible** (YAML config + .ini config touched; both are behavior-changing).
+
+### Pre-push sanity
+- `yq eval '.' docker-compose.yml` + `yq eval '.' docker-compose.swarm.yml` → YAML PARSE OK.
+- `grep -c "POSTGRES_CONNECTION_STRING_INFLUENCER_AND_PROFILE_DIRECTORY" docker-compose.yml docker-compose.swarm.yml` → 4 hits in compose.yml + 3 hits in compose.swarm.yml.
+- `grep -n "DATABASE_URL" docker-compose.yml docker-compose.swarm.yml` → 0 hits (all renamed).
+- `bash scripts/tests/test_validate_secrets.sh` → **5/5 PASS** (untouched but smoked).
+- `bash scripts/tests/test_gen_env_example.sh` → **3/3 PASS** (untouched but smoked).
+
+### Squash mechanics (commit count after this round)
+Round-9 collapsed 11 commits + a merge commit → 1 commit. Round-10 lands as a regular fixup commit on top of that — PR #148 is now at 2 commits. Coordinator-requested squash in round-9 was specifically about cutting Codex's per-commit-truncation surface; 2 commits should still be well under the threshold (cumulative diff barely grows — 4 file edits, ~80 lines net). If round-11 surfaces truncation again, squash via the same `git reset --soft <merge-base>` pattern.
+
+### Next
+- Codex round-10 review.
+- If APPROVE → coordinator marks Ready + merges via `gh pr merge 148 --squash`.
+- If ONLY B2 + B7-imports re-flags return (carve-out via PR #154 should reduce or zero these out) → coordinator override-merges per Q2 standing instruction.
+- If new BLOCKERs / CONCERNs surface → ping coordinator per (c) outcome path.
+
+---
+
 ## 2026-05-25 — PR-D1 Chunk A round-9: close 3 BLOCKERs (Codex truncation via full history squash + A1 STILL via validate-secrets.sh refactor + B2 shell-dir renames)
 
 ### Status
