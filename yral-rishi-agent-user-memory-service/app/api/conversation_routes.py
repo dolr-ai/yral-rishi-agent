@@ -57,8 +57,9 @@
 # N messages just before the cursor message (for loading older history
 # when the user scrolls up). The subquery DESC-then-ASC pattern ensures
 # "most recent N" semantics while preserving chronological page order.
-# ORDER BY includes `id` as a tiebreaker for same-timestamp batch inserts
-# so the ordering is always deterministic.
+# ORDER BY uses `sequence_in_conversation` (added by migration 004) as
+# a tiebreaker for same-timestamp batch inserts so the ordering is always
+# deterministic and matches insertion order (user before assistant).
 #
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
@@ -259,8 +260,10 @@ async def create_or_get_conversation(
         )
 
         # --- Fetch the last non-system message for the response -------------
-        # Index: messages_by_conversation_time_idx (conversation_id, created_at ASC)
+        # Index: messages_by_conversation_sequence_idx (conversation_id, created_at, sequence_in_conversation)
         # ORDER BY DESC reverses the ASC index efficiently for the most-recent row.
+        # sequence_in_conversation tiebreaker (migration 004) ensures deterministic
+        # "last" message within a same-timestamp batch — highest sequence = most recent.
         last_msg_row = await connection.fetchrow(
             """
             SELECT id, conversation_id, role, content, client_message_id,
@@ -268,7 +271,7 @@ async def create_or_get_conversation(
             FROM messages
             WHERE conversation_id = $1
               AND role != 'system'
-            ORDER BY created_at DESC, id DESC
+            ORDER BY created_at DESC, sequence_in_conversation DESC
             LIMIT 1
             """,
             conv_row["id"],
@@ -343,6 +346,27 @@ async def append_messages(
             result_rows: list[asyncpg.Record] = []
             new_row_count: int = 0
 
+            # sequence_in_conversation: per-conversation monotonic counter that
+            # provides a deterministic tiebreaker when two messages share the same
+            # created_at (the normal case for batch inserts — user + assistant in
+            # one transaction both get the same NOW()). Without this, the tiebreaker
+            # would be UUIDv4 (random), giving ~50% chance the assistant reply sorts
+            # before the user message.
+            # We read MAX() once before the loop; each new INSERT advances the counter.
+            # On ON CONFLICT DO NOTHING (retry), the counter is not advanced — the
+            # conflicted row already has its original sequence from the first write.
+            # Index: messages_by_conversation_sequence_idx supports ORDER BY with this.
+            sequence_start = await connection.fetchval(
+                """
+                SELECT COALESCE(MAX(sequence_in_conversation), 0)
+                FROM messages
+                WHERE conversation_id = $1
+                """,
+                conv_uuid,
+            )
+            # sequence_counter tracks the next ordinal to assign to a NEWLY inserted row.
+            sequence_counter = sequence_start
+
             for item in body.messages:
                 # Serialise JSONB columns to JSON strings for asyncpg.
                 # Explicit json.dumps ensures correct serialisation
@@ -372,12 +396,22 @@ async def append_messages(
                 #   DO NOTHING fires: RETURNING yields nothing (None).
                 #   We then SELECT the existing row and return it so the caller
                 #   gets the same message_id as the original write — safe retry.
+                #
+                # sequence_in_conversation: pre-increment before the INSERT so
+                # the tentative next sequence is ready. If the INSERT fires
+                # DO NOTHING (retry), the counter is *not* rolled back — the
+                # existing row already holds its original sequence and the counter
+                # advance is simply unused (a harmless gap). Gaps are acceptable:
+                # ordering correctness requires monotonicity, not contiguity.
+                sequence_counter += 1
+
                 row = await connection.fetchrow(
                     """
                     INSERT INTO messages
                         (conversation_id, role, content, client_message_id,
-                         media_urls, gemini_metadata, count_toward_paywall)
-                    VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7)
+                         media_urls, gemini_metadata, count_toward_paywall,
+                         sequence_in_conversation)
+                    VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8)
                     ON CONFLICT (conversation_id, client_message_id)
                     WHERE client_message_id IS NOT NULL
                     DO NOTHING
@@ -392,6 +426,7 @@ async def append_messages(
                     media_urls_json,
                     gemini_json,
                     item.count_toward_paywall,
+                    sequence_counter,
                 )
 
                 is_new = row is not None
@@ -507,7 +542,7 @@ async def list_conversations_by_user(
                 FROM messages
                 WHERE conversation_id = c.id
                   AND role != 'system'
-                ORDER BY created_at DESC, id DESC
+                ORDER BY created_at DESC, sequence_in_conversation DESC
                 LIMIT 1
             ) m ON TRUE
             WHERE c.user_id = $1
@@ -625,8 +660,9 @@ async def get_conversation_by_id(
 
         # --- 3. Fetch the most-recent non-system message inline ----------
         # Mirrors the LATERAL JOIN pattern in list_conversations_by_user but
-        # for a single conversation. ORDER BY created_at DESC, id DESC uses
-        # the same tiebreaker as list_messages for same-timestamp batches.
+        # for a single conversation. ORDER BY created_at DESC, sequence_in_conversation DESC
+        # uses the same tiebreaker as list_messages for same-timestamp batches
+        # (migration 004 — deterministic insertion-order sequence vs random UUID).
         last_msg_row = await connection.fetchrow(
             """
             SELECT id, conversation_id, role, content, client_message_id,
@@ -634,7 +670,7 @@ async def get_conversation_by_id(
             FROM messages
             WHERE conversation_id = $1
               AND role != 'system'
-            ORDER BY created_at DESC, id DESC
+            ORDER BY created_at DESC, sequence_in_conversation DESC
             LIMIT 1
             """,
             conv_uuid,
@@ -680,16 +716,20 @@ async def list_messages(
           history (with cursor).
     WHY:  the DESC-then-ASC subquery gives "most recent N" semantics with
           chronological ordering within the page:
-            1. inner query: ORDER BY created_at DESC, id DESC LIMIT N —
-               selects the N most-recent (or N before the cursor) rows;
-               id DESC is a tiebreaker for batch inserts with same timestamp.
-            2. outer query: ORDER BY created_at ASC, id ASC — re-orders
-               the page chronologically; id ASC matches the ASC direction.
-          The messages_by_conversation_time_idx index
-          (conversation_id, created_at ASC) supports both scans efficiently.
-          The id tiebreaker closes the non-determinism gap: within a
-          same-timestamp group (same-transaction batch), rows are always
-          returned in the same order across repeated calls.
+            1. inner query: ORDER BY created_at DESC, sequence_in_conversation DESC
+               LIMIT N — selects the N most-recent (or N before the cursor) rows;
+               sequence_in_conversation DESC is the tiebreaker for batch inserts
+               with same timestamp (migration 004 — deterministic insertion order,
+               not random UUIDv4).
+            2. outer query: ORDER BY created_at ASC, sequence_in_conversation ASC —
+               re-orders the page chronologically; ASC matches insertion order.
+          The messages_by_conversation_sequence_idx index
+          (conversation_id, created_at ASC, sequence_in_conversation ASC) supports
+          both scans efficiently.
+          The sequence_in_conversation tiebreaker closes the non-determinism gap:
+          within a same-timestamp group (same-transaction batch), rows are always
+          returned in insertion order (user message before assistant reply) on every
+          call — the mobile chat transcript and LLM context window contract.
 
     Returns 404 if the conversation does not exist.
     Returns 422 if conversation_id or `before` is not a valid UUID.
@@ -720,23 +760,23 @@ async def list_messages(
         if before is None:
             # No cursor — return the most-recent `limit` non-system messages
             # in chronological order (DESC to select, then ASC to order page).
-            # id DESC / id ASC tiebreaker ensures deterministic ordering for
-            # messages sharing the same created_at (same-transaction batch inserts).
-            # Index: messages_by_conversation_time_idx (conversation_id, created_at ASC)
+            # sequence_in_conversation DESC / ASC tiebreaker (migration 004)
+            # ensures deterministic insertion-order within same-timestamp batches.
+            # Index: messages_by_conversation_sequence_idx (conversation_id, created_at, sequence_in_conversation)
             rows = await connection.fetch(
                 """
                 SELECT *
                 FROM (
                     SELECT id, conversation_id, role, content,
                            client_message_id, media_urls, created_at,
-                           count_toward_paywall
+                           count_toward_paywall, sequence_in_conversation
                     FROM messages
                     WHERE conversation_id = $1
                       AND role != 'system'
-                    ORDER BY created_at DESC, id DESC
+                    ORDER BY created_at DESC, sequence_in_conversation DESC
                     LIMIT $2
                 ) sub
-                ORDER BY sub.created_at ASC, sub.id ASC
+                ORDER BY sub.created_at ASC, sub.sequence_in_conversation ASC
                 """,
                 conv_uuid,
                 limit,
@@ -775,9 +815,12 @@ async def list_messages(
                     detail=f"cursor message {before} not found in this conversation",
                 )
 
-            # Compound row comparison partitions same-timestamp batches correctly
-            # (see round-2 fix comment). Defense-in-depth: the subquery also pins
-            # conversation_id = $1 in case the pre-check is somehow bypassed.
+            # Compound row comparison partitions same-timestamp batches correctly.
+            # sequence_in_conversation replaces id as the compound tiebreaker
+            # (migration 004): (created_at, sequence_in_conversation) provides
+            # insertion-order semantics, not random UUIDv4 ordering.
+            # Defense-in-depth: the subquery also pins conversation_id = $1 in
+            # case the pre-check is somehow bypassed.
             # DESC-then-ASC subquery returns most-recent N in chronological order.
             rows = await connection.fetch(
                 """
@@ -785,20 +828,20 @@ async def list_messages(
                 FROM (
                     SELECT id, conversation_id, role, content,
                            client_message_id, media_urls, created_at,
-                           count_toward_paywall
+                           count_toward_paywall, sequence_in_conversation
                     FROM messages
                     WHERE conversation_id = $1
                       AND role != 'system'
-                      AND (created_at, id) < (
-                          SELECT created_at, id
+                      AND (created_at, sequence_in_conversation) < (
+                          SELECT created_at, sequence_in_conversation
                           FROM messages
                           WHERE id = $2
                             AND conversation_id = $1
                       )
-                    ORDER BY created_at DESC, id DESC
+                    ORDER BY created_at DESC, sequence_in_conversation DESC
                     LIMIT $3
                 ) sub
-                ORDER BY sub.created_at ASC, sub.id ASC
+                ORDER BY sub.created_at ASC, sub.sequence_in_conversation ASC
                 """,
                 conv_uuid,
                 before_uuid,

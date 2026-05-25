@@ -651,6 +651,60 @@ async def update_message_counts(
     log.info("Phase 3 — message_count update DONE: %s", result)
 
 
+async def backfill_sequence_in_conversation(
+    destination: asyncpg.Pool,
+    dry_run: bool,
+) -> None:
+    """Phase 4: assign sequence_in_conversation to all migrated messages.
+
+    WHAT: runs a ROW_NUMBER() window-function UPDATE that sets
+          sequence_in_conversation = 1-based ordinal ordered by
+          (created_at ASC, id ASC) within each conversation.
+          Migrated messages land with sequence_in_conversation = 0
+          (the DEFAULT added by migration 004) because the ETL COPY+INSERT
+          does not set this column. This phase corrects them.
+    WHEN: called after Phase 3 (update_message_counts) completes.
+          The UPDATE is safe to re-run: ROW_NUMBER() produces the same
+          deterministic ordinals regardless of how many times it runs.
+    WHY:  without this backfill, migrated messages have sequence = 0.
+          The GET /v1/conversations/{id}/messages endpoint orders by
+          (created_at ASC, sequence_in_conversation ASC) — with all
+          migrated messages at sequence = 0, same-timestamp batches have
+          no stable secondary sort and the LLM context window / mobile
+          transcript can interleave user and assistant turns unpredictably.
+    """
+    log.info("Phase 4 — sequence_in_conversation backfill: starting (dry_run=%s)", dry_run)
+
+    if dry_run:
+        async with destination.acquire() as connection:
+            unsequenced = await connection.fetchval(
+                "SELECT COUNT(*) FROM messages WHERE sequence_in_conversation = 0;"
+            )
+        log.info(
+            "Phase 4 — DRY RUN: would backfill sequence_in_conversation for %d messages",
+            unsequenced,
+        )
+        return
+
+    async with destination.acquire() as connection:
+        result = await connection.execute(
+            """
+            UPDATE messages
+            SET sequence_in_conversation = sub.rn
+            FROM (
+                SELECT id,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY conversation_id
+                           ORDER BY created_at ASC, id ASC
+                       ) AS rn
+                FROM messages
+            ) sub
+            WHERE messages.id = sub.id
+            """
+        )
+    log.info("Phase 4 — sequence_in_conversation backfill DONE: %s", result)
+
+
 async def run_verification(source: asyncpg.Pool, destination: asyncpg.Pool) -> None:
     """Print post-ETL verification counts side by side.
 
@@ -724,7 +778,8 @@ async def main(
     """Run the full ETL migration.
 
     WHAT: orchestrates Phase 1 (conversations), Phase 2 (messages), Phase 3
-          (message_count UPDATE), and the verification count comparison.
+          (message_count UPDATE), Phase 4 (sequence_in_conversation backfill),
+          and the verification count comparison.
     WHEN: invoked by the coordinator under Rishi YES per A14.
     WHY:  single entry point keeps the ETL auditable — coordinator can see
           exactly what ran in what order from the log output.
@@ -766,6 +821,12 @@ async def main(
 
         if not conversations_only and not dry_run:
             await update_message_counts(destination_pool, dry_run)
+            # Phase 4: assign sequence_in_conversation to all migrated messages.
+            # Migrated messages land with sequence = 0 (column DEFAULT); this
+            # ROW_NUMBER() UPDATE corrects them to match insertion order within
+            # each conversation (see migration 004 + backfill_sequence_in_conversation
+            # docstring for the full ordering-determinism motivation).
+            await backfill_sequence_in_conversation(destination_pool, dry_run)
 
         # --- 3. Verify --------------------------------------------------
         if not skip_verification and not dry_run:

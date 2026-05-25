@@ -241,8 +241,13 @@ def test_transform_conversation_full_column_mapping():
 def test_transform_conversation_metadata_is_dropped():
     """conversations.metadata is dropped — Phase 2 pgvector will rebuild memories.
 
-    WHY: v2 Phase 1 schema has no metadata column; passing it would cause an
-         'column does not exist' error on INSERT.
+    WHAT: verifies that the output dict from transform_conversation_row() does
+          NOT contain a 'metadata' key, even when the source row has a non-NULL
+          metadata value.
+    WHEN: called with a source row that has metadata = {"memories": [...]}.
+    WHY:  v2 Phase 1 schema has no metadata column; passing it would cause a
+          'column does not exist' error on INSERT. Phase 2 pgvector will
+          reconstruct semantic memories from message history instead.
     """
     row = _make_conv_row(metadata={"memories": [{"fact": "likes cats"}]})
     result = etl.transform_conversation_row(row)
@@ -253,7 +258,18 @@ def test_transform_conversation_metadata_is_dropped():
 
 
 def test_transform_conversation_h2h_nulls_round_trip():
-    """NULL influencer_id + non-NULL participant_b_id (H2H mode) survive the transform."""
+    """NULL influencer_id + non-NULL participant_b_id (H2H mode) survive the transform.
+
+    WHAT: verifies that a human-to-human chat conversation (influencer_id=NULL,
+          participant_b_id set, conversation_type="human_chat") passes through
+          transform_conversation_row() with all three values preserved correctly.
+    WHEN: called with a source row representing a human_chat conversation.
+    WHY:  if influencer_id=NULL is silently coerced to '' or participant_b_id is
+          dropped, the v2 inbox would misrender H2H conversations as AI chats
+          (influencer icon instead of user avatar). NULL preservation is tested
+          explicitly because dict.get() returns None for missing keys, which
+          could mask a silent key-drop bug.
+    """
     row = _make_conv_row(
         influencer_id=None,
         participant_b_id="user-456",
@@ -273,9 +289,15 @@ def test_transform_conversation_h2h_nulls_round_trip():
 def test_transform_message_token_count_to_gemini_metadata():
     """token_count is wrapped in {total_tokens: N} JSONB envelope — billing data preserved.
 
-    WHY: v2 has no token_count column; the data is preserved inside the
-         gemini_metadata JSONB field that the orchestrator already reads
-         for cost accounting.
+    WHAT: verifies that transform_message_row() converts a non-NULL token_count
+          integer into gemini_metadata = '{"total_tokens": N}' (JSON string) and
+          drops the original token_count key from the output dict.
+    WHEN: called with a source row that has token_count = 42.
+    WHY:  v2 has no token_count column; the data is preserved inside the
+          gemini_metadata JSONB field that the orchestrator already reads for
+          cost accounting. If the raw int were stored instead of the JSON
+          envelope, the $6::jsonb cast in the INSERT would raise a type error
+          at run time.
     """
     row = _make_message_row(token_count=42)
     result = etl.transform_message_row(row)
@@ -290,7 +312,16 @@ def test_transform_message_token_count_to_gemini_metadata():
 
 
 def test_transform_message_null_token_count_gives_null_gemini_metadata():
-    """NULL token_count produces NULL gemini_metadata — user messages have no token count."""
+    """NULL token_count produces NULL gemini_metadata — user messages have no token count.
+
+    WHAT: verifies that transform_message_row() maps token_count=None to
+          gemini_metadata=None (not to '{}' or '{"total_tokens": null}').
+    WHEN: called with a source row that has token_count = None (typical for
+          user-role messages — only assistant replies from Gemini have token counts).
+    WHY:  a non-NULL gemini_metadata on user messages would pollute the cost
+          accounting query that reads gemini_metadata WHERE role = 'assistant';
+          NULL correctly signals "no billing data for this row".
+    """
     row = _make_message_row(token_count=None)
     result = etl.transform_message_row(row)
     assert result["gemini_metadata"] is None
@@ -299,9 +330,14 @@ def test_transform_message_null_token_count_gives_null_gemini_metadata():
 def test_transform_message_null_content_coerced_to_empty_string():
     """NULL content maps to '' — v2 messages.content has a NOT NULL constraint.
 
-    WHY: chat-ai occasionally stores NULL content for system-generated stubs;
-         inserting NULL into v2 would violate the NOT NULL constraint and abort
-         the batch transaction.
+    WHAT: verifies that transform_message_row() converts content=None to
+          content='' in the output dict.
+    WHEN: called with a source row where content is NULL (common for
+          system-generated stub messages in chat-ai).
+    WHY:  chat-ai occasionally stores NULL content for system-generated stubs;
+          inserting NULL into v2 would violate the messages.content NOT NULL
+          constraint and abort the entire batch transaction — losing all rows
+          in that batch including valid ones.
     """
     row = _make_message_row(content=None)
     result = etl.transform_message_row(row)
@@ -312,7 +348,16 @@ def test_transform_message_null_content_coerced_to_empty_string():
 
 
 def test_transform_message_count_toward_paywall_defaults_true():
-    """All migrated messages count toward the paywall — conservative E7 default."""
+    """All migrated messages count toward the paywall — conservative E7 default.
+
+    WHAT: verifies that transform_message_row() always sets count_toward_paywall
+          = True in the output dict, regardless of any source column value.
+    WHEN: called with a baseline message row (no special overrides).
+    WHY:  v2 enforces a paywall at N messages. We cannot retroactively determine
+          which historical messages were auto-greet exemptions vs real turns, so
+          all migrated rows are charged conservatively (E7 default). Defaulting
+          to False would under-count usage and allow paywall bypass.
+    """
     result = etl.transform_message_row(_make_message_row())
     assert result["count_toward_paywall"] is True, (
         "count_toward_paywall must default to True; "
@@ -323,8 +368,17 @@ def test_transform_message_count_toward_paywall_defaults_true():
 def test_transform_message_dropped_columns_absent():
     """Columns with no v2 equivalent are completely absent from the output dict.
 
-    WHY: passing unknown columns to the INSERT causes 'column does not exist' errors.
-         Each dropped column is a documented data-loss decision in etl-plan §3.
+    WHAT: verifies that transform_message_row() does not include any of the
+          8 chat-ai-only columns in its return value — specifically: sender_id,
+          message_type, audio_url, audio_duration_seconds, is_read, status,
+          metadata, and token_count.
+    WHEN: called with a baseline message row.
+    WHY:  passing unknown columns to asyncpg's INSERT causes a 'column does not
+          exist' Postgres error that aborts the batch. Each dropped column is a
+          documented decision in etl-plan §3 (no v2 equivalent, or superseded by
+          a different field). Explicitly asserting absence catches any regression
+          where a future transform refactor accidentally re-introduces a dropped
+          column.
     """
     result = etl.transform_message_row(_make_message_row())
     dropped_columns = {
@@ -345,7 +399,16 @@ def test_transform_message_dropped_columns_absent():
 
 
 def test_transform_message_client_message_id_preserved():
-    """client_message_id (F10 dedup key) is preserved — prevents mobile retry duplicates."""
+    """client_message_id (F10 dedup key) is preserved — prevents mobile retry duplicates.
+
+    WHAT: verifies that a non-NULL client_message_id from the source row appears
+          unchanged in the transform output.
+    WHEN: called with a source row that has client_message_id = "mobile-dedup-abc123".
+    WHY:  client_message_id is the idempotency key for the ON CONFLICT DO NOTHING
+          path in append_messages. If it is dropped or renamed during migration,
+          v2 loses the ability to detect mobile retries and will double-insert
+          messages (double paywall charge + duplicate UI bubbles).
+    """
     row = _make_message_row(client_message_id="mobile-dedup-abc123")
     result = etl.transform_message_row(row)
     assert result["client_message_id"] == "mobile-dedup-abc123"
@@ -357,12 +420,29 @@ def test_transform_message_client_message_id_preserved():
 
 
 def test_serialize_jsonb_none_returns_none():
-    """NULL media_urls must remain NULL — not serialised to 'null' string."""
+    """NULL media_urls must remain NULL — not serialised to 'null' string.
+
+    WHAT: verifies that _serialize_jsonb(None) returns None (not the string 'null').
+    WHEN: called with None (the typical value for messages without media attachments).
+    WHY:  if None were serialised to the JSON string 'null', the asyncpg $N::jsonb
+          cast would insert 'null'::jsonb = SQL NULL equivalent, but the column
+          type check would differ from a true SQL NULL — causing inconsistent
+          behaviour in downstream queries that filter WHERE media_urls IS NULL.
+    """
     assert etl._serialize_jsonb(None) is None
 
 
 def test_serialize_jsonb_dict_produces_valid_json_string():
-    """Python dict is serialised to a JSON string for $N::jsonb cast."""
+    """Python dict is serialised to a JSON string for $N::jsonb cast.
+
+    WHAT: verifies that _serialize_jsonb({"urls": [...]}) returns a JSON-parseable
+          string whose value round-trips back to the original dict.
+    WHEN: called with a dict (the decoded JSONB Python object asyncpg returns when
+          its JSONB codec is registered on the source connection).
+    WHY:  asyncpg's destination pool uses $N::jsonb for JSONB columns; the
+          parameter must be a string, not a Python dict. If a dict were passed
+          directly, asyncpg would raise a type-mismatch error at execute time.
+    """
     result = etl._serialize_jsonb({"urls": ["s3://bucket/key.jpg"]})
     assert isinstance(result, str), "serialized JSONB must be a string for asyncpg cast"
     parsed = json.loads(result)
@@ -370,7 +450,15 @@ def test_serialize_jsonb_dict_produces_valid_json_string():
 
 
 def test_serialize_jsonb_list_produces_valid_json_string():
-    """Python list (common for media_urls) serialises correctly."""
+    """Python list (common for media_urls) serialises correctly.
+
+    WHAT: verifies that _serialize_jsonb(["s3://a.jpg", "s3://b.mp4"]) returns
+          a JSON string whose parsed value equals the original list.
+    WHEN: called with a list (the most common media_urls shape in chat-ai).
+    WHY:  media_urls is a JSONB array in both source and destination schemas.
+          asyncpg may decode it to a Python list on source reads; it must be
+          re-serialised to a string for the destination INSERT's ::jsonb cast.
+    """
     result = etl._serialize_jsonb(["s3://a.jpg", "s3://b.mp4"])
     assert json.loads(result) == ["s3://a.jpg", "s3://b.mp4"]
 
@@ -378,8 +466,15 @@ def test_serialize_jsonb_list_produces_valid_json_string():
 def test_serialize_jsonb_already_string_passthrough():
     """A value already serialised as a JSON string is passed through unchanged.
 
-    WHY: asyncpg codec configuration varies — some pools decode JSONB to Python
-         objects, others return raw strings. This passthrough handles the raw-string case.
+    WHAT: verifies that _serialize_jsonb(already_serialized_string) returns the
+          same string without double-encoding it.
+    WHEN: called with a value that is already a valid JSON string (the case when
+          the source asyncpg connection has no JSONB codec registered and returns
+          raw text instead of decoded Python objects).
+    WHY:  asyncpg codec configuration varies between deployments. Some connections
+          decode JSONB to Python objects; others return raw strings. Double-encoding
+          a raw string ('["a.jpg"]' → '"[\\"a.jpg\\"]"') would produce invalid JSONB
+          at the destination INSERT and silently corrupt media_urls data.
     """
     already_serialized = '["s3://already-serialized.jpg"]'
     assert etl._serialize_jsonb(already_serialized) == already_serialized
@@ -393,8 +488,14 @@ def test_serialize_jsonb_already_string_passthrough():
 def test_run_verification_passes_within_tolerance(capsys):
     """Verification succeeds silently when deltas are within ±500 convs / ±5K msgs.
 
-    WHAT: source and destination counts are close — coordinator sees PASSED report.
-    WHY:  confirms the happy path doesn't false-positive sys.exit(1).
+    WHAT: verifies that run_verification() prints a VERIFICATION REPORT without
+          a LARGE DELTA warning and exits cleanly (no sys.exit()) when source
+          and destination counts are within the tolerance thresholds.
+    WHEN: source has 100 conversations / 1000 messages; destination has 101 / 1003
+          (small positive delta — expected when live traffic creates new rows
+          during the migration window).
+    WHY:  confirms the happy path doesn't false-positive sys.exit(1) and silently
+          declare a normal small-delta ETL as failed.
     """
     source_pool = _MockPool(100, 1_000)       # source: 100 conversations, 1000 messages
     destination_pool = _MockPool(101, 1_003)  # destination: 101 conversations, 1003 messages
@@ -410,8 +511,12 @@ def test_run_verification_passes_within_tolerance(capsys):
 def test_run_verification_exits_1_on_large_conversation_delta(capsys):
     """Verification exits 1 when conversation delta exceeds ±500 threshold.
 
-    WHY: a large negative delta means rows were lost in migration (A4 violation);
-         the coordinator must investigate before declaring the ETL complete.
+    WHAT: verifies that run_verification() calls sys.exit(1) and prints a LARGE
+          DELTA warning when the conversation count difference exceeds 500 rows.
+    WHEN: source has 10,000 conversations; destination has only 100 (delta = -9,900).
+    WHY:  a large negative delta means rows were lost in migration (A4 violation
+          — "ALL data MUST port"). The coordinator must investigate before declaring
+          the ETL complete; exiting with code 1 prevents false-positive success.
     """
     source_pool = _MockPool(10_000, 1_000)      # source: 10K convs
     destination_pool = _MockPool(100, 1_000)    # destination: 100 convs — delta = -9900
@@ -428,7 +533,16 @@ def test_run_verification_exits_1_on_large_conversation_delta(capsys):
 
 
 def test_run_verification_exits_1_on_large_message_delta(capsys):
-    """Verification exits 1 when message delta exceeds ±5000 threshold."""
+    """Verification exits 1 when message delta exceeds ±5000 threshold.
+
+    WHAT: verifies that run_verification() calls sys.exit(1) and prints a LARGE
+          DELTA warning when the message count difference exceeds 5,000 rows.
+    WHEN: source has 100,000 messages; destination has only 10,000 (delta = -90,000).
+    WHY:  3.3M messages × a large loss = millions of PII-bearing conversation
+          turns silently not migrated. The higher ±5,000 threshold (vs ±500 for
+          conversations) accounts for normal live-traffic growth during the
+          migration window without masking a real data-loss event.
+    """
     source_pool = _MockPool(100, 100_000)      # source: 100 convs, 100K messages
     destination_pool = _MockPool(100, 10_000)  # destination: 100 convs, 10K messages — delta = -90K
 
@@ -447,9 +561,14 @@ def test_run_verification_exits_1_on_large_message_delta(capsys):
 def test_cli_rejects_both_conversations_only_and_messages_only():
     """--conversations-only and --messages-only together must exit with code 2.
 
-    WHY: if both flags were accepted, main() would skip Phase 1 (conversations_only=True
-         skips messages) AND Phase 2 (messages_only=True skips conversations) — the ETL
-         would run zero phases and silently succeed with no data migrated.
+    WHAT: verifies that cli() raises SystemExit with code 2 when both
+          --conversations-only and --messages-only flags are passed together.
+    WHEN: sys.argv is set to ["etl", "--conversations-only", "--messages-only"].
+    WHY:  the two flags are mutually exclusive phase-skip flags: together they
+          would skip ALL phases (conversations_only skips messages; messages_only
+          skips conversations) and main() would run zero migration work while
+          silently exiting with code 0 — a completely silent no-op masquerading
+          as a successful ETL run.
     """
     original_argv = sys.argv
     try:
@@ -473,9 +592,14 @@ def test_cli_rejects_both_conversations_only_and_messages_only():
 def test_transform_message_does_not_log_content(caplog):
     """Message content (potential PII) must never appear in any log record.
 
-    WHY: chat messages may contain names, contact details, or other personal
-         information. Logging content would write PII to stdout and any log
-         aggregation system (Sentry, Grafana Loki). See etl-plan §8.
+    WHAT: verifies that calling transform_message_row() with a content string
+          containing simulated PII does NOT cause that string to appear in any
+          logging record emitted at DEBUG level or above.
+    WHEN: called with content that includes a fake SSN and card number.
+    WHY:  chat messages may contain names, contact details, payment info, or
+          other personal information. Logging content would write PII to stdout
+          and any log aggregation system (Sentry, Grafana Loki) — a GDPR and
+          compliance violation. See etl-plan §8 PII safety section.
     """
     pii_content = "My SSN is 123-45-6789 and card is 4111-1111-1111-1111"
     row = _make_message_row(content=pii_content)
@@ -494,8 +618,14 @@ def test_transform_message_does_not_log_content(caplog):
 def test_transform_conversation_does_not_log_metadata_values(caplog):
     """Conversation metadata values (may contain user facts) must not be logged.
 
-    WHY: conversations.metadata may contain inferred user facts from the AI
-         (e.g. 'user lives at X'). These are sensitive and must not appear in logs.
+    WHAT: verifies that calling transform_conversation_row() with a metadata dict
+          containing a sensitive user fact does NOT log that fact string in any
+          log record at DEBUG level or above.
+    WHEN: called with metadata = {"memories": [{"fact": "user lives at 123 Main..."}]}.
+    WHY:  conversations.metadata may contain AI-inferred user facts such as
+          location, preferences, or personal details. Logging these values would
+          write inferred PII to stdout and log aggregators without the user's
+          awareness — a GDPR violation and privacy incident. See etl-plan §8.
     """
     sensitive_fact = "user lives at 123 Main Street, Springfield"
     row = _make_conv_row(metadata={"memories": [{"fact": sensitive_fact}]})
@@ -966,9 +1096,102 @@ def test_migrate_conversations_check_violation_falls_back_to_per_row(caplog):
 
 
 # ===========================================================================
+# 12. PHASE 4 — SEQUENCE_IN_CONVERSATION BACKFILL
+# ===========================================================================
+
+
+def test_backfill_sequence_in_conversation_dry_run_logs_count(caplog):
+    """Dry-run path logs how many messages need sequence_in_conversation backfill.
+
+    WHAT: backfill_sequence_in_conversation(dry_run=True) must call fetchval()
+          to count messages WHERE sequence_in_conversation = 0 and log the
+          result without executing any UPDATE statement.
+    WHEN: destination pool's fetchval() returns 3 (3 migrated messages with
+          the DEFAULT 0 sentinel value that Phase 4 would correct).
+    WHY:  the coordinator checks the dry-run log before committing to live
+          Phase 4 execution. If the dry-run path silently skips the count
+          query, the coordinator sees no output and cannot verify that Phase
+          4 is needed (e.g. in a re-run after a partial migration). The
+          absence of any UPDATE in the dry-run output confirms the live UPDATE
+          is gated correctly.
+    """
+    # _MigrationDestinationConnection.fetchval() always returns 3 — used as
+    # the "3 unsequenced messages" count for assertion purposes.
+    destination = _MigrationDestinationPool()
+
+    with caplog.at_level(logging.INFO, logger="etl"):
+        asyncio.run(etl.backfill_sequence_in_conversation(destination, dry_run=True))
+
+    log_messages = " ".join(r.getMessage() for r in caplog.records)
+    assert "3" in log_messages, (
+        "backfill dry-run must log the count of unsequenced messages (fetchval returns 3); "
+        f"got log output: {log_messages!r}"
+    )
+    assert "DRY RUN" in log_messages.upper(), (
+        "backfill dry-run must clearly include DRY RUN in the log output; "
+        f"got: {log_messages!r}"
+    )
+    # Verify no UPDATE was issued in dry-run mode.
+    update_calls = [
+        line for line in destination.connection.execute_calls
+        if "UPDATE" in line
+    ]
+    assert not update_calls, (
+        f"dry_run=True must not execute any UPDATE; "
+        f"found UPDATE call(s): {update_calls}"
+    )
+
+
+def test_backfill_sequence_in_conversation_live_executes_row_number_update(caplog):
+    """Live path executes the ROW_NUMBER() UPDATE and logs completion.
+
+    WHAT: backfill_sequence_in_conversation(dry_run=False) must call execute()
+          with an UPDATE statement containing ROW_NUMBER() and log a completion
+          message. The mock destination returns 'OK' from execute() — which the
+          function logs as the result.
+    WHEN: destination is a _MigrationDestinationPool with default mock connection;
+          dry_run=False so the live path runs.
+    WHY:  the dry-run test confirms the guard is in place; this test confirms the
+          live path actually issues the UPDATE. Without this test, a refactor that
+          accidentally put the UPDATE under an if-not-dry-run check identical to
+          the dry_run branch would go undetected.
+    """
+    destination = _MigrationDestinationPool()
+
+    with caplog.at_level(logging.INFO, logger="etl"):
+        asyncio.run(etl.backfill_sequence_in_conversation(destination, dry_run=False))
+
+    # Exactly one UPDATE must have been issued.
+    update_calls = [
+        line for line in destination.connection.execute_calls
+        if "UPDATE" in line
+    ]
+    assert len(update_calls) == 1, (
+        f"Expected exactly 1 UPDATE call in live mode, got {len(update_calls)}: {update_calls}"
+    )
+    # The UPDATE must reference ROW_NUMBER and PARTITION BY for correctness.
+    update_sql = update_calls[0]
+    assert "ROW_NUMBER" in update_sql, (
+        "The backfill UPDATE must use ROW_NUMBER() OVER (...) to assign ordinals; "
+        f"got: {update_sql!r}"
+    )
+    assert "PARTITION BY" in update_sql, (
+        "The backfill UPDATE must PARTITION BY conversation_id so each conversation "
+        f"gets its own 1-based sequence; got: {update_sql!r}"
+    )
+    # Log must mention completion (not dry-run text).
+    log_messages = " ".join(r.getMessage() for r in caplog.records)
+    assert "DONE" in log_messages or "backfill" in log_messages.lower(), (
+        f"Expected a completion log message, got: {log_messages!r}"
+    )
+
+
+# ===========================================================================
 # RELATED FILES:
 #   etl-scripts/chat_ai_to_user_memory_etl.py  — module under test
 #   etl-scripts/etl-plan-day-9-draft.md        — §2 + §3 column mapping documentation
 #   yral-rishi-agent-user-memory-service/app/migrations/versions/
 #                                              — schema the destination DB must satisfy
+#   yral-rishi-agent-user-memory-service/app/migrations/versions/004_add_sequence_in_conversation.py
+#                                              — migration that adds the column Phase 4 backfills
 # ===========================================================================

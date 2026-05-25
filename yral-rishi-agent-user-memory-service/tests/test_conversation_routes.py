@@ -779,22 +779,23 @@ async def test_messages_ordering_with_same_created_at_timestamp(
 ) -> None:
     """WHAT: messages inserted in the same Postgres transaction share a
              created_at timestamp (NOW() returns the transaction start time).
-             The listing endpoint MUST return them in a deterministic content-
-             positional order on every call — user message at position 0,
-             assistant reply at position 1 (by id ASC tiebreaker).
+             The listing endpoint MUST return them in INSERTION ORDER on every
+             call — user message at position 0, assistant reply at position 1,
+             driven by sequence_in_conversation (migration 004).
     WHEN: a batch POST .../messages call inserts [user, assistant] in a
           single transaction (which is what the orchestrator always does at
           the end of a turn).
-    WHY:  without the `id ASC` tiebreaker, Postgres may return equal-
-          timestamp rows in a different physical order on different calls —
-          mobile would occasionally see the assistant reply BEFORE the user
-          message on screen (a catastrophic UX regression). The tiebreaker
-          locks the ordering as part of the contract so the test fails loud
-          if the ORDER BY clause is ever simplified to drop the id column.
-          Content-positional assertion (Codex tightening): verifying that
-          both roles are present in a fixed, stable order is more meaningful
-          than just verifying id-sequence stability — it directly represents
-          the mobile rendering contract.
+    WHY:  without sequence_in_conversation (migration 004), Postgres uses
+          UUIDv4 ordering as a tiebreaker — a ~50% chance the assistant reply
+          sorts BEFORE the user message on any given query call (catastrophic
+          UX: inverted transcript + incoherent LLM context). With
+          sequence_in_conversation, the user message gets a lower ordinal
+          (inserted first) and the assistant a higher one; ORDER BY
+          (created_at ASC, sequence_in_conversation ASC) always produces
+          [user, assistant].
+          Ordered equality (not set equality): this test pins the exact
+          [\"user\", \"assistant\"] order directly representing the mobile
+          rendering contract and the LLM context-window requirement.
     """
     conversation_response = await test_client.post(
         "/v1/conversations",
@@ -839,11 +840,18 @@ async def test_messages_ordering_with_same_created_at_timestamp(
 
     assert len(ids1) == 2, f"Expected 2 messages, got {len(ids1)}: {messages_first_batch}"
 
-    # --- Content-positional assertions (Codex tightening) -----------------
-    # Both roles must be present in the response.
+    # --- Ordered content-positional assertion (migration 004 tightening) ----
+    # sequence_in_conversation provides insertion-order tiebreaking for
+    # same-timestamp batches: user message inserted first → lower sequence →
+    # sorts FIRST in (created_at ASC, sequence_in_conversation ASC).
+    # Assert the EXACT order — not just set membership — to pin the
+    # [user, assistant] insertion-order contract vs the old UUID-random order.
     roles_in_order = [messages_first_batch[0]["role"], messages_first_batch[1]["role"]]
-    assert set(roles_in_order) == {"user", "assistant"}, (
-        f"Expected one user + one assistant message, got: {roles_in_order}"
+    assert roles_in_order == ["user", "assistant"], (
+        f"Expected insertion-order [user, assistant] for same-timestamp batch, "
+        f"got: {roles_in_order}. "
+        "sequence_in_conversation (migration 004) must place the user message "
+        "before the assistant reply regardless of UUID sort order."
     )
 
     # Determinism: same id sequence on both GET calls.
@@ -866,22 +874,24 @@ async def test_before_cursor_within_same_timestamp_batch_returns_correct_subset(
 ) -> None:
     """WHAT: when `before=<id>` cursor points at the LAST message of a same-
              timestamp batch, the response includes BOTH the earlier standalone
-             message AND the same-timestamp peers that precede the cursor
-             message by UUID sort order.
+             message AND the same-timestamp peer that precedes the cursor
+             message by sequence_in_conversation (migration 004).
     WHEN: mobile calls GET .../messages?before=<late_b_id> where late_b is
-          the UUID-sort-larger of a two-message batch sharing one created_at.
+          the SECOND message of a two-message batch (higher sequence_in_conversation),
+          derived by POST response index (index 1 = higher sequence).
     WHY:  a created_at-only cursor (`created_at < cursor.created_at`) silently
           drops same-timestamp peers — late_a shares cursor.created_at so
           `late_a.created_at < cursor.created_at` is FALSE, excluding it.
-          The correct compound row comparison `(created_at, id) < (cursor.created_at,
-          cursor.id)` returns late_a because `late_a.id < cursor.id` resolves
-          the tie. This test pins the EXACT expected id list; a created_at-only
-          cursor regression returns only [early_id] and fails the assertion.
-    ORDER NOTE: UUIDv4 is random — insertion index ≠ UUID sort order. The test
-          derives late_a / late_b by sorting the two same-timestamp ids via
-          `uuid.UUID()` comparison, which matches PostgreSQL's UUID type ordering
-          exactly. The larger UUID is used as the cursor; the smaller is expected
-          in the result.
+          The correct compound comparison `(created_at, sequence_in_conversation)
+          < (cursor.created_at, cursor.sequence)` returns late_a because
+          `late_a.sequence < cursor.sequence` resolves the tie.
+          This test pins the EXACT expected id list; a created_at-only cursor
+          regression returns only [early_id] and fails the assertion.
+    ORDER NOTE (migration 004): sequence_in_conversation is assigned at INSERT
+          time in insertion order. The first message in the POST body gets the
+          lower sequence (= late_a); the second gets the higher sequence (= late_b).
+          POST response order mirrors insertion order — index 0 = late_a,
+          index 1 = late_b. This replaces the pre-004 UUID-sort derivation.
     """
     conversation_response = await test_client.post(
         "/v1/conversations",
@@ -913,11 +923,13 @@ async def test_before_cursor_within_same_timestamp_batch_returns_correct_subset(
     assert late_resp.status_code == 200
     late_batch_ids = [m["id"] for m in late_resp.json()]
     assert len(late_batch_ids) == 2, f"Expected 2 late-batch messages, got {late_batch_ids}"
-    # Sort by uuid.UUID() value — matches PostgreSQL's UUID type comparison exactly.
-    # UUIDv4 is random so insertion index does NOT equal UUID sort order.
-    sorted_late_ids = sorted(late_batch_ids, key=lambda message_id: uuid.UUID(message_id))
-    late_a_id = sorted_late_ids[0]  # smaller UUID — precedes cursor in compound comparison
-    late_b_id = sorted_late_ids[1]  # larger UUID — used as the before= cursor
+    # POST response order = insertion order = sequence_in_conversation order.
+    # migration 004: the first message in the request body gets the lower
+    # sequence (sequence_start + 1); the second gets the higher (sequence_start + 2).
+    # asyncpg returns RETURNING rows in insertion order, so the response list
+    # matches: index 0 = lower sequence = late_a, index 1 = higher sequence = late_b.
+    late_a_id = late_batch_ids[0]  # lower sequence_in_conversation — precedes cursor
+    late_b_id = late_batch_ids[1]  # higher sequence_in_conversation — used as before= cursor
 
     # Sanity: confirm 3 total messages exist in chronological order.
     all_resp = await test_client.get(f"/v1/conversations/{conv_id}/messages?limit=10")
@@ -1269,4 +1281,7 @@ async def test_get_conversation_by_id_returns_none_last_message_for_new_conversa
 #   ../app/migrations/versions/003_add_dedup_indexes.py
 #                                — unique indexes required by concurrency +
 #                                  idempotency tests above
+#   ../app/migrations/versions/004_add_sequence_in_conversation.py
+#                                — adds sequence_in_conversation column;
+#                                  required by ordering + cursor tests above
 # ===========================================================================

@@ -3,6 +3,77 @@
 
 ---
 
+### 2026-05-25 — PR #147 round-8: J3 docstrings + sequence_in_conversation ordering fix
+
+**Branch**: session-5/d3-etl-migration
+**Trigger**: Codex round-7 returned (ran 11:26 UTC, before PR #154 carve-out merged at 11:36):
+  BLOCKER (B7/J3 partial): imports lack role-comments (INVALID per PR #154 carve-out);
+    test docstrings missing WHAT/WHEN/WHY (VALID per J3).
+  CONCERN (ordering bug): same-created_at messages ordered by UUID (random ~50% wrong
+    user/assistant order). Recommended fix: sequence_in_conversation column.
+
+**PR comment pushback**: posted on PR #147 citing CONSTRAINTS.md:46 + PR #154 (merged
+11:36 UTC) — test files are exempt from import role-comments. The J3 docstring sub-finding
+is valid and fixed. Codex ran 10 minutes before the carve-out merged.
+
+**What ships**:
+
+1. `tests/test_etl_transforms.py` — J3 WHAT/WHEN/WHY docstrings:
+   - All 19 tests in sections 1–6 that had only WHY or one-liner docstrings now
+     have full WHAT/WHEN/WHY blocks (19 tests updated)
+   - 2 new Phase 4 backfill tests (section 12):
+     - `test_backfill_sequence_in_conversation_dry_run_logs_count`
+     - `test_backfill_sequence_in_conversation_live_executes_row_number_update`
+   - Total ETL unit tests: **26** (24 → 26)
+
+2. `yral-rishi-agent-user-memory-service/app/migrations/versions/004_add_sequence_in_conversation.py`:
+   - New migration (chain 001→002→003→004)
+   - `ALTER TABLE messages ADD COLUMN sequence_in_conversation INTEGER NOT NULL DEFAULT 0`
+   - Backfills existing rows with ROW_NUMBER() OVER (PARTITION BY conversation_id ORDER BY created_at, id)
+   - Creates `messages_by_conversation_sequence_idx (conversation_id, created_at, sequence_in_conversation)`
+   - downgrade() drops index + column
+
+3. `yral-rishi-agent-user-memory-service/app/api/conversation_routes.py`:
+   - `append_messages`: reads `MAX(sequence_in_conversation)` once before loop;
+     `sequence_counter += 1` per message in loop; INSERT adds `sequence_in_conversation` ($8)
+   - All ORDER BY tiebreakers changed: `id` → `sequence_in_conversation` (5 places):
+     - `create_or_get_conversation` last-message query
+     - `list_conversations_by_user` LATERAL subquery
+     - `get_conversation_by_id` last-message query
+     - `list_messages` no-cursor path (inner + outer ORDER BY)
+     - `list_messages` cursor path (inner + outer ORDER BY)
+   - Cursor compound comparison: `(created_at, id)` → `(created_at, sequence_in_conversation)`
+   - `sequence_in_conversation` added to inner SELECT in both `list_messages` paths
+     (outer ORDER BY must reference subquery columns by name)
+   - File header + inline comments updated to reflect the new tiebreaker
+
+4. `etl-scripts/chat_ai_to_user_memory_etl.py`:
+   - New `backfill_sequence_in_conversation(destination, dry_run)` Phase 4:
+     - dry_run=True: fetchval() count of messages with sequence=0, logs "DRY RUN"
+     - dry_run=False: ROW_NUMBER() window UPDATE, logs completion
+   - `main()` docstring + Phase 4 call: `await backfill_sequence_in_conversation(destination_pool, dry_run)`
+     called after Phase 3 under `if not conversations_only and not dry_run:`
+
+5. `yral-rishi-agent-user-memory-service/tests/test_conversation_routes.py`:
+   - `test_messages_ordering_with_same_created_at_timestamp`:
+     docstring updated; `set(roles_in_order) == {"user", "assistant"}` →
+     `roles_in_order == ["user", "assistant"]` (ordered equality, not set equality)
+   - `test_before_cursor_within_same_timestamp_batch_returns_correct_subset`:
+     docstring updated; UUID sort (`sorted(late_batch_ids, key=lambda message_id: uuid.UUID(message_id))`)
+     replaced with positional indexing (`late_a_id = late_batch_ids[0]`, `late_b_id = late_batch_ids[1]`)
+   - RELATED FILES footer: added 004_add_sequence_in_conversation.py
+
+**Root causes**:
+- Ordering bug: UUIDv4 tiebreaker is random (not insertion order). Fixed with per-conversation
+  monotonic sequence integer assigned at INSERT time.
+- J3 gap: sections 1–6 tests were written before the J3 docstring standard was finalised.
+  Fixed by adding WHAT/WHEN/WHY to all 19 tests lacking them.
+
+**Test results**: 26/26 pass (ETL unit). B2 check on new identifiers: 0 hits.
+(Route tests require testcontainers — run in CI with Docker.)
+
+---
+
 ### 2026-05-25 — PR #147 round-7: B2 constant renames + 5 new migration behaviour tests
 
 **Branch**: session-5/d3-etl-migration
