@@ -90,6 +90,17 @@ services:
     environment:
       DATABASE_URL: postgresql://service:service-local-password@pgbouncer:6432/service_local_database
       REDIS_URL: redis://redis:6379/0
+      # DEP-014 — empty for local dev; the local-compose Redis has no
+      # `--requirepass`, so the `or None` guard in app/redis_client.py
+      # normalises empty-string → None and redis-py skips the AUTH
+      # frame. Production deploys override via the REDIS_PASSWORD
+      # Swarm secret per D8.
+      REDIS_PASSWORD: ""
+      # DEP-014 — false for local dev; the local-compose Redis is a
+      # single container with no Sentinel. Production deploys flip
+      # to "true" + the Sentinel-aware path in app/redis_client.py
+      # reads master_name + hosts from shared-config.yaml.
+      REDIS_SENTINEL_ENABLED: "false"
       SENTRY_DSN: ""
       LANGFUSE_TRACING_ENABLED: "false"
       ENVIRONMENT: local
@@ -208,9 +219,21 @@ services:
       LISTEN_PORT: 6432
 
       # AUTH_TYPE controls how clients authenticate TO the bouncer.
-      # `trust` works for local dev (no client password); production
-      # uses `scram-sha-256` (configured in Session 1's stateful-core).
-      AUTH_TYPE: trust
+      # `scram-sha-256` matches the production cluster bouncer
+      # (Session 1's stateful-core) + works with asyncpg out of the
+      # box. DEP-014 (2026-05-24) changed this from `trust`:
+      # `trust` told pgbouncer to AuthOK every client request
+      # without a password challenge, but the template's
+      # DATABASE_URL embeds `service:service-local-password` so
+      # asyncpg sends the password as part of the connection
+      # handshake; pgbouncer's immediate AuthOK confused asyncpg's
+      # SASL state machine and surfaced as
+      # `ProtocolViolationError: server login failed: wrong password
+      # type`. `scram-sha-256` makes pgbouncer issue a SCRAM
+      # challenge that asyncpg negotiates correctly. edoburu/
+      # pgbouncer auto-generates the userlist.txt from DB_USER +
+      # DB_PASSWORD when this mode is set.
+      AUTH_TYPE: scram-sha-256
 
       # Session mode for local dev — see header comment above.
       POOL_MODE: session

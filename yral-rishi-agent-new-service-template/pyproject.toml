@@ -105,6 +105,16 @@ dependencies = [
     # the env at startup, validated, then served to every callsite.
     "pydantic-settings==2.7.1",
 
+    # PyYAML — used by `app/redis_client.py` to load the `redis:`
+    # section of `shared-config.yaml` at lifespan startup (per C7).
+    # Pinned explicitly to match orchestrator + soul-file-library
+    # (both pin 6.0.2). Previously the template was relying on yaml
+    # arriving as a transitive dep of langfuse / pydantic-internals;
+    # PR #151 round-7 (Codex CONCERN) made it explicit to remove the
+    # supply-chain risk + lock the version so the spawn-smoke's
+    # PRE-FLIGHT 2 pytest run can install the matched version.
+    "PyYAML==6.0.2",
+
     # alembic — schema migration tool. Generates + runs SQL migration
     # files against Postgres. Per CONSTRAINTS H11, every migration PR
     # is auto-tested against a WAL-restored snapshot before merge.
@@ -153,6 +163,22 @@ dev = [
 # to prod).
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
+
+
+# ===========================================================================
+# [tool.pytest.ini_options] — pytest discovery + asyncio mode.
+# ===========================================================================
+#
+# Mirrors the orchestrator's pytest config (PR #96 + post-Codex-rounds).
+# `asyncio_mode = "auto"` lets pytest run `async def test_*` functions
+# without each one being decorated `@pytest.mark.asyncio` — pytest-asyncio
+# strict mode otherwise rejects async fixtures requested by async tests.
+# `asyncio_default_fixture_loop_scope = "function"` silences the
+# pytest-asyncio deprecation warning + matches the loop-per-test
+# isolation we want for the redis-client safety-gate tests.
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 
 
 # ===========================================================================

@@ -36,7 +36,7 @@ Per D1 + D8 — declared in `secrets.yaml.template` (becomes `secrets.yaml` in a
 | Secret | Source per env | Blast radius |
 |---|---|---|
 | `DATABASE_URL` | .env.local / GitHub Secret / Swarm secret | HIGH |
-| `REDIS_SENTINEL_PASSWORD` | .env.local / GitHub Secret / Swarm secret | MEDIUM |
+| `REDIS_PASSWORD` | .env.local / GitHub Secret / Swarm secret | MEDIUM |
 | `SENTRY_DSN` | .env.local / GitHub Secret / Swarm secret | LOW (write-only by design) |
 | `LANGFUSE_PUBLIC_KEY` | .env.local / GitHub Secret / Swarm secret | LOW |
 | `LANGFUSE_SECRET_KEY` | .env.local / GitHub Secret / Swarm secret | MEDIUM |
