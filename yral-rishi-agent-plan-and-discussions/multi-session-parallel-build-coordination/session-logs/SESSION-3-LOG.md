@@ -2,6 +2,59 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-25 — PR #137 round-19: test-docstring scope-fix sweep + validator strengthening for empty-credential URLs (Codex round-18 verdict)
+
+### Action
+Codex round-18 returned 1 BLOCKER + 1 CONCERN on round-18's commit (85fee59, coordinator-completed per Session 1 rebase precedent after Anthropic API classifier throttle). Round-19 closes both.
+
+**BLOCKER (scope) — `tests/contract/test_health_routes.py:451`**: the round-17 production-code "Session 1 → Session 3" attribution sweep updated the role-comments in `config.py` + `redis_client.py` + `health_routes.py` + both compose files but missed the test docstrings. Same fix pattern: 3 docstring occurrences corrected:
+
+- `test_redis_url_with_embedded_password_is_rejected_when_flag_is_on` WHEN block (lines 488-498): "Session 1 has flipped enforce_passwordless_redis_url to True via a follow-up PR after PR #150 + secret rotation" → "Session 3 has flipped enforce_passwordless_redis_url to True (in a small follow-up PR that edits the public-api compose default from `:-false` to `:-true`) after Session 1 lands PR #150 + the secret-rotation operator-action + confirms the deployed REDIS_URL is passwordless."
+- `test_credential_bearing_redis_url_is_accepted_when_flag_is_off` WHY block (lines 560-566): "Until Session 1 rotates the deployed Swarm / GitHub Secret REDIS_URL to passwordless shape AND flips enforce_passwordless_redis_url to True" → "Until Session 1 rotates the deployed Swarm / GitHub Secret REDIS_URL to passwordless shape AND Session 3 flips enforce_passwordless_redis_url to True in a follow-up compose-default PR."
+- Same test's WHEN block (lines 572-576): "PR-merge window between this PR landing and Session 1's follow-up that flips the flag TRUE" → "PR-merge window between this PR landing and Session 3's follow-up that flips the flag TRUE (which itself only fires after Session 1 confirms the deployed REDIS_URL has been rotated to the passwordless shape)."
+
+Remaining `Session 1` mentions in `test_health_routes.py` are LEGITIMATE: line 491 ("Session 1 lands PR #150 + secret-rotation operator-action") + line 565 ("Session 1 rotates the deployed Swarm") + line 579 ("Session 1 confirms the deployed REDIS_URL") all describe Session-1-owned actions correctly; line 676 (RELATED FILES footer) references Session 1's cluster bootstrap for DEP-006 context. None of these are flag-flip attributions.
+
+**CONCERN (industry — validator gap) — `app/config.py:237`**: the round-8 validator's rejection condition was `if parsed.username or parsed.password:` which let credential-bearing URL forms with empty/None credentials slip through. Probed all 6 URL shapes via `urlparse`:
+
+```
+'redis://localhost:6379/0'              netloc='localhost:6379'      username=None     password=None
+'redis://:@host:6379/0'                 netloc=':@host:6379'         username=''       password=''
+'redis://user:@host:6379/0'             netloc='user:@host:6379'     username='user'   password=''
+'redis://:pass@host:6379/0'             netloc=':pass@host:6379'     username=''       password='pass'
+'redis://@host:6379/0'                  netloc='@host:6379'          username=''       password=None
+'redis://user:pass@host:6379/0'         netloc='user:pass@host:6379' username='user'   password='pass'
+```
+
+The truthiness check caught 3 of the 5 credential-bearing shapes but slipped `:@host` (both empty strings, falsy) and `@host` (empty string + None, both falsy). redis-py's URL parser still interprets the `@` separator as a credential-bearing URL in both shapes — silently bypassing the `password=` keyword argument that forwards REDIS_PASSWORD.
+
+Round-19 changes the condition to `if "@" in (parsed.netloc or ""):` — catches all 5 credential-bearing shapes regardless of whether credentials are empty/None/populated. Verified the rejection table against all 8 URL shapes (3 legit passwordless + 5 credential-bearing): legit ones pass, credential-bearing ones reject.
+
+Also updates:
+- Validator docstring (WHAT/WHY blocks) to describe the round-19 `@`-in-netloc check + name the round-18 CONCERN that motivated it.
+- `urllib.parse.urlparse` import role-comment (config.py:41-49) to describe the credential-separator detection (any of `user:pass@`, `:pass@`, `user:@`, `:@`, `@`).
+- Inline rejection-branch comment (config.py:244-251) explaining why truthiness was insufficient + that empty-credential `@` forms are still credential-bearing in redis-py's eyes.
+- Validator error message: now names all 5 credential-separator forms + references the round-18 CONCERN.
+
+**New regression test — `test_redis_url_with_empty_credentials_is_rejected_when_flag_is_on`**: iterates over the 4 empty-or-partial-credential shapes (`redis://:@host:6379/0`, `redis://user:@host:6379/0`, `redis://:pass@host:6379/0`, `redis://@host:6379/0`) and asserts each raises ValidationError when the flag is on. Brings the validator regression-test count from 3 → 4. WHY block explicitly names this as a defense against a future refactor that reverts the round-19 condition.
+
+### Files touched (round-19)
+- `yral-rishi-agent-public-api/app/config.py` — 3 edits: urlparse import role-comment refresh; validator docstring (WHAT/WHY); rejection-branch logic + error message + inline comment.
+- `yral-rishi-agent-public-api/tests/contract/test_health_routes.py` — 4 edits: 3 docstring attribution fixes (round-8 rejection test + flag-off safety-net test x2) + 1 new test function for empty-credential rejection.
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-state/SESSION-3-STATE.md` — `LAST THING I DID` paragraph refreshed to round-19 cumulative state.
+- This LOG subsection.
+
+### Verified locally
+- `python3 -c "import ast"` on touched Python files → AST OK.
+- Inline behavioral probe of the validator condition against all 8 URL shapes → 8/8 correctly classified (3 passwordless pass, 5 credential-bearing reject including the 2 previously-slipping shapes).
+- `bash scripts/tests/test_validate_secrets.sh` → 5 passed, 0 failed.
+- `git diff --stat $(git merge-base HEAD origin/main) -- yral-rishi-agent-public-api/` → 12 files / +1212 / -89.
+- Local pytest unavailable (no venv in worktree); behavioral correctness verified via inline probe + AST-parse smoke test.
+
+Same PR + branch. 2 production files + STATE + LOG. The CONCERN fix is a real behavioral change (catches 2 previously-slipping URL shapes); test-docstring scope-fix is documentation-only.
+
+---
+
 ## 2026-05-25 — PR #137 round-18: B2 sweep on test comments + STATE refresh (Codex round-17 verdict)
 
 ### Action

@@ -40,11 +40,14 @@ from functools import lru_cache
 
 # urllib.parse.urlparse — parses a URL into scheme/netloc/path/etc.
 # parts. Used by the round-8 `_reject_password_in_redis_url`
-# validator below to detect credential-bearing `user:pass@host`
-# segments in `REDIS_URL` (which the redis-py URL parser would
-# silently prefer over the `password=` keyword argument). The
-# round-11 feature flag gates whether the validator's rejection
-# branch fires; either way urlparse is the parsing primitive.
+# validator below to detect a credential-separator (`@`) in the
+# netloc of `REDIS_URL` — any form of `[user][:pass]@host` shape
+# (including the empty-credential forms `:@host` and `@host` per
+# Codex PR #137 round-18 CONCERN), all of which the redis-py URL
+# parser would silently prefer over the `password=` keyword
+# argument. The round-11 feature flag gates whether the
+# validator's rejection branch fires; either way urlparse is the
+# parsing primitive.
 from urllib.parse import urlparse
 
 # pydantic.field_validator — pydantic v2 decorator that hooks a
@@ -205,26 +208,36 @@ class Settings(BaseSettings):
         """Reject `REDIS_URL` values that embed credentials in the URL.
 
         WHAT: parse `REDIS_URL` at Settings construction time; raise
-              `ValueError` if the URL contains a username or password
-              segment (i.e., the `user:pass@` portion before `host`).
-              Only fires when `enforce_passwordless_redis_url=True` —
-              otherwise the validator no-ops (returns the value
-              unchanged) to allow the pre-round-8 credential-bearing
-              URL shape to keep working before Session 1 rotates the
-              deployed secret.
+              `ValueError` if the URL's netloc contains a credential
+              separator `@` — that is, ANY shape with `user:pass@`,
+              `:pass@`, `user:@`, `:@`, or `@` before the host. (The
+              empty-credential forms `:@host` and `@host` were added
+              to the rejection branch in round-19 per Codex PR #137
+              round-18 CONCERN; the prior check on
+              `parsed.username or parsed.password` let empty-string
+              credentials slip through because empty strings are
+              falsy in Python.) Only fires when
+              `enforce_passwordless_redis_url=True` — otherwise the
+              validator no-ops (returns the value unchanged) to
+              allow the pre-round-8 credential-bearing URL shape to
+              keep working before Session 1 rotates the deployed
+              secret.
         WHEN: every time the Settings model is instantiated — at
               `get_settings()` first call on the lru_cache path, or
               immediately on app boot via the explicit `get_settings()`
               import sites in middleware.
         WHY:  closes Codex PR #137 round-7 BLOCKER 1 + round-9 BLOCKER
-              3 — the redis-py URL parser takes URL-embedded
-              credentials over the `password=` keyword argument, which
-              would silently bypass the `REDIS_PASSWORD` Swarm secret
-              rotation pattern. Failing LOUDLY at Settings
+              3 + round-18 CONCERN — the redis-py URL parser takes
+              URL-embedded credentials over the `password=` keyword
+              argument (and ALSO interprets an empty-credential `@`
+              separator as a credential-bearing URL, defeating
+              naive username/password truthiness checks), which
+              would silently bypass the `REDIS_PASSWORD` Swarm
+              secret rotation pattern. Failing LOUDLY at Settings
               construction is the earliest possible diagnosis point;
               the feature flag gating makes the protection opt-in so
-              this PR is safe to merge before the deployed secret has
-              been rotated to the passwordless shape.
+              this PR is safe to merge before the deployed secret
+              has been rotated to the passwordless shape.
         """
         # Feature flag OFF (the default): no-op. The validator stays
         # in main but doesn't fire until Session 3 flips the flag's
@@ -242,14 +255,24 @@ class Settings(BaseSettings):
         if not value:
             return value
         parsed = urlparse(value)
-        if parsed.username or parsed.password:
+        # Check the netloc for the `@` separator rather than testing
+        # `parsed.username or parsed.password` for truthiness. The
+        # truthiness check let empty-credential forms (`:@host`,
+        # `@host`) slip through because Python treats empty strings
+        # as falsy — but redis-py's URL parser still interprets the
+        # `@` separator as a credential-bearing URL, defeating the
+        # passwordless-URL contract. Closes Codex PR #137 round-18
+        # CONCERN.
+        if "@" in (parsed.netloc or ""):
             raise ValueError(
                 "REDIS_URL must be passwordless — REDIS_PASSWORD is the "
                 "sole AUTH source per the round-8 contract. Got a URL "
-                "with embedded credentials; strip the `user:pass@` "
-                "portion and rely on the REDIS_PASSWORD env var. See "
-                "secrets.yaml REDIS_URL description for the full "
-                "rationale (Codex PR #137 round-7 BLOCKER 1)."
+                "with a credential separator `@` in the netloc (any of "
+                "`user:pass@`, `:pass@`, `user:@`, `:@`, or `@` before "
+                "the host); strip the entire credential segment and "
+                "rely on the REDIS_PASSWORD env var. See secrets.yaml "
+                "REDIS_URL description for the full rationale (Codex "
+                "PR #137 round-7 BLOCKER 1 + round-18 CONCERN)."
             )
         return value
 

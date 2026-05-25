@@ -485,11 +485,15 @@ def test_redis_url_with_embedded_password_is_rejected_when_flag_is_on():
             embeds a password in the `user:pass@host` portion; assert
             ValidationError raised at construction time (NOT silently
             accepted + handed to redis-py).
-    WHEN: post-rotation steady state — Session 1 has flipped
-          enforce_passwordless_redis_url to True via a follow-up PR
-          after PR #150 + secret rotation. An operator who copies a
-          credential-bearing URL into a .env.local or Swarm secret
-          value now gets a loud boot crash naming the field.
+    WHEN: post-rotation steady state — Session 3 has flipped
+          enforce_passwordless_redis_url to True (in a small
+          follow-up PR that edits the public-api compose default
+          from `:-false` to `:-true`) after Session 1 lands PR #150
+          + the secret-rotation operator-action + confirms the
+          deployed REDIS_URL is passwordless. An operator who
+          copies a credential-bearing URL into a .env.local or
+          Swarm secret value now gets a loud boot crash naming
+          the field.
     WHY:  defense-in-depth on the passwordless-URL contract.
           REDIS_PASSWORD is the sole AUTH source — when the flag is
           on, the validator fails LOUDLY at Settings boot rather
@@ -559,20 +563,24 @@ def test_redis_url_without_embedded_password_is_accepted_when_flag_is_on():
 def test_credential_bearing_redis_url_is_accepted_when_flag_is_off():
     """WHY: closes Codex PR #137 round-9 BLOCKER 3 — feature-flag
            safety net. Until Session 1 rotates the deployed Swarm /
-           GitHub Secret REDIS_URL to passwordless shape AND flips
-           enforce_passwordless_redis_url to True, the
-           pre-round-8 credential-bearing URL form MUST keep
-           working. This test proves the default-FALSE flag value
-           lets a credential-bearing URL through without raising.
+           GitHub Secret REDIS_URL to passwordless shape AND
+           Session 3 flips enforce_passwordless_redis_url to True
+           in a follow-up compose-default PR, the pre-round-8
+           credential-bearing URL form MUST keep working. This
+           test proves the default-FALSE flag value lets a
+           credential-bearing URL through without raising.
 
     WHAT: instantiate the Settings model WITHOUT setting
           enforce_passwordless_redis_url (default FALSE) + a
           credential-bearing REDIS_URL; assert NO exception raised +
           the URL is preserved verbatim in the constructed instance.
-    WHEN: the PR-merge window between this PR landing and Session 1's
-          follow-up that flips the flag TRUE. The deployed Swarm
-          REDIS_URL may still carry the pre-round-8 credential-
-          bearing shape; the validator must NOT crash startup.
+    WHEN: the PR-merge window between this PR landing and Session 3's
+          follow-up that flips the flag TRUE (which itself only
+          fires after Session 1 confirms the deployed REDIS_URL
+          has been rotated to the passwordless shape). The deployed
+          Swarm REDIS_URL may still carry the pre-round-8
+          credential-bearing shape; the validator must NOT crash
+          startup.
     """
     # Settings — see the per-import comment on the redis_client
     # block above; reused here with the flag at its default-FALSE
@@ -588,6 +596,62 @@ def test_credential_bearing_redis_url_is_accepted_when_flag_is_off():
     # Flag confirmed default-FALSE so a future refactor that flips
     # the default doesn't silently break this safety-net behavior.
     assert settings.enforce_passwordless_redis_url is False
+
+
+def test_redis_url_with_empty_credentials_is_rejected_when_flag_is_on():
+    """WHY: closes Codex PR #137 round-18 CONCERN — the prior
+           validator condition `parsed.username or parsed.password`
+           treated empty-string credentials as falsy, letting URL
+           forms like `redis://:@host:6379/0` and `redis://@host:6379/0`
+           slip through. redis-py's URL parser still interprets the
+           `@` separator as a credential-bearing URL in those
+           shapes, which would silently take precedence over the
+           `password=` keyword argument that forwards REDIS_PASSWORD
+           — defeating the passwordless-URL contract.
+
+    WHAT: instantiate the Settings model with
+          enforce_passwordless_redis_url=True against four
+          empty-or-partial-credential URL shapes and assert all
+          four raise ValidationError:
+            1. `redis://:@host:6379/0`     — empty username, empty password
+            2. `redis://user:@host:6379/0` — username, empty password
+            3. `redis://:pass@host:6379/0` — empty username, password
+            4. `redis://@host:6379/0`      — only the `@` separator
+          The round-19 fix changed the validator's rejection
+          condition from `parsed.username or parsed.password` to
+          `"@" in parsed.netloc`, which catches all credential-
+          separator forms regardless of whether the credentials
+          themselves are empty.
+    WHEN: every CI run — defends against a future refactor that
+          reverts the round-19 condition back to the
+          username-or-password truthiness check.
+    """
+    # ValidationError — the exception the round-8 validator raises
+    # (via pydantic v2's ValueError → ValidationError translation
+    # path) when the round-11 flag is True AND the URL netloc
+    # contains the credential separator `@`. The `with
+    # pytest.raises(...)` block asserts the validator fires for
+    # each of the four credential-bearing shapes.
+    from pydantic import ValidationError
+
+    # Settings — see the per-import comment in the redis_client
+    # block above; reused here to drive
+    # `enforce_passwordless_redis_url=True` against four URL forms
+    # the prior truthiness check let slip through.
+    from app.config import Settings
+
+    credential_bearing_shapes_with_empty_or_partial_credentials = [
+        "redis://:@host:6379/0",
+        "redis://user:@host:6379/0",
+        "redis://:pass@host:6379/0",
+        "redis://@host:6379/0",
+    ]
+    for url in credential_bearing_shapes_with_empty_or_partial_credentials:
+        with pytest.raises(ValidationError, match="REDIS_URL must be passwordless"):
+            Settings(
+                enforce_passwordless_redis_url=True,
+                redis_url=url,
+            )
 
 
 # ===========================================================================
