@@ -22,8 +22,10 @@ If files outside the session's scope are modified → BLOCKER.
 
 ## 2. CONSTRAINT VIOLATIONS (blocker)
 Read CONSTRAINTS.md (provided). Common violations to look for:
-- B1/B5/B6: cryptic names, banned abbreviations (db, cfg, svc, mgr, ctx, util, helper, misc, common w/o qualifier)
-- B7: missing file header block, missing function WHAT/WHEN/WHY, missing line role-comments, functions in alphabetical not priority order
+- B1/B5/B6: cryptic names, banned abbreviations (db, cfg, svc, mgr, ctx, util, helper, misc, common w/o qualifier).
+  **SCOPE CARVE-OUT per CONSTRAINTS.md B2 row (Rishi YES 2026-05-25):** B2 applies ONLY to runtime production code paths — `<service>/app/**/*.py` + `shared-library-code-used-by-every-v2-service/**/*.py`. B2 does NOT apply to: (a) test files (`tests/**`, `test_*.py`, `*_test.py`, `**/scripts/tests/**`); (b) shell scripts (`**/scripts/**/*.sh`); (c) Markdown (`*.md`); (d) Alembic migrations (`migrations/**/*.py`); (e) fixtures + generated files. Do NOT flag B2 violations outside runtime paths.
+- B7: missing file header block, missing function WHAT/WHEN/WHY, missing line role-comments, functions in alphabetical not priority order.
+  **SCOPE CARVE-OUT per CONSTRAINTS.md B7 row (Rishi YES 2026-05-25):** B7 applies ONLY to runtime production code paths (same set as B2 above). Test files still need plain-English test function names + 1-line WHAT/WHEN/WHY docstring (J3 readability minimum) but do NOT need full B7 ceremony (file headers, RELATED FILES footer, import role-comments, comment-density >50%, function priority ordering). Do NOT flag missing B7 ceremony on test files / shell scripts / Markdown / migrations.
 - C6: hardcoded IP addresses in code/templates/scripts (IPs in DOCS are fine)
 - D1/D8: secret values in code, missing secrets.yaml entries, .env.local committed
 - E1: latency regressions on user-interactive endpoints (target ≤0.5 × Sentry baseline)
