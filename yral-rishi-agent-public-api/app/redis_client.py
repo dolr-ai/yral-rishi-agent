@@ -71,11 +71,41 @@ def get_redis() -> redis.Redis:
     # `from_url` parses the URL + applies the kwargs. The connection
     # pool is created lazily on first command, not at construction
     # time — so this call is cheap even when Redis is unreachable.
+    #
+    # `password=` carries the AUTH credential sent in response to the
+    # primary's `--requirepass` AUTH challenge. The v2 cluster's
+    # Redis primary requires AUTH on every connection (per H3 +
+    # 2026-05-22 incident-response rotation); without this keyword
+    # argument the first command raises
+    # `redis.exceptions.AuthenticationError: Authentication required.`
+    # Empty default keeps local development working — redis-py
+    # treats password=None as "no AUTH frame", matching the
+    # unauthenticated docker-compose Redis.
+    #
+    # PASSWORDLESS-URL CONTRACT (Codex PR #137 round-7 BLOCKER 1 +
+    # round-9 BLOCKER 3 fix): `settings.redis_url` MUST NOT embed
+    # credentials in the `user:pass@host` portion. The redis-py URL
+    # parser would take URL-embedded credentials over this
+    # `password=` argument, silently bypassing the `REDIS_PASSWORD`
+    # Swarm-secret rotation pattern. `app/config.py`'s
+    # `_reject_password_in_redis_url` validator rejects credential-
+    # bearing URLs at Settings construction time so the violation
+    # surfaces at boot rather than at the first Redis call —
+    # gated behind the `enforce_passwordless_redis_url` feature
+    # flag (defaults FALSE so this PR is safe to merge before
+    # Session 1's secret rotation; **Session 3** flips the flag's
+    # docker-compose default to TRUE in a small follow-up PR
+    # after PR #150 + Session 1's rotation land + Session 1
+    # confirms the deployed REDIS_URL is passwordless — Session 1
+    # confirms the secret state, Session 3 owns the public-api
+    # compose flip per I9 + agent-definition session split).
+    # `REDIS_PASSWORD` is the sole AUTH source.
     return redis.Redis.from_url(
         settings.redis_url,
         decode_responses=False,
         socket_connect_timeout=2.0,
         socket_timeout=2.0,
+        password=settings.redis_password or None,
     )
 
 

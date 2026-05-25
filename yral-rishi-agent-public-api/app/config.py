@@ -38,6 +38,28 @@
 
 from functools import lru_cache
 
+# urllib.parse.urlparse — parses a URL into scheme/netloc/path/etc.
+# parts. Used by the round-8 `_reject_password_in_redis_url`
+# validator below to detect a credential-separator (`@`) in the
+# netloc of `REDIS_URL` — any form of `[user][:pass]@host` shape
+# (including the empty-credential forms `:@host` and `@host` per
+# Codex PR #137 round-18 CONCERN), all of which the redis-py URL
+# parser would silently prefer over the `password=` keyword
+# argument. The round-11 feature flag gates whether the
+# validator's rejection branch fires; either way urlparse is the
+# parsing primitive.
+from urllib.parse import urlparse
+
+# pydantic.field_validator — pydantic v2 decorator that hooks a
+# class method into the field-validation pipeline at Settings
+# construction time. Used by the round-8 + round-11
+# `_reject_password_in_redis_url` validator below to enforce the
+# passwordless-URL contract at boot (the earliest possible
+# diagnosis point) instead of letting a misconfigured URL surface
+# as a silent runtime credential-precedence confusion when
+# `REDIS_PASSWORD` rotates.
+from pydantic import field_validator
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -106,15 +128,153 @@ class Settings(BaseSettings):
     # is NOT yet in place AND (b) the deploy target is local/staging.
     enable_session_3_phase_1_day_2_placeholder_responses: bool = False
 
+    # FEATURE FLAG — `enforce_passwordless_redis_url` (Codex PR #137
+    # round-9 BLOCKER 3 — option (a) feature-flag pattern):
+    # Defaults FALSE so this PR is safe to merge BEFORE Session 1's
+    # PR #150 lands the passwordless cluster manifest + before
+    # Session 1 rotates the deployed Swarm/GitHub Secret REDIS_URL
+    # to the passwordless shape. With the flag OFF, the
+    # `_reject_password_in_redis_url` validator below is a no-op —
+    # the pre-round-8 credential-bearing `redis://:<password>@<host>`
+    # form keeps working in production without a boot-time crash.
+    #
+    # After PR #150 + Session 1's secret-rotation operator-action
+    # land + Session 1 confirms the deployed REDIS_URL secret is in
+    # passwordless shape, **Session 3** flips this flag's
+    # docker-compose default from `false` to `true` in a small
+    # follow-up PR (the flag's `enforce_passwordless_redis_url`
+    # env-var lives in `docker-compose.swarm.yml`'s `environment:`
+    # block — public-api owns that file per I9 + the agent-
+    # definition session split, so Session 1 cannot edit it). The
+    # division of labor: Session 1 OWNS the cluster + secret-
+    # rotation operator-action and confirms when the deployed
+    # REDIS_URL is passwordless; Session 3 OWNS the public-api
+    # compose flip from `:-false` → `:-true` triggered by that
+    # confirmation. Activating the flag locks in the passwordless-
+    # URL contract going forward. Belt-and-suspenders: validator
+    # code lives in main but doesn't fire until enabled.
+    #
+    # Pattern precedent: same shadow-mode-rollout idiom v2 uses for
+    # the JWT strict signature validation (per memory
+    # `feedback_jwt_signature_validation_with_shadow_rollout`).
+    #
+    # MUST be declared BEFORE `redis_url` so the validator below can
+    # read it via `info.data` (pydantic v2 validates fields in
+    # declaration order; only previously-validated fields appear in
+    # the validator's `info.data` snapshot).
+    enforce_passwordless_redis_url: bool = False
+
     # -- Redis URL (single-primary fallback path for /health/ready) --------
     # Used by /health/ready's C11-Sentinel fallback path when
-    # `redis_sentinel_enabled` is False (laptop dev / docker-compose).
-    # Production sets the Sentinel flag to True + lets the Sentinel-
-    # aware client discover the current primary at connect time, so
-    # this URL is unused in cluster. PR #101's JWKS cache + PR #103's
-    # idempotency cache also consume this setting on the Day-4A/4C
-    # branches.
+    # `redis_sentinel_enabled` is False (laptop development /
+    # docker-compose). Production sets the Sentinel flag to True +
+    # lets the Sentinel-aware client discover the current primary at
+    # connect time, so this URL is unused in cluster. PR #101's JWKS
+    # cache + PR #103's idempotency cache also consume this setting
+    # on the Day-4A/4C branches.
     redis_url: str = "redis://localhost:6379/0"
+
+    # `redis_password`: AUTH credential sent in response to Redis's
+    # AUTH challenge. The v2 cluster's Redis primary runs with
+    # `--requirepass` enabled (per H3 + 2026-05-22 incident-response
+    # rotation), so every connection to the primary MUST AUTH or first
+    # command raises
+    # `redis.exceptions.AuthenticationError: Authentication required.`
+    #
+    # Consumed by BOTH Redis paths in this service:
+    #   - app/redis_client.py — passed as the `password=` keyword
+    #     argument to redis.Redis.from_url() (the JWKS-cache +
+    #     idempotency-deduplication singleton; uses single-URL connect)
+    #   - app/api/health_routes.py — passed as the `password=`
+    #     keyword argument to Sentinel.master_for() (the
+    #     /health/ready C11 probe)
+    #
+    # Sourced from the `REDIS_PASSWORD` secret declared in
+    # `secrets.yaml` (mounted at `/run/secrets/REDIS_PASSWORD`;
+    # environment variable auto-exported via the compose
+    # secret-bridge wrapper). Swarm secret name:
+    # `yral_v2_redis_primary_password_<sha>` (versioned via
+    # 2026-05-22 rotation pattern; compose maps the logical name →
+    # versioned secret via `external: name:`).
+    #
+    # Empty default keeps local development working: the
+    # docker-compose-bundled Redis is unauthenticated, both code
+    # paths skip AUTH when this is empty.
+    redis_password: str = ""
+
+    @field_validator("redis_url")
+    @classmethod
+    def _reject_password_in_redis_url(cls, value: str, info) -> str:
+        """Reject `REDIS_URL` values that embed credentials in the URL.
+
+        WHAT: parse `REDIS_URL` at Settings construction time; raise
+              `ValueError` if the URL's netloc contains a credential
+              separator `@` — that is, ANY shape with `user:pass@`,
+              `:pass@`, `user:@`, `:@`, or `@` before the host. (The
+              empty-credential forms `:@host` and `@host` were added
+              to the rejection branch in round-19 per Codex PR #137
+              round-18 CONCERN; the prior check on
+              `parsed.username or parsed.password` let empty-string
+              credentials slip through because empty strings are
+              falsy in Python.) Only fires when
+              `enforce_passwordless_redis_url=True` — otherwise the
+              validator no-ops (returns the value unchanged) to
+              allow the pre-round-8 credential-bearing URL shape to
+              keep working before Session 1 rotates the deployed
+              secret.
+        WHEN: every time the Settings model is instantiated — at
+              `get_settings()` first call on the lru_cache path, or
+              immediately on app boot via the explicit `get_settings()`
+              import sites in middleware.
+        WHY:  closes Codex PR #137 round-7 BLOCKER 1 + round-9 BLOCKER
+              3 + round-18 CONCERN — the redis-py URL parser takes
+              URL-embedded credentials over the `password=` keyword
+              argument (and ALSO interprets an empty-credential `@`
+              separator as a credential-bearing URL, defeating
+              naive username/password truthiness checks), which
+              would silently bypass the `REDIS_PASSWORD` Swarm
+              secret rotation pattern. Failing LOUDLY at Settings
+              construction is the earliest possible diagnosis point;
+              the feature flag gating makes the protection opt-in so
+              this PR is safe to merge before the deployed secret
+              has been rotated to the passwordless shape.
+        """
+        # Feature flag OFF (the default): no-op. The validator stays
+        # in main but doesn't fire until Session 3 flips the flag's
+        # docker-compose default to TRUE in a small follow-up PR
+        # (after Session 1's PR #150 + secret-rotation operator-
+        # action land + Session 1 confirms the deployed REDIS_URL is
+        # passwordless). Closes Codex round-9 BLOCKER 3 — soft
+        # merge-order gate (comment + PR body) was judged insufficient;
+        # feature flag is the real mechanism.
+        if not info.data.get("enforce_passwordless_redis_url", False):
+            return value
+        # Empty URL is technically valid (defaults to
+        # redis://localhost if pydantic-settings doesn't apply the
+        # field default; defensive short-circuit).
+        if not value:
+            return value
+        parsed = urlparse(value)
+        # Check the netloc for the `@` separator rather than testing
+        # `parsed.username or parsed.password` for truthiness. The
+        # truthiness check let empty-credential forms (`:@host`,
+        # `@host`) slip through because Python treats empty strings
+        # as falsy — but redis-py's URL parser still interprets the
+        # `@` separator as a credential-bearing URL, defeating the
+        # passwordless-URL contract. Closes Codex PR #137 round-18
+        # CONCERN.
+        if "@" in (parsed.netloc or ""):
+            raise ValueError(
+                "REDIS_URL must be passwordless — REDIS_PASSWORD is the "
+                "sole AUTH source per the round-8 contract. Got a URL "
+                "with a credential separator `@` in the netloc (any of "
+                "`user:pass@`, `:pass@`, `user:@`, `:@`, or `@` before "
+                "the host); strip the entire credential segment and "
+                "rely on the REDIS_PASSWORD env var. See secrets.yaml "
+                "REDIS_URL description for the full rationale (Codex "
+                "PR #137 round-7 BLOCKER 1 + round-18 CONCERN)."
+            )
+        return value
 
     # -- C11 Sentinel feature flag (Codex PR #97 round-4 BLOCKER 2) --------
     # Default-OFF so laptop dev + docker-compose + CI run on the
@@ -203,7 +363,7 @@ class Settings(BaseSettings):
     # differentiates "compute hung" from "service gone."
     orchestrator_connect_timeout_seconds: float = 5.0
 
-    # How long an idempotency-dedup cache entry lives in Redis. 24 hours
+    # How long an idempotency-deduplication cache entry lives in Redis. 24 hours
     # per F10. Long enough that mobile retries (network drop, app
     # restart, OS push-back-to-foreground) hit the cache; short enough
     # that bounded storage holds across normal traffic patterns.

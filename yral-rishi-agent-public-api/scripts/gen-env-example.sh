@@ -11,18 +11,45 @@
 # the file stays a complete local-dev template.
 #
 # WHO RUNS THIS:
-#   - Dev when adding/renaming a secret in `secrets.yaml` — keeps
-#     `.env.example` in lockstep so the CI drift check doesn't fire.
+#   - A developer when adding/renaming a secret in `secrets.yaml` —
+#     keeps `.env.example` in lockstep so the CI drift check
+#     doesn't fire.
 #   - CI workflow with `--check` (proposed) — fails the build if
 #     `.env.example` drifted from `secrets.yaml`. Not wired into the
 #     workflow this PR; lands when the lint-secrets-hygiene job is added.
 #
 # WHAT THIS SCRIPT DOES NOT DO (per A2.1):
 #   - It does NOT push values anywhere — that's `sync-github-secrets.sh`.
-#   - It does NOT verify env presence — that's `validate-secrets.sh`.
+#   - It does NOT verify environment-variable presence — that's
+#     `validate-secrets.sh`.
 #   - It does NOT delete `.env.example`. The script overwrites the file
 #     with new content (a file modification, not a deletion — A1-clean).
 #   - It does NOT touch `.env.local` (which is gitignored).
+#
+# PER-SERVICE LOCAL-DEVELOPMENT-DEFAULT LOOKUP (Codex PR #137 round-7 BLOCKER 2 fix):
+# Most secrets emit `NAME=` (blank — developers fill in via
+# `.env.local`), which is correct for true-secret credentials
+# (SENTRY_DSN, LANGFUSE_*, REDIS_PASSWORD). Some secrets have a
+# safe public local-development value (notably
+# `REDIS_URL=redis://localhost:6379/0` pointing at the
+# docker-compose Redis) which a blank `.env.example` line would
+# WRONGLY override the Settings default for when developers run
+# `cp .env.example .env.local`.
+#
+# Round-8 fix: the `local_default_value_for_name()` helper below
+# returns a hardcoded per-service default for the small set of
+# secret names that need one (currently just `REDIS_URL` here in
+# public-api). Other secret names fall through to blank emission.
+#
+# Why a hardcoded lookup (not a `secrets.yaml` schema extension):
+# extending the D8 schema with a per-entry `local_default_value`
+# field would force EVERY service's `secrets.yaml` to be updated +
+# every service's copy of THIS script to recognize the new field —
+# cross-service schema drift in the worst case. The per-service
+# hardcoded case-statement is service-local: encodes service-
+# specific knowledge in the service-specific script. A coordinator-
+# queued follow-up syncs the same case-statement convention into
+# the template's `gen-env-example.sh` so future services inherit it.
 #
 # FLAGS:
 #   (no flags)    write `.env.example` and exit 0.
@@ -86,6 +113,37 @@ fi
 # Build the would-be content into a variable, then either write OR diff
 # ===========================================================================
 
+local_default_value_for_name() {
+    # WHAT: return the hardcoded local-development default value for
+    #       the given secret name, or empty string if the secret has
+    #       no safe local-development default (the common case).
+    # WHEN: called once per secret while generating each `.env.example`
+    #       entry — the return value becomes the right-hand side of
+    #       `NAME=<value>` in the output.
+    # WHY:  closes Codex PR #137 round-7 BLOCKER 2 — the generator is
+    #       now the single source of truth for the local-development
+    #       default, so a clean re-run reproduces `.env.example`
+    #       exactly (no post-script manual edit required, no
+    #       `lint-secrets-hygiene` CI drift).
+    case "$1" in
+        REDIS_URL)
+            # docker-compose Redis (unauthenticated) — the safe local
+            # default. Production REDIS_URL points at the Sentinel
+            # quorum and is PASSWORDLESS (AUTH is via REDIS_PASSWORD
+            # per H3 + the 2026-05-22 rotation). See `secrets.yaml`
+            # REDIS_URL description for the passwordless-URL contract.
+            echo "redis://localhost:6379/0"
+            ;;
+        *)
+            # No safe local-development default for this secret —
+            # emit blank so developers MUST fill it in via
+            # `.env.local`.
+            echo ""
+            ;;
+    esac
+}
+
+
 generate_content() {
     cat <<'HEADER'
 # .env.example
@@ -107,7 +165,7 @@ ENVIRONMENT=local
 LOG_LEVEL=INFO
 
 # LANGFUSE_TRACING_ENABLED — set "true" to ship LLM traces to rishi-6.
-# Default "false" so local dev doesn't need real Langfuse keys.
+# Default "false" so local development doesn't need real Langfuse keys.
 LANGFUSE_TRACING_ENABLED=false
 
 
@@ -138,7 +196,14 @@ HEADER
         echo "# Source: local=$local_source"
         echo "#         ci=$ci_source"
         echo "#         production=$production_source"
-        echo "$name="
+        # Per-service local-development-default lookup (Codex PR #137
+        # round-7 BLOCKER 2 fix). Returns the hardcoded value for
+        # secrets like REDIS_URL whose local-development default is a
+        # safe public URL; returns empty for true-secret credentials
+        # so developers fill them in via .env.local.
+        local local_default_value
+        local_default_value=$(local_default_value_for_name "$name")
+        echo "$name=$local_default_value"
 
         index=$((index + 1))
     done

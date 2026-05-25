@@ -276,9 +276,36 @@ async def _check_redis_reachable() -> bool:
             # `master_for` returns a Redis client that re-resolves the
             # current primary on every command (no stale-primary bug
             # after Sentinel failover).
+            #
+            # `password=` carries the AUTH credential sent in response
+            # to the primary's `--requirepass` AUTH challenge (v2
+            # cluster's Redis primary requires AUTH per H3 +
+            # 2026-05-22 incident-response rotation). Without it, the
+            # ping() raises AuthenticationError + /health/ready falsely
+            # reports Redis unreachable. Empty default keeps local
+            # development working — sentinels in laptop docker-compose
+            # are rare anyway, but if present they'd be unauthenticated.
+            #
+            # PASSWORDLESS-URL CONTRACT (Codex PR #137 round-7 BLOCKER
+            # 1 + round-9 BLOCKER 3 fix): `REDIS_PASSWORD` (forwarded
+            # here) is the SOLE AUTH source. `REDIS_URL` MUST be
+            # passwordless — credential-bearing URLs are rejected at
+            # Settings construction time by the `app/config.py`
+            # `_reject_password_in_redis_url` validator, gated behind
+            # the `enforce_passwordless_redis_url` feature flag
+            # (defaults FALSE; **Session 3** flips the flag's
+            # docker-compose default to TRUE in a small follow-up PR
+            # after PR #150 + Session 1's secret-rotation operator-
+            # action land + Session 1 confirms the deployed REDIS_URL
+            # is passwordless — Session 1 owns the cluster + secret
+            # state, Session 3 owns the public-api compose flip per
+            # I9 + agent-definition session split). Same contract
+            # enforced symmetrically on the `redis.Redis.from_url()`
+            # callsite in `app/redis_client.py`.
             primary_client = sentinel_client.master_for(
                 master_name,
                 socket_timeout=_HEALTH_PROBE_TIMEOUT_SECONDS,
+                password=settings.redis_password or None,
             )
             await asyncio.wait_for(
                 primary_client.ping(), timeout=_HEALTH_PROBE_TIMEOUT_SECONDS,

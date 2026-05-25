@@ -77,6 +77,23 @@ services:
       # + soul-file + influencer in their parallel PR.
       ENVIRONMENT: ${ENVIRONMENT:-staging}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # ENFORCE_PASSWORDLESS_REDIS_URL — Codex PR #137 round-9
+      # BLOCKER 3 + round-11 feature-flag pattern + round-15 CONCERN
+      # rollout-path closure. Defaults `false` so the round-11
+      # `_reject_password_in_redis_url` validator no-ops on the
+      # currently-deployed credential-bearing REDIS_URL secret
+      # (still in the pre-round-8 `redis://:<password>@host:6379/0`
+      # shape). After Session 1's separate cluster-manifest PR
+      # (PR #150) lands + Session 1 rotates the Swarm/GitHub Secret
+      # REDIS_URL to the passwordless shape, a Session 3 follow-up
+      # PR flips this line's `:-false` literal to `:-true` (or sets
+      # the var explicitly in the CI deploy injection). That
+      # activation PR is the load-bearing closure of round-15's
+      # CONCERN: without this env-var wired here, there'd be no
+      # rollout path that doesn't require Session 1 to edit
+      # public-api files (an I9 violation — Session 1 doesn't
+      # own this compose).
+      ENFORCE_PASSWORDLESS_REDIS_URL: ${ENFORCE_PASSWORDLESS_REDIS_URL:-false}
 
     # Per-replica resource caps. The defaults below are conservative
     # starting points; tune per service after the first week of prod
@@ -162,6 +179,16 @@ services:
       - source: REDIS_URL
         target: REDIS_URL
         mode: 0400
+      # REDIS_PASSWORD — AUTH credential the Sentinel-discovered Redis
+      # primary demands on first command (--requirepass enabled per
+      # H3). Without this mount, both Redis paths in this service
+      # (from_url singleton in app/redis_client.py AND the Sentinel
+      # probe in app/api/health_routes.py) raise
+      # `redis.exceptions.AuthenticationError`. Top-level `secrets:`
+      # below maps the logical name to the versioned Swarm secret.
+      - source: REDIS_PASSWORD
+        target: REDIS_PASSWORD
+        mode: 0400
       - source: SENTRY_DSN
         target: SENTRY_DSN
         mode: 0400
@@ -206,6 +233,14 @@ networks:
 secrets:
   REDIS_URL:
     external: true
+  # REDIS_PASSWORD maps the logical name (consumed by Settings +
+  # app/redis_client.py + app/api/health_routes.py) to the versioned
+  # Swarm secret created via the 2026-05-22 rotation pattern. Rotation
+  # = bump the `name:` below to the next versioned secret + roll the
+  # service.
+  REDIS_PASSWORD:
+    external:
+      name: yral_v2_redis_primary_password_ceeb8b19
   SENTRY_DSN:
     external: true
   LANGFUSE_PUBLIC_KEY:
