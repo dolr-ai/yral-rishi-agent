@@ -3,6 +3,65 @@
 
 ---
 
+### 2026-05-25 — PR #147 round-6: B2 rename sweep + CheckViolationError per-row fallback
+
+**Branch**: session-5/d3-etl-migration
+**Trigger**: Codex round-5 returned:
+  BLOCKER (B2): dsn, src, dst, conn, batch_num, cursor_ts, conv, msg, resp, uid, asst
+  in etl-scripts/chat_ai_to_user_memory_etl.py + tests + helper code.
+  CONCERN (industry): etl-plan §7 says CheckViolationError rows are logged+skipped,
+  but the script had no per-row exception handling — bad row aborted the whole batch.
+
+**What ships**:
+
+1. `etl-scripts/chat_ai_to_user_memory_etl.py` — comprehensive B2 rename:
+   - `dsn` → positional arg (asyncpg's `create_pool` first param; removes `dsn=` keyword)
+   - `src` / `dst` function params → `source` / `destination` (all migrate functions + main)
+   - `open_dest_pool` → `open_destination_pool`
+   - `conn` → `connection` in all internal variable names
+   - `cursor_ts` → `cursor_timestamp`
+   - `batch_num` → `batch_number`
+   - `src_dsn` / `dst_dsn` → `source_database_connection_string` / `destination_database_connection_string`
+   - `src_pool` / `dst_pool` → `source_pool` / `destination_pool`
+   - `src_convs` / `dst_convs` / `src_msgs` / `dst_msgs` →
+     `source_conversations` / `destination_conversations` / `source_messages` / `destination_messages`
+   - `conv_delta` / `msg_delta` → `conversations_delta` / `messages_delta`
+   - `conv_status` / `msg_status` → `conversations_status` / `messages_status`
+   - `parsed` in `cli()`: `args` → `parsed` (argparse object; `args` was the B2 violation)
+   - CheckViolationError fallback (see below)
+
+2. `etl-scripts/chat_ai_to_user_memory_etl.py` — CheckViolationError per-row fallback:
+   Implements plan §7 "log + skip" contract. Both migrate_conversations and
+   migrate_messages now wrap the bulk INSERT SELECT in try/except asyncpg.CheckViolationError:
+   - Fast path: INSERT SELECT succeeds → use bulk result count
+   - Fallback: CheckViolationError fires → retry the batch row-by-row using rows_to_insert
+     (staging table data intact — failed INSERT SELECT committed zero rows); individual
+     per-row exceptions log the offending row ID + constraint name and skip it
+   This matches the plan doc §7 "Script logs the offending row + skips it" exactly.
+
+3. `tests/test_etl_transforms.py` — B2 rename:
+   - `_MockConn` → `_MockConnection` (class + all references)
+   - `self._conn` → `self._connection` in `_MockPool`
+   - `src_pool` / `dst_pool` → `source_pool` / `destination_pool`
+   - `_make_msg_row` → `_make_message_row`
+   - `exc_info` → `exit_info` (in SystemExit assertions)
+   - Log variable `message` in PII tests → `log_text` (to avoid shadowing `message` field names)
+
+4. `yral-rishi-agent-user-memory-service/app/api/conversation_routes.py` — B2 rename:
+   - All 19 `conn` variable usages → `connection`
+
+5. `yral-rishi-agent-user-memory-service/tests/test_conversation_routes.py` — B2 rename:
+   - `conv = conversations[0]` → `conversation = conversations[0]` (2 locations)
+   - `lm = conv["last_message"]` → `last_message = conversation["last_message"]`
+   - `lambda uid: uuid.UUID(uid)` → `lambda message_id: uuid.UUID(message_id)`
+   - `conn` → `connection` in soft-delete fixture block
+   - `resp = ` → `post_response = ` in cursor pagination loop
+   - `{uid}` in docstrings → `{user_id}`
+
+**Test results**: 19 ETL unit tests pass; B2 check: 0 hits across all 4 files.
+
+---
+
 ### 2026-05-24 — PR #147 round-5: security fix + ETL keyset+COPY rewrite
 
 **Branch**: session-5/d3-etl-migration

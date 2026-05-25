@@ -301,20 +301,20 @@ async def test_append_messages_updates_conversation_stats(
     assert list_resp.status_code == 200
     conversations = list_resp.json()
     assert len(conversations) == 1
-    conv = conversations[0]
+    conversation = conversations[0]
 
     # last_message_at MUST have strictly advanced — a message was appended,
     # so the timestamp cannot stay equal.  `>=` would pass even when the
     # UPDATE silently failed; `>` fails loud on that regression.
-    assert conv["last_message_at"] > initial_last_at, (
+    assert conversation["last_message_at"] > initial_last_at, (
         "appending a message MUST advance conversations.last_message_at; "
         "if it doesn't, the stats-update SQL silently failed"
     )
     # last_message should now be populated
-    assert conv["last_message"] is not None
+    assert conversation["last_message"] is not None
     # The last non-system message is the assistant reply
-    assert conv["last_message"]["role"] == "assistant"
-    assert conv["last_message"]["content"] == "reply"
+    assert conversation["last_message"]["role"] == "assistant"
+    assert conversation["last_message"]["content"] == "reply"
 
 
 # ===========================================================================
@@ -326,7 +326,7 @@ async def test_append_messages_updates_conversation_stats(
 async def test_list_conversations_by_user_returns_empty_list_for_new_user(
     test_client: AsyncClient,
 ) -> None:
-    """WHAT: GET .../by-user/{uid} returns [] when the user has no conversations.
+    """WHAT: GET .../by-user/{user_id} returns [] when the user has no conversations.
     WHEN: a user_id with no rows in the conversations table is queried.
     WHY:  mobile inbox must show an empty list, not a 404 or 500, for a
           brand-new user who has never opened a chat.
@@ -340,7 +340,7 @@ async def test_list_conversations_by_user_returns_empty_list_for_new_user(
 async def test_list_conversations_by_user_includes_last_message_inline(
     test_client: AsyncClient,
 ) -> None:
-    """WHAT: GET .../by-user/{uid} returns conversations with last_message populated.
+    """WHAT: GET .../by-user/{user_id} returns conversations with last_message populated.
     WHEN: the user has a conversation with at least one message.
     WHY:  mobile uses last_message for the inbox row subtitle. Missing it
           = blank inbox subtitles for all conversations.
@@ -372,18 +372,18 @@ async def test_list_conversations_by_user_includes_last_message_inline(
     conversations = response.json()
     assert len(conversations) == 1
 
-    conv = conversations[0]
-    assert conv["user_id"] == "user-inbox"
-    assert conv["ai_influencer_id"] == "inf-inbox"
+    conversation = conversations[0]
+    assert conversation["user_id"] == "user-inbox"
+    assert conversation["ai_influencer_id"] == "inf-inbox"
 
     # last_message must be populated and match the assistant reply
-    assert conv["last_message"] is not None
-    lm = conv["last_message"]
-    assert lm["role"] == "assistant"
-    assert lm["content"] == "inbox reply"
+    assert conversation["last_message"] is not None
+    last_message = conversation["last_message"]
+    assert last_message["role"] == "assistant"
+    assert last_message["content"] == "inbox reply"
     # MessageResponse fields must all be present
     for field in ("id", "conversation_id", "role", "content", "created_at", "count_toward_paywall"):
-        assert field in lm, f"last_message missing field: {field}"
+        assert field in last_message, f"last_message missing field: {field}"
 
 
 @pytest.mark.asyncio
@@ -560,11 +560,11 @@ async def test_list_messages_before_cursor_returns_older_messages(
     # We use 3 separate POST calls so created_at timestamps are distinct.
     msg_ids = []
     for content in ("oldest", "middle", "newest"):
-        resp = await test_client.post(
+        post_response = await test_client.post(
             f"/v1/conversations/{conv_id}/messages",
             json={"messages": [{"role": "user", "content": content}]},
         )
-        msg_ids.append(resp.json()[0]["id"])
+        msg_ids.append(post_response.json()[0]["id"])
 
     oldest_id, middle_id, newest_id = msg_ids
 
@@ -915,7 +915,7 @@ async def test_before_cursor_within_same_timestamp_batch_returns_correct_subset(
     assert len(late_batch_ids) == 2, f"Expected 2 late-batch messages, got {late_batch_ids}"
     # Sort by uuid.UUID() value — matches PostgreSQL's UUID type comparison exactly.
     # UUIDv4 is random so insertion index does NOT equal UUID sort order.
-    sorted_late_ids = sorted(late_batch_ids, key=lambda uid: uuid.UUID(uid))
+    sorted_late_ids = sorted(late_batch_ids, key=lambda message_id: uuid.UUID(message_id))
     late_a_id = sorted_late_ids[0]  # smaller UUID — precedes cursor in compound comparison
     late_b_id = sorted_late_ids[1]  # larger UUID — used as the before= cursor
 
@@ -1200,8 +1200,8 @@ async def test_get_conversation_by_id_returns_404_for_soft_deleted_conversation(
     # database_pool is a separate asyncpg pool that connects to the same
     # testcontainers Postgres — changes are immediately visible to test_client.
     # uuid.UUID() converts the string id to the PostgreSQL-compatible type.
-    async with database_pool.acquire() as conn:
-        await conn.execute(
+    async with database_pool.acquire() as connection:
+        await connection.execute(
             "UPDATE conversations SET soft_deleted_at = NOW() WHERE id = $1",
             uuid.UUID(conv_id),
         )

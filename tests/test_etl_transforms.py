@@ -99,7 +99,7 @@ def _make_conv_row(**overrides) -> dict:
     return base
 
 
-def _make_msg_row(**overrides) -> dict:
+def _make_message_row(**overrides) -> dict:
     """Build a minimal chat-ai messages row as a plain dict.
 
     WHAT: returns a dict mirroring the columns SELECTed by migrate_messages().
@@ -122,12 +122,12 @@ def _make_msg_row(**overrides) -> dict:
 
 # ---------------------------------------------------------------------------
 # Minimal asyncpg pool mock for run_verification() tests.
-# The function acquires each pool ONCE and calls fetchval() twice per conn
+# The function acquires each pool ONCE and calls fetchval() twice per connection
 # (once for conversations count, once for messages count).
 # ---------------------------------------------------------------------------
 
 
-class _MockConn:
+class _MockConnection:
     """Minimal asyncpg.Connection stand-in — supports fetchval() + async context manager.
 
     WHAT: each call to fetchval() consumes the next value from the initialiser list,
@@ -153,20 +153,21 @@ class _MockConn:
 
 
 class _MockPool:
-    """Minimal asyncpg.Pool stand-in — acquire() returns the single shared _MockConn.
+    """Minimal asyncpg.Pool stand-in — acquire() returns the single shared _MockConnection.
 
-    WHAT: pools the single _MockConn instance; acquire() is a sync method returning
-          the conn object (which is itself an async context manager).
+    WHAT: pools the single _MockConnection instance; acquire() is a sync method returning
+          the connection object (which is itself an async context manager).
     WHEN: constructed per-test with the expected fetchval sequence for that pool.
-    WHY:  run_verification() acquires src + dst each once, so one conn per pool suffices.
+    WHY:  run_verification() acquires source + destination each once, so one
+          connection per pool suffices.
     """
 
     def __init__(self, *fetchval_returns):
-        self._conn = _MockConn(*fetchval_returns)
+        self._connection = _MockConnection(*fetchval_returns)
 
     def acquire(self):
-        # Returns the conn directly — it acts as its own async context manager.
-        return self._conn
+        # Returns the connection directly — it acts as its own async context manager.
+        return self._connection
 
 
 # ===========================================================================
@@ -247,7 +248,7 @@ def test_transform_message_token_count_to_gemini_metadata():
          gemini_metadata JSONB field that the orchestrator already reads
          for cost accounting.
     """
-    row = _make_msg_row(token_count=42)
+    row = _make_message_row(token_count=42)
     result = etl.transform_message_row(row)
 
     assert result["gemini_metadata"] is not None
@@ -261,7 +262,7 @@ def test_transform_message_token_count_to_gemini_metadata():
 
 def test_transform_message_null_token_count_gives_null_gemini_metadata():
     """NULL token_count produces NULL gemini_metadata — user messages have no token count."""
-    row = _make_msg_row(token_count=None)
+    row = _make_message_row(token_count=None)
     result = etl.transform_message_row(row)
     assert result["gemini_metadata"] is None
 
@@ -273,7 +274,7 @@ def test_transform_message_null_content_coerced_to_empty_string():
          inserting NULL into v2 would violate the NOT NULL constraint and abort
          the batch transaction.
     """
-    row = _make_msg_row(content=None)
+    row = _make_message_row(content=None)
     result = etl.transform_message_row(row)
     assert result["content"] == "", (
         "NULL content must be coerced to empty string; "
@@ -283,7 +284,7 @@ def test_transform_message_null_content_coerced_to_empty_string():
 
 def test_transform_message_count_toward_paywall_defaults_true():
     """All migrated messages count toward the paywall — conservative E7 default."""
-    result = etl.transform_message_row(_make_msg_row())
+    result = etl.transform_message_row(_make_message_row())
     assert result["count_toward_paywall"] is True, (
         "count_toward_paywall must default to True; "
         "we cannot retroactively determine which historical messages were auto-greet exemptions"
@@ -296,7 +297,7 @@ def test_transform_message_dropped_columns_absent():
     WHY: passing unknown columns to the INSERT causes 'column does not exist' errors.
          Each dropped column is a documented data-loss decision in etl-plan §3.
     """
-    result = etl.transform_message_row(_make_msg_row())
+    result = etl.transform_message_row(_make_message_row())
     dropped_columns = {
         "sender_id",            # H2H sender attribution — no v2 Phase 1 column
         "message_type",         # inferred from media_urls by v2 client
@@ -316,7 +317,7 @@ def test_transform_message_dropped_columns_absent():
 
 def test_transform_message_client_message_id_preserved():
     """client_message_id (F10 dedup key) is preserved — prevents mobile retry duplicates."""
-    row = _make_msg_row(client_message_id="mobile-dedup-abc123")
+    row = _make_message_row(client_message_id="mobile-dedup-abc123")
     result = etl.transform_message_row(row)
     assert result["client_message_id"] == "mobile-dedup-abc123"
 
@@ -363,14 +364,14 @@ def test_serialize_jsonb_already_string_passthrough():
 def test_run_verification_passes_within_tolerance(capsys):
     """Verification succeeds silently when deltas are within ±500 convs / ±5K msgs.
 
-    WHAT: source and dest counts are close — coordinator sees PASSED report.
+    WHAT: source and destination counts are close — coordinator sees PASSED report.
     WHY:  confirms the happy path doesn't false-positive sys.exit(1).
     """
-    src_pool = _MockPool(100, 1_000)    # source: 100 conversations, 1000 messages
-    dst_pool = _MockPool(101, 1_003)    # dest:   101 conversations, 1003 messages (live traffic)
+    source_pool = _MockPool(100, 1_000)       # source: 100 conversations, 1000 messages
+    destination_pool = _MockPool(101, 1_003)  # destination: 101 conversations, 1003 messages
 
     # Should complete without sys.exit — any exit here is a test failure.
-    asyncio.run(etl.run_verification(src_pool, dst_pool))
+    asyncio.run(etl.run_verification(source_pool, destination_pool))
 
     report = capsys.readouterr().out
     assert "VERIFICATION REPORT" in report
@@ -383,13 +384,13 @@ def test_run_verification_exits_1_on_large_conversation_delta(capsys):
     WHY: a large negative delta means rows were lost in migration (A4 violation);
          the coordinator must investigate before declaring the ETL complete.
     """
-    src_pool = _MockPool(10_000, 1_000)  # source: 10K convs
-    dst_pool = _MockPool(100, 1_000)     # dest:   100 convs — delta = -9900, exceeds 500
+    source_pool = _MockPool(10_000, 1_000)      # source: 10K convs
+    destination_pool = _MockPool(100, 1_000)    # destination: 100 convs — delta = -9900
 
-    with pytest.raises(SystemExit) as exc_info:
-        asyncio.run(etl.run_verification(src_pool, dst_pool))
+    with pytest.raises(SystemExit) as exit_info:
+        asyncio.run(etl.run_verification(source_pool, destination_pool))
 
-    assert exc_info.value.code == 1, (
+    assert exit_info.value.code == 1, (
         "run_verification must exit with code 1 when conversation delta > 500; "
         "exit code 0 would silently declare a lossy migration as successful"
     )
@@ -399,13 +400,13 @@ def test_run_verification_exits_1_on_large_conversation_delta(capsys):
 
 def test_run_verification_exits_1_on_large_message_delta(capsys):
     """Verification exits 1 when message delta exceeds ±5000 threshold."""
-    src_pool = _MockPool(100, 100_000)   # source: 100 convs, 100K msgs
-    dst_pool = _MockPool(100, 10_000)    # dest:   100 convs, 10K msgs — delta = -90K
+    source_pool = _MockPool(100, 100_000)      # source: 100 convs, 100K messages
+    destination_pool = _MockPool(100, 10_000)  # destination: 100 convs, 10K messages — delta = -90K
 
-    with pytest.raises(SystemExit) as exc_info:
-        asyncio.run(etl.run_verification(src_pool, dst_pool))
+    with pytest.raises(SystemExit) as exit_info:
+        asyncio.run(etl.run_verification(source_pool, destination_pool))
 
-    assert exc_info.value.code == 1
+    assert exit_info.value.code == 1
     assert "LARGE DELTA" in capsys.readouterr().out
 
 
@@ -424,9 +425,9 @@ def test_cli_rejects_both_conversations_only_and_messages_only():
     original_argv = sys.argv
     try:
         sys.argv = ["etl", "--conversations-only", "--messages-only"]
-        with pytest.raises(SystemExit) as exc_info:
+        with pytest.raises(SystemExit) as exit_info:
             etl.cli()
-        assert exc_info.value.code == 2, (
+        assert exit_info.value.code == 2, (
             "argparse must exit with code 2 on mutual-exclusivity violation "
             "(standard POSIX CLI contract for argument errors)"
         )
@@ -448,15 +449,15 @@ def test_transform_message_does_not_log_content(caplog):
          aggregation system (Sentry, Grafana Loki). See etl-plan §8.
     """
     pii_content = "My SSN is 123-45-6789 and card is 4111-1111-1111-1111"
-    row = _make_msg_row(content=pii_content)
+    row = _make_message_row(content=pii_content)
 
     with caplog.at_level(logging.DEBUG, logger="etl"):
         etl.transform_message_row(row)
 
     for record in caplog.records:
-        message = record.getMessage()
-        assert pii_content not in message, (
-            f"PII content appeared verbatim in log record: {message!r}\n"
+        log_text = record.getMessage()
+        assert pii_content not in log_text, (
+            f"PII content appeared verbatim in log record: {log_text!r}\n"
             "message content must NEVER be logged — it may contain user PII"
         )
 
@@ -474,9 +475,9 @@ def test_transform_conversation_does_not_log_metadata_values(caplog):
         etl.transform_conversation_row(row)
 
     for record in caplog.records:
-        message = record.getMessage()
-        assert sensitive_fact not in message, (
-            f"Sensitive metadata value appeared in log record: {message!r}"
+        log_text = record.getMessage()
+        assert sensitive_fact not in log_text, (
+            f"Sensitive metadata value appeared in log record: {log_text!r}"
         )
 
 

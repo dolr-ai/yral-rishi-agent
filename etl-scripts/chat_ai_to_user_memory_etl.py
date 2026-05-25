@@ -78,7 +78,7 @@ _UUID_MIN = uuid.UUID("00000000-0000-0000-0000-000000000000")  # nil UUID sorts 
 # ---------------------------------------------------------------------------
 
 
-async def open_source_pool(dsn: str) -> asyncpg.Pool:
+async def open_source_pool(database_connection_string: str) -> asyncpg.Pool:
     """Open a read-only asyncpg pool for the chat-ai source Postgres.
 
     WHAT: creates an asyncpg connection pool with statement_cache_size=0
@@ -89,7 +89,7 @@ async def open_source_pool(dsn: str) -> asyncpg.Pool:
           DB during the migration window (belt-and-suspenders — A14 safety).
     """
     return await asyncpg.create_pool(
-        dsn=dsn,
+        database_connection_string,  # positional: asyncpg's first param is the connection string
         min_size=1,
         max_size=4,
         # READ ONLY server-side protection: cannot write to source.
@@ -99,7 +99,7 @@ async def open_source_pool(dsn: str) -> asyncpg.Pool:
     )
 
 
-async def open_dest_pool(dsn: str) -> asyncpg.Pool:
+async def open_destination_pool(database_connection_string: str) -> asyncpg.Pool:
     """Open a write asyncpg pool for the v2 user-memory-service destination.
 
     WHAT: standard asyncpg pool; statement_cache_size=0 for pgBouncer.
@@ -108,7 +108,7 @@ async def open_dest_pool(dsn: str) -> asyncpg.Pool:
           ensures a source-side disconnect doesn't affect in-flight writes.
     """
     return await asyncpg.create_pool(
-        dsn=dsn,
+        database_connection_string,  # positional: asyncpg's first param is the connection string
         min_size=1,
         max_size=4,
         statement_cache_size=0,
@@ -223,8 +223,8 @@ def _serialize_jsonb(value) -> str | None:
 
 
 async def migrate_conversations(
-    src: asyncpg.Pool,
-    dst: asyncpg.Pool,
+    source: asyncpg.Pool,
+    destination: asyncpg.Pool,
     batch_size: int,
     dry_run: bool,
 ) -> int:
@@ -235,6 +235,8 @@ async def migrate_conversations(
           Each batch is bulk-loaded into a temp staging table via asyncpg's
           binary COPY protocol (~50× faster than per-row INSERTs), then
           atomically upserted into v2.conversations with ON CONFLICT (id) DO NOTHING.
+          If the bulk INSERT SELECT hits a CheckViolationError (bad row), the
+          batch retries row-by-row so only the offending row is skipped (logged).
     WHEN: called as the first migration phase.
     WHY:  conversations must exist BEFORE messages (FK constraint). Keyset read
           prevents source DB overload on 284K rows. A single destination
@@ -246,23 +248,23 @@ async def migrate_conversations(
     log.info("Phase 1 — conversations: starting (batch_size=%d, dry_run=%s)",
              batch_size, dry_run)
 
-    async with src.acquire() as conn:
-        total = await conn.fetchval("SELECT count(*) FROM conversations;")
+    async with source.acquire() as source_connection:
+        total = await source_connection.fetchval("SELECT count(*) FROM conversations;")
     log.info("Phase 1 — source has %d conversations total", total)
 
     inserted_total = 0
-    batch_num = 0
+    batch_number = 0
     # Keyset cursor: start before all real rows (epoch timestamp + nil UUID).
-    cursor_ts = _ETL_EPOCH
+    cursor_timestamp = _ETL_EPOCH
     cursor_id = _UUID_MIN
 
     # Hold ONE destination connection for the entire phase.
     # PostgreSQL TEMP TABLEs are session-scoped — a new acquire() would return
     # a different connection without the staging table.
-    async with dst.acquire() as dst_conn:
+    async with destination.acquire() as destination_connection:
         if not dry_run:
             # Create staging table once; reuse across all batches via TRUNCATE.
-            await dst_conn.execute(
+            await destination_connection.execute(
                 """
                 CREATE TEMP TABLE IF NOT EXISTS conversations_staging (
                     id UUID NOT NULL,
@@ -280,8 +282,8 @@ async def migrate_conversations(
 
         while True:
             # Keyset read — no OFFSET, so the source DB scans only new rows.
-            async with src.acquire() as src_conn:
-                rows = await src_conn.fetch(
+            async with source.acquire() as source_connection:
+                rows = await source_connection.fetch(
                     """
                     SELECT id, user_id, influencer_id, participant_b_id,
                            conversation_type, metadata, created_at, updated_at
@@ -290,28 +292,28 @@ async def migrate_conversations(
                     ORDER BY created_at ASC, id ASC
                     LIMIT $3
                     """,
-                    cursor_ts,
+                    cursor_timestamp,
                     cursor_id,
                     batch_size,
                 )
 
             if not rows:
-                log.info("Phase 1 — keyset cursor exhausted after batch %d", batch_num)
+                log.info("Phase 1 — keyset cursor exhausted after batch %d", batch_number)
                 break
 
-            batch_num += 1
+            batch_number += 1
             rows_to_insert = [transform_conversation_row(r) for r in rows]
 
             if dry_run:
                 log.info("Phase 1 — batch %d: DRY RUN — would insert %d rows",
-                         batch_num, len(rows_to_insert))
+                         batch_number, len(rows_to_insert))
             else:
                 # TRUNCATE staging → COPY batch (binary protocol) → INSERT SELECT.
                 # Each step auto-commits; ON CONFLICT makes the whole pipeline
-                # idempotent — a crash + restart re-runs from cursor_ts = _ETL_EPOCH
+                # idempotent — a crash + restart re-runs from cursor_timestamp = _ETL_EPOCH
                 # and skips already-loaded rows.
-                await dst_conn.execute("TRUNCATE conversations_staging")
-                await dst_conn.copy_records_to_table(
+                await destination_connection.execute("TRUNCATE conversations_staging")
+                await destination_connection.copy_records_to_table(
                     "conversations_staging",
                     records=[
                         (
@@ -328,32 +330,72 @@ async def migrate_conversations(
                         "message_count", "soft_deleted_at",
                     ],
                 )
-                result = await dst_conn.execute(
-                    """
-                    INSERT INTO conversations (
-                        id, user_id, influencer_id, participant_b_id,
-                        conversation_type, created_at, last_message_at,
-                        message_count, soft_deleted_at
+
+                try:
+                    result = await destination_connection.execute(
+                        """
+                        INSERT INTO conversations (
+                            id, user_id, influencer_id, participant_b_id,
+                            conversation_type, created_at, last_message_at,
+                            message_count, soft_deleted_at
+                        )
+                        SELECT id, user_id, influencer_id, participant_b_id,
+                               conversation_type, created_at, last_message_at,
+                               message_count, soft_deleted_at
+                        FROM conversations_staging
+                        ON CONFLICT (id) DO NOTHING
+                        """
                     )
-                    SELECT id, user_id, influencer_id, participant_b_id,
-                           conversation_type, created_at, last_message_at,
-                           message_count, soft_deleted_at
-                    FROM conversations_staging
-                    ON CONFLICT (id) DO NOTHING
-                    """
-                )
-                # asyncpg returns "INSERT 0 N" — N is the count of new rows.
-                inserted_batch = int(result.split()[-1])
+                    # asyncpg returns "INSERT 0 N" — N is the count of new rows.
+                    inserted_batch = int(result.split()[-1])
+
+                except asyncpg.CheckViolationError as violation:
+                    # Bulk INSERT SELECT hit a CHECK constraint — one or more rows have
+                    # an invalid conversation_type or other constrained value. Fall back
+                    # to per-row inserts so only the offending rows are skipped. The
+                    # staging table data is intact (the failed INSERT SELECT did not
+                    # commit any rows), so we can re-insert from rows_to_insert directly.
+                    log.warning(
+                        "Phase 1 — batch %d: bulk INSERT SELECT hit CHECK constraint %r; "
+                        "retrying row-by-row — bad rows will be logged and skipped",
+                        batch_number, violation.constraint_name,
+                    )
+                    inserted_batch = 0
+                    for row in rows_to_insert:
+                        try:
+                            row_result = await destination_connection.execute(
+                                """
+                                INSERT INTO conversations (
+                                    id, user_id, influencer_id, participant_b_id,
+                                    conversation_type, created_at, last_message_at,
+                                    message_count, soft_deleted_at
+                                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                                ON CONFLICT (id) DO NOTHING
+                                """,
+                                row["id"], row["user_id"], row["influencer_id"],
+                                row["participant_b_id"], row["conversation_type"],
+                                row["created_at"], row["last_message_at"],
+                                row["message_count"], row["soft_deleted_at"],
+                            )
+                            if row_result.split()[-1] != "0":
+                                inserted_batch += 1
+                        except asyncpg.CheckViolationError as row_violation:
+                            log.warning(
+                                "Phase 1 — batch %d: SKIPPING conversation %s "
+                                "(CHECK constraint %r violated — see plan §7 recovery)",
+                                batch_number, row["id"], row_violation.constraint_name,
+                            )
+
                 inserted_total += inserted_batch
                 log.info(
                     "Phase 1 — batch %d: inserted=%d skipped=%d "
                     "(running total inserted=%d / source=%d)",
-                    batch_num, inserted_batch, len(rows_to_insert) - inserted_batch,
+                    batch_number, inserted_batch, len(rows_to_insert) - inserted_batch,
                     inserted_total, total,
                 )
 
             # Advance keyset cursor to the last row of this batch.
-            cursor_ts = rows[-1]["created_at"]
+            cursor_timestamp = rows[-1]["created_at"]
             cursor_id = rows[-1]["id"]
 
             # Exit when this batch was smaller than batch_size → no more rows.
@@ -366,8 +408,8 @@ async def migrate_conversations(
 
 
 async def migrate_messages(
-    src: asyncpg.Pool,
-    dst: asyncpg.Pool,
+    source: asyncpg.Pool,
+    destination: asyncpg.Pool,
     batch_size: int,
     dry_run: bool,
 ) -> int:
@@ -381,9 +423,11 @@ async def migrate_messages(
           JSONB columns (media_urls, gemini_metadata) are stored as TEXT in the
           staging table and cast to JSONB in the INSERT SELECT — COPY's binary
           protocol does not natively encode Postgres JSONB.
+          If the bulk INSERT SELECT hits a CheckViolationError (bad row), the
+          batch retries row-by-row so only the offending row is skipped (logged).
     WHEN: called AFTER Phase 1 (conversations must exist before messages: FK
           constraint on messages.conversation_id).
-    WHY:  3.3M messages × OFFSET re-scan = O(n²) on the source DB.  Keyset
+    WHY:  3.3M messages × OFFSET re-scan = O(n²) on the source DB. Keyset
           pagination eliminates the re-scan: each page starts exactly where the
           last left off. A single destination connection is held for the entire
           phase so the TEMP TABLE (session-scoped in PostgreSQL) is visible
@@ -394,25 +438,25 @@ async def migrate_messages(
     log.info("Phase 2 — messages: starting (batch_size=%d, dry_run=%s)",
              batch_size, dry_run)
 
-    async with src.acquire() as conn:
-        total = await conn.fetchval("SELECT count(*) FROM messages;")
+    async with source.acquire() as source_connection:
+        total = await source_connection.fetchval("SELECT count(*) FROM messages;")
     log.info("Phase 2 — source has %d messages total", total)
 
     inserted_total = 0
-    batch_num = 0
+    batch_number = 0
     # Keyset cursor: start before all real rows (epoch timestamp + nil UUID).
-    cursor_ts = _ETL_EPOCH
+    cursor_timestamp = _ETL_EPOCH
     cursor_id = _UUID_MIN
 
     # Hold ONE destination connection for the entire phase.
     # PostgreSQL TEMP TABLEs are session-scoped — a new acquire() would return
     # a different connection without the staging table.
-    async with dst.acquire() as dst_conn:
+    async with destination.acquire() as destination_connection:
         if not dry_run:
             # media_urls + gemini_metadata stored as TEXT in staging; cast to
             # JSONB in the INSERT SELECT. COPY's binary protocol cannot encode
             # the Postgres JSONB wire format directly — TEXT is the safe bridge.
-            await dst_conn.execute(
+            await destination_connection.execute(
                 """
                 CREATE TEMP TABLE IF NOT EXISTS messages_staging (
                     id UUID NOT NULL,
@@ -430,8 +474,8 @@ async def migrate_messages(
 
         while True:
             # Keyset read — no OFFSET, so the source DB scans only new rows.
-            async with src.acquire() as src_conn:
-                rows = await src_conn.fetch(
+            async with source.acquire() as source_connection:
+                rows = await source_connection.fetch(
                     """
                     SELECT id, conversation_id, role, content, media_urls,
                            client_message_id, token_count, created_at
@@ -440,28 +484,28 @@ async def migrate_messages(
                     ORDER BY created_at ASC, id ASC
                     LIMIT $3
                     """,
-                    cursor_ts,
+                    cursor_timestamp,
                     cursor_id,
                     batch_size,
                 )
 
             if not rows:
-                log.info("Phase 2 — keyset cursor exhausted after batch %d", batch_num)
+                log.info("Phase 2 — keyset cursor exhausted after batch %d", batch_number)
                 break
 
-            batch_num += 1
+            batch_number += 1
             rows_to_insert = [transform_message_row(r) for r in rows]
 
             if dry_run:
                 log.info("Phase 2 — batch %d: DRY RUN — would insert %d rows",
-                         batch_num, len(rows_to_insert))
+                         batch_number, len(rows_to_insert))
             else:
                 # TRUNCATE staging → COPY batch (binary protocol) → INSERT SELECT.
                 # ON CONFLICT makes the whole pipeline idempotent — a crash +
-                # restart re-runs from cursor_ts = _ETL_EPOCH and skips already-
-                # loaded rows.
-                await dst_conn.execute("TRUNCATE messages_staging")
-                await dst_conn.copy_records_to_table(
+                # restart re-runs from cursor_timestamp = _ETL_EPOCH and skips
+                # already-loaded rows.
+                await destination_connection.execute("TRUNCATE messages_staging")
+                await destination_connection.copy_records_to_table(
                     "messages_staging",
                     records=[
                         (
@@ -478,38 +522,83 @@ async def migrate_messages(
                         "created_at", "count_toward_paywall",
                     ],
                 )
-                result = await dst_conn.execute(
-                    """
-                    INSERT INTO messages (
-                        id, conversation_id, role, content,
-                        media_urls, gemini_metadata,
-                        client_message_id, created_at,
-                        count_toward_paywall
+
+                try:
+                    result = await destination_connection.execute(
+                        """
+                        INSERT INTO messages (
+                            id, conversation_id, role, content,
+                            media_urls, gemini_metadata,
+                            client_message_id, created_at,
+                            count_toward_paywall
+                        )
+                        SELECT
+                            id, conversation_id, role, content,
+                            media_urls::jsonb, gemini_metadata::jsonb,
+                            client_message_id, created_at,
+                            count_toward_paywall
+                        FROM messages_staging
+                        ON CONFLICT (id) DO NOTHING
+                        """
                     )
-                    SELECT
-                        id, conversation_id, role, content,
-                        media_urls::jsonb, gemini_metadata::jsonb,
-                        client_message_id, created_at,
-                        count_toward_paywall
-                    FROM messages_staging
-                    ON CONFLICT (id) DO NOTHING
-                    """
-                )
-                # asyncpg returns "INSERT 0 N" — N is the count of new rows.
-                inserted_batch = int(result.split()[-1])
+                    # asyncpg returns "INSERT 0 N" — N is the count of new rows.
+                    inserted_batch = int(result.split()[-1])
+
+                except asyncpg.CheckViolationError as violation:
+                    # Bulk INSERT SELECT hit a CHECK constraint — one or more rows have
+                    # an invalid role value or other constrained column. Fall back to
+                    # per-row inserts so only the offending rows are skipped. The
+                    # staging table data is intact (failed INSERT SELECT committed nothing).
+                    log.warning(
+                        "Phase 2 — batch %d: bulk INSERT SELECT hit CHECK constraint %r; "
+                        "retrying row-by-row — bad rows will be logged and skipped",
+                        batch_number, violation.constraint_name,
+                    )
+                    inserted_batch = 0
+                    for row in rows_to_insert:
+                        try:
+                            row_result = await destination_connection.execute(
+                                """
+                                INSERT INTO messages (
+                                    id, conversation_id, role, content,
+                                    media_urls, gemini_metadata,
+                                    client_message_id, created_at,
+                                    count_toward_paywall
+                                ) VALUES (
+                                    $1, $2, $3, $4,
+                                    $5::jsonb, $6::jsonb,
+                                    $7, $8, $9
+                                )
+                                ON CONFLICT (id) DO NOTHING
+                                """,
+                                row["id"], row["conversation_id"],
+                                row["role"], row["content"],
+                                row["media_urls"], row["gemini_metadata"],
+                                row["client_message_id"], row["created_at"],
+                                row["count_toward_paywall"],
+                            )
+                            if row_result.split()[-1] != "0":
+                                inserted_batch += 1
+                        except asyncpg.CheckViolationError as row_violation:
+                            log.warning(
+                                "Phase 2 — batch %d: SKIPPING message %s "
+                                "(CHECK constraint %r violated — see plan §7 recovery)",
+                                batch_number, row["id"], row_violation.constraint_name,
+                            )
+
                 inserted_total += inserted_batch
                 # Progress log every 10 batches (every 100K rows at default size).
-                if batch_num % 10 == 0:
+                if batch_number % 10 == 0:
                     log.info(
                         "Phase 2 — batch %d: inserted=%d skipped=%d "
                         "(running total inserted=%d / source=%d)",
-                        batch_num, inserted_batch,
+                        batch_number, inserted_batch,
                         len(rows_to_insert) - inserted_batch,
                         inserted_total, total,
                     )
 
             # Advance keyset cursor to the last row of this batch.
-            cursor_ts = rows[-1]["created_at"]
+            cursor_timestamp = rows[-1]["created_at"]
             cursor_id = rows[-1]["id"]
 
             # Exit when this batch was smaller than batch_size → no more rows.
@@ -522,7 +611,7 @@ async def migrate_messages(
 
 
 async def update_message_counts(
-    dst: asyncpg.Pool,
+    destination: asyncpg.Pool,
     dry_run: bool,
 ) -> None:
     """Phase 3: set message_count on each conversation.
@@ -539,16 +628,16 @@ async def update_message_counts(
     log.info("Phase 3 — message_count update: starting (dry_run=%s)", dry_run)
 
     if dry_run:
-        async with dst.acquire() as conn:
-            affected = await conn.fetchval(
+        async with destination.acquire() as connection:
+            affected = await connection.fetchval(
                 "SELECT count(*) FROM conversations WHERE message_count = 0;"
             )
         log.info("Phase 3 — DRY RUN: would update message_count on %d conversations",
                  affected)
         return
 
-    async with dst.acquire() as conn:
-        result = await conn.execute(
+    async with destination.acquire() as connection:
+        result = await connection.execute(
             """
             UPDATE conversations c
             SET message_count = (
@@ -562,7 +651,7 @@ async def update_message_counts(
     log.info("Phase 3 — message_count update DONE: %s", result)
 
 
-async def run_verification(src: asyncpg.Pool, dst: asyncpg.Pool) -> None:
+async def run_verification(source: asyncpg.Pool, destination: asyncpg.Pool) -> None:
     """Print post-ETL verification counts side by side.
 
     WHAT: queries count(*) on both source + destination for conversations
@@ -574,37 +663,43 @@ async def run_verification(src: asyncpg.Pool, dst: asyncpg.Pool) -> None:
     """
     log.info("Verification — running count comparison")
 
-    async with src.acquire() as conn:
-        src_convs = await conn.fetchval("SELECT count(*) FROM conversations;")
-        src_msgs = await conn.fetchval("SELECT count(*) FROM messages;")
+    async with source.acquire() as connection:
+        source_conversations = await connection.fetchval("SELECT count(*) FROM conversations;")
+        source_messages = await connection.fetchval("SELECT count(*) FROM messages;")
 
-    async with dst.acquire() as conn:
-        dst_convs = await conn.fetchval("SELECT count(*) FROM conversations;")
-        dst_msgs = await conn.fetchval("SELECT count(*) FROM messages;")
+    async with destination.acquire() as connection:
+        destination_conversations = await connection.fetchval("SELECT count(*) FROM conversations;")
+        destination_messages = await connection.fetchval("SELECT count(*) FROM messages;")
 
-    conv_delta = dst_convs - src_convs
-    msg_delta = dst_msgs - src_msgs
+    conversations_delta = destination_conversations - source_conversations
+    messages_delta = destination_messages - source_messages
 
     # Positive delta = v2 has MORE rows (live traffic created new ones during ETL)
     # Negative delta = v2 has FEWER rows (some failed to import — investigate)
-    conv_status = "OK" if abs(conv_delta) <= 500 else "⚠️  LARGE DELTA — INVESTIGATE"
-    msg_status = "OK" if abs(msg_delta) <= 5000 else "⚠️  LARGE DELTA — INVESTIGATE"
+    conversations_status = (
+        "OK" if abs(conversations_delta) <= 500
+        else "⚠️  LARGE DELTA — INVESTIGATE"
+    )
+    messages_status = (
+        "OK" if abs(messages_delta) <= 5000
+        else "⚠️  LARGE DELTA — INVESTIGATE"
+    )
 
     print("\n" + "=" * 60)
     print("ETL VERIFICATION REPORT")
     print(f"  Run at: {datetime.now(timezone.utc).isoformat()}")
     print("=" * 60)
     print(f"  conversations:")
-    print(f"    chat-ai (source) : {src_convs:>10,}")
-    print(f"    v2 user-memory   : {dst_convs:>10,}")
-    print(f"    delta            : {conv_delta:>+10,}  [{conv_status}]")
+    print(f"    chat-ai (source) : {source_conversations:>10,}")
+    print(f"    v2 user-memory   : {destination_conversations:>10,}")
+    print(f"    delta            : {conversations_delta:>+10,}  [{conversations_status}]")
     print(f"  messages:")
-    print(f"    chat-ai (source) : {src_msgs:>10,}")
-    print(f"    v2 user-memory   : {dst_msgs:>10,}")
-    print(f"    delta            : {msg_delta:>+10,}  [{msg_status}]")
+    print(f"    chat-ai (source) : {source_messages:>10,}")
+    print(f"    v2 user-memory   : {destination_messages:>10,}")
+    print(f"    delta            : {messages_delta:>+10,}  [{messages_status}]")
     print("=" * 60 + "\n")
 
-    if "INVESTIGATE" in conv_status or "INVESTIGATE" in msg_status:
+    if "INVESTIGATE" in conversations_status or "INVESTIGATE" in messages_status:
         log.error(
             "Verification FAILED: delta exceeds tolerance threshold. "
             "See etl-plan-day-9-draft.md §6 for recovery steps."
@@ -637,13 +732,15 @@ async def main(
     # --- 0. Read connection strings from environment ----------------------
     # Connection strings are env vars (NOT CLI args) so they don't appear
     # in `ps aux` output on shared machines. See etl-plan-day-9-draft.md §8.
-    src_dsn = os.environ.get("CHAT_AI_POSTGRES_URL")
-    dst_dsn = os.environ.get("POSTGRES_CONNECTION_STRING_USER_MEMORY_SERVICE")
+    source_database_connection_string = os.environ.get("CHAT_AI_POSTGRES_URL")
+    destination_database_connection_string = os.environ.get(
+        "POSTGRES_CONNECTION_STRING_USER_MEMORY_SERVICE"
+    )
 
-    if not src_dsn:
+    if not source_database_connection_string:
         log.error("CHAT_AI_POSTGRES_URL not set. Set it and re-run.")
         sys.exit(1)
-    if not dst_dsn:
+    if not destination_database_connection_string:
         log.error("POSTGRES_CONNECTION_STRING_USER_MEMORY_SERVICE not set. Set it and re-run.")
         sys.exit(1)
 
@@ -654,31 +751,31 @@ async def main(
 
     # --- 1. Open pools ----------------------------------------------------
     log.info("Opening source connection pool (READ ONLY)...")
-    src_pool = await open_source_pool(src_dsn)
+    source_pool = await open_source_pool(source_database_connection_string)
 
     log.info("Opening destination connection pool...")
-    dst_pool = await open_dest_pool(dst_dsn)
+    destination_pool = await open_destination_pool(destination_database_connection_string)
 
     try:
         # --- 2. Run migration phases ------------------------------------
         if not messages_only:
-            await migrate_conversations(src_pool, dst_pool, batch_size, dry_run)
+            await migrate_conversations(source_pool, destination_pool, batch_size, dry_run)
 
         if not conversations_only:
-            await migrate_messages(src_pool, dst_pool, batch_size, dry_run)
+            await migrate_messages(source_pool, destination_pool, batch_size, dry_run)
 
         if not conversations_only and not dry_run:
-            await update_message_counts(dst_pool, dry_run)
+            await update_message_counts(destination_pool, dry_run)
 
         # --- 3. Verify --------------------------------------------------
         if not skip_verification and not dry_run:
-            await run_verification(src_pool, dst_pool)
+            await run_verification(source_pool, destination_pool)
         elif dry_run:
             log.info("Skipping verification (dry-run mode)")
 
     finally:
-        await src_pool.close()
-        await dst_pool.close()
+        await source_pool.close()
+        await destination_pool.close()
 
 
 def cli() -> None:
@@ -732,18 +829,18 @@ def cli() -> None:
         help="Skip the post-ETL count comparison (useful during testing)",
     )
 
-    args = parser.parse_args()
+    parsed = parser.parse_args()
 
-    if args.conversations_only and args.messages_only:
+    if parsed.conversations_only and parsed.messages_only:
         parser.error("--conversations-only and --messages-only are mutually exclusive")
 
     asyncio.run(
         main(
-            batch_size=args.batch_size,
-            conversations_only=args.conversations_only,
-            messages_only=args.messages_only,
-            dry_run=args.dry_run,
-            skip_verification=args.skip_verification,
+            batch_size=parsed.batch_size,
+            conversations_only=parsed.conversations_only,
+            messages_only=parsed.messages_only,
+            dry_run=parsed.dry_run,
+            skip_verification=parsed.skip_verification,
         )
     )
 

@@ -224,7 +224,7 @@ async def create_or_get_conversation(
           handles NULL equality (NULL == NULL for this comparison).
     """
     pool = get_pool()
-    async with pool.acquire() as conn:
+    async with pool.acquire() as connection:
         # --- Atomic upsert using the partial expression unique index --------
         # ON CONFLICT target must match 003_add_dedup_indexes.py's
         # conversations_natural_key_active_unique_idx exactly (same
@@ -235,7 +235,7 @@ async def create_or_get_conversation(
         # ensure RETURNING always yields the row (DO NOTHING returns nothing;
         # DO UPDATE returns the row whether it was inserted or conflicted).
         # Index used: conversations_natural_key_active_unique_idx
-        conv_row = await conn.fetchrow(
+        conv_row = await connection.fetchrow(
             """
             INSERT INTO conversations
                 (user_id, influencer_id, participant_b_id, conversation_type)
@@ -261,7 +261,7 @@ async def create_or_get_conversation(
         # --- Fetch the last non-system message for the response -------------
         # Index: messages_by_conversation_time_idx (conversation_id, created_at ASC)
         # ORDER BY DESC reverses the ASC index efficiently for the most-recent row.
-        last_msg_row = await conn.fetchrow(
+        last_msg_row = await connection.fetchrow(
             """
             SELECT id, conversation_id, role, content, client_message_id,
                    media_urls, created_at, count_toward_paywall
@@ -321,12 +321,12 @@ async def append_messages(
         ) from exc
 
     pool = get_pool()
-    async with pool.acquire() as conn:
+    async with pool.acquire() as connection:
         # --- 1. Verify the conversation exists --------------------------
         # 404 before the FK constraint fires gives the caller a deterministic
         # error code rather than a Postgres-level IntegrityError that maps
         # ambiguously to 500.
-        exists = await conn.fetchval(
+        exists = await connection.fetchval(
             "SELECT id FROM conversations WHERE id = $1",
             conv_uuid,
         )
@@ -339,7 +339,7 @@ async def append_messages(
         # --- 2. Insert all messages in a single transaction -------------
         # If any INSERT fails (e.g. CHECK constraint violation on role),
         # the whole batch rolls back — no partial turn is persisted.
-        async with conn.transaction():
+        async with connection.transaction():
             result_rows: list[asyncpg.Record] = []
             new_row_count: int = 0
 
@@ -372,7 +372,7 @@ async def append_messages(
                 #   DO NOTHING fires: RETURNING yields nothing (None).
                 #   We then SELECT the existing row and return it so the caller
                 #   gets the same message_id as the original write — safe retry.
-                row = await conn.fetchrow(
+                row = await connection.fetchrow(
                     """
                     INSERT INTO messages
                         (conversation_id, role, content, client_message_id,
@@ -399,7 +399,7 @@ async def append_messages(
                 if row is None and item.client_message_id is not None:
                     # Conflict hit — fetch the existing row so the caller
                     # gets the correct (original) message_id back.
-                    row = await conn.fetchrow(
+                    row = await connection.fetchrow(
                         """
                         SELECT id, conversation_id, role, content,
                                client_message_id, media_urls, created_at,
@@ -424,7 +424,7 @@ async def append_messages(
             # Retry-matched rows are not counted again. Update last_message_at
             # to the current time.
             if new_row_count > 0:
-                await conn.execute(
+                await connection.execute(
                     """
                     UPDATE conversations
                     SET last_message_at = NOW(),
@@ -473,7 +473,7 @@ async def list_conversations_by_user(
           (user_id + soft_deleted_at IS NULL).
     """
     pool = get_pool()
-    async with pool.acquire() as conn:
+    async with pool.acquire() as connection:
         # LATERAL JOIN explanation:
         # For each conversation row `c`, Postgres evaluates the subquery
         # against `messages WHERE conversation_id = c.id` and returns the
@@ -482,7 +482,7 @@ async def list_conversations_by_user(
         # columns (last_message will be None in the response).
         # Index used: messages_by_conversation_time_idx (conversation_id, created_at ASC)
         # — ORDER BY DESC reverses the ASC index efficiently.
-        rows = await conn.fetch(
+        rows = await connection.fetch(
             """
             SELECT
                 c.id,
@@ -596,11 +596,11 @@ async def get_conversation_by_id(
         ) from exc
 
     pool = get_pool()
-    async with pool.acquire() as conn:
+    async with pool.acquire() as connection:
         # --- 1. Fetch the conversation (active rows only) ----------------
         # WHERE soft_deleted_at IS NULL: soft-deleted conversations behave
         # as if they don't exist — they return 404, same as truly missing rows.
-        row = await conn.fetchrow(
+        row = await connection.fetchrow(
             """
             SELECT id, user_id, influencer_id, participant_b_id,
                    conversation_type, last_message_at, message_count
@@ -627,7 +627,7 @@ async def get_conversation_by_id(
         # Mirrors the LATERAL JOIN pattern in list_conversations_by_user but
         # for a single conversation. ORDER BY created_at DESC, id DESC uses
         # the same tiebreaker as list_messages for same-timestamp batches.
-        last_msg_row = await conn.fetchrow(
+        last_msg_row = await connection.fetchrow(
             """
             SELECT id, conversation_id, role, content, client_message_id,
                    media_urls, created_at, count_toward_paywall
@@ -703,11 +703,11 @@ async def list_messages(
         ) from exc
 
     pool = get_pool()
-    async with pool.acquire() as conn:
+    async with pool.acquire() as connection:
         # Verify the conversation exists before querying messages.
         # 404 is more actionable for the orchestrator than an empty list
         # when the conversation_id is wrong.
-        exists = await conn.fetchval(
+        exists = await connection.fetchval(
             "SELECT id FROM conversations WHERE id = $1",
             conv_uuid,
         )
@@ -723,7 +723,7 @@ async def list_messages(
             # id DESC / id ASC tiebreaker ensures deterministic ordering for
             # messages sharing the same created_at (same-transaction batch inserts).
             # Index: messages_by_conversation_time_idx (conversation_id, created_at ASC)
-            rows = await conn.fetch(
+            rows = await connection.fetch(
                 """
                 SELECT *
                 FROM (
@@ -759,7 +759,7 @@ async def list_messages(
             # the response shape (wrong page boundary).
             # 404 is consistent with the tenant-isolation pattern used throughout
             # this service: never confirm existence of another user's resources.
-            cursor_exists = await conn.fetchval(
+            cursor_exists = await connection.fetchval(
                 """
                 SELECT id
                 FROM messages
@@ -779,7 +779,7 @@ async def list_messages(
             # (see round-2 fix comment). Defense-in-depth: the subquery also pins
             # conversation_id = $1 in case the pre-check is somehow bypassed.
             # DESC-then-ASC subquery returns most-recent N in chronological order.
-            rows = await conn.fetch(
+            rows = await connection.fetch(
                 """
                 SELECT *
                 FROM (

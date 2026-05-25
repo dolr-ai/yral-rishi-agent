@@ -1,5 +1,5 @@
 # Session 5 STATE — ETL + Tests + Memory
-> Updated: 2026-05-24 (D3 — PR #147 round-5: security fix + ETL keyset+COPY rewrite)
+> Updated: 2026-05-25 (D3 — PR #147 round-6: B2 rename sweep + CheckViolationError fallback)
 
 ## ⭐ START-OF-SESSION SUMMARY (read first when resuming)
 
@@ -37,7 +37,7 @@ ETL unit tests: **19**
 
 ## CURRENT TASK
 
-Pushing round-5 commit to session-5/d3-etl-migration. Awaiting Codex round-5 verdict.
+Pushed round-6 commit to session-5/d3-etl-migration. Awaiting Codex round-6 verdict.
 
 ## NEXT 3 PLANNED ACTIONS
 
