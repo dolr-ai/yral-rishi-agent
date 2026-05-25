@@ -332,7 +332,7 @@ async def health_deep() -> dict | JSONResponse:
 # ===========================================================================
 # RELATED FILES:
 #   main.py                       — mounts `health_router` on the FastAPI
-#                                   app; calls verify_production_sentinel_or_die
+#                                   app; calls verify_deployed_environment_sentinel_or_die
 #                                   + init_pool + init_redis at lifespan
 #                                   startup so this probe has something to
 #                                   probe AGAINST.

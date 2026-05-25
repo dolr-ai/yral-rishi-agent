@@ -4,7 +4,7 @@
 # ⭐ START HERE: this module exposes ONE async lifecycle pair —
 # `init_redis()` + `close_redis()` — ONE accessor — `get_redis()` — ONE
 # readiness probe — `check_redis_reachable()` — and ONE production-
-# safety gate — `verify_production_sentinel_or_die()`. The FastAPI
+# safety gate — `verify_deployed_environment_sentinel_or_die()`. The FastAPI
 # lifespan in `app/main.py` wires them. The /health/ready route in
 # `app/health_routes.py` calls `check_redis_reachable()` on every
 # readiness probe.
@@ -30,7 +30,7 @@
 # spawned services that DO use Redis (idempotency keys, feature flags,
 # session state, etc.).
 #
-# WHY DEPLOYED-FAIL-CLOSED (`verify_production_sentinel_or_die`)
+# WHY DEPLOYED-FAIL-CLOSED (`verify_deployed_environment_sentinel_or_die`)
 # Codex PR #97 round-5 ITEM 6 + Session 4's PR #96 round-4 + PR #151
 # round-5 BLOCKER 1: a DEPLOYED service (production OR staging — both
 # share the HA Redis Sentinel infrastructure on rishi-4/5/6 per F4 +
@@ -130,7 +130,7 @@ _log = logging.getLogger("app.redis_client")
 # ===========================================================================
 
 
-def verify_production_sentinel_or_die() -> None:
+def verify_deployed_environment_sentinel_or_die() -> None:
     """Refuse to start if production env runs without C11 Sentinel.
 
     WHAT: at app construction time, reads `settings.environment` +
@@ -546,7 +546,7 @@ def _load_redis_section_from_shared_config() -> dict:
 # ===========================================================================
 # RELATED FILES:
 #   main.py                       — lifespan startup:
-#                                     verify_production_sentinel_or_die();
+#                                     verify_deployed_environment_sentinel_or_die();
 #                                     await init_redis()
 #                                   lifespan shutdown:
 #                                     await close_redis()

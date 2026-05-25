@@ -130,7 +130,7 @@ class Settings(BaseSettings):
 
     # Flag-gated Sentinel-vs-single-primary path selector. False by
     # default so local dev / CI work without Sentinel quorum;
-    # production deploys MUST flip to True or `verify_production_sentinel_or_die`
+    # production deploys MUST flip to True or `verify_deployed_environment_sentinel_or_die`
     # in `app/redis_client.py` will SystemExit at startup per C11.
     redis_sentinel_enabled: bool = False
 

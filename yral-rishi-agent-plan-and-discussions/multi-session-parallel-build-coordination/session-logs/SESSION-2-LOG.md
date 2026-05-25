@@ -3,6 +3,126 @@
 
 ---
 
+## 2026-05-25 — PR #151 round-12 fixup: function rename for B1 accuracy (production → deployed_environment) + 5 test renames to behavior-first per J3 + network-flake trade-off comment (J2/J3)
+
+Same PR (#151), stays DRAFT. Round-11 squashed rounds 1-10 into single commit `4e81fab` to compact Codex's diff view. Codex round-11 returned 1 🛑 BLOCKER + 2 ⚠️  CONCERNs. Round-12 closes all three.
+
+### BLOCKER — B1 function name accuracy (REAL — fixed via rename)
+
+**Codex round-11:** "`verify_production_sentinel_or_die()` is now intentionally used for both production AND staging, but the Python function name still says production only. B1 requires function names to read accurately as English."
+
+This is the rename I considered + deferred in round-6 ("function name kept per coordinator's literal snippet; rename deferred if Codex flags"). Codex round-11 flagged. Closing now.
+
+**Rename:** `verify_production_sentinel_or_die` → `verify_deployed_environment_sentinel_or_die`.
+
+**Ripple sites (7 files within Session 2 scope):**
+
+| File | Change |
+|---|---|
+| `app/redis_client.py` | function def + 3 comment references (header WHY block, file-header `⭐ START HERE`, RELATED FILES footer) |
+| `app/main.py` | import + import-block comment + lifespan callsite |
+| `app/config.py` | 1 comment in the `redis_sentinel_enabled` field's docblock |
+| `app/health_routes.py` | 1 RELATED FILES footer reference |
+| `tests/test_redis_client_safety_gates.py` | import + 17 references across header / section banner / docstrings / function bodies / footer |
+| `.env.example` (template) | 1 comment in REDIS_SENTINEL_ENABLED block |
+| `.env.example` (hello-world) | same — Session 2 owns hello-world per lint-scope |
+
+**Out-of-scope (other sessions' territory per I9):**
+- `yral-rishi-agent-public-api/app/api/health_routes.py` — Session 3 owns; still has the OLD function name. Session 3 will need to rename in their own PR (or accept the name divergence from the template). Not blocking this PR.
+
+### CONCERN 1 — test names behavior-first per J3 (REAL — 5 renames)
+
+**Codex round-11:** "Test function names are implementation-heavy rather than plain-English behavior sentences per J3, e.g. they include the internal function name `verify_production_sentinel_or_die`."
+
+J3 mandates test names describe BEHAVIOR + CONDITION, not the function being tested.
+
+**Renames:**
+
+| Before | After |
+|---|---|
+| `test_verify_production_sentinel_or_die_raises_when_production_without_sentinel` | `test_sentinel_disabled_in_production_raises_runtime_error` |
+| `test_verify_production_sentinel_or_die_raises_when_staging_without_sentinel` | `test_sentinel_disabled_in_staging_raises_runtime_error` |
+| `test_verify_production_sentinel_or_die_allows_local_without_sentinel` | `test_sentinel_disabled_in_local_environment_does_not_raise` |
+| `test_init_redis_raises_when_sentinel_enabled_but_master_name_missing` | `test_missing_sentinel_master_name_raises_runtime_error` |
+| `test_init_redis_raises_when_sentinel_enabled_but_sentinel_hosts_missing` | `test_missing_sentinel_hosts_raises_runtime_error` |
+
+Each new name reads as a behavior-sentence: `<condition>_<expected_behavior>`. Pytest output now reads as a checklist of behaviors verified rather than a list of internal-function callsites.
+
+Test docstrings still reference the function under test in their `WHAT:` lines (that's normal — documenting what the test does); J3's constraint is on the test NAME itself, not the docstring.
+
+### CONCERN 2 — network-flake risk in PRE-FLIGHT 2 (J2/J3 — fixed via documented trade-off, option a)
+
+**Codex round-11:** "Spawn-smoke pre-flight depends on live network `pip install '.[dev]'` inside python:3.12-slim, which can flake despite retries."
+
+**Coordinator's framing:** "(a) Accept it + add a comment explaining the trade-off was deliberate (drift-resistance > network-flake)" or "(b) Use the already-built service container (no pip install at test time)".
+
+**Picked option (a).** Added an "ACKNOWLEDGED TRADE-OFF — NETWORK FLAKE RISK" comment block above the PRE-FLIGHT 2 install. The block:
+- Names the trade-off explicitly: `drift-resistance > network-flake`
+- Explains why (b) was rejected: template's Dockerfile does `pip install .` (not `.[dev]`), so pytest isn't in the runtime image; using the built container would require multi-stage Dockerfile rework outside DEP-014's acceptance criteria
+- Lists the flake-mitigation paths already in place: `--timeout 120`, `--retries 10`, Docker image cache, pip cache layer
+- Quantifies practical flake rate (~sub-1% per spawn-smoke invocation under normal PyPI conditions)
+- Captures container-reuse as a follow-up if PyPI outages bite in practice
+
+### Local validation (Mac dev, 2026-05-25)
+
+```
+── PRE-FLIGHT 1 ── DEP-010 no-index 5/5 PASS
+── PRE-FLIGHT 2 ── DEP-014 safety-gate pytest 5/5 PASS (with renamed tests)
+  ... 5 passed in 0.01s
+── STEP 0-7 incl. 5b ready + 5c deep + 6b redis-down 503: ALL PASS
+═══ test_spawn_smoke.sh — ALL STEPS PASSED ═══
+```
+
+**Banned-abbreviation lint sweep** on 5 touched Python files: **0 violations**.
+
+**Python `ast.parse`** on all 5 touched Python files: clean.
+
+**Cross-repo audit** of remaining `verify_production_sentinel_or_die` references — only public-api retains the old name (Session 3 territory; not in my I9 scope). Confirms my rename is complete within Session 2's owned surface.
+
+### Files touched (round-12)
+
+| # | Action | Path | Notes |
+|---|---|---|---|
+| 1 | RENAME | `yral-rishi-agent-new-service-template/app/redis_client.py` | function def + header WHY block + RELATED FILES footer |
+| 2 | RENAME | `yral-rishi-agent-new-service-template/app/main.py` | import + lifespan callsite + import-block comment |
+| 3 | RENAME | `yral-rishi-agent-new-service-template/app/config.py` | 1 docblock reference |
+| 4 | RENAME | `yral-rishi-agent-new-service-template/app/health_routes.py` | 1 RELATED FILES footer reference |
+| 5 | MODIFY | `yral-rishi-agent-new-service-template/tests/test_redis_client_safety_gates.py` | function rename throughout (17 occurrences) + 5 test-function-name behavior-first rewrites |
+| 6 | MODIFY | `yral-rishi-agent-new-service-template/.env.example` | function-name reference in REDIS_SENTINEL_ENABLED block |
+| 7 | MODIFY | `yral-rishi-agent-hello-world/.env.example` | same for hello-world (Session 2 also owns) |
+| 8 | MODIFY | `yral-rishi-agent-new-service-template/scripts/tests/test_spawn_smoke.sh` | new "ACKNOWLEDGED TRADE-OFF" comment block above PRE-FLIGHT 2 install |
+
+### Diff size (round-12 alone)
+
+| File | Lines |
+|---|---|
+| `app/redis_client.py` (function rename + refs) | ~+4/-4 (token swap) |
+| `app/main.py` (rename) | ~+3/-3 |
+| `app/config.py` (1 ref) | ~+1/-1 |
+| `app/health_routes.py` (1 ref) | ~+1/-1 |
+| `tests/test_redis_client_safety_gates.py` (rename + 5 test renames) | ~+20/-20 (mostly token swaps; behavior-first test names slightly longer) |
+| `.env.example` × 2 | ~+1/-1 each |
+| `scripts/tests/test_spawn_smoke.sh` (trade-off comment block) | ~+30 net |
+| this LOG entry | ~110 doc |
+
+### Constraints touched
+
+A2.1 (round-12 single-concern: B1 + J3 + J2 doc), B1 (function name now reads accurately as English — the BLOCKER's exact constraint; covers both deployed environments per the body), B7 (rename ripple updates all comment references; new trade-off comment carries the WHY-option-a + flake-mitigation enumeration + container-reuse follow-up), J2/J3 (test names now behavior-first per J3; network-flake trade-off documented per J2), I9 (Session 2 scope; public-api kept its old name per Session 3's territory), I11 (this append-only entry; rounds 1-11 entries untouched).
+
+### Cross-session handoff
+
+Session 3's `yral-rishi-agent-public-api/app/api/health_routes.py` still has the OLD function name `verify_production_sentinel_or_die`. Session 3 may want to rename in their own PR for consistency; the template's new name `verify_deployed_environment_sentinel_or_die` is the going-forward standard. Not blocking this PR.
+
+### Next
+
+Codex round-12 re-review. Iteration cumulative state through 12 rounds:
+- Rounds 6, 7, 9, 10 closed without BLOCKERs
+- Round 8 had a repeat-false-positive BLOCKER (shared-config keys "missing") successfully pushed back in round 9
+- Round 11 BLOCKER (B1 rename) closed in this round-12
+- All BLOCKERs concrete + actioned; no overrides invoked
+
+---
+
 ## 2026-05-25 — PR #151 round-10 fixup: PRE-FLIGHT 2 switches to `pip install ".[dev]"` (pyproject as single source of truth) + test file-header refresh (RuntimeError + 5 tests + staging coverage)
 
 Same PR (#151), stays DRAFT. Round-9 Codex returned 2 ⚠️  CONCERNs (no BLOCKERs). Codex's round-8 BLOCKER false-positive (shared-config.yaml redis section "missing") successfully absorbed — didn't re-fire on round-9. Round-10 closes both round-9 CONCERNs.

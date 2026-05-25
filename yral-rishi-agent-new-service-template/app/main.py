@@ -63,14 +63,14 @@ from app.database import close_pool, init_pool
 # (Sentinel-aware for production / single-primary for local-dev).
 # `init_redis()` opens at startup AFTER the production fail-closed
 # gate fires; `close_redis()` flushes on SIGTERM.
-# `verify_production_sentinel_or_die()` is the C11 safety gate —
+# `verify_deployed_environment_sentinel_or_die()` is the C11 safety gate —
 # refuses to boot a production deploy with `redis_sentinel_enabled=
 # False` (Codex PR #97 round-5 ITEM 6 + Session 4's PR #96 round-4
 # pattern).
 from app.redis_client import (
     close_redis,
     init_redis,
-    verify_production_sentinel_or_die,
+    verify_deployed_environment_sentinel_or_die,
 )
 
 # DEP-014 — /health/{live,ready} probes per F9. /health/live is a
@@ -127,7 +127,7 @@ async def lifespan(_app: FastAPI):
     # non-deployed env skip the gate. If this raises RuntimeError,
     # neither init_pool nor init_redis has run yet — nothing to clean
     # up.
-    verify_production_sentinel_or_die()
+    verify_deployed_environment_sentinel_or_die()
     # Open the asyncpg pool. min_size=2 means we hold 2 warm
     # connections so the first request after scale-up doesn't pay
     # TCP-connect latency to pgBouncer. If init_pool raises, the

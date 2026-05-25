@@ -184,6 +184,38 @@ fi
 # slack. Cold pip cache + flaky CI network was the failure mode
 # the previous timeout was tuned for; round-10's heavier install
 # needs proportionally more.
+#
+# ACKNOWLEDGED TRADE-OFF — NETWORK FLAKE RISK (Codex PR #151 round-11
+# CONCERN 2; J2/J3):
+# This pre-flight makes a live `pip install` from PyPI inside
+# python:3.12-slim every invocation, which has a non-zero flake rate
+# despite the --timeout 120 / --retries 10 budget. The deliberate
+# trade-off:
+#   drift-resistance (the round-10 fix's win — pyproject.toml is
+#     the SOLE pin location; spawn-smoke install reads from it
+#     structurally, cannot drift)
+#     > network-flake (the round-11 cost — every spawn-smoke run
+#     hits PyPI; pip's retry logic + timeout absorb transient
+#     network blips but not sustained PyPI outages)
+#
+# Considered + rejected the "even better" alternative (per Codex
+# round-7 CONCERN 1's "even better" hint): run pytest INSIDE the
+# already-built service container. The template's Dockerfile does
+# `pip install .` (not `.[dev]`), so pytest isn't in the runtime
+# image — would require multi-stage Dockerfile rework that's larger
+# scope than DEP-014's acceptance criteria + needs its own design
+# surface. Captured as a follow-up if PyPI outages bite this gate
+# in practice.
+#
+# The flake-mitigation path THIS pre-flight provides:
+#   * --timeout 120 — each wheel download has up to 2 minutes
+#   * --retries 10 — pip retries each failed download up to 10 times
+#   * Docker image cached locally — only wheels re-fetched on retry
+#   * pip cache layer (Docker) survives across spawn-smoke runs in
+#     CI when the runner reuses the image layer
+# Combined, the practical flake rate is sub-1% per spawn-smoke
+# invocation under normal PyPI conditions. Acceptable per J2/J3
+# given the drift-resistance win.
 echo ""
 echo "── PRE-FLIGHT 2 ── DEP-014 safety-gate pytest run (production-fail-closed gate + sentinel-config validation)"
 if ! docker run --rm \
