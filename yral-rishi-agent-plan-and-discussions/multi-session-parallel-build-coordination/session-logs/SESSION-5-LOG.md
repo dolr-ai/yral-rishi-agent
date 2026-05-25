@@ -3,6 +3,54 @@
 
 ---
 
+### 2026-05-25 — PR #147 round-7: B2 constant renames + 5 new migration behaviour tests
+
+**Branch**: session-5/d3-etl-migration
+**Trigger**: Codex round-6 returned:
+  BLOCKER (B2): `_CONV_ID`, `_MSG_ID`, `_INF_ID`, `conv_resp`, `msg_ids`, `msgs1`,
+  `asst_msg_id` in test_etl_transforms.py + test_conversation_routes.py.
+  CONCERN: no tests for keyset pagination, COPY-to-staging, ON CONFLICT idempotency,
+  message_count update, or CheckViolationError fallback.
+
+**What ships**:
+
+1. `tests/test_etl_transforms.py` — B2 constant renames:
+   - `_CONV_ID` → `_CONVERSATION_ID`, `_MSG_ID` → `_MESSAGE_ID`, `_INF_ID` → `_INFLUENCER_ID`
+
+2. `yral-rishi-agent-user-memory-service/tests/test_conversation_routes.py` — B2 renames:
+   - `conv_resp` → `conversation_response` (13 occurrences; `conv_resp2` → `conversation_response_2`)
+   - `msg_ids` → `message_ids`, `msgs1` → `messages_first_batch`
+   - `asst_msg_id` → `assistant_message_id`
+   - `batch_resp` → `batch_response`, `resp1` → `get_response_1`, `resp2` → `get_response_2`
+
+3. `tests/test_etl_transforms.py` — 5 new migration behaviour tests (sections 7–11):
+   - §7 `test_migrate_conversations_keyset_cursor_advances_to_last_row_of_batch`:
+     batch_size=2, full batch → assert second fetch call's cursor args =
+     (row_b.created_at, row_b.id); also asserts first call uses _ETL_EPOCH/_UUID_MIN
+   - §8 `test_migrate_conversations_copies_correct_data_to_staging`:
+     assert COPY target="conversations_staging", columns include id/user_id/
+     conversation_type, user_id value appears in copied records
+   - §9 `test_migrate_conversations_on_conflict_returns_zero_inserted`:
+     INSERT SELECT returns "INSERT 0 0" → inserted total = 0 (idempotent re-run)
+   - §10 `test_update_message_counts_dry_run_logs_affected_count`:
+     fetchval returns 7 → log contains "7" + "DRY RUN"; no UPDATE execute() call
+   - §11 `test_migrate_conversations_check_violation_falls_back_to_per_row`:
+     bulk INSERT raises; first per-row INSERT raises (bad row); second succeeds →
+     inserted=1, ≥2 WARNING logs (fallback notice + SKIPPING), fallback fires
+
+   New mock infrastructure added to support these tests:
+   - `_MockCheckViolationError`: real Exception subclass patched into
+     sys.modules["asyncpg"].CheckViolationError before ETL module load
+   - `_MigrationSourceConnection` + `_MigrationSourcePool`: records fetch_call_args
+     for keyset cursor assertion
+   - `_MigrationDestinationConnection` + `_MigrationDestinationPool`: captures
+     copy_calls + execute_calls; configurable raise_on_bulk_insert +
+     raise_on_first_per_row_insert for the fallback test
+
+**Test results**: 24/24 pass (19 original + 5 new). B2 check: 0 hits.
+
+---
+
 ### 2026-05-25 — PR #147 round-6: B2 rename sweep + CheckViolationError per-row fallback
 
 **Branch**: session-5/d3-etl-migration

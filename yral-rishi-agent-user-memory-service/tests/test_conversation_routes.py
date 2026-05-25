@@ -156,11 +156,11 @@ async def test_append_messages_returns_user_and_assistant_responses(
           public-api.
     """
     # Create a conversation first
-    conv_resp = await test_client.post(
+    conversation_response = await test_client.post(
         "/v1/conversations",
         json={"user_id": "user-turn", "ai_influencer_id": "influencer-turn", "conversation_type": "ai_chat"},
     )
-    conv_id = conv_resp.json()["id"]
+    conv_id = conversation_response.json()["id"]
 
     # Append a turn (user + assistant)
     response = await test_client.post(
@@ -215,11 +215,11 @@ async def test_append_messages_filters_system_role_from_response(
           "system" role value on the wire would break mobile's type parser.
     """
     # Create a conversation
-    conv_resp = await test_client.post(
+    conversation_response = await test_client.post(
         "/v1/conversations",
         json={"user_id": "user-system-msg", "ai_influencer_id": "inf-sys", "conversation_type": "ai_chat"},
     )
-    conv_id = conv_resp.json()["id"]
+    conv_id = conversation_response.json()["id"]
 
     response = await test_client.post(
         f"/v1/conversations/{conv_id}/messages",
@@ -278,12 +278,12 @@ async def test_append_messages_updates_conversation_stats(
           show conversations in the right order after each turn.
     """
     # Create conversation
-    conv_resp = await test_client.post(
+    conversation_response = await test_client.post(
         "/v1/conversations",
         json={"user_id": "user-stats", "ai_influencer_id": "inf-stats", "conversation_type": "ai_chat"},
     )
-    conv_id = conv_resp.json()["id"]
-    initial_last_at = conv_resp.json()["last_message_at"]
+    conv_id = conversation_response.json()["id"]
+    initial_last_at = conversation_response.json()["last_message_at"]
 
     # Append two messages (user + assistant)
     await test_client.post(
@@ -350,11 +350,11 @@ async def test_list_conversations_by_user_includes_last_message_inline(
         "/v1/conversations",
         json={"user_id": "user-inbox", "ai_influencer_id": "inf-inbox", "conversation_type": "ai_chat"},
     )
-    conv_resp2 = await test_client.post(
+    conversation_response_2 = await test_client.post(
         "/v1/conversations",
         json={"user_id": "user-inbox", "ai_influencer_id": "inf-inbox", "conversation_type": "ai_chat"},
     )
-    conv_id = conv_resp2.json()["id"]
+    conv_id = conversation_response_2.json()["id"]
 
     await test_client.post(
         f"/v1/conversations/{conv_id}/messages",
@@ -430,11 +430,11 @@ async def test_list_messages_returns_history_in_chronological_order(
           = incoherent LLM context + visually wrong chat transcript.
     """
     # Create conversation + append a multi-turn exchange
-    conv_resp = await test_client.post(
+    conversation_response = await test_client.post(
         "/v1/conversations",
         json={"user_id": "user-history", "ai_influencer_id": "inf-hist", "conversation_type": "ai_chat"},
     )
-    conv_id = conv_resp.json()["id"]
+    conv_id = conversation_response.json()["id"]
 
     await test_client.post(
         f"/v1/conversations/{conv_id}/messages",
@@ -477,11 +477,11 @@ async def test_list_messages_filters_system_role(
           would break the Literal["user","assistant"] type assumption
           and potentially render internal context frames in the chat UI.
     """
-    conv_resp = await test_client.post(
+    conversation_response = await test_client.post(
         "/v1/conversations",
         json={"user_id": "user-sys-filter", "ai_influencer_id": "inf-sf", "conversation_type": "ai_chat"},
     )
-    conv_id = conv_resp.json()["id"]
+    conv_id = conversation_response.json()["id"]
 
     await test_client.post(
         f"/v1/conversations/{conv_id}/messages",
@@ -511,11 +511,11 @@ async def test_list_messages_limit_param_is_respected(
           turns; returning all history when N is small would blow the LLM
           context window.
     """
-    conv_resp = await test_client.post(
+    conversation_response = await test_client.post(
         "/v1/conversations",
         json={"user_id": "user-msg-limit", "ai_influencer_id": "inf-ml", "conversation_type": "ai_chat"},
     )
-    conv_id = conv_resp.json()["id"]
+    conv_id = conversation_response.json()["id"]
 
     # Insert 6 messages (3 turns)
     for i in range(3):
@@ -550,23 +550,23 @@ async def test_list_messages_before_cursor_returns_older_messages(
           Wrong cursor semantics = user sees duplicate messages or skips
           messages when scrolling up.
     """
-    conv_resp = await test_client.post(
+    conversation_response = await test_client.post(
         "/v1/conversations",
         json={"user_id": "user-cursor", "ai_influencer_id": "inf-cursor", "conversation_type": "ai_chat"},
     )
-    conv_id = conv_resp.json()["id"]
+    conv_id = conversation_response.json()["id"]
 
     # Insert 3 sequential messages (user only, for simplicity)
     # We use 3 separate POST calls so created_at timestamps are distinct.
-    msg_ids = []
+    message_ids = []
     for content in ("oldest", "middle", "newest"):
         post_response = await test_client.post(
             f"/v1/conversations/{conv_id}/messages",
             json={"messages": [{"role": "user", "content": content}]},
         )
-        msg_ids.append(post_response.json()[0]["id"])
+        message_ids.append(post_response.json()[0]["id"])
 
-    oldest_id, middle_id, newest_id = msg_ids
+    oldest_id, middle_id, newest_id = message_ids
 
     # Using `before=newest_id` should return the 2 older messages
     response = await test_client.get(
@@ -700,7 +700,7 @@ async def test_append_message_idempotency_via_client_message_id(
           This test confirms the dedup is end-to-end correct.
     """
     # Create a conversation to append to.
-    conv_resp = await test_client.post(
+    conversation_response = await test_client.post(
         "/v1/conversations",
         json={
             "user_id": "user-dedup",
@@ -708,8 +708,8 @@ async def test_append_message_idempotency_via_client_message_id(
             "conversation_type": "ai_chat",
         },
     )
-    assert conv_resp.status_code == 200
-    conv_id = conv_resp.json()["id"]
+    assert conversation_response.status_code == 200
+    conv_id = conversation_response.json()["id"]
 
     # The retry-safe payload: both calls use the same client_message_id.
     dedup_payload = {
@@ -796,7 +796,7 @@ async def test_messages_ordering_with_same_created_at_timestamp(
           than just verifying id-sequence stability — it directly represents
           the mobile rendering contract.
     """
-    conv_resp = await test_client.post(
+    conversation_response = await test_client.post(
         "/v1/conversations",
         json={
             "user_id": "user-ts-order",
@@ -804,13 +804,13 @@ async def test_messages_ordering_with_same_created_at_timestamp(
             "conversation_type": "ai_chat",
         },
     )
-    assert conv_resp.status_code == 200
-    conv_id = conv_resp.json()["id"]
+    assert conversation_response.status_code == 200
+    conv_id = conversation_response.json()["id"]
 
     # Batch insert: both messages share the same NOW() (transaction start time).
     # This is the real scenario the orchestrator uses — user + assistant in
     # one POST call. The POST response preserves insertion order.
-    batch_resp = await test_client.post(
+    batch_response = await test_client.post(
         f"/v1/conversations/{conv_id}/messages",
         json={
             "messages": [
@@ -819,29 +819,29 @@ async def test_messages_ordering_with_same_created_at_timestamp(
             ]
         },
     )
-    assert batch_resp.status_code == 200
-    posted = batch_resp.json()
+    assert batch_response.status_code == 200
+    posted = batch_response.json()
     assert len(posted) == 2
     user_msg_id = next(m["id"] for m in posted if m["role"] == "user")
-    asst_msg_id = next(m["id"] for m in posted if m["role"] == "assistant")
+    assistant_message_id = next(m["id"] for m in posted if m["role"] == "assistant")
 
     # GET messages twice — the ORDER BY (created_at ASC, id ASC) tiebreaker
     # must produce the IDENTICAL id sequence on every call.
-    resp1 = await test_client.get(f"/v1/conversations/{conv_id}/messages")
-    resp2 = await test_client.get(f"/v1/conversations/{conv_id}/messages")
+    get_response_1 = await test_client.get(f"/v1/conversations/{conv_id}/messages")
+    get_response_2 = await test_client.get(f"/v1/conversations/{conv_id}/messages")
 
-    assert resp1.status_code == 200
-    assert resp2.status_code == 200
+    assert get_response_1.status_code == 200
+    assert get_response_2.status_code == 200
 
-    msgs1 = resp1.json()
-    ids1 = [m["id"] for m in msgs1]
-    ids2 = [m["id"] for m in resp2.json()]
+    messages_first_batch = get_response_1.json()
+    ids1 = [m["id"] for m in messages_first_batch]
+    ids2 = [m["id"] for m in get_response_2.json()]
 
-    assert len(ids1) == 2, f"Expected 2 messages, got {len(ids1)}: {msgs1}"
+    assert len(ids1) == 2, f"Expected 2 messages, got {len(ids1)}: {messages_first_batch}"
 
     # --- Content-positional assertions (Codex tightening) -----------------
     # Both roles must be present in the response.
-    roles_in_order = [msgs1[0]["role"], msgs1[1]["role"]]
+    roles_in_order = [messages_first_batch[0]["role"], messages_first_batch[1]["role"]]
     assert set(roles_in_order) == {"user", "assistant"}, (
         f"Expected one user + one assistant message, got: {roles_in_order}"
     )
@@ -857,7 +857,7 @@ async def test_messages_ordering_with_same_created_at_timestamp(
 
     # Both ids from POST must be present in GET.
     assert user_msg_id in ids1, f"user message id {user_msg_id!r} missing from GET"
-    assert asst_msg_id in ids1, f"assistant message id {asst_msg_id!r} missing from GET"
+    assert assistant_message_id in ids1, f"assistant message id {assistant_message_id!r} missing from GET"
 
 
 @pytest.mark.asyncio
@@ -883,7 +883,7 @@ async def test_before_cursor_within_same_timestamp_batch_returns_correct_subset(
           exactly. The larger UUID is used as the cursor; the smaller is expected
           in the result.
     """
-    conv_resp = await test_client.post(
+    conversation_response = await test_client.post(
         "/v1/conversations",
         json={
             "user_id": "user-cursor-ts",
@@ -891,8 +891,8 @@ async def test_before_cursor_within_same_timestamp_batch_returns_correct_subset(
             "conversation_type": "ai_chat",
         },
     )
-    assert conv_resp.status_code == 200
-    conv_id = conv_resp.json()["id"]
+    assert conversation_response.status_code == 200
+    conv_id = conversation_response.json()["id"]
 
     # Insert an EARLIER standalone message (different transaction → different timestamp).
     early_resp = await test_client.post(
@@ -1041,7 +1041,7 @@ async def test_get_conversation_by_id_happy_path(
           public-api's response_models.py can parse it without adjustment.
     """
     # Create a conversation + append a message so last_message is populated.
-    conv_resp = await test_client.post(
+    conversation_response = await test_client.post(
         "/v1/conversations",
         json={
             "user_id": "user-by-id",
@@ -1049,8 +1049,8 @@ async def test_get_conversation_by_id_happy_path(
             "conversation_type": "ai_chat",
         },
     )
-    assert conv_resp.status_code == 200
-    conv_id = conv_resp.json()["id"]
+    assert conversation_response.status_code == 200
+    conv_id = conversation_response.json()["id"]
 
     await test_client.post(
         f"/v1/conversations/{conv_id}/messages",
@@ -1128,7 +1128,7 @@ async def test_get_conversation_by_id_returns_404_for_wrong_user_tenant_isolatio
           visible conversations identically: not found.
     """
     # Create a conversation owned by "user-owner"
-    conv_resp = await test_client.post(
+    conversation_response = await test_client.post(
         "/v1/conversations",
         json={
             "user_id": "user-owner",
@@ -1136,8 +1136,8 @@ async def test_get_conversation_by_id_returns_404_for_wrong_user_tenant_isolatio
             "conversation_type": "ai_chat",
         },
     )
-    assert conv_resp.status_code == 200
-    conv_id = conv_resp.json()["id"]
+    assert conversation_response.status_code == 200
+    conv_id = conversation_response.json()["id"]
 
     # Request as "user-intruder" — different user, should NOT see this conv
     response = await test_client.get(
@@ -1176,7 +1176,7 @@ async def test_get_conversation_by_id_returns_404_for_soft_deleted_conversation(
     delete in Phase 1 — it's a future sprint.
     """
     # Create the conversation via the HTTP API.
-    conv_resp = await test_client.post(
+    conversation_response = await test_client.post(
         "/v1/conversations",
         json={
             "user_id": "user-soft-del",
@@ -1184,8 +1184,8 @@ async def test_get_conversation_by_id_returns_404_for_soft_deleted_conversation(
             "conversation_type": "ai_chat",
         },
     )
-    assert conv_resp.status_code == 200
-    conv_id = conv_resp.json()["id"]
+    assert conversation_response.status_code == 200
+    conv_id = conversation_response.json()["id"]
 
     # Verify the conversation is reachable before soft-deleting.
     before_delete_resp = await test_client.get(
@@ -1229,7 +1229,7 @@ async def test_get_conversation_by_id_returns_none_last_message_for_new_conversa
           conversation; an error or missing field here would break public-api's
           inbox rendering for the first-time-opening scenario.
     """
-    conv_resp = await test_client.post(
+    conversation_response = await test_client.post(
         "/v1/conversations",
         json={
             "user_id": "user-no-msgs",
@@ -1237,8 +1237,8 @@ async def test_get_conversation_by_id_returns_none_last_message_for_new_conversa
             "conversation_type": "ai_chat",
         },
     )
-    assert conv_resp.status_code == 200
-    conv_id = conv_resp.json()["id"]
+    assert conversation_response.status_code == 200
+    conv_id = conversation_response.json()["id"]
 
     response = await test_client.get(
         f"/v1/conversations/{conv_id}",
