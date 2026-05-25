@@ -38,6 +38,7 @@
 
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -93,6 +94,29 @@ class Settings(BaseSettings):
     # Host defaults to the production self-hosted Langfuse on rishi-6
     # so a forgotten override still routes correctly per D4.
     langfuse_host: str = "https://langfuse.rishi.yral.com"
+
+    # -- Postgres (per D8 + the v2-service per-service-role discipline) ---
+    # `postgres_connection_string`: the asyncpg DSN the runtime pool +
+    # the Alembic env.py both consume to reach the per-service Postgres
+    # role. Format: `postgresql://<role>:<pwd>@<pgbouncer>:5432/<db>`
+    # (the bare `pgbouncer` overlay-DNS name on the v2 cluster's
+    # `yral-v2-data-plane` overlay; same routing pattern as soul-file-
+    # library per the 2026-05-21 operator-action LOG entry).
+    #
+    # `validation_alias=` lets the Python field stay
+    # `postgres_connection_string` (B1-clean identifier) while the env
+    # var keeps the D8-declared per-service name
+    # `POSTGRES_CONNECTION_STRING_INFLUENCER_AND_PROFILE_DIRECTORY` so
+    # the secrets-manifest tooling + the Swarm secret mount line up.
+    #
+    # Empty default for local dev: the docker-compose-bundled Postgres
+    # is provisioned with a service-account user via the local compose
+    # file; production injection of the env var switches to the
+    # cluster-side per-service role.
+    postgres_connection_string: str = Field(
+        default="",
+        validation_alias="POSTGRES_CONNECTION_STRING_INFLUENCER_AND_PROFILE_DIRECTORY",
+    )
 
 
 @lru_cache(maxsize=1)

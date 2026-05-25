@@ -142,6 +142,19 @@ dev = [
     # pytest-asyncio — lets pytest run `async def test_*()` functions.
     # Required because every endpoint in this template is async.
     "pytest-asyncio==0.25.2",
+
+    # testcontainers[postgres] — spins up an ephemeral Postgres 17
+    # container per pytest session for integration tests against the
+    # real DB (rather than a mock). Pinned same version as
+    # user-memory-service for cross-service consistency. Added in
+    # PR-D1 round-2 per Codex J1/J3 BLOCKER on the missing test suite.
+    "testcontainers[postgres]==4.10.0",
+
+    # NOTE: `asgi-lifespan` (httpx AsyncClient lifespan-event driver for
+    # FastAPI endpoint tests) is deliberately NOT added in this PR per
+    # A2.1 (avoid speculative dependencies). It lands in Chunk B alongside
+    # the endpoint tests that actually consume it, matching the pinned
+    # version user-memory-service uses (`asgi-lifespan==2.1.0`).
 ]
 
 # ===========================================================================
