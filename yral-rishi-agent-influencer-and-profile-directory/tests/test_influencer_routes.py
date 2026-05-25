@@ -11,10 +11,15 @@
 #   list endpoint (GET /v1/influencers):
 #     - happy path: 3 active rows seeded → 200 + 3 rows in body
 #     - pagination: limit + offset honored
+#     - empty result when offset > row count
 #     - catalog authority: discontinued rows filtered out; coming_soon
 #       surfaced with is_active="active" wire mapping
-#     - 422 when any of the 4 required headers is missing
-#     - 422 on out-of-range limit / offset
+#     - 422 when ANY of the 4 required internal-call headers is missing
+#       (parameterised across X-User-Id / X-Internal-Caller /
+#       X-Request-Id / X-Trace-Id per round-2 CONCERN closure)
+#     - 422 on out-of-range limit / negative offset
+#     - Cache-Control: max-age=300 header set on 200 responses per
+#       00-api-contract.md (round-2 CONCERN closure)
 #
 #   single-fetch endpoint (GET /v1/influencers/{id}):
 #     - happy path: seeded row → 200 + full InfluencerResponse shape
@@ -23,7 +28,8 @@
 #       privacy/soft-delete-enumeration protection)
 #     - coming_soon row returned with is_active="active"
 #     - NULL avatar_url coerced to "" on the wire
-#     - 422 when any of the 4 required headers is missing
+#     - 422 when ANY of the 4 required internal-call headers is missing
+#       (parameterised same as the list endpoint)
 #
 # B7/B2 NOTE (per PR #154 carve-out):
 # Test files are exempt from B7 (no file-header WHAT/WHEN/WHY ceremony
@@ -246,39 +252,63 @@ async def test_get_list_influencers_excludes_discontinued_rows_but_surfaces_comi
 
 
 @pytest.mark.asyncio
-async def test_get_list_influencers_returns_422_when_x_user_id_header_is_missing(
+@pytest.mark.parametrize(
+    "missing_header_name",
+    ["X-User-Id", "X-Internal-Caller", "X-Request-Id", "X-Trace-Id"],
+)
+async def test_get_list_influencers_returns_422_when_any_required_internal_call_header_is_missing(
     test_client: AsyncClient,
+    missing_header_name: str,
 ) -> None:
-    """FastAPI rejects with 422 when any required Header(...) is absent."""
-    headers_without_user_id = {
+    """FastAPI 422 when ANY of the 4 required internal-call headers is absent.
+
+    Parameterised over all 4 headers (X-User-Id, X-Internal-Caller,
+    X-Request-Id, X-Trace-Id) per the round-1 CONCERN closure on PR
+    #157: the file-header claims coverage of the full 4-header set
+    + this parameterisation makes the claim true (round-1 had only
+    2 of the 4 covered on the list endpoint).
+    """
+    headers_without_one = {
         key: value
         for key, value in _INTERNAL_HEADERS.items()
-        if key != "X-User-Id"
+        if key != missing_header_name
     }
 
     response = await test_client.get(
-        "/v1/influencers", headers=headers_without_user_id
+        "/v1/influencers", headers=headers_without_one
     )
 
     assert response.status_code == 422
 
 
 @pytest.mark.asyncio
-async def test_get_list_influencers_returns_422_when_x_internal_caller_header_is_missing(
+async def test_get_list_influencers_sets_cache_control_max_age_300_header_per_contract(
     test_client: AsyncClient,
+    postgres_connection_string: str,
 ) -> None:
-    """Same rejection when X-Internal-Caller is the missing one."""
-    headers_without_caller = {
-        key: value
-        for key, value in _INTERNAL_HEADERS.items()
-        if key != "X-Internal-Caller"
-    }
+    """List endpoint sets Cache-Control: max-age=300 per 00-api-contract.md.
+
+    Per `00-api-contract.md` the public catalog endpoint is annotated
+    `Cache-Control 300s`. Round-1 CONCERN closure on PR #157: the
+    round-1 implementation returned the list without setting the
+    header. Round-2 sets it on every 200 response so mobile + edge
+    caches keep the catalog response for 5 minutes (lowers
+    directory-RPC traffic; catalog data changes slowly).
+    """
+    connection = await _direct_connect(postgres_connection_string)
+    try:
+        await _insert_test_influencer(
+            connection, identifier="cache-control-row"
+        )
+    finally:
+        await connection.close()
 
     response = await test_client.get(
-        "/v1/influencers", headers=headers_without_caller
+        "/v1/influencers", headers=_INTERNAL_HEADERS
     )
 
-    assert response.status_code == 422
+    assert response.status_code == 200, response.text
+    assert response.headers.get("cache-control") == "max-age=300"
 
 
 @pytest.mark.asyncio
@@ -437,18 +467,27 @@ async def test_get_influencer_by_id_coerces_null_avatar_url_to_empty_string_on_t
 
 
 @pytest.mark.asyncio
-async def test_get_influencer_by_id_returns_422_when_x_user_id_header_is_missing(
+@pytest.mark.parametrize(
+    "missing_header_name",
+    ["X-User-Id", "X-Internal-Caller", "X-Request-Id", "X-Trace-Id"],
+)
+async def test_get_influencer_by_id_returns_422_when_any_required_internal_call_header_is_missing(
     test_client: AsyncClient,
+    missing_header_name: str,
 ) -> None:
-    """FastAPI 422 when any of the 4 required headers is missing on by-id too."""
-    headers_without_user_id = {
+    """FastAPI 422 when ANY of the 4 required internal-call headers is absent on the by-id route.
+
+    Parameterised over all 4 headers per the round-1 CONCERN closure
+    on PR #157: round-1 covered only 1 of the 4 on this endpoint.
+    """
+    headers_without_one = {
         key: value
         for key, value in _INTERNAL_HEADERS.items()
-        if key != "X-User-Id"
+        if key != missing_header_name
     }
 
     response = await test_client.get(
-        "/v1/influencers/any-id", headers=headers_without_user_id
+        "/v1/influencers/any-id", headers=headers_without_one
     )
 
     assert response.status_code == 422

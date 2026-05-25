@@ -2,6 +2,78 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-25 — PR-D1 Chunk B round-2: close 1 BLOCKER (B7 runtime imports) + 2 CONCERNs (Cache-Control header + parameterised missing-header tests)
+
+### Status
+**Round-2 fixup pushed to PR #157 — DRAFT stays on.** Codex round-1 verdict was the cleanest first-round in PR-D1 history: 1 BLOCKER + 2 CONCERNs + **NO B2/B7 flags on test files** (per the PR #154 carve-out — runtime-only scope discipline is working). Per coordinator paste: real RUNTIME B7 on app/** code; carve-out doesn't help on runtime paths.
+
+### What's changing (round-2)
+
+**BLOCKER closure — B7 runtime import role-comments:**
+
+`app/models/influencer_response.py`: 3 imports each got a 4-7-line role-comment block above explaining WHAT the import gives us + WHY pinned over alternatives. Imports covered:
+- `from typing import Literal` — typed wire-vocabulary enumeration; rationale on regression-prevention for a stray Literal widening.
+- `from pydantic import BaseModel, ConfigDict` — Pydantic 2.x building blocks; `extra="forbid"` rationale on persistence-shape leakage.
+- `from app.models.influencer_metadata import InfluencerMetadata` — the persistence model `from_persistence` projects FROM; rationale on projection-direction type-checking.
+
+`app/api/influencer_routes.py`: 5 imports each got a role-comment block:
+- `import logging` — stdlib structured logger pipe.
+- `from typing import Annotated` — PEP 593 metadata wrapper for FastAPI param declarations.
+- `from fastapi import (...)` — expanded to multi-line with role description for each name (APIRouter / Header / HTTPException / Path / Query / Response / status). NEW: added `Response` import (was missing in round-1) for the Cache-Control header injection.
+- `from app.models.influencer_response import InfluencerResponse` — wire-shape model + `from_persistence` projection (cites round-8 header).
+- `from app.repository import influencer_metadata_repository` — data-access layer; cites catalog-authority SQL filter.
+
+**CONCERN 1 closure — Cache-Control header on list endpoint:**
+
+Per `00-api-contract.md` the public catalog endpoint is annotated `Cache-Control 300s` — mobile + edge caches keep the catalog response for 5 minutes. Round-1's implementation returned the list without setting or testing any cache header; Codex correctly flagged the contract drift.
+
+`app/api/influencer_routes.py` changes:
+- Added `Response` to the `fastapi` imports.
+- Added `response: Response` as the FIRST parameter on `list_influencers` (FastAPI injects the mutable response object; standard pattern verified against `yral-rishi-agent-public-api/app/api/influencer_routes.py:159`).
+- Added `response.headers["Cache-Control"] = "max-age=300"` immediately before the return statement, with a 6-line role-comment explaining why the LIST endpoint caches but the BY-ID endpoint does NOT (per-row response; per-row updates could land any time + stale-by-id would surface to mobile).
+- Updated the list endpoint's WHAT/WHEN/WHY docstring to name the Cache-Control header.
+
+`tests/test_influencer_routes.py` new test:
+- `test_get_list_influencers_sets_cache_control_max_age_300_header_per_contract` — seeds a row, hits the endpoint, asserts `response.headers.get("cache-control") == "max-age=300"`.
+
+**CONCERN 2 closure — parameterised missing-header tests:**
+
+Round-1 covered 2 of the 4 required headers on the list endpoint + 1 of the 4 on the by-id endpoint. Codex correctly flagged the gap between the file-header coverage claim ("missing any of the 4 required headers") and actual coverage.
+
+`tests/test_influencer_routes.py` changes:
+- Removed 3 individual tests (`test_get_list_influencers_returns_422_when_x_user_id_header_is_missing`, `..._x_internal_caller_..._missing`, `test_get_influencer_by_id_returns_422_when_x_user_id_header_is_missing`).
+- Added 2 parameterised tests via `@pytest.mark.parametrize`:
+  - `test_get_list_influencers_returns_422_when_any_required_internal_call_header_is_missing` (4 param cases: X-User-Id, X-Internal-Caller, X-Request-Id, X-Trace-Id).
+  - `test_get_influencer_by_id_returns_422_when_any_required_internal_call_header_is_missing` (same 4 param cases).
+- Net coverage: 8 param-expanded test cases (4 headers × 2 endpoints) replacing 3 individual tests. File-header coverage block updated to name parameterisation + reference the round-2 closure.
+
+### Files touched (round-2)
+- `yral-rishi-agent-influencer-and-profile-directory/app/api/influencer_routes.py` — B7 import role-comments + `Response` import + Cache-Control header on list endpoint.
+- `yral-rishi-agent-influencer-and-profile-directory/app/models/influencer_response.py` — B7 import role-comments.
+- `yral-rishi-agent-influencer-and-profile-directory/tests/test_influencer_routes.py` — Cache-Control test + parameterised missing-header tests + file-header coverage update.
+- This LOG addendum + STATE refresh.
+
+### Constraints touched
+- **A2.1** — single concern: close round-1 BLOCKER + 2 CONCERNs. No scope creep.
+- **A8 + A16** — Cache-Control header now matches the public contract verbatim.
+- **B7** — runtime-file import role-comments per the canonical runtime-code discipline (PR #154 carve-out does not apply here since both files are app/**).
+- **I11** — same-commit doc + LOG + STATE pairing.
+- **I14** — still **NOT auto-merge eligible** (Python runtime + endpoint test code touched).
+- **J3** — new test names retain sentence-style; parameterised cases expand to 4 J3-named instances each.
+
+### Pre-push sanity
+- `python3 -m py_compile` clean on all 3 touched files.
+- `grep -n "Cache-Control"` confirms 5 hits in routes file (1 import-comment + 1 docstring + 3 in the role-comment block + the set call) + 3 hits in tests file (file-header coverage + test docstring + assertion).
+- `grep -c "parametrize"` in tests file → 2 hits (the 2 new parameterised tests).
+
+### Next
+- Codex round-2 review.
+- If APPROVE → coordinator marks Ready + merges via `gh pr merge 157 --squash`.
+- If only minor CONCERNs → handle in round-3 within the 5-round Codex cap.
+- If new BLOCKERs / CONCERNs surface → ping coordinator per (c) outcome path.
+
+---
+
 ## 2026-05-25 — PR-D1 Chunk B opened (DRAFT): GET /v1/influencers + GET /v1/influencers/{id} endpoints + wire-shape response model + endpoint tests
 
 ### Status

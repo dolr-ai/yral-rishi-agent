@@ -58,12 +58,45 @@
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
 
+# logging — stdlib structured logger. `_log` below grabs a per-module
+# logger so handler-internal events (warnings on edge cases) land in
+# the structured pipeline configured by `app.logging.configure_logging`.
 import logging
+
+# Annotated — PEP 593 metadata wrapper that pairs a type with a
+# FastAPI parameter declaration (Header / Query / Path). Declaring
+# the 4 internal-call headers as module-level `Annotated` aliases
+# below lets both routes share them verbatim.
 from typing import Annotated
 
-from fastapi import APIRouter, Header, HTTPException, Path, Query, status
+# APIRouter — the per-module router that `app/main.py` mounts via
+# `include_router`. Header / HTTPException / Path / Query — FastAPI
+# parameter declarations for the request shape (Header for the 4
+# required internal-call headers, Path for `{influencer_id}`, Query
+# for pagination bounds). Response — injectable response object the
+# list endpoint mutates to set Cache-Control per the API contract.
+# status — symbolic HTTP status codes used in `@router.get(...)`
+# decorators + `HTTPException` constructors below.
+from fastapi import (
+    APIRouter,
+    Header,
+    HTTPException,
+    Path,
+    Query,
+    Response,
+    status,
+)
 
+# InfluencerResponse — the wire-shape Pydantic the routes return.
+# `from_persistence` projects the 14-field persistence shape onto the
+# 9-field wire shape per the round-8 "DO NOT SERIALIZE DIRECTLY"
+# header instruction in `app/models/influencer_metadata.py`.
 from app.models.influencer_response import InfluencerResponse
+
+# influencer_metadata_repository — data-access layer. The routes call
+# the catalog read methods (`get_by_id` + `list_paginated`) which
+# enforce `WHERE is_active <> 'discontinued'` at the SQL layer so this
+# handler stays a thin pass-through.
 from app.repository import influencer_metadata_repository
 
 
@@ -141,6 +174,7 @@ _XTraceIdHeader = Annotated[
     summary="List catalog-visible influencers (paginated).",
 )
 async def list_influencers(
+    response: Response,
     x_user_id: _XUserIdHeader,
     x_internal_caller: _XInternalCallerHeader,
     x_request_id: _XRequestIdHeader,
@@ -168,15 +202,20 @@ async def list_influencers(
           at the repository layer per catalog authority. The response
           body is a flat `list[InfluencerResponse]` — no total-count
           wrapper (per DEP-013); mobile derives "more pages available"
-          client-side from `len(items) == limit`.
+          client-side from `len(items) == limit`. Sets
+          `Cache-Control: max-age=300` per `00-api-contract.md`'s
+          5-minute mobile caching annotation.
     WHEN: invoked by public-api's `directory_client.list_influencers(...)`
-          on the catalog read path. Hot path; no Redis cache today
-          (cache layer ships in a follow-up PR; the API contract's
-          Cache-Control 300s annotation is a future optimisation).
+          on the catalog read path. Hot path; the 5-minute mobile
+          cache reduces directory-RPC traffic. A future server-side
+          Redis cache layer will pair with this header (the API
+          contract pairs the two for the full mobile + edge cache
+          story).
     WHY:  the canonical catalog read endpoint. Authority lives in the
           repository's `WHERE is_active <> 'discontinued'` filter; this
           handler is a thin pass-through projecting persistence rows
-          onto the wire shape.
+          onto the wire shape + setting the contract-mandated
+          Cache-Control header.
     """
     _ = (x_internal_caller, x_request_id, x_trace_id)  # observed via Sentry/Langfuse tags
 
@@ -184,6 +223,17 @@ async def list_influencers(
         limit=limit,
         offset=offset,
     )
+
+    # Per `00-api-contract.md` the public catalog endpoint is annotated
+    # `Cache-Control 300s` — mobile + edge caches keep the catalog
+    # response for 5 minutes. Catalog data changes slowly (admin /
+    # creator-studio writes; no per-request mutation) so a 5-minute
+    # client cache is mobile-friendly + lowers directory-RPC traffic.
+    # Set here (before the return) so the header lands on every 200
+    # response from this endpoint. The by-id endpoint deliberately
+    # does NOT cache (per-row response; per-row updates could land
+    # any time + a stale by-id would surface to mobile).
+    response.headers["Cache-Control"] = "max-age=300"
 
     return [
         InfluencerResponse.from_persistence(row)

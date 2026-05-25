@@ -72,10 +72,25 @@
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
 
+# Literal — typed enumeration of permitted string values for the wire
+# `is_active` field. Pinning `Literal["active", "discontinued"]` rather
+# than a bare `str` makes a stray vocabulary regression (e.g. a future
+# extension that surfaces `coming_soon` on the wire without widening
+# the contract) raise ValidationError at the model boundary instead of
+# silently propagating into mobile's JSON parsing.
 from typing import Literal
 
+# BaseModel — Pydantic 2.x base class every response shape extends.
+# ConfigDict — declarative model config; this module uses `extra="forbid"`
+# to reject unexpected keys (catches the regression where someone adds
+# a field to the persistence model without thinking through whether it
+# belongs on the wire — see the class definition below).
 from pydantic import BaseModel, ConfigDict
 
+# InfluencerMetadata — the INTERNAL persistence model `from_persistence`
+# projects FROM. Importing the persistence-shape type here keeps the
+# projection direction explicit + type-checked: the classmethod takes
+# the 14-field persistence shape and returns the 9-field wire shape.
 from app.models.influencer_metadata import InfluencerMetadata
 
 
