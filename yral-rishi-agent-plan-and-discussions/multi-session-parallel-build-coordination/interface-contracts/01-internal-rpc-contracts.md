@@ -352,10 +352,16 @@ The gate runs in TWO modes for J2 zero-flake compliance — stable hardware ALON
 - **Session 1 deliverable note**: When choosing MOCK_LLM_FIXED_LATENCY_MS, derive the typical chat-ai LLM-call p95 contribution from **AGGREGATED Sentry performance data** (per A14 + I7, which pre-authorize aggregated Sentry perf reads). Likely 50-200ms for Gemini Flash / 100-400ms for OpenRouter routing paths based on Sentry's transaction-duration histograms broken down by route. Pick the median of those, OR the lower value to be conservative (a lower mock = stricter gate). **DO NOT** query Langfuse traces — Langfuse traces include prompts/responses/PII and A14 only pre-authorizes aggregated Sentry perf reads, NOT live trace reads. (Codex round-17 BLOCKER correctly flagged round-16's Langfuse-trace instruction as an A14 violation; round-18 corrects to Sentry aggregated reads.) Document the chosen value's source in the Gate A2-PR workflow file's comment block so future maintainers know what it approximates.
 - Marked as a REQUIRED check in the merge protection rule for the send-message hot path — implementation PR cannot merge until Gate A2-PR passes. J2 zero-flake compliance comes from BOTH stable hardware AND deterministic mock LLM.
 
+**Gate A2-PR explicit scope (clarifying Codex round-18 CONCERN)**: this gate validates **v2 infrastructure cost ≤ chat-ai infrastructure cost** by holding the LLM contribution CONSTANT (via mock) on the v2 side. It does NOT validate v2's real-world provider-routing latency — that's caught by Gate A2-NIGHTLY (real Gemini/OpenRouter calls with week-over-week drift alerts) + Gate B (pre-production-traffic shadow rehearsal at projected RPS). The 3-gate scope split:
+  - **Gate A2-PR** = "v2 infra ≤ chat-ai infra" (LLM neutralized via mock; merge-blocking per E1)
+  - **Gate A2-NIGHTLY** = "v2 real-world doesn't drift week-over-week" (real LLM, telemetry not gating)
+  - **Gate B** = "v2 full system at day-0 RPS meets latency floor" (real LLM + real cluster + projected load; pre-production-traffic at Rishi's A6 discretion)
+A regression in any one tier surfaces a different class of bug. Treating them as overlapping is wrong — they're complementary.
+
 **Gate A2-NIGHTLY (telemetry, NOT merge-blocking, real LLM provider)**:
 - Run nightly on a schedule (catches baseline-drift + real-provider latency regressions early)
 - Same N=500 calls but against real LLM providers (Gemini Flash for default, OpenRouter for Tara/NSFW per A10)
-- Records full real-world p95 telemetry into Langfuse + the daily-baseline.csv
+- Records full real-world p95 telemetry into Langfuse + a SEPARATE v2 telemetry file `yral-rishi-agent-plan-and-discussions/latency-baseline-capture-from-live-services-the-numbers-v2-must-beat/v2-daily-telemetry.csv`. CRITICALLY this file is DIFFERENT from `daily-baseline.csv` — the baseline file holds chat-ai data ONLY (the source-of-truth for the E1 0.5× threshold); v2 telemetry goes in its own file so the two never mix and the threshold stays uncorrupted. (Codex round-18 BLOCKER correctly flagged that round-16 said v2 telemetry feeds back into daily-baseline.csv, which would have corrupted the chat-ai baseline source for the E1 0.5× comparison; round-19 separates the files.)
 - Surfaces alerts via Google Chat webhook per D6 if p95 drifts > 10% week-over-week
 - Does NOT block merges — real-provider variance makes this telemetry, not gating
 
