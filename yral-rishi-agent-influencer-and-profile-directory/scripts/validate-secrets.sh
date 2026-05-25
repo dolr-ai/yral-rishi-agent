@@ -5,17 +5,38 @@
 #
 # ⭐ START HERE: run this from inside a service folder. The script reads
 # `secrets.yaml` next to it, then for each declared secret:
-#   - if `local` is in `required_in`, checks `.env.local` has the key with
-#     a non-empty value;
+#   - if `local` is in `required_in`, checks the env file (default
+#     `.env.local`) has the key with a non-empty value;
 #   - if `ci` or `production` is in `required_in`, checks `gh secret list`
 #     reports the key as present.
 # Exits 0 on full compliance, 1 if any required value is missing, 2 on
 # tooling errors (missing yq, gh CLI not authenticated, etc.).
 #
+# USAGE:
+#   validate-secrets.sh                              # reads ./.env.local
+#   validate-secrets.sh --env-file <path>            # reads <path> instead
+#
+# WHY THE `--env-file` FLAG (per Codex round-8 A1 BLOCKER closure on
+# PR #148): the test harness needs to point this script at a fixture
+# file named `env.local.fixture` (the fixture-rename pattern from
+# round-5 keeps the canonical `.env.local` name out of the gitignored
+# test tree per D8). Earlier rounds had the test create a transient
+# `.env.local` from the fixture + delete it after the run; Codex
+# flagged BOTH the in-source-tree deletion (round-7) AND the
+# mktemp-temp-dir deletion that still CONTAINED a `.env.local`
+# (round-8) as A1 secrets-file-class deletion attempts. The flag
+# lets the test pass the fixture path directly, so a file named
+# `.env.local` never appears in the test fixture tree or in any
+# mktemp temp dir, and the test invocation does not run `rm` against
+# any path. Production callers omit the flag and the default
+# behavior is unchanged.
+#
 # WHO RUNS THIS:
 #   - CI workflow on every PR touching the service folder (per D8 + I10).
 #   - Devs locally before opening a PR ("did I forget to set anything?").
 #   - The post-spawn checklist (PR 5 — first run after new-service.sh).
+#   - The test harness at `scripts/tests/test_validate_secrets.sh`
+#     (passes `--env-file env.local.fixture`).
 #
 # WHAT THIS SCRIPT DOES NOT DO (per A2.1):
 #   - It does NOT push missing values — that's `sync-github-secrets.sh`.
@@ -24,6 +45,9 @@
 #     2026-05-14: removing stale GitHub Secrets hits the hard-stop list
 #     (config/secrets) and needs typed YES. This script only REPORTS;
 #     deletion is operator-controlled.
+#   - It does NOT create or delete any local file. The script is
+#     strictly read-only against the filesystem (per the A1 hard-stop
+#     discipline + the round-9 test-harness contract above).
 #
 # DEPENDENCIES:
 #   - yq (https://github.com/mikefarah/yq) — YAML query tool.
@@ -41,6 +65,11 @@ set -euo pipefail
 # ===========================================================================
 
 SECRETS_YAML="secrets.yaml"
+
+# Default env-file path. Production callers leave this default; the
+# test harness overrides via `--env-file` so the canonical
+# `.env.local` filename never appears in the test fixture tree (per
+# Codex round-8 A1 BLOCKER closure on PR #148; see file header).
 ENV_LOCAL=".env.local"
 
 # Exit codes — keep numeric so the CI workflow can branch on them.
@@ -59,6 +88,37 @@ print_error_and_exit() {
     echo "Error: $*" >&2
     exit "$code"
 }
+
+
+# ===========================================================================
+# Argument parsing
+# ===========================================================================
+
+# Walk argv looking for `--env-file <path>`. Anything else is
+# rejected with a usage hint so a typo doesn't silently misroute the
+# default env-file path. Kept inline (no getopts) because there's
+# exactly one flag today + adding getopts would obscure the simple
+# read for non-Bash readers.
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --env-file)
+            if [ $# -lt 2 ]; then
+                print_error_and_exit "$EXIT_TOOLING_ERROR" \
+                    "--env-file requires a path argument."
+            fi
+            ENV_LOCAL="$2"
+            shift 2
+            ;;
+        --env-file=*)
+            ENV_LOCAL="${1#--env-file=}"
+            shift
+            ;;
+        *)
+            print_error_and_exit "$EXIT_TOOLING_ERROR" \
+                "Unknown argument '$1'. Usage: validate-secrets.sh [--env-file <path>]"
+            ;;
+    esac
+done
 
 
 # ===========================================================================

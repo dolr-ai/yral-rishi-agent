@@ -119,8 +119,23 @@ HEADER
     # One block per declared secret. We re-read each field via yq because
     # the description can be multi-line; piping it through `sed 's/^/# /'`
     # turns it into a comment block that's safe to commit.
+    #
+    # `yq` exits non-zero on malformed YAML (e.g. fixture
+    # `malformed-yaml/secrets.yaml`); without this explicit check the
+    # `[ "$index" -lt "$count" ]` line below sees `count=""` + emits
+    # `integer expected` then continues into the DRIFT exit path.
+    # Catching yq's failure here surfaces EXIT_TOOLING_ERROR (2)
+    # instead — closes the round-4 gen-env-example shell-test gap
+    # coordinator flagged 2026-05-24.
     local count
-    count=$(yq eval '.secrets | length' "$SECRETS_YAML")
+    if ! count=$(yq eval '.secrets | length' "$SECRETS_YAML" 2>/dev/null); then
+        echo "Error: failed to parse $SECRETS_YAML — see yq output above" >&2
+        exit "$EXIT_TOOLING_ERROR"
+    fi
+    if [ -z "$count" ] || ! [[ "$count" =~ ^[0-9]+$ ]]; then
+        echo "Error: yq returned non-numeric .secrets length from $SECRETS_YAML — likely malformed yaml" >&2
+        exit "$EXIT_TOOLING_ERROR"
+    fi
     local index=0
     while [ "$index" -lt "$count" ]; do
         local name description local_source ci_source production_source
