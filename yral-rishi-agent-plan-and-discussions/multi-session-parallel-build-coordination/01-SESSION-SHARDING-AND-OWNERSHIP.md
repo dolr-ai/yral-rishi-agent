@@ -68,6 +68,7 @@ These files live under `yral-rishi-agent-plan-and-discussions/**` (which is othe
 **Scope (write-allowed):**
 - `bootstrap-scripts-for-the-v2-docker-swarm-cluster/**`
 - `yral-rishi-agent-plan-and-discussions/latency-baseline-capture-from-live-services-the-numbers-v2-must-beat/scripts/**` (the Sentry baseline cron — Session 1 owns the script even though the surrounding docs in the same folder are coordinator-owned. The full repo path includes the `yral-rishi-agent-plan-and-discussions/` umbrella prefix — corrected 2026-05-24 per PR #145 round-11 Codex BLOCKER which correctly flagged the missing prefix in the prior wording. The `.github/workflows/lint-scope-violations.yml` allowlist at line 89 has always carried the full prefix; this ownership-doc wording now matches the lint workflow.)
+- `yral-rishi-agent-plan-and-discussions/latency-baseline-capture-from-live-services-the-numbers-v2-must-beat/daily-baseline.csv` (the OUTPUT artifact written by Session 1's Sentry baseline cron script. Session 1 owns it because Session 1's script writes it; coordinator owns the docs ABOUT it (README + plot files in the same folder). Added 2026-05-25 per PR #145 round-16 Codex BLOCKER — round-16 named Session 1 as the maintainer but the ownership doc only listed the scripts/ subfolder. Lint workflow must also be updated to include this CSV path in SESSION_PATHS[1] alongside the scripts/ subfolder.)
 - The single new Caddy snippet file added to `yral-rishi-hetzner-infra-template` (a SEPARATE repo Rishi owns) — Session 1 opens that PR
 
 **First-week deliverables:**

@@ -86,7 +86,7 @@ jobs:
           declare -A SESSION_PATHS
           # Common per-session paths (own log + state files, cross-session-deps file)
           COMMON_SESSION_PATHS="yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-${SESSION}-LOG\.md|yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-state/SESSION-${SESSION}-STATE\.md|yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/cross-session-dependencies\.md"
-          SESSION_PATHS[1]="bootstrap-scripts-for-the-v2-docker-swarm-cluster/|yral-rishi-agent-plan-and-discussions/latency-baseline-capture-from-live-services-the-numbers-v2-must-beat/scripts/|${COMMON_SESSION_PATHS}"
+          SESSION_PATHS[1]="bootstrap-scripts-for-the-v2-docker-swarm-cluster/|yral-rishi-agent-plan-and-discussions/latency-baseline-capture-from-live-services-the-numbers-v2-must-beat/scripts/|yral-rishi-agent-plan-and-discussions/latency-baseline-capture-from-live-services-the-numbers-v2-must-beat/daily-baseline\.csv|${COMMON_SESSION_PATHS}"
           SESSION_PATHS[2]="yral-rishi-agent-new-service-template/|yral-rishi-agent-hello-world/|${COMMON_SESSION_PATHS}"
           SESSION_PATHS[3]="yral-rishi-agent-public-api/|${COMMON_SESSION_PATHS}"
           SESSION_PATHS[4]="yral-rishi-agent-conversation-turn-orchestrator/|yral-rishi-agent-soul-file-library/|yral-rishi-agent-influencer-and-profile-directory/|${COMMON_SESSION_PATHS}"

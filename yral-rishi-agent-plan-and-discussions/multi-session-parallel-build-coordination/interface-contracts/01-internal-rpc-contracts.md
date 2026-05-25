@@ -338,7 +338,7 @@ The gate runs in TWO modes for J2 zero-flake compliance — stable hardware ALON
   - `yral-rishi-agent-public-api/**`
   - `yral-rishi-agent-user-memory-service/**`
   - `yral-rishi-agent-conversation-turn-orchestrator/app/run_turn.py` (orchestrator's send-message turn handler)
-  - Any code consuming yral-billing's chat-access endpoint (search by grep, not path)
+  - (Note: yral-billing's chat-access endpoint is consumed by `yral-rishi-agent-public-api/**` today per E7 — already covered by the public-api path filter above. If a future service adds a billing-client consumer outside public-api, add the specific path then. GitHub Actions path filters don't support grep, so we keep this list as concrete paths only — Codex round-16 CONCERN correctly flagged round-15's grep-based language as invalid.)
   - `shared-library-code-used-by-every-v2-service/**` (HTTP client wrappers, retry/timeout helpers — a latency regression here affects every consuming service)
   - `yral-rishi-agent-plan-and-discussions/shared-config.yaml` (timeouts, pool sizes, sentinel master name — all latency-affecting config)
   - `yral-rishi-agent-new-service-template/app/**` AND `template-pyproject.toml` (template-derived asyncpg/redis pool defaults that every service inherits — Session 2 PR #151 surfaced exactly this class of dependency)
