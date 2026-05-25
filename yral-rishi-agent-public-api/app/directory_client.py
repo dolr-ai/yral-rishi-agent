@@ -49,10 +49,21 @@
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
 
+# typing.Optional — used for the `Optional[httpx.AsyncClient]`
+# annotation on the module-level singleton reference, which is None
+# until lifespan startup runs init_directory_client().
 from typing import Optional
 
+# httpx — async HTTP client used for the lifespan-managed
+# AsyncClient singleton that pools TCP connections to Session 4's
+# influencer-and-profile-directory service across the worker's
+# lifetime.
 import httpx
 
+# get_settings — module-singleton accessor for the pydantic-settings
+# model; supplies directory_base_url + the list / by-id path
+# templates + the connect/total timeouts the singleton is constructed
+# with.
 from app.config import get_settings
 
 
@@ -92,8 +103,9 @@ async def list_influencers(
     WHEN: invoked from influencer_routes.list_influencers() on every
           /api/v1/influencers request after auth + flag-gate pass.
     WHY:  single place that knows the directory's wire shape for the
-          list endpoint. Pagination params propagate 1:1 from the
-          public-api surface to the internal RPC (per DEP-013 proposal).
+          list endpoint. Pagination parameters propagate 1:1 from
+          the public-api surface to the internal RPC (per DEP-013
+          proposal).
     """
     # Read settings via the lru_cache'd accessor — pydantic-settings
     # parsing happens at most once per process; this call is cheap.

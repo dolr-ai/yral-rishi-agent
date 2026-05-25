@@ -369,6 +369,43 @@ class Settings(BaseSettings):
     # that bounded storage holds across normal traffic patterns.
     idempotency_dedup_ttl_seconds: int = 86400
 
+    # -- User-memory-service RPC (per
+    # interface-contracts/01-internal-rpc-contracts.md — PR-B2) -----------
+    # The Session-5 user-memory-service base URL public-api looks up
+    # the conversation row against (BEFORE every orchestrator call) to
+    # derive the per-request `ai_influencer_id` from the conversation
+    # record. The trust-boundary mechanism: `ai_influencer_id` is
+    # ONLY ever sourced from this lookup; client-supplied
+    # `influencer_id` in body/query/header is rejected before reaching
+    # the orchestrator. Swarm DNS name `<stack>_<service>` per
+    # project.config.
+    user_memory_base_url: str = (
+        "http://yral-rishi-agent-user-memory-service_service:8000"
+    )
+
+    # The path template under user_memory_base_url for the by-id
+    # endpoint. Post-PR #132 (Session 5 D2 merged 2026-05-23T12:36:58Z)
+    # the on-main contract declares this single-id GET shape; the chat
+    # handler calls it directly instead of the list-then-filter
+    # approach the original PR-B2 plan would have used. The
+    # X-User-Id header carries the tenant-isolation key — user-memory
+    # returns 404 (never 403) when the conversation doesn't belong
+    # to the caller, refusing to leak existence of other users'
+    # conversations.
+    user_memory_get_by_id_path_template: str = (
+        "/v1/conversations/{conversation_id}"
+    )
+
+    # End-to-end timeout for one user-memory call. 5 s — same as
+    # directory_client; the lookup is a simple DB-backed query with
+    # no LLM compute on the path.
+    user_memory_request_timeout_seconds: float = 5.0
+
+    # Connect-only timeout. 2 s — fails fast on "user-memory container
+    # missing" so the public-api 503 error path differentiates "gone"
+    # from "slow."
+    user_memory_connect_timeout_seconds: float = 2.0
+
     # -- Influencer-and-profile-directory RPC (per
     # interface-contracts/01-internal-rpc-contracts.md + DEP-013) ---------
     # The Session-4 influencer-directory base URL public-api proxies

@@ -112,6 +112,14 @@ from app.api.dependencies import AuthenticatedUser, require_authenticated_user
 # is the first handler in v2 public-api to actually call the
 # orchestrator; the rest stay on Day-2 stubs until later sprints.
 from app import orchestrator_client
+
+# PR-B2 user-memory RPC client — send_message looks up the
+# conversation row via this client BEFORE the orchestrator call so
+# the per-request `influencer_id` is derived from a trusted source
+# (the conversation record), NOT from any client-controlled input.
+# Trust-boundary mechanism for PR-B3 (orchestrator drops env fallback).
+from app import user_memory_client
+
 from app.api.idempotency import (
     cache_lookup,
     cache_store,
@@ -474,15 +482,178 @@ async def send_message(
             media_type="application/json",
         )
 
-    # ---- 3. Forward to orchestrator ---------------------------------
+    # ---- 2b. User-memory lookup → derive trusted influencer_id ------
+    # PR-B2 trust boundary: `influencer_id` forwarded to the
+    # orchestrator MUST come from the conversation record, NEVER from
+    # any client-controlled surface (request body / query string /
+    # header). The by-id lookup is keyed by the URL path's
+    # `conversation_id` + the JWT-derived `user.user_id` (via
+    # X-User-Id header inside the client) — both of those are the
+    # public-api-validated trust roots.
+    #
+    # Session 5's by-id endpoint (PR #132, merged 2026-05-23T12:36:58Z)
+    # enforces tenant isolation: returns 404 (never 403) if the
+    # conversation doesn't belong to the caller, refusing to leak
+    # existence of other users' conversations. Public-api translates
+    # that 404 into its own envelope-shaped 404 + never forwards the
+    # orchestrator call. This is the load-bearing security property
+    # for the trust-boundary contract test.
     request_id = get_request_id()
+    derived_influencer_id: Optional[str]
+    try:
+        user_memory_response = await user_memory_client.get_conversation(
+            user_id=user.user_id,
+            request_id=request_id,
+            conversation_id=conversation_id,
+        )
+    except (httpx.TimeoutException, httpx.ConnectError) as exc:
+        # user-memory unreachable → 503. Sentry-tagged so on-call can
+        # pivot on the failure mode without grepping log lines.
+        with sentry_sdk.new_scope() as scope:
+            scope.set_tag(
+                "user_memory.call.failed",
+                "connect" if isinstance(exc, httpx.ConnectError) else "timeout",
+            )
+            scope.set_context(
+                "user_memory_call",
+                {
+                    "user_id": user.user_id,
+                    "conversation_id": conversation_id,
+                    "exc_type": type(exc).__name__,
+                },
+            )
+            sentry_sdk.capture_message(
+                f"user-memory call timeout / connect error: {exc}",
+                level="error",
+            )
+        body_dict = error_response(
+            "service_unavailable",
+            "User-memory service unreachable (timeout / connect error)",
+        ).model_dump()
+        return JSONResponse(status_code=503, content=body_dict)
+
+    if user_memory_response.status_code == 404:
+        # Conversation not found / soft-deleted / wrong-user (Session 5's
+        # by-id endpoint never differentiates these for tenant-isolation
+        # reasons). Surface as the locked `not_found` envelope so
+        # mobile renders the correct "conversation no longer exists"
+        # screen + the orchestrator call NEVER fires (trust-boundary
+        # short-circuit).
+        body_dict = error_response(
+            "not_found",
+            f"Conversation {conversation_id!r} not found for the authenticated user.",
+        ).model_dump()
+        return JSONResponse(
+            status_code=HTTP_STATUS_FOR_ERROR_CODE["not_found"],
+            content=body_dict,
+        )
+
+    if user_memory_response.status_code != 200:
+        # Any other non-200 from user-memory → 503 envelope. Sentry-
+        # tagged with the actual upstream status for on-call.
+        with sentry_sdk.new_scope() as scope:
+            scope.set_tag(
+                "user_memory.call.failed",
+                str(user_memory_response.status_code),
+            )
+            scope.set_context(
+                "user_memory_call",
+                {
+                    "user_id": user.user_id,
+                    "conversation_id": conversation_id,
+                    "status_code": user_memory_response.status_code,
+                },
+            )
+            sentry_sdk.capture_message(
+                f"user-memory returned unexpected status {user_memory_response.status_code}",
+                level="error",
+            )
+        body_dict = error_response(
+            "service_unavailable",
+            "User-memory service returned an unexpected error",
+        ).model_dump()
+        return JSONResponse(status_code=503, content=body_dict)
+
+    # Parse the ConversationResponse. Per Session 5's contract on
+    # `01-internal-rpc-contracts.md`, the response maps the DB column
+    # `influencer_id` → wire field `ai_influencer_id`.
+    try:
+        conversation = user_memory_response.json()
+        if not isinstance(conversation, dict):
+            raise ValueError("expected dict, got " + type(conversation).__name__)
+    except (ValueError, TypeError) as exc:
+        with sentry_sdk.new_scope() as scope:
+            scope.set_tag("user_memory.call.failed", "bad_response_shape")
+            scope.set_context(
+                "user_memory_call",
+                {
+                    "user_id": user.user_id,
+                    "conversation_id": conversation_id,
+                    "exc": str(exc),
+                },
+            )
+            sentry_sdk.capture_message(
+                f"user-memory 2xx body did not parse as dict: {exc}",
+                level="error",
+            )
+        body_dict = error_response(
+            "service_unavailable",
+            "User-memory service returned malformed response",
+        ).model_dump()
+        return JSONResponse(status_code=503, content=body_dict)
+
+    # The trust-derived influencer_id. `None` is a valid value when
+    # the conversation row pre-dates Day-8 (legacy data without an
+    # ai_influencer_id assignment); PR-B1's orchestrator-side env-var
+    # fallback handles that case. PR-B3 will require this value
+    # non-None + remove the fallback.
+    derived_influencer_id = conversation.get("ai_influencer_id")
+
+    # Defense-in-depth on the user-memory contract boundary: validate
+    # ai_influencer_id is str-or-None. Without this guard, a schema-
+    # drift on Session 5's side (e.g., the column type changes from
+    # text to a json/list/int representation) would forward the
+    # malformed value into orchestrator's RunTurnRequest body where
+    # Pydantic would 422 — or worse, the value would land in a
+    # Sentry context line tagged with the user_id (PII shape leak per
+    # H6 if the malformed value happens to be a dict carrying nested
+    # user data). Failing closed here keeps the trust boundary clean
+    # + surfaces the schema drift to on-call via the same envelope
+    # shape as other user-memory failure modes.
+    if derived_influencer_id is not None and not isinstance(derived_influencer_id, str):
+        with sentry_sdk.new_scope() as scope:
+            scope.set_tag(
+                "user_memory.call.failed",
+                "ai_influencer_id_wrong_type",
+            )
+            scope.set_context(
+                "user_memory_call",
+                {
+                    "user_id": user.user_id,
+                    "conversation_id": conversation_id,
+                    "ai_influencer_id_type": type(derived_influencer_id).__name__,
+                },
+            )
+            sentry_sdk.capture_message(
+                "user-memory returned ai_influencer_id with non-string type "
+                f"({type(derived_influencer_id).__name__})",
+                level="error",
+            )
+        body_dict = error_response(
+            "service_unavailable",
+            "User-memory service returned malformed ai_influencer_id type",
+        ).model_dump()
+        return JSONResponse(status_code=503, content=body_dict)
+
+    # ---- 3. Forward to orchestrator ---------------------------------
     try:
         orchestrator_response = await orchestrator_client.run_turn(
             user_id=user.user_id,
             conversation_id=conversation_id,
-            message_content=body.content,
+            user_message=body.content,
             client_message_id=body.client_message_id,
             media_urls=body.media_urls,
+            influencer_id=derived_influencer_id,
             request_id=request_id,
             idempotency_key=idempotency_key,
         )
