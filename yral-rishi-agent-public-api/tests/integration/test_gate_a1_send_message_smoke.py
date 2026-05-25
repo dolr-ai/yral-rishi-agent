@@ -2,8 +2,17 @@
 # test_gate_a1_send_message_smoke.py — Gate A1 per-PR PUBLIC-API
 # integration SMOKE check for the send-message hot path.
 #
-# ⭐ SCAFFOLD ONLY. Implementation deferred to Day 12-13 (Phase 1
-# parity smoke target) per PR #145 architectural ratification.
+# ⭐ INTENTIONAL SCAFFOLD — implementation lands by Day 11-13
+# (Phase 1 parity smoke target) per PR #145 Gate A1 acceptance
+# criteria. CI-coverage gap on the new public-api → user-memory
+# behavior is INTENTIONAL until the implementation step (Codex
+# PR #141 round-6 CONCERN 1 informational acknowledgment). The
+# contract-level unit tests in
+# `tests/contract/test_orchestrator_proxy.py` (including the
+# trust-boundary forgery-rejection test + the round-7 id /
+# user_id verification checks) cover the public-api side of the
+# boundary at the unit-test tier in the meantime.
+#
 # Each test below carries the Gate A1 acceptance criterion in its
 # docstring; module-level pytest.skip keeps CI green until the
 # implementation step lands.

@@ -2,6 +2,64 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-25 — PR #141 round-7 — Codex post-squash verdict: 2 BLOCKERs + 2 CONCERNs closed (B2 runtime + trust-boundary security + scaffold ack + E1 timeout)
+
+### Action
+Codex re-evaluated PR #141 against current main after the round-6 squash-rebase landed at `5c43f3b`. Verdict: 2 BLOCKERs + 2 CONCERNs. Round-7 closes all 4. Past the 5-round cap, but both BLOCKERs are runtime/security per the cap-rule's "override only for paperwork" carve-out (PR #154) — keep iterating until Codex APPROVE.
+
+**BLOCKER 1 (B2 runtime code) — `app/api/chat_routes.py:505` area.** The new user-memory-hop error handlers used `exc` as the exception variable name + `exc_type` as a Sentry context key. PR #154's carve-out made B2 runtime-only — this is runtime production code, so the carve-out doesn't apply. Renamed across the 7 occurrences in my additions (only the user-memory hop's two `except` blocks; pre-existing `exc` references in `app/main.py` exception handlers + the Day-4C orchestrator-path handlers NOT touched per "fix what you ship"). Diff grep against `origin/main` confirms 0 `exc` / `exc_type` tokens in my additions.
+
+| Site | Before | After |
+|---|---|---|
+| chat_routes.py L509 | `except (httpx.TimeoutException, httpx.ConnectError) as exc:` | `... as exception:` |
+| L515 | `isinstance(exc, httpx.ConnectError)` | `isinstance(exception, httpx.ConnectError)` |
+| L522 | `"exc_type": type(exc).__name__` | `"exception_type": type(exception).__name__` |
+| L526 | `f"... error: {exc}"` | `f"... error: {exception}"` |
+| L584 | `except (ValueError, TypeError) as exc:` | `... as exception:` |
+| L592 | `"exc": str(exc)` | `"exception": str(exception)` |
+| L596 | `f"... dict: {exc}"` | `f"... dict: {exception}"` |
+
+**BLOCKER 2 (industry — trust boundary security gap) — `app/api/chat_routes.py:613` area.** Round-6 validated only that `ai_influencer_id` was str-or-None — it did NOT verify that user-memory's 200 response actually matched the request. A user-memory implementation bug (wrong-row response) or a cross-tenant regression on the user-memory side would propagate into public-api without detection. Round-7 adds 2 verification assertions BEFORE the `derived_influencer_id` read:
+
+1. **Returned `id` must match URL-path `conversation_id`**. Mismatch → envelope-shaped 503 + Sentry `level="error"` with `user_memory.call.failed=id_mismatch`. Signals a user-memory implementation bug returning the wrong row for the by-id lookup.
+
+2. **Returned `user_id` must match JWT-authenticated `user.user_id`**. Mismatch → envelope-shaped 503 + Sentry **`level="fatal"`** (pages on-call immediately) with `user_memory.call.failed=user_id_mismatch_cross_tenant`. This is a CROSS-TENANT LEAK signal — user-memory returned another user's conversation row for this caller, despite the by-id endpoint's claimed tenant-isolation contract.
+
+Both Sentry contexts deliberately record only `*_type` rather than the leaked values themselves (H6 PII discipline — do not echo the leaked user_id / id into Sentry, which is searchable and retained). Both checks happen BEFORE the `ai_influencer_id` read so a wrong-row response NEVER influences orchestrator routing.
+
+**2 new regression tests** in `tests/contract/test_orchestrator_proxy.py` prove the assertions fire + orchestrator gets 0 calls when triggered:
+
+- `test_send_message_returns_503_when_user_memory_id_does_not_match_url_conversation_id` — user-memory returns a row whose `id` is `"some-OTHER-conversation-id-from-a-different-row"`. Asserts 503 + envelope + `mock_orchestrator_happy.await_count == 0`.
+- `test_send_message_returns_503_when_user_memory_user_id_indicates_cross_tenant_leak` — user-memory returns a row whose `user_id` is `"some-OTHER-user-id-not-the-caller"`. Same 3 assertions.
+
+Test count: 18 pre-round-7 → 20 post-round-7.
+
+**CONCERN 1 (test scaffold — informational ack) — `tests/integration/test_gate_a1_send_message_smoke.py:45`.** Codex flagged that the round-6 Gate A1 scaffold tests are module-skipped + raise `NotImplementedError`, so they do not protect the new public-api → user-memory behavior in CI. This is INTENTIONAL per PR #145 (real implementation lands Day 11-13). Round-7 expands the module-level scaffold comment to explicitly say `INTENTIONAL SCAFFOLD — implementation lands by Day 11-13` + names the contract-level unit tests in `tests/contract/test_orchestrator_proxy.py` that cover the boundary at the unit-test tier in the meantime. No code change beyond the comment.
+
+**CONCERN 2 (industry — E1 timeout violation) — `app/config.py:399`.** Round-6's 5-second `user_memory_request_timeout_seconds` (+ 2-second connect) would hold the send-message hot path for up to 5 s on a degraded user-memory, directly violating CONSTRAINTS E1 (user-interactive endpoints MUST be 50% faster than chat-ai). Round-7:
+
+- `user_memory_request_timeout_seconds: 5.0 → 0.5` (500 ms total — aggressive end of Codex's suggested 200-500 ms band; leaves Postgres p95 headroom for a simple DB-backed by-id lookup with no LLM compute).
+- `user_memory_connect_timeout_seconds: 2.0 → 0.2` (200 ms connect — the prior 2 s exceeded the new 500 ms total request timeout, which is nonsensical; 200 ms still distinguishes "container missing" from "slow first response" on the in-cluster network).
+
+Comments on both fields document the round-7 rationale + reference Codex CONCERN 2.
+
+### Files touched (round-7)
+- `yral-rishi-agent-public-api/app/api/chat_routes.py` — BLOCKER 1 `exc` → `exception` rename (7 sites) + BLOCKER 2 two new verification assertions with Sentry-tagged 503 envelopes (added ~58 lines).
+- `yral-rishi-agent-public-api/app/config.py` — CONCERN 2 timeout values dropped + comment refresh on both fields.
+- `yral-rishi-agent-public-api/tests/contract/test_orchestrator_proxy.py` — 2 new regression tests for BLOCKER 2 (added ~58 lines).
+- `yral-rishi-agent-public-api/tests/integration/test_gate_a1_send_message_smoke.py` — CONCERN 1 INTENTIONAL-SCAFFOLD module-comment expansion.
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-state/SESSION-3-STATE.md` — `Updated:` line + LAST THING I DID refresh.
+- This LOG subsection.
+
+### Verified locally
+- `python3 -c "import ast"` on all 4 touched Python files → AST OK.
+- `git diff origin/main -- yral-rishi-agent-public-api/app/api/chat_routes.py | grep -E '^\\+' | grep -E '\\bexc\\b|exc_type'` → empty (B2 sweep clean against my diff).
+- Existing tests not regressed (no body changes to pre-round-7 tests; `_HAPPY_CONVERSATION` fixture's `id` + `user_id` fields already match `SEND_MESSAGE_PATH` + `TEST_USER_ID`, so the new boundary checks pass for the happy path).
+
+### Cap-rule note
+Round 7 is past the 5-round cap (PR #154). BLOCKERs are runtime/security — the cap-rule's "only override for paperwork" carve-out keeps this iteration in-bounds. Once Codex APPROVE on round-7 scope, coordinator can squash-merge per the same path as PR #137's override-merge.
+
+---
 
 ## 2026-05-25 — PR #141 round-6 — adopt PR #145 ratified architecture (drop "narrow exception" framing) + scaffold Gate A1 SMOKE check
 

@@ -623,6 +623,67 @@ def test_send_message_returns_503_when_ai_influencer_id_wrong_type(
     assert mock_orchestrator_happy.await_count == 0
 
 
+def test_send_message_returns_503_when_user_memory_id_does_not_match_url_conversation_id(
+    client, mock_orchestrator_happy, monkeypatch,
+):
+    """WHAT: when user-memory returns a 200 response whose `id` field
+            does not match the URL-path `conversation_id`, public-api
+            returns envelope-shaped 503 + the orchestrator call NEVER
+            fires.
+    WHEN: user-memory implementation bug — returning the wrong row
+          for the requested by-id lookup.
+    WHY:  Codex PR #141 round-6 BLOCKER 2 — without this verification
+          a wrong-row response would feed a foreign conversation's
+          influencer_id into the orchestrator + leak conversation
+          existence cross-row. Defense-in-depth on the trust-boundary
+          contract.
+    """
+    wrong_row = dict(_HAPPY_CONVERSATION)
+    wrong_row["id"] = "some-OTHER-conversation-id-from-a-different-row"
+    monkeypatch.setattr(
+        user_memory_client,
+        "get_conversation",
+        AsyncMock(return_value=_make_mock_response(200, wrong_row)),
+    )
+    response = client.post(SEND_MESSAGE_PATH, json={"content": "hi"})
+    assert response.status_code == 503
+    assert response.json()["error"] == "service_unavailable"
+    # Load-bearing short-circuit: orchestrator NEVER fires on a wrong-
+    # row response from user-memory.
+    assert mock_orchestrator_happy.await_count == 0
+
+
+def test_send_message_returns_503_when_user_memory_user_id_indicates_cross_tenant_leak(
+    client, mock_orchestrator_happy, monkeypatch,
+):
+    """WHAT: when user-memory returns a 200 response whose `user_id`
+            field does not match the JWT-authenticated caller's
+            `user_id`, public-api returns envelope-shaped 503 + the
+            orchestrator call NEVER fires.
+    WHEN: cross-tenant leak signal on the user-memory side — a
+          conversation row belonging to another user surfaced to
+          this caller despite the by-id endpoint's tenant-isolation
+          contract.
+    WHY:  Codex PR #141 round-6 BLOCKER 2 — defense-in-depth at the
+          public-api boundary. A user-memory regression CANNOT reach
+          mobile when this check fires; on-call gets paged via
+          Sentry `level="fatal"` immediately.
+    """
+    cross_tenant_row = dict(_HAPPY_CONVERSATION)
+    cross_tenant_row["user_id"] = "some-OTHER-user-id-not-the-caller"
+    monkeypatch.setattr(
+        user_memory_client,
+        "get_conversation",
+        AsyncMock(return_value=_make_mock_response(200, cross_tenant_row)),
+    )
+    response = client.post(SEND_MESSAGE_PATH, json={"content": "hi"})
+    assert response.status_code == 503
+    assert response.json()["error"] == "service_unavailable"
+    # Load-bearing short-circuit: orchestrator NEVER fires when a
+    # cross-tenant signal is detected.
+    assert mock_orchestrator_happy.await_count == 0
+
+
 def test_send_message_forwards_none_influencer_id_for_legacy_conversation(
     client, mock_orchestrator_happy, monkeypatch,
 ):

@@ -396,15 +396,26 @@ class Settings(BaseSettings):
         "/v1/conversations/{conversation_id}"
     )
 
-    # End-to-end timeout for one user-memory call. 5 s — same as
-    # directory_client; the lookup is a simple DB-backed query with
-    # no LLM compute on the path.
-    user_memory_request_timeout_seconds: float = 5.0
+    # End-to-end timeout for one user-memory call. 0.5 s (500 ms) per
+    # Codex PR #141 round-6 CONCERN — the previous 5-second total
+    # held the send-message hot path for 5 s on a degraded user-
+    # memory, violating CONSTRAINTS E1 (user-interactive endpoints
+    # MUST be 50% faster than chat-ai). user-memory is a simple
+    # DB-backed by-id lookup with no LLM compute — 500 ms is the
+    # aggressive end of the 200-500 ms band Codex suggested and
+    # leaves headroom for Postgres p95 + the network hop. A
+    # degraded user-memory now fail-fasts to 503 instead of holding
+    # mobile requests, which is the correct trade per E1.
+    user_memory_request_timeout_seconds: float = 0.5
 
-    # Connect-only timeout. 2 s — fails fast on "user-memory container
-    # missing" so the public-api 503 error path differentiates "gone"
-    # from "slow."
-    user_memory_connect_timeout_seconds: float = 2.0
+    # Connect-only timeout. 0.2 s (200 ms) per Codex PR #141 round-6
+    # CONCERN — the previous 2-second connect ceiling exceeded the
+    # new 0.5-second total request timeout (nonsense given the
+    # request timeout MUST upper-bound the connect timeout). 200 ms
+    # is enough to distinguish "container missing" from "slow first
+    # response" on the in-cluster network while preserving the
+    # fail-fast envelope-shaped 503.
+    user_memory_connect_timeout_seconds: float = 0.2
 
     # -- Influencer-and-profile-directory RPC (per
     # interface-contracts/01-internal-rpc-contracts.md + DEP-013) ---------

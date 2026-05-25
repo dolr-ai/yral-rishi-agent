@@ -506,24 +506,24 @@ async def send_message(
             request_id=request_id,
             conversation_id=conversation_id,
         )
-    except (httpx.TimeoutException, httpx.ConnectError) as exc:
+    except (httpx.TimeoutException, httpx.ConnectError) as exception:
         # user-memory unreachable → 503. Sentry-tagged so on-call can
         # pivot on the failure mode without grepping log lines.
         with sentry_sdk.new_scope() as scope:
             scope.set_tag(
                 "user_memory.call.failed",
-                "connect" if isinstance(exc, httpx.ConnectError) else "timeout",
+                "connect" if isinstance(exception, httpx.ConnectError) else "timeout",
             )
             scope.set_context(
                 "user_memory_call",
                 {
                     "user_id": user.user_id,
                     "conversation_id": conversation_id,
-                    "exc_type": type(exc).__name__,
+                    "exception_type": type(exception).__name__,
                 },
             )
             sentry_sdk.capture_message(
-                f"user-memory call timeout / connect error: {exc}",
+                f"user-memory call timeout / connect error: {exception}",
                 level="error",
             )
         body_dict = error_response(
@@ -581,7 +581,7 @@ async def send_message(
         conversation = user_memory_response.json()
         if not isinstance(conversation, dict):
             raise ValueError("expected dict, got " + type(conversation).__name__)
-    except (ValueError, TypeError) as exc:
+    except (ValueError, TypeError) as exception:
         with sentry_sdk.new_scope() as scope:
             scope.set_tag("user_memory.call.failed", "bad_response_shape")
             scope.set_context(
@@ -589,16 +589,92 @@ async def send_message(
                 {
                     "user_id": user.user_id,
                     "conversation_id": conversation_id,
-                    "exc": str(exc),
+                    "exception": str(exception),
                 },
             )
             sentry_sdk.capture_message(
-                f"user-memory 2xx body did not parse as dict: {exc}",
+                f"user-memory 2xx body did not parse as dict: {exception}",
                 level="error",
             )
         body_dict = error_response(
             "service_unavailable",
             "User-memory service returned malformed response",
+        ).model_dump()
+        return JSONResponse(status_code=503, content=body_dict)
+
+    # Trust-boundary verification per Codex PR #141 round-6 BLOCKER 2
+    # (industry — trust boundary security gap). Before deriving the
+    # influencer_id, verify the conversation user-memory returned
+    # actually matches the request. Two checks:
+    #
+    # 1. Returned `id` MUST match the URL-path `conversation_id`. A
+    #    mismatch signals a user-memory implementation bug (returning
+    #    the wrong row for the requested ID) — fail-closed with 503
+    #    rather than forwarding a wrong-conversation influencer_id to
+    #    the orchestrator + leaking conversation existence cross-row.
+    #
+    # 2. Returned `user_id` MUST match the JWT-authenticated
+    #    `user.user_id`. A mismatch is a CROSS-TENANT LEAK signal
+    #    (user-memory returned another user's conversation row for
+    #    this caller, despite the by-id endpoint's claimed tenant-
+    #    isolation contract). Fail-closed with 503 + Sentry
+    #    `level="fatal"` so on-call gets paged immediately — this is
+    #    the kind of bug Session 5's Gate A_user_memory testcontainer
+    #    suite is supposed to catch, but defense-in-depth at the
+    #    public-api side means a regression on the user-memory side
+    #    cannot reach mobile.
+    #
+    # Both checks happen BEFORE the ai_influencer_id read so a wrong-
+    # row response NEVER influences orchestrator routing.
+    returned_id = conversation.get("id")
+    if returned_id != conversation_id:
+        with sentry_sdk.new_scope() as scope:
+            scope.set_tag("user_memory.call.failed", "id_mismatch")
+            scope.set_context(
+                "user_memory_call",
+                {
+                    "user_id": user.user_id,
+                    "requested_conversation_id": conversation_id,
+                    "returned_conversation_id_type": type(returned_id).__name__,
+                },
+            )
+            sentry_sdk.capture_message(
+                "user-memory returned a conversation row whose `id` does not "
+                "match the requested conversation_id — wrong-row response",
+                level="error",
+            )
+        body_dict = error_response(
+            "service_unavailable",
+            "User-memory service returned a wrong-row response",
+        ).model_dump()
+        return JSONResponse(status_code=503, content=body_dict)
+
+    returned_user_id = conversation.get("user_id")
+    if returned_user_id != user.user_id:
+        # CROSS-TENANT SIGNAL — page on-call (fatal) per Codex PR #141
+        # round-6 BLOCKER 2. Do not echo the returned user_id in the
+        # Sentry context (PII per H6); record only its type so a
+        # debugger can pivot on the user-memory side without the leak
+        # crossing into Sentry.
+        with sentry_sdk.new_scope() as scope:
+            scope.set_tag("user_memory.call.failed", "user_id_mismatch_cross_tenant")
+            scope.set_context(
+                "user_memory_call",
+                {
+                    "authenticated_user_id": user.user_id,
+                    "requested_conversation_id": conversation_id,
+                    "returned_user_id_type": type(returned_user_id).__name__,
+                },
+            )
+            sentry_sdk.capture_message(
+                "user-memory returned a conversation row whose `user_id` does "
+                "not match the JWT-authenticated caller — possible CROSS-TENANT "
+                "LEAK on the user-memory side",
+                level="fatal",
+            )
+        body_dict = error_response(
+            "service_unavailable",
+            "User-memory service returned a cross-tenant response",
         ).model_dump()
         return JSONResponse(status_code=503, content=body_dict)
 
