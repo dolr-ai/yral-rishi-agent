@@ -315,6 +315,27 @@ Verified locally:
 
 Same PR + branch. 2 files touched + this LOG subsection. No code-behavior change.
 
+### Round-13 fixups (Codex round-12 verdict: 1 BLOCKER B7 + 1 CONCERN STATE staleness)
+Codex round-12 verdict on commit `e0420dd` returned 1 BLOCKER + 1 CONCERN.
+
+**BLOCKER (B7 function header) — `scripts/tests/test_validate_secrets.sh:45`**: round-10's heavily-modified `assert_exit_code` shell function had only above-function prose explaining mechanics — not B7's explicit WHAT/WHEN/WHY function-header format. Round-13 replaces the prose comment block with a full B7 header: function name + one-line summary on the first line, then explicit `WHAT:`/`WHEN:`/`WHY:` lines. Content preserved verbatim (same DEP-010 + mktemp-copy-rename explanation); format restructured to match B7 verbatim.
+
+Defensive scan of other touched shell functions in this PR's diff:
+- `local_default_value_for_name()` in `gen-env-example.sh` (round-8 addition) — ALREADY has full WHAT/WHEN/WHY header inside the function body (added when the function was introduced); no round-13 change needed.
+- `generate_content()` in `gen-env-example.sh` — pre-existing on main; not in my diff; "fix what you ship" applies.
+
+**CONCERN (STATE staleness) — `SESSION-3-STATE.md:4`**: round-1's "Updated:" line said `6 files / +262 lines; 3 new mocked tests` — the round-1 snapshot. After 11 rounds the cumulative diff is `12 files / +1089 / -88; 6 J1-HOT tests + 3 validator regression tests`. I11 state files are resume snapshots, not historical record. Round-13 refreshes both the `Updated:` one-liner and the `LAST THING I DID` paragraph to capture the current diff numbers + the round-1-through-12 arc summary + the round-11 feature-flag mechanism (which removed the round-9 merge-order coordinator gate).
+
+### Files touched (round-13)
+- `yral-rishi-agent-public-api/scripts/tests/test_validate_secrets.sh` — `assert_exit_code` function gains the full B7 header (function name + one-line summary + WHAT/WHEN/WHY paragraphs). The DEP-010 + mktemp-copy-rename content from round-10 is preserved verbatim inside the WHY block.
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-state/SESSION-3-STATE.md` — Updated line + LAST THING I DID paragraph refreshed to current cumulative diff numbers + round-by-round arc + round-11 feature-flag-supersedes-merge-order-gate framing.
+- This LOG subsection.
+
+Verified locally:
+- `bash scripts/tests/test_validate_secrets.sh` → **5 passed, 0 failed** (B7 header is comment-only; behavior unchanged).
+
+Same PR + branch. 2 files touched + this LOG subsection. No code-behavior change.
+
 ---
 
 ## 2026-05-22 — PR-B — Day-8 directory-RPC wrapper for `/api/v1/influencers` list + by-id (DRAFT, blocked on Session 4 directory ratification)

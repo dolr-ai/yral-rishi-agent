@@ -42,14 +42,34 @@ FAIL=0
 # Helpers
 # ===========================================================================
 
-# Run validate-secrets.sh against a runtime copy of the fixture
-# directory; capture exit code only. Expected exit code passed in
-# $1; case label in $2. Per DEP-010 the checked-in fixture uses
-# `env.local.fixture`; at runtime we copy the fixture directory
-# into `mktemp -d`, rename env.local.fixture → .env.local inside
-# the temporary directory, then cd + run the validator there.
-# Cleanup is via subshell EXIT trap so it fires even if the
-# validator aborts mid-run.
+# assert_exit_code — run validate-secrets.sh against a runtime copy
+# of a checked-in fixture directory + assert the resulting exit
+# code matches the expected value.
+#
+# WHAT: takes 3 positional arguments — expected_exit_code ($1),
+#       fixture_subdirectory_name ($2), human_readable_label ($3) —
+#       copies `fixtures/$2` into a fresh `mktemp -d` working
+#       directory, renames `env.local.fixture` → `.env.local`
+#       inside the copy (only when the fixture ships one),
+#       cd's into that throw-away directory, runs the
+#       `validate-secrets.sh` script under test, captures its exit
+#       code in a subshell, then prints PASS or FAIL against the
+#       expected value and increments the suite-level PASS/FAIL
+#       counters.
+# WHEN: invoked once per test case from the case block below — 5
+#       calls in this suite (happy path + 4 failure paths). Each
+#       call is independent; the per-call `mktemp -d` working
+#       directory + EXIT-trap cleanup means assertions don't leak
+#       state into each other regardless of order.
+# WHY:  centralizing the run-and-assert mechanics in one helper
+#       keeps each case-block call to a single line — the
+#       expected-exit-code, the fixture name, and a label — so
+#       reviewers see what's being tested without re-reading the
+#       runner machinery. The mktemp-copy-rename pattern (per
+#       DEP-010 — see file header above for the rationale)
+#       guarantees the literal `.env.local` filename never exists
+#       in the tracked tree even though the validator-under-test
+#       requires it as its working-directory-relative input.
 assert_exit_code() {
     local expected=$1
     local fixture=$2
