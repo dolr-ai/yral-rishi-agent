@@ -276,7 +276,16 @@ def test_get_redis_forwards_password_to_from_url(monkeypatch):
           breaks JWKS cache + idempotency-dedup. Defends against a
           refactor that drops the password argument silently.
     """
+    # redis_client — module exposing the lru_cache'd get_redis()
+    # singleton; tests monkeypatch its `redis.Redis.from_url` callsite
+    # and invoke `redis_client.reset_for_testing()` to clear the cache
+    # between assertions so a captured fake client doesn't leak.
     from app import redis_client
+
+    # Settings — pydantic-settings class for the app's typed runtime
+    # config; tests instantiate a fresh `Settings(...)` to drive
+    # specific field values (redis_password, enforce_passwordless_*)
+    # without monkeypatching env vars at process scope.
     from app.config import Settings
 
     # Build a fresh Settings instance with a known password so the
@@ -328,7 +337,16 @@ def test_empty_redis_password_resolves_to_none_in_from_url(monkeypatch):
     WHEN: laptop development / docker-compose / CI — environments where the
           local Redis container runs unauthenticated.
     """
+    # redis_client — module exposing the lru_cache'd get_redis()
+    # singleton; tests monkeypatch its `redis.Redis.from_url` callsite
+    # and invoke `redis_client.reset_for_testing()` to clear the cache
+    # between assertions so a captured fake client doesn't leak.
     from app import redis_client
+
+    # Settings — pydantic-settings class for the app's typed runtime
+    # config; tests instantiate a fresh `Settings(...)` to drive
+    # specific field values (redis_password, enforce_passwordless_*)
+    # without monkeypatching env vars at process scope.
     from app.config import Settings
 
     fake_settings = Settings(redis_password="")
@@ -373,9 +391,24 @@ def test_health_ready_sentinel_path_forwards_password(
           unreachable, breaking Swarm's healthcheck-based
           rolling-update decision.
     """
+    # AsyncMock — unittest.mock async-aware mock; used to fake the
+    # awaitable Sentinel-discovered primary client's `.ping()`
+    # coroutine so the health probe returns True without booting Redis.
+    # MagicMock — sync mock used for the non-async Sentinel +
+    # primary-client object shells; `master_for` is a regular method
+    # that returns the primary mock, so MagicMock (not AsyncMock) is
+    # the right shape for the outer Sentinel object.
     from unittest.mock import AsyncMock, MagicMock
 
+    # health_routes — module containing `_check_redis_reachable` +
+    # the `Sentinel` class import the test monkeypatches; the
+    # `_load_redis_section_from_shared_config` helper is also stubbed
+    # via setattr on this module.
     from app.api import health_routes
+
+    # Settings — see the per-import comment above on the redis_client
+    # block; reused here to drive `redis_sentinel_enabled=True` +
+    # `redis_password=<sentinel-value>` for the Sentinel-path probe.
     from app.config import Settings
 
     # Force the Sentinel-aware code path with a known password. The
@@ -464,8 +497,18 @@ def test_redis_url_with_embedded_password_is_rejected_when_flag_is_on():
           take precedence over the `password=` argument that
           forwards REDIS_PASSWORD.
     """
+    # ValidationError — the exception the round-8
+    # `_reject_password_in_redis_url` field validator raises (via
+    # pydantic v2's `ValueError` → `ValidationError` translation
+    # path) when the round-11 `enforce_passwordless_redis_url` flag
+    # is True AND the URL embeds credentials. The `with
+    # pytest.raises(...)` block asserts the validator fires.
     from pydantic import ValidationError
 
+    # Settings — see the per-import comment in the redis_client
+    # block above; reused here to drive
+    # `enforce_passwordless_redis_url=True` + the credential-bearing
+    # REDIS_URL that the validator must reject.
     from app.config import Settings
 
     with pytest.raises(ValidationError, match="REDIS_URL must be passwordless"):
@@ -489,6 +532,11 @@ def test_redis_url_without_embedded_password_is_accepted_when_flag_is_on():
           validator that accidentally rejects a legitimate URL when
           the flag is enabled.
     """
+    # Settings — see the per-import comment on the redis_client
+    # block above; reused here to drive
+    # `enforce_passwordless_redis_url=True` against three passwordless
+    # URL forms (none of which should trigger the validator's
+    # rejection branch).
     from app.config import Settings
 
     # local docker-compose
@@ -526,6 +574,10 @@ def test_credential_bearing_redis_url_is_accepted_when_flag_is_off():
           REDIS_URL may still carry the pre-round-8 credential-
           bearing shape; the validator must NOT crash startup.
     """
+    # Settings — see the per-import comment on the redis_client
+    # block above; reused here with the flag at its default-FALSE
+    # value so the validator's rejection branch is gated off + a
+    # credential-bearing URL passes through unchanged.
     from app.config import Settings
 
     credential_bearing_url = "redis://:leaked-password@some-host:6379/0"

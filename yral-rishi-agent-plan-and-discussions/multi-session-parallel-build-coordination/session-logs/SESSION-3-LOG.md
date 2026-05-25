@@ -401,6 +401,40 @@ Verified locally:
 
 Same PR + branch. 1 new file (fixture) + 1 modified file (test runner) + this LOG subsection. **Behavior change on case 3**: now correctly distinguishes incomplete-content from missing-file (previously masked); the other 4 cases behave identically. A1 cleanup guard is defensive — fires only on pathological future-refactor paths; no behavior change for current code path.
 
+### Round-16 fixups (Codex round-15 verdict: 1 BLOCKER B7 function-local imports + 1 CONCERN rollout-path closure)
+Codex round-15 verdict on commit `af40ad6` returned 1 BLOCKER + 1 CONCERN.
+
+**BLOCKER (B7 function-local import role-comments) — `tests/contract/test_health_routes.py:270`**: B7's per-import role-comment rule applies to function-local imports too. Round-2 + round-11 added 5 distinct imports across the new validator tests without per-import comments:
+- `from app import redis_client` (2 occurrences in round-2 tests)
+- `from app.config import Settings` (6 occurrences across rounds 2 + 11)
+- `from unittest.mock import AsyncMock, MagicMock` (1 occurrence; both names co-imported)
+- `from app.api import health_routes` (1 occurrence)
+- `from pydantic import ValidationError` (1 occurrence)
+
+Round-16 added multi-line role-comment blocks above each occurrence. The `Settings` repetitions share an annotation-by-reference pattern: the first 2 occurrences carry the full WHY paragraph (in the `redis_client` block); the later 4 reference back via "see the per-import comment on the redis_client block above" + a one-line WHY specific to that test's use of the field values.
+
+**CONCERN (rollout path incomplete) — `app/config.py:125`**: round-11's `enforce_passwordless_redis_url: bool = False` Settings field needed an operational way to flip the env var in deployed public-api containers. The PR body said "Session 1 flips the flag TRUE in a follow-up after PR #150 + secret rotation," but Session 1 doesn't own public-api files (I9 boundary — Session 3 owns `docker-compose.swarm.yml`); without the env var wired here, there's literally no rollout path that doesn't require Session 1 to violate I9.
+
+Round-16 fix: wire `ENFORCE_PASSWORDLESS_REDIS_URL: ${ENFORCE_PASSWORDLESS_REDIS_URL:-false}` into the production compose's `environment:` block + `ENFORCE_PASSWORDLESS_REDIS_URL: "false"` (literal, no override) into `docker-compose.yml`'s local dev `environment:` block. Multi-line role-comment block above each entry documents:
+- The Codex round-9 BLOCKER 3 → round-11 feature-flag → round-15 CONCERN → round-16 wiring narrative.
+- The activation path: Session 3 follow-up PR flips the `:-false` literal to `:-true` (or sets the var explicitly in CI deploy injection) AFTER Session 1's PR #150 lands + Session 1 rotates the Swarm/GitHub Secret REDIS_URL to passwordless shape.
+- The I9 boundary rationale: this entry MUST live in public-api's compose (which Session 3 owns) — Session 1 editing it would violate the agent-definition split.
+
+The Settings field's default-FALSE remains as the second safety net: if the env var ever gets unset entirely (typo in CI injection, etc.), the validator still no-ops on credential-bearing URLs rather than crashing the worker at boot.
+
+### Files touched (round-16)
+- `yral-rishi-agent-public-api/tests/contract/test_health_routes.py` — 5 role-comment blocks added above the 5 distinct function-local imports across rounds 2 + 11. `Settings` repetitions annotate-by-reference to the redis_client block (first 2 occurrences carry the full annotation; later 4 reference back). No code change.
+- `yral-rishi-agent-public-api/docker-compose.swarm.yml` — new `ENFORCE_PASSWORDLESS_REDIS_URL: ${ENFORCE_PASSWORDLESS_REDIS_URL:-false}` entry below `LOG_LEVEL` in the `environment:` block, with multi-line role-comment block documenting the rollout-path narrative.
+- `yral-rishi-agent-public-api/docker-compose.yml` — mirror entry `ENFORCE_PASSWORDLESS_REDIS_URL: "false"` (literal, no env-override path needed locally) in the local-dev `environment:` block, with brief role-comment block.
+- This LOG subsection.
+
+Verified locally:
+- `bash scripts/tests/test_validate_secrets.sh` → **5 passed, 0 failed** (no test-behavior change in round-16 — only adds comments).
+- `python3 -c "import ast"` on `test_health_routes.py` → OK.
+- PyYAML not available locally; compose-file YAML parse will validate in CI (the inserted entries follow the existing `KEY: ${VAR:-default}` shape of `ENVIRONMENT` / `LOG_LEVEL` above).
+
+Same PR + branch. 3 files touched + this LOG subsection. **No code-behavior change** (B7 fix is comment-only; compose entries default to `false` so deployed behavior is unchanged until Session 3's separate activation PR lands).
+
 ---
 
 ## 2026-05-22 — PR-B — Day-8 directory-RPC wrapper for `/api/v1/influencers` list + by-id (DRAFT, blocked on Session 4 directory ratification)

@@ -93,6 +93,15 @@ services:
       SENTRY_DSN: ""
       LANGFUSE_TRACING_ENABLED: "false"
       ENVIRONMENT: local
+      # ENFORCE_PASSWORDLESS_REDIS_URL — round-11 validator gating
+      # flag. Defaults "false" locally so the docker-compose Redis
+      # (unauthenticated; the URL above is passwordless anyway) +
+      # any future local override that re-introduces credentials
+      # for testing doesn't trigger a validator boot-crash. Mirror
+      # of the swarm.yml entry so local + production semantics
+      # stay aligned. See `docker-compose.swarm.yml` for the
+      # production-rollout activation path.
+      ENFORCE_PASSWORDLESS_REDIS_URL: "false"
 
     # Don't start the service until Postgres + pgBouncer + Redis are
     # actually accepting connections — without this, the service might
