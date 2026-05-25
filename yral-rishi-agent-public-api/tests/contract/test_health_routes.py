@@ -477,7 +477,7 @@ def test_redis_url_with_embedded_password_is_rejected_when_flag_is_on():
 
 def test_redis_url_without_embedded_password_is_accepted_when_flag_is_on():
     """WHY: regression guard — the validator MUST accept the standard
-           passwordless production + local-developmentelopment forms verbatim
+           passwordless production + local-development forms verbatim
            even when the enforce flag is on.
 
     WHAT: instantiate the Settings model with

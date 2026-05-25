@@ -292,6 +292,29 @@ Verified locally:
 
 Same PR + branch. 7 files touched + this LOG subsection. **Behavior change**: validator is now gated behind a feature flag; default-FALSE means existing credential-bearing REDIS_URL secrets keep working until Session 1 flips the flag TRUE in the follow-up.
 
+### Round-12 fixups (Codex round-11 verdict: 1 BLOCKER + 1 CONCERN)
+Codex round-11 verdict on commit `56e2a90` returned 1 BLOCKER + 1 CONCERN.
+
+**BLOCKER (B2 abbreviations on the ported `test_validate_secrets.sh`) — line 8**: round-10 ported the template's test runner verbatim; the template's prose comments use `dir`, `cwd`, `tmp` (not on the B2 allowed-abbreviation list). Round-12 scrubs in this file's diff additions:
+- `dir` → `directory` (multiple — file header + assert_exit_code body inline comments + the per-line annotations on `cp -R fixture/.`, `[ -f ... ]` guard, and the `cd` step)
+- `cwd` → `current working directory` (header + 2 inline comments)
+- `tmp` → `temporary` / `temporary directory` (header + 1 inline mention; the literal `/tmp/tmp.XXXXXX` filesystem-path token + `mktemp -d` command literal are preserved as-is — both are UNIX-named identifiers, not abbreviations the file invented)
+
+**CONCERN (typo) — `tests/contract/test_health_routes.py:382`**: round-11's `dev` → `development` sweep double-applied on an already-fully-spelled `local-development` token, yielding `local-developmentelopment`. Round-12 fixes the literal typo (line 480 in current file): `local-developmentelopment` → `local-development`.
+
+Defensive sweep across MY PR's diff vs the **merge-base** (the view Codex actually reviews — not vs current origin/main which carries OTHER services' merged work since my branch diverged at `840faeb`): zero B2-suspect tokens remaining in public-api production files. UNIX path literals (`/dev/null`, `/tmp/tmp.X*`) and POSIX command names (`mktemp -d`) preserved verbatim — they're not abbreviations.
+
+### Files touched (round-12)
+- `yral-rishi-agent-public-api/scripts/tests/test_validate_secrets.sh` — file-header narrative + `assert_exit_code` body inline comments scrubbed: `dir`/`cwd`/`tmp` → `directory`/`current working directory`/`temporary directory`. Behavior unchanged.
+- `yral-rishi-agent-public-api/tests/contract/test_health_routes.py` — typo fix (1 character-cluster removal at line 480).
+
+Verified locally:
+- `bash scripts/tests/test_validate_secrets.sh` → **5 passed, 0 failed**.
+- `python3 -c "import ast"` on test_health_routes.py → OK.
+- B2 sweep vs merge-base on public-api files (`git diff $(git merge-base HEAD origin/main) -- yral-rishi-agent-public-api/ | grep '^+' | grep B2-suspect`) → clean.
+
+Same PR + branch. 2 files touched + this LOG subsection. No code-behavior change.
+
 ---
 
 ## 2026-05-22 — PR-B — Day-8 directory-RPC wrapper for `/api/v1/influencers` list + by-id (DRAFT, blocked on Session 4 directory ratification)
