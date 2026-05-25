@@ -2,6 +2,32 @@
 
 > Append-only diary. Most recent entries at TOP. Never edit past entries; correct via new entries.
 
+## 2026-05-25 — PR #137 round-18: B2 sweep on test comments + STATE refresh (Codex round-17 verdict)
+
+### Action
+Codex round-17 returned 2 BLOCKERs on round-17's commit (744e9ec). Round-18 closes both:
+
+1. **B2 sweep on test comments** in `yral-rishi-agent-public-api/scripts/tests/test_validate_secrets.sh` (the round-10 ported runner). Round-17's B2 sweep had cleaned `dir`/`cwd`/`tmp` on PR comments but missed adjacent words in newer comments: `regex`/`stdout`/`stderr`/`etc.`/`dedup`. Also propagated to `secrets.yaml`'s notes block (one mention of "dedup cache" → "deduplication cache" in the REDIS_PASSWORD consumer-paths description).
+
+2. **STATE refresh**: `LAST THING I DID` paragraph in `SESSION-3-STATE.md` was stale — still described round-13's snapshot AND repeated the wrong rollout owner ("when Session 1 flips ON post-rotation"). Round-17 corrected the production-code role-comments to say Session 3 owns the compose flip, but the STATE-file echo of that fact didn't get refreshed in the same commit. Round-18 closes that LAST THING I DID + bumps the round counter + reflects the round-17 ownership correction.
+
+### Files touched
+- `yral-rishi-agent-public-api/scripts/tests/test_validate_secrets.sh` (B2 abbreviation sweep on round-15/round-10 comments)
+- `yral-rishi-agent-public-api/secrets.yaml` (one mention of "dedup cache" → "deduplication cache" in REDIS_PASSWORD notes)
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-state/SESSION-3-STATE.md` (LAST THING I DID refresh + round counter)
+- `yral-rishi-agent-plan-and-discussions/multi-session-parallel-build-coordination/session-logs/SESSION-3-LOG.md` (this round-18 entry, append-only at top per I11)
+
+### Why
+Codex round-17 verdict (09:18:26 UTC): "BLOCKER (B2) — New comments still contain B2-disallowed abbreviations such as `regex`, `stdout/stderr`; other new comments also include examples like `etc.` and `dedup`" + "BLOCKER — `LAST THING I DID` is stale and repeats the wrong rollout owner: 'when Session 1 flips ON post-rotation.' This resume snapshot can mislead the next session into a scope violation."
+
+### Test evidence
+Production-code grep for any B2-suspect token in touched files → 0 matches post-sweep.
+
+### Notes
+Round-18 also surfaced an Anthropic API classifier throttle mid-round (same wave that hit Session 1 earlier today). Coordinator completed the STATE refresh + LOG entry + commit + push from coordinator side under the same precedent as Session 1's rebase earlier. Production code edit (secrets.yaml `dedup cache` → `deduplication cache`) was the only edit I landed under my own throttled context before coordinator took over.
+
+---
+
 ## 2026-05-23 — Redis client-side AUTH wiring on public-api's 2 Redis paths (DRAFT, sequence interruption ahead of PR-B2)
 
 ### Action

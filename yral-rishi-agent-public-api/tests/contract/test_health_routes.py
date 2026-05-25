@@ -273,7 +273,7 @@ def test_get_redis_forwards_password_to_from_url(monkeypatch):
           AUTH frame is sent on connection.
     WHY:  v2 cluster's Redis primary runs --requirepass; without the
           AUTH frame the first command raises AuthenticationError +
-          breaks JWKS cache + idempotency-dedup. Defends against a
+          breaks JWKS cache + idempotency-deduplication. Defends against a
           refactor that drops the password argument silently.
     """
     # redis_client — module exposing the lru_cache'd get_redis()

@@ -52,7 +52,7 @@ FAIL=0
 #         - macOS (per-user TMPDIR): `/var/folders/<a>/<b>/T/tmp.XXXX`
 #         - explicit $TMPDIR set (e.g. CI): `${TMPDIR}tmp.XXXX`
 #       Any other shape (system directory, source-tree path, an
-#       empty string, etc.) returns 1 with a loud REFUSING-TO-DELETE
+#       empty string, and anything else) returns 1 with a loud REFUSING-TO-DELETE
 #       message naming the offending path so a future regression
 #       surfaces immediately.
 # WHEN: called by assert_exit_code (+ assert_exit_code_and_message_
@@ -178,8 +178,8 @@ assert_exit_code() {
     # proven successful above); a `cd` failure here would surface as
     # exit 1 but is structurally impossible — `mktemp -d` returned a
     # writable directory + nothing else has happened to it. Output is
-    # suppressed so the test harness's stdout stays scoped to PASS /
-    # FAIL lines.
+    # suppressed so the test harness's standard output stays scoped
+    # to PASS / FAIL lines.
     local actual=0
     (cd "$temporary_fixture_directory" && bash "$SCRIPT_UNDER_TEST") >/dev/null 2>&1 || actual=$?
 
@@ -201,17 +201,17 @@ assert_exit_code() {
 
 
 # assert_exit_code_and_message_contains — same as assert_exit_code,
-# plus asserts the validator's combined stdout/stderr contains a
-# supplied regex pattern.
+# plus asserts the validator's combined standard output and
+# standard error contains a supplied regular-expression pattern.
 #
 # WHAT: takes 4 positional arguments — expected_exit_code ($1),
 #       fixture_subdirectory_name ($2), human_readable_label ($3),
-#       message_pattern_grep_regex ($4). Runs the same SETUP /
+#       message_pattern_grep_regular_expression ($4). Runs the same SETUP /
 #       INVOCATION / cleanup machinery as assert_exit_code (with
 #       the cleanup_temporary_fixture_directory guard), but captures
 #       the validator's combined output (instead of suppressing it
 #       via `>/dev/null 2>&1`) and asserts both the exit code AND
-#       that the output matches the regex.
+#       that the output matches the regular expression.
 # WHEN: used for the env-local-incomplete case where the bare-exit-
 #       code assertion is INSUFFICIENT — missing-file and missing-
 #       value paths both exit 1 (EXIT_MISSING_VALUE), so a future
@@ -259,7 +259,7 @@ assert_exit_code_and_message_contains() {
         fi
     fi
 
-    # INVOCATION — capture combined stdout+stderr (NOT suppressed)
+    # INVOCATION — capture combined standard output and standard error (NOT suppressed)
     # so the message-pattern check below can grep it.
     local actual=0
     local validator_output

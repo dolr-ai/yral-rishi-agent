@@ -181,7 +181,7 @@ class Settings(BaseSettings):
     # Consumed by BOTH Redis paths in this service:
     #   - app/redis_client.py — passed as the `password=` keyword
     #     argument to redis.Redis.from_url() (the JWKS-cache +
-    #     idempotency-dedup singleton; uses single-URL connect)
+    #     idempotency-deduplication singleton; uses single-URL connect)
     #   - app/api/health_routes.py — passed as the `password=`
     #     keyword argument to Sentinel.master_for() (the
     #     /health/ready C11 probe)
@@ -340,7 +340,7 @@ class Settings(BaseSettings):
     # differentiates "compute hung" from "service gone."
     orchestrator_connect_timeout_seconds: float = 5.0
 
-    # How long an idempotency-dedup cache entry lives in Redis. 24 hours
+    # How long an idempotency-deduplication cache entry lives in Redis. 24 hours
     # per F10. Long enough that mobile retries (network drop, app
     # restart, OS push-back-to-foreground) hit the cache; short enough
     # that bounded storage holds across normal traffic patterns.
