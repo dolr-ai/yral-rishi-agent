@@ -236,9 +236,9 @@ GET http://yral-rishi-agent-user-memory-service:8000/v1/conversations/{conversat
     created_at: string,
     last_message_at: string,
     message_count: integer,
-    soft_deleted_at: string|null,
-    last_message: {...}|null
+    soft_deleted_at: string|null
   }
+  (Codex round-14 CONCERN correctly flagged that round-12's `last_message: {...}|null` was a hand-wavy non-shape that created caller/implementer drift risk. Round-15 removes `last_message` from this endpoint's response — public-api's use case here is to derive `ai_influencer_id` + verify tenant ownership ONLY, neither of which needs the last_message payload. If a future use case needs last-message preview, add a dedicated `GET /v1/conversations/{id}/last-message` endpoint with its own pinned response shape.)
 → 404 (conversation not found, soft-deleted, OR owned by different
        user — tenant-isolation 404; never 403 + never leaks
        existence of other users' conversations)
@@ -267,7 +267,7 @@ This decision is binding for Phase 1. Future PRs touching the public-api ↔ use
 Codex PR #145 round-1 raised a real performance question: does this synchronous public-api → user-memory call on the user-interactive hot path comply with E1's hard 50%-faster latency target? And does it duplicate orchestrator's existing `/context` call?
 
 **Not duplicative — different endpoints serve different purposes:**
-- `public-api → user-memory: GET /v1/conversations/{id}` — returns conversation metadata (id, user_id, ai_influencer_id, message_count, last_message). Used by public-api to derive `influencer_id` + verify tenant ownership (404 if not-owned).
+- `public-api → user-memory: GET /v1/conversations/{id}` — returns conversation metadata (id, user_id, ai_influencer_id, conversation_type, timestamps, message_count). Used by public-api to derive `influencer_id` + verify tenant ownership (404 if not-owned). Per round-15 the response no longer includes `last_message` — not needed for the influencer-id derivation use case.
 - `orchestrator → user-memory: GET /context?user_id&influencer_id&recent_messages=10` (per the section above) — returns semantic memory facts + user profile + recent episode summaries. Used by orchestrator to enrich the LLM prompt.
 
 The two calls fetch DIFFERENT data shapes. The `/v1/conversations/{id}` call is a single-row Postgres SELECT (~1-3ms warm + ~5-10ms cold including network round-trip). The `/context` call is a multi-table join + aggregation (heavier, but its own bucket; was already in the design).

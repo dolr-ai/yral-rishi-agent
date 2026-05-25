@@ -152,7 +152,7 @@ Do NOT start coding until I type "build". After "build", you operate in Auto-mod
 **Out of scope:**
 - LLM calls (Session 4)
 - Soul File composition (Session 4)
-- Memory reads (Session 5)
+- Memory reads (Session 5) — EXCEPT the narrow Phase-1-ratified carve-out per PR #145's architectural decision (`interface-contracts/01-internal-rpc-contracts.md` § "Architectural decision — Phase-1 ratification (2026-05-24)"): public-api MAY call user-memory's `GET /v1/conversations/{id}` to derive `ai_influencer_id` + verify tenant ownership on every `POST /api/v1/chat/conversations/{id}/messages`. This is conversation METADATA only (not semantic memory reads); orchestrator still owns the `GET /context` semantic memory path per the broader rule.
 - DB schema design beyond what public-api owns (`agent_public_api` schema only)
 
 **Branch naming:** `session-3/<feature>`
