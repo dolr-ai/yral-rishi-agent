@@ -412,6 +412,8 @@ async def send_message(
         user_message=content or "",
         is_nsfw=is_nsfw,
         media_urls=media_urls,
+        user_id=user_id,
+        conversation_id=conversation_id,
     )
 
     # Typing indicator STOP
