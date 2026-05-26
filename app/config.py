@@ -90,5 +90,10 @@ GOOGLE_CHAT_WEBHOOK_URL = _env("GOOGLE_CHAT_WEBHOOK_URL")
 # Billing
 BILLING_URL = _env("BILLING_URL", "https://billing.yral.com")
 
+# Langfuse (LLM observability)
+LANGFUSE_SECRET_KEY = _env("LANGFUSE_SECRET_KEY")
+LANGFUSE_PUBLIC_KEY = _env("LANGFUSE_PUBLIC_KEY")
+LANGFUSE_HOST = _env("LANGFUSE_HOST")
+
 # JWT auth
 EXPECTED_ISSUERS = ["https://auth.yral.com", "https://auth.dolr.ai"]

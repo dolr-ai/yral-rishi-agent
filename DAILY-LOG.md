@@ -50,6 +50,19 @@ curl agent.rishi.yral.com/api/v1/influencers → {"influencers":[],"total":0,"li
 - chat-ai baseline: 6,780 lines
 - Ratio: 59% of chat-ai — same functionality, no bloat
 
+## 2026-05-26 — Phase 2.1: Langfuse Tracing
+
+### What completed
+- Added `langfuse==2.60.2` to requirements
+- Created `app/services/langfuse_tracing.py` — Langfuse client wrapper with `trace_generation()` helper
+- Integrated tracing into `ai_client.generate_response()` — every Gemini and OpenRouter call is now traced with provider, model, input/output tokens, latency, user_id, conversation_id
+- Error traces logged at ERROR level so failed LLM calls are visible in Langfuse
+- Langfuse flush on app shutdown
+- Config: `LANGFUSE_SECRET_KEY`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_HOST` env vars (no-op if not set)
+
+### To activate
+Set LANGFUSE_SECRET_KEY, LANGFUSE_PUBLIC_KEY, and LANGFUSE_HOST env vars on the Swarm service. Can point to the self-hosted Langfuse on the cluster (once scaled up from 0 replicas) or Langfuse Cloud.
+
 ### Next steps (Rishi)
 1. Reload rishi-1/2 Caddy to fix the public 503
 2. ETL: take pg_dump of chat-ai DB, run `scripts/etl-from-chat-ai.sh` to load data

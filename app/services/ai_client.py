@@ -1,11 +1,13 @@
 import json
 import base64
 import logging
+import time
 
 import httpx
 from openai import AsyncOpenAI
 
 import config
+from services import langfuse_tracing
 
 logger = logging.getLogger(__name__)
 
@@ -249,11 +251,14 @@ async def generate_response(
     user_message: str,
     is_nsfw: bool = False,
     media_urls: list[str] | None = None,
+    user_id: str | None = None,
+    conversation_id: str | None = None,
 ) -> tuple[str, int, bool]:
     if is_nsfw:
         client = get_openrouter_client()
         if client:
             try:
+                t0 = time.monotonic()
                 messages = [{"role": "system", "content": system_instructions}]
                 for msg in conversation_history:
                     role = msg.get("role", "user")
@@ -288,6 +293,8 @@ async def generate_response(
                     max_tokens=config.OPENROUTER_MAX_TOKENS,
                     temperature=config.OPENROUTER_TEMPERATURE,
                 )
+                latency_ms = (time.monotonic() - t0) * 1000
+
                 choices = response.choices or []
                 if not choices:
                     raise RuntimeError(
@@ -297,11 +304,26 @@ async def generate_response(
                 response_text = (message.content if message else None) or ""
                 response_text = response_text.strip()
 
+                input_tokens = 0
                 token_count = 0
                 if response.usage:
+                    input_tokens = response.usage.prompt_tokens or 0
                     token_count = response.usage.completion_tokens or 0
                 if not token_count and response_text:
                     token_count = int(len(response_text) / 4)
+
+                langfuse_tracing.trace_generation(
+                    trace_name="chat-response",
+                    user_id=user_id,
+                    model=config.OPENROUTER_MODEL,
+                    provider="openrouter",
+                    input_text=user_message,
+                    output_text=response_text,
+                    input_tokens=input_tokens,
+                    output_tokens=token_count,
+                    latency_ms=latency_ms,
+                    conversation_id=conversation_id,
+                )
 
                 return (response_text, token_count, False)
             except Exception as e:
@@ -312,6 +334,7 @@ async def generate_response(
         return (FALLBACK_ERROR_MESSAGE, 0, True)
 
     try:
+        t0 = time.monotonic()
         system_instruction, contents = await _build_gemini_contents(
             system_instructions,
             conversation_history,
@@ -324,9 +347,35 @@ async def generate_response(
             temperature=config.GEMINI_TEMPERATURE,
             max_tokens=config.GEMINI_MAX_TOKENS,
         )
+        latency_ms = (time.monotonic() - t0) * 1000
+
+        langfuse_tracing.trace_generation(
+            trace_name="chat-response",
+            user_id=user_id,
+            model=config.GEMINI_MODEL,
+            provider="gemini",
+            input_text=user_message,
+            output_text=response_text,
+            input_tokens=0,
+            output_tokens=token_count,
+            latency_ms=latency_ms,
+            conversation_id=conversation_id,
+        )
+
         return (response_text, token_count, False)
     except Exception as e:
         logger.error(f"Gemini generation failed: {e}")
+        langfuse_tracing.trace_generation(
+            trace_name="chat-response",
+            user_id=user_id,
+            model=config.GEMINI_MODEL,
+            provider="gemini",
+            input_text=user_message,
+            output_text=str(e),
+            latency_ms=(time.monotonic() - t0) * 1000 if "t0" in dir() else 0,
+            is_error=True,
+            conversation_id=conversation_id,
+        )
         return (FALLBACK_ERROR_MESSAGE, 0, True)
 
 
