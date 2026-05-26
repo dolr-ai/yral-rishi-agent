@@ -13,6 +13,7 @@ import httpx
 from services import (
     ai_client,
     push_notifications,
+    soul_file,
     websocket_manager,
     storage,
     replicate,
@@ -391,10 +392,11 @@ async def send_message(
         except (json.JSONDecodeError, TypeError):
             memories = {}
 
-    system_instructions = inf.get("system_instructions", "")
-    if memories:
-        memories_text = "\n".join(f"- {k}: {v}" for k, v in memories.items())
-        system_instructions += f"\n\n**MEMORIES:**\n{memories_text}"
+    system_instructions = soul_file.compose(
+        system_instructions=inf.get("system_instructions", ""),
+        category=inf.get("category"),
+        memories=memories,
+    )
 
     # Typing indicator START
     await websocket_manager.broadcast_typing_status(

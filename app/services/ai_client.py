@@ -423,25 +423,30 @@ async def generate_response(
         )
 
 
-MEMORY_EXTRACTION_PROMPT = """Extract any factual information about the user from this conversation that should be remembered for future interactions.
+MEMORY_EXTRACTION_PROMPT = """Extract factual information about the user from this conversation exchange.
 
-Examples of things to remember:
-- Physical attributes: height, weight, age, appearance
-- Personal information: name, location, occupation, interests
-- Preferences: favorite foods, hobbies, goals
-- Context: relationship status, family, pets
+CATEGORIES (use these as key prefixes):
+- identity: name, age, gender, location, occupation, language
+- preferences: favorite_food, hobbies, interests, music_taste, style
+- goals: fitness_goal, career_goal, learning_goal, relationship_goal
+- context: relationship_status, family, pets, living_situation
+- emotional: current_mood, stress_level, recent_events
 
-Recent conversation:
+Recent exchange:
 User: {user_message}
 Assistant: {assistant_response}
 
 Current memories:
 {memories_text}
 
-Return ONLY a JSON object with key-value pairs. Use lowercase keys with underscores (e.g., "height", "weight", "name").
-If no new information was provided, return an empty object {{}}.
-If information updates an existing memory, use the new value.
-Format: {{"key1": "value1", "key2": "value2"}}"""
+Rules:
+- Return ONLY a JSON object with key-value pairs
+- Use lowercase keys with underscores
+- Only extract EXPLICIT facts the user stated, not inferences
+- If the user corrects a previous fact, use the new value
+- If no new information, return empty object {{}}
+- Keep values concise (under 50 chars each)
+Format: {{"identity_name": "Rahul", "goals_fitness": "lose 10kg by August"}}"""
 
 
 async def extract_memories(
