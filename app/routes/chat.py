@@ -13,6 +13,7 @@ import httpx
 from services import (
     ai_client,
     push_notifications,
+    soul_file,
     websocket_manager,
     storage,
     replicate,
@@ -391,10 +392,11 @@ async def send_message(
         except (json.JSONDecodeError, TypeError):
             memories = {}
 
-    system_instructions = inf.get("system_instructions", "")
-    if memories:
-        memories_text = "\n".join(f"- {k}: {v}" for k, v in memories.items())
-        system_instructions += f"\n\n**MEMORIES:**\n{memories_text}"
+    system_instructions = soul_file.compose(
+        system_instructions=inf.get("system_instructions", ""),
+        category=inf.get("category"),
+        memories=memories,
+    )
 
     # Typing indicator START
     await websocket_manager.broadcast_typing_status(
@@ -406,7 +408,7 @@ async def send_message(
 
     # Call AI model
     is_nsfw = inf.get("is_nsfw", False)
-    response_text, token_count, is_fallback = await ai_client.generate_response(
+    llm_result = await ai_client.generate_response(
         system_instructions=system_instructions,
         conversation_history=history,
         user_message=content or "",
@@ -429,9 +431,9 @@ async def send_message(
         pool,
         conversation_id=conversation_id,
         role="assistant",
-        content=response_text,
+        content=llm_result.content,
         message_type="text",
-        token_count=token_count,
+        token_count=llm_result.output_tokens,
         sender_id=influencer_id,
     )
 
@@ -441,7 +443,7 @@ async def send_message(
             pool,
             conversation_id,
             content or "",
-            response_text,
+            llm_result.content,
             memories,
             is_nsfw,
         )
@@ -467,7 +469,7 @@ async def send_message(
         push_notifications.send_new_message_notification(
             user_id=user_id,
             influencer_name=inf.get("display_name", "AI"),
-            message_content=response_text,
+            message_content=llm_result.content,
             conversation_id=conversation_id,
             influencer_id=influencer_id,
         )
@@ -522,14 +524,14 @@ async def _generate_image_prompt_from_context(pool, conversation_id: str) -> str
     )
     user = f"Conversation Context:\n{context_str}\n\nGenerate an image prompt:"
 
-    text, _, _ = await ai_client.generate_response(
+    result = await ai_client.generate_response(
         system_instructions=system,
         conversation_history=[],
         user_message=user,
         is_nsfw=False,
         media_urls=None,
     )
-    return text.strip()
+    return result.content.strip()
 
 
 @router.post("/conversations/{conversation_id}/images", status_code=201)
