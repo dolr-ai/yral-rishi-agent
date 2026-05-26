@@ -15,6 +15,11 @@ async def root():
     }
 
 
+@router.get("/health/live")
+async def health_live():
+    return {"status": "OK"}
+
+
 @router.get("/health")
 async def health():
     if not await database.check_db_health():
