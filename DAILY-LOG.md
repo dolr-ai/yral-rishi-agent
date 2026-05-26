@@ -12,7 +12,7 @@
 - **Day 7**: media upload + image generation in conversations (2 endpoints)
 - **Day 8**: human-to-human chat — create, list, send message (3 endpoints)
 - **Day 9**: unified inbox v3 — AI + human chats in one list (1 endpoint)
-- **Day 10**: billing paywall — NOT in chat-ai source code yet. BILLING_URL config added, ready to wire when Sarvesh confirms the API contract.
+- **Day 10**: billing paywall — RESOLVED. Billing is 100% client-side. Mobile app calls `billing.yral.com/google/chat-access/check` directly before sending messages. Chat backend never checks billing — if a message arrives, mobile already verified access. No backend code needed.
 - **Day 11**: WebSocket inbox — real-time events (new_message, conversation_read, typing_status) (1 WS + 1 docs endpoint)
 
 ### Endpoint count
@@ -27,7 +27,6 @@
 - #158: Phase 0 + Phase 1 (all days combined on agent/phase-0-cleanup branch)
 
 ### Blockers
-- Billing paywall (Day 10): chat-ai doesn't have this code yet. Need API contract from Sarvesh.
 - Deploy to cluster (Day 13): need to run migrations on Patroni + deploy via Swarm.
 
 ### Tomorrow
