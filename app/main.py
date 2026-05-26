@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -32,11 +33,48 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to initialize database pool at startup: {e}")
 
+    trending_refresher_task = asyncio.create_task(_trending_stats_refresher())
+
     yield
 
     logger.info("Shutting down...")
+    trending_refresher_task.cancel()
+    try:
+        await trending_refresher_task
+    except asyncio.CancelledError:
+        pass
     await database.close_pool()
     logger.info("Shutdown complete")
+
+
+async def _trending_stats_refresher():
+    """Refresh influencer_trending_stats materialized view every 15 min.
+
+    First refresh is non-concurrent (required when view has no data).
+    Subsequent refreshes use CONCURRENTLY to avoid blocking reads.
+    Both replicas run this — Postgres row-level locking handles the race.
+    """
+    REFRESH_INTERVAL_SEC = 15 * 60
+
+    try:
+        pool = await database.get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("REFRESH MATERIALIZED VIEW influencer_trending_stats")
+        logger.info("influencer_trending_stats: initial refresh complete")
+    except Exception:
+        logger.exception("influencer_trending_stats: initial refresh failed")
+
+    while True:
+        await asyncio.sleep(REFRESH_INTERVAL_SEC)
+        try:
+            pool = await database.get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "REFRESH MATERIALIZED VIEW CONCURRENTLY influencer_trending_stats"
+                )
+            logger.info("influencer_trending_stats: concurrent refresh complete")
+        except Exception:
+            logger.exception("influencer_trending_stats: concurrent refresh failed")
 
 
 app = FastAPI(
@@ -86,3 +124,6 @@ async def auth_me(request: Request):
 
 from routes.health import router as health_router
 app.include_router(health_router)
+
+from routes.influencers import router as influencers_router
+app.include_router(influencers_router)
