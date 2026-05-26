@@ -1,0 +1,380 @@
+import json
+import logging
+import secrets
+from datetime import datetime
+
+from fastapi import APIRouter, HTTPException, Request, Query, Header
+from fastapi.responses import JSONResponse
+
+import config
+from database import get_pool
+from auth import get_current_user
+from repositories import influencer_repo
+from services import moderation, character_generator, google_chat
+from services.character_generator import GeminiSafetyBlocked
+from models import (
+    CreateInfluencerRequest,
+    GeneratePromptRequest,
+    ValidateAndGenerateRequest,
+    UpdateSystemPromptRequest,
+    GenerateVideoPromptRequest,
+)
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/v1", tags=["Influencers"])
+
+
+def _format_influencer_response(inf: dict) -> dict:
+    system_instructions = inf.get("system_instructions", "")
+    system_prompt_display = (
+        moderation.strip_guardrails(system_instructions) if system_instructions else ""
+    )
+
+    return {
+        "id": inf["id"],
+        "name": inf["name"],
+        "display_name": inf["display_name"],
+        "avatar_url": inf.get("avatar_url") or "",
+        "description": inf.get("description") or "",
+        "category": inf.get("category") or "",
+        "is_active": inf.get("is_active", "active"),
+        "parent_principal_id": inf.get("parent_principal_id"),
+        "source": inf.get("source"),
+        "system_prompt": system_prompt_display,
+        "created_at": inf["created_at"].isoformat()
+        if isinstance(inf["created_at"], datetime)
+        else str(inf["created_at"]),
+        "conversation_count": inf.get("conversation_count"),
+        "message_count": inf.get("message_count"),
+    }
+
+
+def _format_influencer_detail(inf: dict) -> dict:
+    personality_traits = inf.get("personality_traits")
+    if isinstance(personality_traits, str):
+        try:
+            personality_traits = json.loads(personality_traits)
+        except (json.JSONDecodeError, TypeError):
+            personality_traits = {}
+
+    suggested_messages = inf.get("suggested_messages")
+    if isinstance(suggested_messages, str):
+        try:
+            suggested_messages = json.loads(suggested_messages)
+        except (json.JSONDecodeError, TypeError):
+            suggested_messages = []
+
+    metadata = inf.get("metadata")
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except (json.JSONDecodeError, TypeError):
+            metadata = {}
+
+    system_instructions = inf.get("system_instructions", "")
+    system_instructions_display = moderation.strip_guardrails(system_instructions)
+
+    return {
+        "id": inf["id"],
+        "name": inf["name"],
+        "display_name": inf["display_name"],
+        "avatar_url": inf.get("avatar_url"),
+        "description": inf.get("description"),
+        "category": inf.get("category"),
+        "system_instructions": system_instructions_display,
+        "personality_traits": personality_traits,
+        "initial_greeting": inf.get("initial_greeting"),
+        "suggested_messages": suggested_messages,
+        "is_active": inf.get("is_active", "active"),
+        "is_nsfw": inf.get("is_nsfw", False),
+        "parent_principal_id": inf.get("parent_principal_id"),
+        "source": inf.get("source"),
+        "created_at": inf["created_at"].isoformat()
+        if isinstance(inf["created_at"], datetime)
+        else str(inf["created_at"]),
+        "updated_at": inf["updated_at"].isoformat()
+        if isinstance(inf["updated_at"], datetime)
+        else str(inf["updated_at"]),
+        "metadata": metadata,
+        "conversation_count": inf.get("conversation_count"),
+    }
+
+
+@router.get("/influencers")
+async def list_influencers(
+    limit: int = Query(default=50, le=100),
+    offset: int = Query(default=0, ge=0),
+):
+    try:
+        pool = await get_pool()
+        influencers = await influencer_repo.list_all(pool, limit, offset)
+        total = await influencer_repo.count_all(pool)
+
+        response = JSONResponse(
+            content={
+                "influencers": [_format_influencer_response(i) for i in influencers],
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
+        response.headers["Cache-Control"] = "public, max-age=300"
+        return response
+    except Exception as e:
+        logger.error(f"list_influencers failed: {type(e).__name__}: {e}")
+        import sentry_sdk
+
+        sentry_sdk.capture_exception(e)
+        raise HTTPException(
+            status_code=500, detail=f"Internal error: {type(e).__name__}: {e}"
+        )
+
+
+@router.get("/influencers/trending")
+async def list_trending(
+    limit: int = Query(default=50, le=100),
+    offset: int = Query(default=0, ge=0),
+):
+    pool = await get_pool()
+    influencers = await influencer_repo.list_trending(pool, limit, offset)
+    total = await influencer_repo.count_trending(pool)
+
+    formatted = []
+    for i in influencers:
+        inf = _format_influencer_response(i)
+        inf["message_count"] = i.get("message_count", 0)
+        inf["conversation_count"] = i.get("conversation_count", 0)
+        formatted.append(inf)
+
+    response = JSONResponse(
+        content={
+            "influencers": formatted,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+    )
+    response.headers["Cache-Control"] = "public, max-age=300"
+    return response
+
+
+@router.get("/influencers/{influencer_id}")
+async def get_influencer(influencer_id: str):
+    pool = await get_pool()
+    inf = await influencer_repo.get_with_conversation_count(pool, influencer_id)
+    if not inf:
+        raise HTTPException(status_code=404, detail="Influencer not found")
+
+    response = JSONResponse(content=_format_influencer_detail(inf))
+    response.headers["Cache-Control"] = "public, max-age=300"
+    return response
+
+
+@router.post("/influencers/generate-prompt")
+async def generate_prompt(body: GeneratePromptRequest, request: Request):
+    get_current_user(request)
+    try:
+        instructions = await character_generator.generate_system_instructions(
+            body.concept
+        )
+    except GeminiSafetyBlocked as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    if not instructions:
+        raise HTTPException(
+            status_code=500, detail="Failed to generate system instructions"
+        )
+    return {"system_instructions": instructions}
+
+
+@router.post("/influencers/validate-and-generate-metadata")
+async def validate_and_generate(body: ValidateAndGenerateRequest, request: Request):
+    get_current_user(request)
+    result = await character_generator.validate_and_generate_metadata(body.concept)
+    if not result:
+        raise HTTPException(
+            status_code=500, detail="Failed to validate and generate metadata"
+        )
+    return result
+
+
+@router.post("/influencers/create", status_code=201)
+async def create_influencer(body: CreateInfluencerRequest, request: Request):
+    user_id = get_current_user(request)
+    pool = await get_pool()
+
+    existing = await influencer_repo.get_by_name(pool, body.name)
+    if existing:
+        raise HTTPException(
+            status_code=409, detail=f"Name '{body.name}' is already taken"
+        )
+
+    safe_instructions = moderation.with_guardrails(body.system_instructions)
+
+    greeting = body.initial_greeting
+    suggestions = body.suggested_messages
+    if not greeting or not suggestions:
+        (
+            gen_greeting,
+            gen_suggestions,
+        ) = await character_generator.generate_initial_greeting(
+            body.display_name,
+            body.system_instructions,
+        )
+        if not greeting:
+            greeting = gen_greeting
+        if not suggestions:
+            suggestions = gen_suggestions
+
+    influencer_data = {
+        "id": body.bot_principal_id,
+        "name": body.name,
+        "display_name": body.display_name,
+        "avatar_url": body.avatar_url,
+        "description": body.description,
+        "category": body.category,
+        "system_instructions": safe_instructions,
+        "personality_traits": body.personality_traits,
+        "initial_greeting": greeting,
+        "suggested_messages": suggestions,
+        "is_active": "active",
+        "is_nsfw": False,
+        "parent_principal_id": user_id,
+        "source": body.source or "user_created",
+        "metadata": body.metadata,
+    }
+
+    created = await influencer_repo.create(pool, influencer_data)
+    if not created:
+        raise HTTPException(status_code=500, detail="Failed to create influencer")
+
+    starter_video_prompt = await character_generator.generate_video_prompt(
+        body.display_name,
+        body.system_instructions,
+    )
+
+    response = _format_influencer_detail(created)
+    response["starter_video_prompt"] = starter_video_prompt
+    return response
+
+
+@router.patch("/influencers/{influencer_id}/system-prompt")
+async def update_system_prompt(
+    influencer_id: str,
+    body: UpdateSystemPromptRequest,
+    request: Request,
+):
+    user_id = get_current_user(request)
+    pool = await get_pool()
+
+    inf = await influencer_repo.get_by_id(pool, influencer_id)
+    if not inf:
+        raise HTTPException(status_code=404, detail="Influencer not found")
+    if inf.get("parent_principal_id") != user_id:
+        raise HTTPException(
+            status_code=403, detail="Only the creator can update this influencer"
+        )
+
+    safe_instructions = moderation.with_guardrails(body.system_instructions)
+    await influencer_repo.update_system_prompt(pool, influencer_id, safe_instructions)
+
+    updated = await influencer_repo.get_with_conversation_count(pool, influencer_id)
+    return _format_influencer_detail(updated)
+
+
+@router.post("/influencers/{influencer_id}/generate-video-prompt")
+async def generate_video_prompt_endpoint(
+    influencer_id: str,
+    body: GenerateVideoPromptRequest,
+    request: Request,
+):
+    get_current_user(request)
+    pool = await get_pool()
+
+    inf = await influencer_repo.get_by_id(pool, influencer_id)
+    if not inf:
+        raise HTTPException(status_code=404, detail="Influencer not found")
+
+    prompt = await character_generator.generate_video_prompt(
+        inf["display_name"],
+        inf["system_instructions"],
+    )
+    if not prompt:
+        raise HTTPException(status_code=500, detail="Failed to generate video prompt")
+    return {"prompt": prompt}
+
+
+@router.delete("/influencers/{influencer_id}")
+async def delete_influencer(influencer_id: str, request: Request):
+    user_id = get_current_user(request)
+    pool = await get_pool()
+
+    inf = await influencer_repo.get_by_id(pool, influencer_id)
+    if not inf:
+        raise HTTPException(status_code=404, detail="Influencer not found")
+    if inf.get("parent_principal_id") != user_id:
+        raise HTTPException(
+            status_code=403, detail="Only the creator can delete this influencer"
+        )
+
+    await influencer_repo.soft_delete(pool, influencer_id)
+    deleted = await influencer_repo.get_by_id(pool, influencer_id)
+    return _format_influencer_detail(deleted)
+
+
+@router.post("/admin/influencers/{influencer_id}")
+async def admin_ban(
+    influencer_id: str,
+    x_admin_key: str = Header(None, alias="X-Admin-Key"),
+):
+    if (
+        not config.ADMIN_KEY
+        or not x_admin_key
+        or not secrets.compare_digest(x_admin_key, config.ADMIN_KEY)
+    ):
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+
+    pool = await get_pool()
+    inf = await influencer_repo.get_by_id_or_name(pool, influencer_id)
+    if not inf:
+        raise HTTPException(status_code=404, detail="Influencer not found")
+
+    try:
+        await influencer_repo.ban(pool, inf["id"])
+        updated = await influencer_repo.get_by_id(pool, inf["id"])
+        await google_chat.notify_influencer_banned(
+            inf["id"], inf.get("display_name", "Unknown")
+        )
+        return _format_influencer_detail(updated)
+    except Exception as e:
+        await google_chat.notify_influencer_ban_failed(inf["id"], str(e))
+        raise HTTPException(status_code=500, detail=f"Ban failed: {e}")
+
+
+@router.post("/admin/influencers/{influencer_id}/unban")
+async def admin_unban(
+    influencer_id: str,
+    x_admin_key: str = Header(None, alias="X-Admin-Key"),
+):
+    if (
+        not config.ADMIN_KEY
+        or not x_admin_key
+        or not secrets.compare_digest(x_admin_key, config.ADMIN_KEY)
+    ):
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+
+    pool = await get_pool()
+    inf = await influencer_repo.get_by_id_or_name(pool, influencer_id)
+    if not inf:
+        raise HTTPException(status_code=404, detail="Influencer not found")
+
+    try:
+        await influencer_repo.unban(pool, inf["id"])
+        updated = await influencer_repo.get_by_id(pool, inf["id"])
+        await google_chat.notify_influencer_unbanned(
+            inf["id"], inf.get("display_name", "Unknown")
+        )
+        return _format_influencer_detail(updated)
+    except Exception as e:
+        await google_chat.notify_influencer_unban_failed(inf["id"], str(e))
+        raise HTTPException(status_code=500, detail=f"Unban failed: {e}")
