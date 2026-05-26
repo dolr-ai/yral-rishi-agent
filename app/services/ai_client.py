@@ -2,6 +2,7 @@ import json
 import base64
 import logging
 import time
+from dataclasses import dataclass
 
 import httpx
 from openai import AsyncOpenAI
@@ -15,6 +16,18 @@ FALLBACK_ERROR_MESSAGE = (
     "I'm having trouble responding right now. Please try again in a moment."
 )
 GEMINI_NATIVE_URL = "https://generativelanguage.googleapis.com/v1beta"
+
+
+@dataclass(frozen=True)
+class LlmResponse:
+    content: str
+    provider: str
+    model: str
+    input_tokens: int
+    output_tokens: int
+    latency_ms: float
+    is_fallback: bool = False
+
 
 _openrouter_client: AsyncOpenAI | None = None
 _MAX_IMAGE_BYTES = 5 * 1024 * 1024
@@ -253,7 +266,7 @@ async def generate_response(
     media_urls: list[str] | None = None,
     user_id: str | None = None,
     conversation_id: str | None = None,
-) -> tuple[str, int, bool]:
+) -> LlmResponse:
     if is_nsfw:
         client = get_openrouter_client()
         if client:
@@ -325,13 +338,28 @@ async def generate_response(
                     conversation_id=conversation_id,
                 )
 
-                return (response_text, token_count, False)
+                return LlmResponse(
+                    content=response_text,
+                    provider="openrouter",
+                    model=config.OPENROUTER_MODEL,
+                    input_tokens=input_tokens,
+                    output_tokens=token_count,
+                    latency_ms=latency_ms,
+                )
             except Exception as e:
                 logger.error(f"OpenRouter generation failed: {e}")
 
     if not config.GEMINI_API_KEY:
         logger.error("No AI client available (GEMINI_API_KEY not set)")
-        return (FALLBACK_ERROR_MESSAGE, 0, True)
+        return LlmResponse(
+            content=FALLBACK_ERROR_MESSAGE,
+            provider="none",
+            model="none",
+            input_tokens=0,
+            output_tokens=0,
+            latency_ms=0,
+            is_fallback=True,
+        )
 
     try:
         t0 = time.monotonic()
@@ -362,9 +390,17 @@ async def generate_response(
             conversation_id=conversation_id,
         )
 
-        return (response_text, token_count, False)
+        return LlmResponse(
+            content=response_text,
+            provider="gemini",
+            model=config.GEMINI_MODEL,
+            input_tokens=0,
+            output_tokens=token_count,
+            latency_ms=latency_ms,
+        )
     except Exception as e:
         logger.error(f"Gemini generation failed: {e}")
+        elapsed = (time.monotonic() - t0) * 1000 if "t0" in locals() else 0
         langfuse_tracing.trace_generation(
             trace_name="chat-response",
             user_id=user_id,
@@ -372,11 +408,19 @@ async def generate_response(
             provider="gemini",
             input_text=user_message,
             output_text=str(e),
-            latency_ms=(time.monotonic() - t0) * 1000 if "t0" in dir() else 0,
+            latency_ms=elapsed,
             is_error=True,
             conversation_id=conversation_id,
         )
-        return (FALLBACK_ERROR_MESSAGE, 0, True)
+        return LlmResponse(
+            content=FALLBACK_ERROR_MESSAGE,
+            provider="gemini",
+            model=config.GEMINI_MODEL,
+            input_tokens=0,
+            output_tokens=0,
+            latency_ms=elapsed,
+            is_fallback=True,
+        )
 
 
 MEMORY_EXTRACTION_PROMPT = """Extract any factual information about the user from this conversation that should be remembered for future interactions.
