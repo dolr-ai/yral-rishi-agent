@@ -142,3 +142,6 @@ app.include_router(human_chat_router)
 
 from routes.chat_v3 import router as chat_v3_router
 app.include_router(chat_v3_router)
+
+from routes.websocket import router as ws_router
+app.include_router(ws_router)
