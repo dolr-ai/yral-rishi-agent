@@ -50,8 +50,38 @@ curl agent.rishi.yral.com/api/v1/influencers → {"influencers":[],"total":0,"li
 - chat-ai baseline: 6,780 lines
 - Ratio: 59% of chat-ai — same functionality, no bloat
 
+## 2026-05-26 — Phase 2.1: Langfuse Tracing
+
+### What completed
+- Added `langfuse==2.60.2` to requirements
+- Created `app/services/langfuse_tracing.py` — Langfuse client wrapper with `trace_generation()` helper
+- Integrated tracing into `ai_client.generate_response()` — every Gemini and OpenRouter call is now traced with provider, model, input/output tokens, latency, user_id, conversation_id
+- Error traces logged at ERROR level so failed LLM calls are visible in Langfuse
+- Langfuse flush on app shutdown
+- Config: `LANGFUSE_SECRET_KEY`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_HOST` env vars (no-op if not set)
+
+### To activate
+Set LANGFUSE_SECRET_KEY, LANGFUSE_PUBLIC_KEY, and LANGFUSE_HOST env vars on the Swarm service. Can point to the self-hosted Langfuse on the cluster (once scaled up from 0 replicas) or Langfuse Cloud.
+
+## 2026-05-26 — Phase 2.5: Request ID Tracing
+- `app/middleware.py`: RequestIdMiddleware assigns UUID to every request, propagates to Sentry + response header
+
+## 2026-05-26 — Phase 2.6: Redis WebSocket Pub/Sub
+- Rewrote `app/services/websocket_manager.py` to publish all WS events via Redis pub/sub
+- Background subscriber on each node delivers events to local WebSocket connections
+- Falls back to local-only if Redis is not available (safe default)
+- Added `redis==5.2.1` to requirements
+- Subscriber started in main.py lifespan, cancelled on shutdown
+
+## PRs merged
+- **#158** (Phase 0 + Phase 1): squash-merged to main
+- **#159** (Codex review workflow): squash-merged to main
+
+## Open PR
+- **agent/phase-2** branch: Phase 2.1 (Langfuse) + 2.5 (Request ID) + 2.6 (Redis WS pub/sub)
+
 ### Next steps (Rishi)
-1. Reload rishi-1/2 Caddy to fix the public 503
-2. ETL: take pg_dump of chat-ai DB, run `scripts/etl-from-chat-ai.sh` to load data
-3. Set env vars on Swarm service: GEMINI_API_KEY, OPENROUTER_API_KEY, S3 creds, SENTRY_DSN
-4. Motorola test: open debug APK, see influencer catalog, send message, get AI reply
+1. ETL: take pg_dump of chat-ai DB, run `scripts/etl-from-chat-ai.sh` to load data
+2. Motorola test: open debug APK, see influencer catalog, send message, get AI reply
+3. Set REDIS_HOST=redis-primary on Swarm service to enable cross-node WS delivery
+4. Set Langfuse env vars when ready to enable LLM tracing
