@@ -12,6 +12,7 @@ import httpx
 
 from services import (
     ai_client,
+    content_safety,
     push_notifications,
     soul_file,
     websocket_manager,
@@ -370,12 +371,29 @@ async def send_message(
         sender_id=user_id,
     )
 
+    # Content safety check — runs before LLM call
+    is_nsfw = inf.get("is_nsfw", False)
+    safety = content_safety.check_message(content or "", is_nsfw_influencer=is_nsfw)
+    if safety.blocked:
+        assistant_msg = await message_repo.create(
+            pool,
+            conversation_id=conversation_id,
+            role="assistant",
+            content=safety.override_response,
+            message_type="text",
+            sender_id=influencer_id,
+        )
+        return SendMessageResponse(
+            user_message=ChatMessage(**_format_message(user_msg)),
+            assistant_message=ChatMessage(**_format_message(assistant_msg)),
+        )
+
     # Fetch conversation history
     history = await message_repo.get_recent_for_context(pool, conversation_id, 11)
     history = [m for m in history if m["id"] != user_msg["id"]]
     history = history[-10:]
 
-    # Enhance system instructions with memories
+    # Compose soul file prompt
     metadata = conv.get("metadata")
     if isinstance(metadata, str):
         try:
@@ -407,7 +425,6 @@ async def send_message(
     )
 
     # Call AI model
-    is_nsfw = inf.get("is_nsfw", False)
     llm_result = await ai_client.generate_response(
         system_instructions=system_instructions,
         conversation_history=history,
