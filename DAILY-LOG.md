@@ -73,12 +73,38 @@ Set LANGFUSE_SECRET_KEY, LANGFUSE_PUBLIC_KEY, and LANGFUSE_HOST env vars on the 
 - Added `redis==5.2.1` to requirements
 - Subscriber started in main.py lifespan, cancelled on shutdown
 
+## 2026-05-26 — Phase 2.2: LLM Client Abstraction
+- Added `LlmResponse` frozen dataclass (content, provider, model, input_tokens, output_tokens, latency_ms, is_fallback)
+- `generate_response()` returns `LlmResponse` instead of raw tuple
+- Provider + model info preserved for observability
+
+## 2026-05-26 — Phase 2.3: Soul File 4-Layer Composer
+- `app/services/soul_file.py` — composes prompts from 4 layers:
+  L1 (Global rules) → L2 (Archetype: companion/advisor/entertainer/educator/creator) → L3 (Per-influencer system_instructions) → L4 (Per-user memories)
+- Deterministic output enables provider-side prompt caching
+- Integrated into send-message flow
+
+## 2026-05-26 — Phase 2.4: Enhanced Memory Extraction
+- Structured categories: identity, preferences, goals, context, emotional
+- Explicit-facts-only rule (no inferences from conversation)
+- Concise values (under 50 chars)
+- Correction-aware: user corrections override old memories
+
 ## PRs merged
 - **#158** (Phase 0 + Phase 1): squash-merged to main
 - **#159** (Codex review workflow): squash-merged to main
+- **#160** (Phase 2.1 + 2.5 + 2.6): squash-merged to main
 
-## Open PR
-- **agent/phase-2** branch: Phase 2.1 (Langfuse) + 2.5 (Request ID) + 2.6 (Redis WS pub/sub)
+## Phase 2 status
+| # | Feature | Status |
+|---|---------|--------|
+| 2.1 | Langfuse tracing | Merged (#160) |
+| 2.2 | LLM client abstraction | In PR |
+| 2.3 | Soul File 4-layer composer | In PR |
+| 2.4 | Memory enhancement | In PR |
+| 2.5 | Request ID tracing | Merged (#160) |
+| 2.6 | Redis WebSocket pub/sub | Merged (#160) |
+| 2.7 | Streaming responses (SSE) | Deferred — needs mobile coordination |
 
 ### Next steps (Rishi)
 1. ETL: take pg_dump of chat-ai DB, run `scripts/etl-from-chat-ai.sh` to load data
