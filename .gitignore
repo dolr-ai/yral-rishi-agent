@@ -1,15 +1,12 @@
-# macOS metadata junk — never useful, always noise
 .DS_Store
 **/.DS_Store
 
-# Editor junk
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# Python build artifacts
 __pycache__/
 *.py[cod]
 *$py.class
@@ -20,21 +17,18 @@ __pycache__/
 .venv/
 venv/
 
-# Secrets — NEVER commit these (actual values live in GitHub Secrets + Vault per constraint D1)
 .env
 .env.local
 .env.*.local
 *.pem
 *.key
 !.env.example
+secrets/
 
-# Node artifacts (if we ever have any JS)
 node_modules/
 
-# Docker
 *.docker-volume
 
-# Claude Code runtime state — never useful in repo, gets recreated locally
 .claude/scheduled_tasks.lock
 .claude/local-state/
 .claude/cache/

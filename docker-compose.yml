@@ -1,0 +1,62 @@
+services:
+  app:
+    image: ${IMAGE_REPO:-ghcr.io/dolr-ai/yral-rishi-agent}:${IMAGE_TAG:-latest}
+    container_name: ${PROJECT_REPO:-yral-rishi-agent}
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 10G
+          cpus: '4.0'
+    expose:
+      - "8000"
+    networks:
+      web:
+      db-internal:
+        aliases:
+          - ${PROJECT_REPO:-yral-rishi-agent}-${SERVER_NAME:-local}
+    environment:
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_RELEASE: ${IMAGE_TAG:-unknown}
+      SENTRY_ENVIRONMENT: production
+      SENTRY_TRACES_RATE: "1.0"
+      SENTRY_PROFILES_RATE: "0.05"
+      PROJECT_REPO: ${PROJECT_REPO:-yral-rishi-agent}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_S3_BUCKET: ${AWS_S3_BUCKET:-}
+      AWS_REGION: ${AWS_REGION:-eu-central-1}
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-}
+      S3_PUBLIC_URL_BASE: ${S3_PUBLIC_URL_BASE:-}
+      REPLICATE_API_TOKEN: ${REPLICATE_API_TOKEN:-}
+      METADATA_URL: ${METADATA_URL:-https://metadata.yral.com}
+      YRAL_METADATA_NOTIFICATION_API_KEY: ${YRAL_METADATA_NOTIFICATION_API_KEY:-}
+      ADMIN_KEY_TO_DELETE_INFLUENCER: ${ADMIN_KEY_TO_DELETE_INFLUENCER:-}
+      GOOGLE_CHAT_WEBHOOK_URL: ${GOOGLE_CHAT_WEBHOOK_URL:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+    secrets:
+      - database_url
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health',timeout=5).status==200 else 1)"
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+
+secrets:
+  database_url:
+    file: ./secrets/database_url
+
+networks:
+  web:
+    external: true
+  db-internal:
+    external: true
+    name: ${OVERLAY_NETWORK:-db-internal}
