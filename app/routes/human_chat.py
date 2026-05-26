@@ -28,6 +28,7 @@ def _format_message(msg: dict) -> dict:
 
     if media_urls:
         from services import storage
+
         media_urls = [storage.generate_presigned_url(u) for u in media_urls if u]
         if not any(media_urls):
             media_urls = None
@@ -35,6 +36,7 @@ def _format_message(msg: dict) -> dict:
     audio_url = msg.get("audio_url")
     if audio_url and not audio_url.startswith("http"):
         from services import storage
+
         audio_url = storage.generate_presigned_url(audio_url)
 
     created_at = msg["created_at"]
@@ -65,7 +67,9 @@ async def create_human_conversation(request: Request):
     if not participant_id:
         raise HTTPException(status_code=422, detail="participant_id is required")
     if participant_id == user_id:
-        raise HTTPException(status_code=422, detail="Cannot create conversation with yourself")
+        raise HTTPException(
+            status_code=422, detail="Cannot create conversation with yourself"
+        )
 
     existing = await pool.fetchrow(
         """
@@ -76,7 +80,8 @@ async def create_human_conversation(request: Request):
           AND ((user_id = $1 AND participant_b_id = $2)
                OR (user_id = $2 AND participant_b_id = $1))
         """,
-        user_id, participant_id,
+        user_id,
+        participant_id,
     )
 
     if existing:
@@ -86,8 +91,12 @@ async def create_human_conversation(request: Request):
             "user_id": existing["user_id"],
             "conversation_type": "human_chat",
             "participant_b_id": existing["participant_b_id"],
-            "created_at": existing["created_at"].isoformat() if isinstance(existing["created_at"], datetime) else str(existing["created_at"]),
-            "updated_at": existing["updated_at"].isoformat() if isinstance(existing["updated_at"], datetime) else str(existing["updated_at"]),
+            "created_at": existing["created_at"].isoformat()
+            if isinstance(existing["created_at"], datetime)
+            else str(existing["created_at"]),
+            "updated_at": existing["updated_at"].isoformat()
+            if isinstance(existing["updated_at"], datetime)
+            else str(existing["updated_at"]),
             "message_count": msg_count,
         }
 
@@ -97,7 +106,9 @@ async def create_human_conversation(request: Request):
         INSERT INTO conversations (id, user_id, conversation_type, participant_b_id)
         VALUES ($1, $2, 'human_chat', $3)
         """,
-        conversation_id, user_id, participant_id,
+        conversation_id,
+        user_id,
+        participant_id,
     )
 
     return {
@@ -136,7 +147,9 @@ async def list_human_conversations(
         ORDER BY c.updated_at DESC
         LIMIT $2 OFFSET $3
         """,
-        user_id, limit, offset,
+        user_id,
+        limit,
+        offset,
     )
 
     total = await pool.fetchval(
@@ -151,22 +164,37 @@ async def list_human_conversations(
     conversations = []
     for r in rows:
         peer_id = r["participant_b_id"] if r["user_id"] == user_id else r["user_id"]
-        created_at = r["created_at"].isoformat() if isinstance(r["created_at"], datetime) else str(r["created_at"])
-        updated_at = r["updated_at"].isoformat() if isinstance(r["updated_at"], datetime) else str(r["updated_at"])
+        created_at = (
+            r["created_at"].isoformat()
+            if isinstance(r["created_at"], datetime)
+            else str(r["created_at"])
+        )
+        updated_at = (
+            r["updated_at"].isoformat()
+            if isinstance(r["updated_at"], datetime)
+            else str(r["updated_at"])
+        )
 
-        conversations.append({
-            "id": r["id"],
-            "user_id": r["user_id"],
-            "conversation_type": "human_chat",
-            "participant_b_id": r["participant_b_id"],
-            "peer_id": peer_id,
-            "created_at": created_at,
-            "updated_at": updated_at,
-            "message_count": r["message_count"],
-            "unread_count": r.get("unread_count", 0),
-        })
+        conversations.append(
+            {
+                "id": r["id"],
+                "user_id": r["user_id"],
+                "conversation_type": "human_chat",
+                "participant_b_id": r["participant_b_id"],
+                "peer_id": peer_id,
+                "created_at": created_at,
+                "updated_at": updated_at,
+                "message_count": r["message_count"],
+                "unread_count": r.get("unread_count", 0),
+            }
+        )
 
-    return {"conversations": conversations, "total": total, "limit": limit, "offset": offset}
+    return {
+        "conversations": conversations,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.post("/conversations/{conversation_id}/messages")
@@ -193,12 +221,19 @@ async def send_human_message(conversation_id: str, request: Request):
     if conv["user_id"] != user_id and conv["participant_b_id"] != user_id:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    recipient_id = conv["participant_b_id"] if conv["user_id"] == user_id else conv["user_id"]
+    recipient_id = (
+        conv["participant_b_id"] if conv["user_id"] == user_id else conv["user_id"]
+    )
 
     if client_message_id:
-        existing = await message_repo.get_by_client_id(pool, conversation_id, client_message_id)
+        existing = await message_repo.get_by_client_id(
+            pool, conversation_id, client_message_id
+        )
         if existing:
-            return {"user_message": _format_message(existing), "assistant_message": None}
+            return {
+                "user_message": _format_message(existing),
+                "assistant_message": None,
+            }
 
     user_msg = await message_repo.create(
         pool,
@@ -215,20 +250,29 @@ async def send_human_message(conversation_id: str, request: Request):
 
     formatted_msg = _format_message(user_msg)
 
-    asyncio.create_task(websocket_manager.broadcast_new_message(
-        user_id=recipient_id,
-        conversation_id=conversation_id,
-        message=formatted_msg,
-        influencer={"id": user_id, "display_name": user_id[:8] + "...", "avatar_url": None, "is_online": True},
-        unread_count=await message_repo.count_unread(pool, conversation_id),
-    ))
+    asyncio.create_task(
+        websocket_manager.broadcast_new_message(
+            user_id=recipient_id,
+            conversation_id=conversation_id,
+            message=formatted_msg,
+            influencer={
+                "id": user_id,
+                "display_name": user_id[:8] + "...",
+                "avatar_url": None,
+                "is_online": True,
+            },
+            unread_count=await message_repo.count_unread(pool, conversation_id),
+        )
+    )
 
-    asyncio.create_task(push_notifications.send_new_message_notification(
-        user_id=recipient_id,
-        influencer_name="Someone",
-        message_content=content or "[Media message]",
-        conversation_id=conversation_id,
-        influencer_id=user_id,
-    ))
+    asyncio.create_task(
+        push_notifications.send_new_message_notification(
+            user_id=recipient_id,
+            influencer_name="Someone",
+            message_content=content or "[Media message]",
+            conversation_id=conversation_id,
+            influencer_id=user_id,
+        )
+    )
 
     return {"user_message": formatted_msg, "assistant_message": None}

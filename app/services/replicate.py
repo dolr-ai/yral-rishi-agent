@@ -25,7 +25,9 @@ async def generate_image(prompt: str, aspect_ratio: str = "1:1") -> str | None:
 
 
 async def generate_image_with_reference(
-    prompt: str, reference_image_url: str, aspect_ratio: str = "9:16",
+    prompt: str,
+    reference_image_url: str,
+    aspect_ratio: str = "9:16",
 ) -> str | None:
     if not config.REPLICATE_API_TOKEN:
         return None
@@ -60,7 +62,9 @@ async def _run_prediction(model: str, input_data: dict) -> str | None:
                 },
             )
             if response.status_code >= 400:
-                logger.error(f"Replicate API error: {response.status_code} — {response.text}")
+                logger.error(
+                    f"Replicate API error: {response.status_code} — {response.text}"
+                )
                 return None
 
             data = response.json()

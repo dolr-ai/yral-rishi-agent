@@ -10,8 +10,15 @@ from sentry_sdk.integrations.logging import LoggingIntegration
 from sentry_sdk.integrations.starlette import StarletteIntegration
 
 _SENSITIVE_QUERY_KEYS = {
-    "key", "api_key", "apikey", "token", "access_token",
-    "auth", "secret", "password", "signature",
+    "key",
+    "api_key",
+    "apikey",
+    "token",
+    "access_token",
+    "auth",
+    "secret",
+    "password",
+    "signature",
 }
 
 _URL_IN_TEXT_RE = re.compile(r"https?://\S+")
@@ -60,7 +67,12 @@ def _scrub_event(event, _hint):
             tags["url"] = _redact_url(tags["url"])
     elif isinstance(tags, list):
         for tag in tags:
-            if isinstance(tag, list) and len(tag) == 2 and tag[0] == "url" and isinstance(tag[1], str):
+            if (
+                isinstance(tag, list)
+                and len(tag) == 2
+                and tag[0] == "url"
+                and isinstance(tag[1], str)
+            ):
                 tag[1] = _redact_url(tag[1])
 
     bc = event.get("breadcrumbs")

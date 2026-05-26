@@ -10,7 +10,13 @@ from auth import get_current_user
 from repositories import influencer_repo, conversation_repo, message_repo
 import httpx
 
-from services import ai_client, push_notifications, websocket_manager, storage, replicate
+from services import (
+    ai_client,
+    push_notifications,
+    websocket_manager,
+    storage,
+    replicate,
+)
 from models import SendMessageResponse, ChatMessage
 
 logger = logging.getLogger(__name__)
@@ -48,10 +54,13 @@ def _format_message(msg: dict) -> dict:
     }
 
 
-def _format_conversation(conv: dict, message_count: int = 0,
-                         last_message: dict | None = None,
-                         recent_messages: list[dict] | None = None,
-                         show_suggestions: bool = False) -> dict:
+def _format_conversation(
+    conv: dict,
+    message_count: int = 0,
+    last_message: dict | None = None,
+    recent_messages: list[dict] | None = None,
+    show_suggestions: bool = False,
+) -> dict:
     suggested = conv.get("inf_suggested_messages")
     if isinstance(suggested, str):
         try:
@@ -122,7 +131,8 @@ async def create_conversation(body: dict, request: Request):
         recent = await message_repo.get_recent_for_context(pool, existing["id"], 10)
         formatted_recent = [_format_message(m) for m in recent] if recent else None
         return _format_conversation(
-            existing, message_count=msg_count,
+            existing,
+            message_count=msg_count,
             recent_messages=formatted_recent,
             show_suggestions=True,
         )
@@ -145,7 +155,8 @@ async def create_conversation(body: dict, request: Request):
     formatted_recent = [_format_message(m) for m in recent] if recent else None
 
     return _format_conversation(
-        conv, message_count=msg_count,
+        conv,
+        message_count=msg_count,
         recent_messages=formatted_recent,
         show_suggestions=True,
     )
@@ -162,7 +173,11 @@ async def list_conversations(
     pool = await get_pool()
 
     conversations = await conversation_repo.list_by_user(
-        pool, user_id, influencer_id, limit, offset,
+        pool,
+        user_id,
+        influencer_id,
+        limit,
+        offset,
     )
     total = await conversation_repo.count_by_user(pool, user_id, influencer_id)
 
@@ -171,7 +186,9 @@ async def list_conversations(
 
     conv_ids = [c["id"] for c in conversations]
     last_messages = await conversation_repo.get_last_messages_batch(pool, conv_ids)
-    recent_messages = await message_repo.get_recent_for_conversations_batch(pool, conv_ids, 10)
+    recent_messages = await message_repo.get_recent_for_conversations_batch(
+        pool, conv_ids, 10
+    )
 
     last_msg_map = {}
     for lm in last_messages:
@@ -196,14 +213,22 @@ async def list_conversations(
         msg_count = c.get("message_count", 0)
         last_msg = last_msg_map.get(c["id"])
         recent = recent_map.get(c["id"])
-        formatted.append(_format_conversation(
-            c, message_count=msg_count,
-            last_message=last_msg,
-            recent_messages=recent,
-            show_suggestions=True,
-        ))
+        formatted.append(
+            _format_conversation(
+                c,
+                message_count=msg_count,
+                last_message=last_msg,
+                recent_messages=recent,
+                show_suggestions=True,
+            )
+        )
 
-    return {"conversations": formatted, "total": total, "limit": limit, "offset": offset}
+    return {
+        "conversations": formatted,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.get("/conversations/{conversation_id}/messages")
@@ -224,7 +249,11 @@ async def list_messages(
         raise HTTPException(status_code=403, detail="Access denied")
 
     messages = await message_repo.list_by_conversation(
-        pool, conversation_id, limit, offset, order,
+        pool,
+        conversation_id,
+        limit,
+        offset,
+        order,
     )
     total = await message_repo.count_by_conversation(pool, conversation_id)
 
@@ -262,7 +291,9 @@ async def delete_conversation(conversation_id: str, request: Request):
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
     if conv["user_id"] != user_id:
-        raise HTTPException(status_code=403, detail="Only the conversation creator can delete it")
+        raise HTTPException(
+            status_code=403, detail="Only the conversation creator can delete it"
+        )
 
     msg_count = await message_repo.delete_by_conversation(pool, conversation_id)
     await conversation_repo.delete(pool, conversation_id)
@@ -277,7 +308,9 @@ async def delete_conversation(conversation_id: str, request: Request):
 
 @router.post("/conversations/{conversation_id}/messages")
 async def send_message(
-    conversation_id: str, body: dict, request: Request,
+    conversation_id: str,
+    body: dict,
+    request: Request,
 ):
     user_id = get_current_user(request)
     pool = await get_pool()
@@ -299,7 +332,9 @@ async def send_message(
     # Deduplication
     client_message_id = body.get("client_message_id")
     if client_message_id:
-        existing = await message_repo.get_by_client_id(pool, conversation_id, client_message_id)
+        existing = await message_repo.get_by_client_id(
+            pool, conversation_id, client_message_id
+        )
         if existing:
             reply = await message_repo.get_assistant_reply(pool, existing["id"])
             return {
@@ -363,8 +398,10 @@ async def send_message(
 
     # Typing indicator START
     await websocket_manager.broadcast_typing_status(
-        user_id=user_id, conversation_id=conversation_id,
-        influencer_id=influencer_id, is_typing=True,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        influencer_id=influencer_id,
+        is_typing=True,
     )
 
     # Call AI model
@@ -379,8 +416,10 @@ async def send_message(
 
     # Typing indicator STOP
     await websocket_manager.broadcast_typing_status(
-        user_id=user_id, conversation_id=conversation_id,
-        influencer_id=influencer_id, is_typing=False,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        influencer_id=influencer_id,
+        is_typing=False,
     )
 
     # Save AI response
@@ -395,31 +434,42 @@ async def send_message(
     )
 
     # Background tasks: memory extraction + push notification + WS broadcast
-    asyncio.create_task(_background_memory_extraction(
-        pool, conversation_id, content or "", response_text, memories, is_nsfw,
-    ))
+    asyncio.create_task(
+        _background_memory_extraction(
+            pool,
+            conversation_id,
+            content or "",
+            response_text,
+            memories,
+            is_nsfw,
+        )
+    )
 
     unread_count = await message_repo.count_unread(pool, conversation_id)
-    asyncio.create_task(websocket_manager.broadcast_new_message(
-        user_id=user_id,
-        conversation_id=conversation_id,
-        message=_format_message(assistant_msg),
-        influencer={
-            "id": influencer_id,
-            "display_name": inf.get("display_name", ""),
-            "avatar_url": inf.get("avatar_url"),
-            "is_online": True,
-        },
-        unread_count=unread_count,
-    ))
+    asyncio.create_task(
+        websocket_manager.broadcast_new_message(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            message=_format_message(assistant_msg),
+            influencer={
+                "id": influencer_id,
+                "display_name": inf.get("display_name", ""),
+                "avatar_url": inf.get("avatar_url"),
+                "is_online": True,
+            },
+            unread_count=unread_count,
+        )
+    )
 
-    asyncio.create_task(push_notifications.send_new_message_notification(
-        user_id=user_id,
-        influencer_name=inf.get("display_name", "AI"),
-        message_content=response_text,
-        conversation_id=conversation_id,
-        influencer_id=influencer_id,
-    ))
+    asyncio.create_task(
+        push_notifications.send_new_message_notification(
+            user_id=user_id,
+            influencer_name=inf.get("display_name", "AI"),
+            message_content=response_text,
+            conversation_id=conversation_id,
+            influencer_id=influencer_id,
+        )
+    )
 
     return SendMessageResponse(
         user_message=ChatMessage(**_format_message(user_msg)),
@@ -428,25 +478,38 @@ async def send_message(
 
 
 async def _background_memory_extraction(
-    pool, conversation_id: str, user_message: str,
-    assistant_response: str, existing_memories: dict, is_nsfw: bool,
+    pool,
+    conversation_id: str,
+    user_message: str,
+    assistant_response: str,
+    existing_memories: dict,
+    is_nsfw: bool,
 ):
     try:
         updated_memories = await ai_client.extract_memories(
-            user_message, assistant_response, existing_memories, is_nsfw,
+            user_message,
+            assistant_response,
+            existing_memories,
+            is_nsfw,
         )
         if updated_memories != existing_memories:
             await conversation_repo.update_metadata(
-                pool, conversation_id, {"memories": updated_memories},
+                pool,
+                conversation_id,
+                {"memories": updated_memories},
             )
     except Exception as e:
         logger.warning(f"Memory extraction failed (non-fatal): {e}")
 
 
 async def _generate_image_prompt_from_context(pool, conversation_id: str) -> str:
-    messages = await message_repo.list_by_conversation(pool, conversation_id, limit=10, offset=0, order="desc")
+    messages = await message_repo.list_by_conversation(
+        pool, conversation_id, limit=10, offset=0, order="desc"
+    )
     messages.reverse()
-    context_lines = [f"{m['role']}: {m['content']}" for m in messages if m.get("content")]
+    context_lines = [
+        f"{m['role']}: {m['content']}" for m in messages if m.get("content")
+    ]
     context_str = "\n".join(context_lines)
 
     system = (
@@ -469,7 +532,9 @@ async def _generate_image_prompt_from_context(pool, conversation_id: str) -> str
 
 @router.post("/conversations/{conversation_id}/images", status_code=201)
 async def generate_conversation_image(
-    conversation_id: str, body: dict, request: Request,
+    conversation_id: str,
+    body: dict,
+    request: Request,
 ):
     import config
 
@@ -477,7 +542,9 @@ async def generate_conversation_image(
     pool = await get_pool()
 
     if not config.REPLICATE_API_TOKEN:
-        raise HTTPException(status_code=503, detail="Image generation service not available")
+        raise HTTPException(
+            status_code=503, detail="Image generation service not available"
+        )
 
     conv = await conversation_repo.get_by_id(pool, conversation_id)
     if not conv:
@@ -492,7 +559,10 @@ async def generate_conversation_image(
     if not inf:
         raise HTTPException(status_code=404, detail="Influencer not found")
     if inf.get("is_active") == "discontinued":
-        raise HTTPException(status_code=403, detail="This bot has been deleted and can no longer generate images.")
+        raise HTTPException(
+            status_code=403,
+            detail="This bot has been deleted and can no longer generate images.",
+        )
 
     final_prompt = (body.get("prompt") or "").strip()
     if not final_prompt:
@@ -507,12 +577,16 @@ async def generate_conversation_image(
             input_image_url = storage.generate_presigned_url(avatar_raw) or None
 
     if input_image_url:
-        image_url = await replicate.generate_image_with_reference(final_prompt, input_image_url, aspect_ratio="9:16")
+        image_url = await replicate.generate_image_with_reference(
+            final_prompt, input_image_url, aspect_ratio="9:16"
+        )
     else:
         image_url = await replicate.generate_image(final_prompt, aspect_ratio="9:16")
 
     if not image_url:
-        raise HTTPException(status_code=503, detail="Failed to generate image from upstream provider")
+        raise HTTPException(
+            status_code=503, detail="Failed to generate image from upstream provider"
+        )
 
     try:
         async with httpx.AsyncClient(timeout=30, follow_redirects=True) as http:
@@ -524,12 +598,17 @@ async def generate_conversation_image(
     image_bytes = resp.content
     if not image_bytes:
         raise HTTPException(status_code=503, detail="Generated image was empty")
-    content_type = (resp.headers.get("content-type") or "image/jpeg").split(";")[0].strip()
+    content_type = (
+        (resp.headers.get("content-type") or "image/jpeg").split(";")[0].strip()
+    )
     if not content_type.startswith("image/"):
         content_type = "image/jpeg"
 
     s3_key, _ = await storage.upload(
-        user_id=user_id, file_bytes=image_bytes, file_extension=".jpg", content_type=content_type,
+        user_id=user_id,
+        file_bytes=image_bytes,
+        file_extension=".jpg",
+        content_type=content_type,
     )
 
     msg = await message_repo.create(

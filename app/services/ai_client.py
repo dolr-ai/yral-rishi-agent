@@ -9,7 +9,9 @@ import config
 
 logger = logging.getLogger(__name__)
 
-FALLBACK_ERROR_MESSAGE = "I'm having trouble responding right now. Please try again in a moment."
+FALLBACK_ERROR_MESSAGE = (
+    "I'm having trouble responding right now. Please try again in a moment."
+)
 GEMINI_NATIVE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
 _openrouter_client: AsyncOpenAI | None = None
@@ -36,6 +38,7 @@ def get_openrouter_client() -> AsyncOpenAI | None:
 async def _fetch_image_bytes_and_mime(url: str) -> tuple[str, bytes] | tuple[None, str]:
     if not (url.startswith("http://") or url.startswith("https://")):
         from services import storage as _storage
+
         presigned = _storage.generate_presigned_url(url)
         if not presigned:
             return (None, "missing")
@@ -68,7 +71,9 @@ async def _fetch_and_encode_image(url: str) -> dict:
     mime, data = await _fetch_image_bytes_and_mime(url)
     if mime is None:
         return {"text": f"[image attachment — {data}]"}
-    return {"inlineData": {"mimeType": mime, "data": base64.b64encode(data).decode("ascii")}}
+    return {
+        "inlineData": {"mimeType": mime, "data": base64.b64encode(data).decode("ascii")}
+    }
 
 
 async def _fetch_and_encode_image_openai(url: str) -> dict:
@@ -118,9 +123,19 @@ async def _build_gemini_contents(
                     for url in msg_media[:5]:
                         placeholder_idx = len(parts)
                         parts.append(None)
-                        image_tasks.append((len(contents), placeholder_idx, _fetch_and_encode_image(url)))
+                        image_tasks.append(
+                            (
+                                len(contents),
+                                placeholder_idx,
+                                _fetch_and_encode_image(url),
+                            )
+                        )
                 else:
-                    parts.append({"text": f"[User sent {len(msg_media)} image(s) — see AI's earlier response for description]"})
+                    parts.append(
+                        {
+                            "text": f"[User sent {len(msg_media)} image(s) — see AI's earlier response for description]"
+                        }
+                    )
 
         if parts:
             contents.append({"role": gemini_role, "parts": parts})
@@ -132,7 +147,9 @@ async def _build_gemini_contents(
         for url in media_urls[:5]:
             placeholder_idx = len(user_parts)
             user_parts.append(None)
-            image_tasks.append((len(contents), placeholder_idx, _fetch_and_encode_image(url)))
+            image_tasks.append(
+                (len(contents), placeholder_idx, _fetch_and_encode_image(url))
+            )
     if user_parts:
         contents.append({"role": "user", "parts": user_parts})
 
@@ -142,7 +159,9 @@ async def _build_gemini_contents(
 
         for (content_idx, part_idx, _), result in zip(image_tasks, results):
             if isinstance(result, Exception):
-                contents[content_idx]["parts"][part_idx] = {"text": "[image — failed to load]"}
+                contents[content_idx]["parts"][part_idx] = {
+                    "text": "[image — failed to load]"
+                }
             else:
                 contents[content_idx]["parts"][part_idx] = result
 
@@ -199,7 +218,9 @@ async def _call_gemini(
 
     if not response_text:
         finish_reason = candidates[0].get("finishReason", "UNKNOWN")
-        raise ValueError(f"Gemini returned candidate with no text (finishReason={finish_reason})")
+        raise ValueError(
+            f"Gemini returned candidate with no text (finishReason={finish_reason})"
+        )
 
     usage = data.get("usageMetadata", {})
     token_count = usage.get("candidatesTokenCount", 0)
@@ -209,7 +230,9 @@ async def _call_gemini(
     return response_text, token_count
 
 
-async def _build_user_content(text: str | None, media_urls: list[str] | None) -> str | list:
+async def _build_user_content(
+    text: str | None, media_urls: list[str] | None
+) -> str | list:
     if not media_urls:
         return text or ""
     parts = []
@@ -242,10 +265,22 @@ async def generate_response(
                                 msg_media = json.loads(msg_media)
                             except (json.JSONDecodeError, TypeError):
                                 msg_media = None
-                        messages.append({"role": "user", "content": await _build_user_content(content, msg_media)})
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": await _build_user_content(
+                                    content, msg_media
+                                ),
+                            }
+                        )
                     else:
                         messages.append({"role": "assistant", "content": content or ""})
-                messages.append({"role": "user", "content": await _build_user_content(user_message, media_urls)})
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": await _build_user_content(user_message, media_urls),
+                    }
+                )
 
                 response = await client.chat.completions.create(
                     model=config.OPENROUTER_MODEL,
@@ -255,7 +290,9 @@ async def generate_response(
                 )
                 choices = response.choices or []
                 if not choices:
-                    raise RuntimeError(f"OpenRouter returned no choices (model={config.OPENROUTER_MODEL})")
+                    raise RuntimeError(
+                        f"OpenRouter returned no choices (model={config.OPENROUTER_MODEL})"
+                    )
                 message = choices[0].message
                 response_text = (message.content if message else None) or ""
                 response_text = response_text.strip()
@@ -276,7 +313,10 @@ async def generate_response(
 
     try:
         system_instruction, contents = await _build_gemini_contents(
-            system_instructions, conversation_history, user_message, media_urls,
+            system_instructions,
+            conversation_history,
+            user_message,
+            media_urls,
         )
         response_text, token_count = await _call_gemini(
             contents=contents,
@@ -335,7 +375,10 @@ async def extract_memories(
                 response = await client.chat.completions.create(
                     model=config.OPENROUTER_MODEL,
                     messages=[
-                        {"role": "system", "content": "You are a helpful assistant that returns valid JSON."},
+                        {
+                            "role": "system",
+                            "content": "You are a helpful assistant that returns valid JSON.",
+                        },
                         {"role": "user", "content": prompt},
                     ],
                     max_tokens=1024,
@@ -354,7 +397,9 @@ async def extract_memories(
             return existing_memories
 
         contents = [{"role": "user", "parts": [{"text": prompt}]}]
-        system_instruction = {"parts": [{"text": "You are a helpful assistant that returns valid JSON."}]}
+        system_instruction = {
+            "parts": [{"text": "You are a helpful assistant that returns valid JSON."}]
+        }
 
         response_text, _ = await _call_gemini(
             contents=contents,
@@ -377,6 +422,7 @@ async def extract_memories(
 
 def _is_safe_url(url: str) -> bool:
     from urllib.parse import urlparse
+
     try:
         parsed = urlparse(url)
         if parsed.scheme not in ("http", "https"):
@@ -385,11 +431,27 @@ def _is_safe_url(url: str) -> bool:
         if not host:
             return False
         blocked_prefixes = (
-            "127.", "10.", "192.168.", "0.", "169.254.",
-            "172.16.", "172.17.", "172.18.", "172.19.",
-            "172.20.", "172.21.", "172.22.", "172.23.",
-            "172.24.", "172.25.", "172.26.", "172.27.",
-            "172.28.", "172.29.", "172.30.", "172.31.",
+            "127.",
+            "10.",
+            "192.168.",
+            "0.",
+            "169.254.",
+            "172.16.",
+            "172.17.",
+            "172.18.",
+            "172.19.",
+            "172.20.",
+            "172.21.",
+            "172.22.",
+            "172.23.",
+            "172.24.",
+            "172.25.",
+            "172.26.",
+            "172.27.",
+            "172.28.",
+            "172.29.",
+            "172.30.",
+            "172.31.",
         )
         if any(host.startswith(p) for p in blocked_prefixes):
             return False
@@ -417,15 +479,26 @@ async def transcribe_audio(audio_url: str) -> str | None:
 
             url = f"{GEMINI_NATIVE_URL}/models/{config.GEMINI_MODEL}:generateContent"
             payload = {
-                "contents": [{
-                    "parts": [
-                        {"text": "Please transcribe this audio file accurately. Only return the transcription text without any additional commentary."},
-                        {"inlineData": {"mimeType": content_type, "data": audio_b64}},
-                    ],
-                }],
+                "contents": [
+                    {
+                        "parts": [
+                            {
+                                "text": "Please transcribe this audio file accurately. Only return the transcription text without any additional commentary."
+                            },
+                            {
+                                "inlineData": {
+                                    "mimeType": content_type,
+                                    "data": audio_b64,
+                                }
+                            },
+                        ],
+                    }
+                ],
                 "generationConfig": {"temperature": 0.1, "maxOutputTokens": 4096},
             }
-            response = await http.post(url, json=payload, params={"key": config.GEMINI_API_KEY}, timeout=60)
+            response = await http.post(
+                url, json=payload, params={"key": config.GEMINI_API_KEY}, timeout=60
+            )
             response.raise_for_status()
 
             data = response.json()

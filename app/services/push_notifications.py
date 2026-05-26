@@ -41,6 +41,8 @@ async def send_new_message_notification(
                 },
             )
             if response.status_code >= 400:
-                logger.warning(f"Push notification failed: {response.status_code} for user {user_id}")
+                logger.warning(
+                    f"Push notification failed: {response.status_code} for user {user_id}"
+                )
     except Exception as e:
         logger.warning(f"Push notification error (non-fatal): {e}")

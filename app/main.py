@@ -2,16 +2,24 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
 import sentry_sdk
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
+import config
 import database
 from auth import get_current_user
-import config
 from infra import init_sentry
+from routes.chat import router as chat_router
+from routes.chat_v2 import router as chat_v2_router
+from routes.chat_v3 import router as chat_v3_router
+from routes.health import router as health_router
+from routes.human_chat import router as human_chat_router
+from routes.influencers import router as influencers_router
+from routes.media import router as media_router
+from routes.websocket import router as ws_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -104,11 +112,14 @@ async def capture_validation_error(request: Request, exc: RequestValidationError
         scope.set_tag("http.method", request.method)
         scope.set_tag("http.route", request.url.path)
         scope.fingerprint = ["422", request.method, request.url.path]
-        scope.set_context("validation", {
-            "path": str(request.url.path),
-            "method": request.method,
-            "errors": exc.errors(),
-        })
+        scope.set_context(
+            "validation",
+            {
+                "path": str(request.url.path),
+                "method": request.method,
+                "errors": exc.errors(),
+            },
+        )
         sentry_sdk.capture_message(
             f"422 {request.method} {request.url.path}",
             level="warning",
@@ -122,26 +133,11 @@ async def auth_me(request: Request):
     return {"user_id": user_id}
 
 
-from routes.health import router as health_router
 app.include_router(health_router)
-
-from routes.influencers import router as influencers_router
 app.include_router(influencers_router)
-
-from routes.chat import router as chat_router
 app.include_router(chat_router)
-
-from routes.chat_v2 import router as chat_v2_router
 app.include_router(chat_v2_router)
-
-from routes.media import router as media_router
 app.include_router(media_router)
-
-from routes.human_chat import router as human_chat_router
 app.include_router(human_chat_router)
-
-from routes.chat_v3 import router as chat_v3_router
 app.include_router(chat_v3_router)
-
-from routes.websocket import router as ws_router
 app.include_router(ws_router)

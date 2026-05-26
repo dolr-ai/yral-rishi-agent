@@ -23,8 +23,10 @@ async def _fetch_user_profiles(user_ids: list[str]) -> dict[str, dict]:
     if not user_ids or not config.METADATA_URL:
         return {}
 
-    profiles = {uid: {"principal_id": uid, "username": None, "profile_picture_url": None}
-                for uid in user_ids}
+    profiles = {
+        uid: {"principal_id": uid, "username": None, "profile_picture_url": None}
+        for uid in user_ids
+    }
 
     try:
         url = f"{config.METADATA_URL.rstrip('/')}/metadata-bulk"
@@ -71,16 +73,27 @@ async def list_conversations_v2(
 
 
 async def _list_for_user(
-    pool, user_id: str, influencer_id: str | None,
-    limit: int, offset: int,
+    pool,
+    user_id: str,
+    influencer_id: str | None,
+    limit: int,
+    offset: int,
 ) -> dict:
     conversations = await conversation_repo.list_by_user(
-        pool, user_id, influencer_id, limit, offset,
+        pool,
+        user_id,
+        influencer_id,
+        limit,
+        offset,
     )
     total = await conversation_repo.count_by_user(pool, user_id, influencer_id)
 
     conv_ids = [c["id"] for c in conversations]
-    last_messages = await conversation_repo.get_last_messages_batch(pool, conv_ids) if conv_ids else []
+    last_messages = (
+        await conversation_repo.get_last_messages_batch(pool, conv_ids)
+        if conv_ids
+        else []
+    )
 
     last_msg_map = {}
     for lm in last_messages:
@@ -97,32 +110,48 @@ async def _list_for_user(
             "name": c.get("inf_name") or "",
             "display_name": c.get("inf_display_name") or "",
             "avatar_url": c.get("inf_avatar_url"),
-            "is_online": c.get("inf_is_active") != "discontinued" if c.get("inf_is_active") else True,
+            "is_online": c.get("inf_is_active") != "discontinued"
+            if c.get("inf_is_active")
+            else True,
         }
-        formatted.append({
-            "id": c["id"],
-            "user_id": c["user_id"],
-            "influencer_id": c.get("influencer_id"),
-            "influencer": influencer_info,
-            "user": None,
-            "created_at": _format_dt(c["created_at"]),
-            "updated_at": _format_dt(c["updated_at"]),
-            "message_count": c.get("message_count", 0),
-            "unread_count": c.get("unread_count", 0),
-            "last_message": last_msg_map.get(c["id"]),
-        })
+        formatted.append(
+            {
+                "id": c["id"],
+                "user_id": c["user_id"],
+                "influencer_id": c.get("influencer_id"),
+                "influencer": influencer_info,
+                "user": None,
+                "created_at": _format_dt(c["created_at"]),
+                "updated_at": _format_dt(c["updated_at"]),
+                "message_count": c.get("message_count", 0),
+                "unread_count": c.get("unread_count", 0),
+                "last_message": last_msg_map.get(c["id"]),
+            }
+        )
 
-    return {"conversations": formatted, "total": total, "limit": limit, "offset": offset}
+    return {
+        "conversations": formatted,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 async def _list_for_bot(pool, bot_principal: str, limit: int, offset: int) -> dict:
     conversations = await conversation_repo.list_by_influencer(
-        pool, bot_principal, limit, offset,
+        pool,
+        bot_principal,
+        limit,
+        offset,
     )
     total = await conversation_repo.count_by_influencer(pool, bot_principal)
 
     conv_ids = [c["id"] for c in conversations]
-    last_messages = await conversation_repo.get_last_messages_batch(pool, conv_ids) if conv_ids else []
+    last_messages = (
+        await conversation_repo.get_last_messages_batch(pool, conv_ids)
+        if conv_ids
+        else []
+    )
 
     last_msg_map = {}
     for lm in last_messages:
@@ -137,22 +166,32 @@ async def _list_for_bot(pool, bot_principal: str, limit: int, offset: int) -> di
 
     formatted = []
     for c in conversations:
-        user_info = user_profiles.get(c["user_id"], {
-            "principal_id": c["user_id"],
-            "username": None,
-            "profile_picture_url": None,
-        })
-        formatted.append({
-            "id": c["id"],
-            "user_id": c["user_id"],
-            "influencer_id": c.get("influencer_id") or bot_principal,
-            "influencer": None,
-            "user": user_info,
-            "created_at": _format_dt(c["created_at"]),
-            "updated_at": _format_dt(c["updated_at"]),
-            "message_count": c.get("message_count", 0),
-            "unread_count": c.get("unread_count", 0),
-            "last_message": last_msg_map.get(c["id"]),
-        })
+        user_info = user_profiles.get(
+            c["user_id"],
+            {
+                "principal_id": c["user_id"],
+                "username": None,
+                "profile_picture_url": None,
+            },
+        )
+        formatted.append(
+            {
+                "id": c["id"],
+                "user_id": c["user_id"],
+                "influencer_id": c.get("influencer_id") or bot_principal,
+                "influencer": None,
+                "user": user_info,
+                "created_at": _format_dt(c["created_at"]),
+                "updated_at": _format_dt(c["updated_at"]),
+                "message_count": c.get("message_count", 0),
+                "unread_count": c.get("unread_count", 0),
+                "last_message": last_msg_map.get(c["id"]),
+            }
+        )
 
-    return {"conversations": formatted, "total": total, "limit": limit, "offset": offset}
+    return {
+        "conversations": formatted,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }

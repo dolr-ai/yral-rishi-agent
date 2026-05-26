@@ -19,7 +19,9 @@ async def create(pool, user_id: str, influencer_id: str) -> dict:
         DO NOTHING
         RETURNING id
         """,
-        conversation_id, user_id, influencer_id,
+        conversation_id,
+        user_id,
+        influencer_id,
     )
     if row is None:
         existing = await get_existing(pool, user_id, influencer_id)
@@ -65,14 +67,18 @@ async def get_existing(pool, user_id: str, influencer_id: str) -> dict | None:
         LEFT JOIN ai_influencers i ON c.influencer_id = i.id
         WHERE c.user_id = $1 AND c.influencer_id = $2
         """,
-        user_id, influencer_id,
+        user_id,
+        influencer_id,
     )
     return _row_to_dict(row) if row else None
 
 
 async def list_by_user(
-    pool, user_id: str, influencer_id: str | None = None,
-    limit: int = 20, offset: int = 0,
+    pool,
+    user_id: str,
+    influencer_id: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
 ) -> list[dict]:
     if influencer_id:
         rows = await pool.fetch(
@@ -98,7 +104,10 @@ async def list_by_user(
             ORDER BY c.updated_at DESC
             LIMIT $3 OFFSET $4
             """,
-            user_id, influencer_id, limit, offset,
+            user_id,
+            influencer_id,
+            limit,
+            offset,
         )
     else:
         rows = await pool.fetch(
@@ -124,7 +133,9 @@ async def list_by_user(
             ORDER BY c.updated_at DESC
             LIMIT $2 OFFSET $3
             """,
-            user_id, limit, offset,
+            user_id,
+            limit,
+            offset,
         )
     return [_row_to_dict(r) for r in rows]
 
@@ -139,7 +150,8 @@ async def count_by_user(pool, user_id: str, influencer_id: str | None = None) ->
                   AND i.is_active != 'discontinued'
                   AND c.user_id NOT IN (SELECT id FROM ai_influencers)
             """,
-            user_id, influencer_id,
+            user_id,
+            influencer_id,
         )
     return await pool.fetchval(
         """
@@ -154,7 +166,10 @@ async def count_by_user(pool, user_id: str, influencer_id: str | None = None) ->
 
 
 async def list_by_influencer(
-    pool, influencer_id: str, limit: int = 20, offset: int = 0,
+    pool,
+    influencer_id: str,
+    limit: int = 20,
+    offset: int = 0,
 ) -> list[dict]:
     rows = await pool.fetch(
         """
@@ -171,7 +186,9 @@ async def list_by_influencer(
         ORDER BY c.updated_at DESC
         LIMIT $2 OFFSET $3
         """,
-        influencer_id, limit, offset,
+        influencer_id,
+        limit,
+        offset,
     )
     return [_row_to_dict(r) for r in rows]
 
@@ -211,7 +228,8 @@ async def update_metadata(pool, conversation_id: str, metadata: dict):
         SET metadata = $1, updated_at = NOW()
         WHERE id = $2
         """,
-        json.dumps(metadata), conversation_id,
+        json.dumps(metadata),
+        conversation_id,
     )
 
 

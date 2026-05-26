@@ -21,7 +21,11 @@ async def ws_inbox(websocket: WebSocket, user_id: str, token: str = Query(defaul
     try:
         payload = pyjwt.decode(
             token,
-            options={"verify_signature": False, "verify_aud": False, "verify_exp": True},
+            options={
+                "verify_signature": False,
+                "verify_aud": False,
+                "verify_exp": True,
+            },
             algorithms=["RS256", "HS256"],
         )
     except Exception:
@@ -64,16 +68,29 @@ async def ws_docs():
             "data": {
                 "conversation_id": "string",
                 "message": "MessageResponse object",
-                "influencer": {"id": "string", "display_name": "string", "avatar_url": "string or null", "is_online": True},
+                "influencer": {
+                    "id": "string",
+                    "display_name": "string",
+                    "avatar_url": "string or null",
+                    "is_online": True,
+                },
                 "unread_count": 0,
-            }
+            },
         },
         "conversation_read": {
             "event": "conversation_read",
-            "data": {"conversation_id": "string", "unread_count": 0, "read_at": "ISO timestamp"}
+            "data": {
+                "conversation_id": "string",
+                "unread_count": 0,
+                "read_at": "ISO timestamp",
+            },
         },
         "typing_status": {
             "event": "typing_status",
-            "data": {"conversation_id": "string", "influencer_id": "string", "is_typing": True}
+            "data": {
+                "conversation_id": "string",
+                "influencer_id": "string",
+                "is_typing": True,
+            },
         },
     }

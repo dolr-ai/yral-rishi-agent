@@ -44,8 +44,9 @@ class InfluencerDetailResponse(BaseModel):
 
 # Influencer creation models
 
+
 class CreateInfluencerRequest(BaseModel):
-    name: str = Field(min_length=3, max_length=50, pattern=r'^[a-z0-9_-]+$')
+    name: str = Field(min_length=3, max_length=50, pattern=r"^[a-z0-9_-]+$")
     display_name: str = Field(min_length=1, max_length=255)
     system_instructions: str = Field(min_length=10, max_length=10000)
     bot_principal_id: str = Field(min_length=1, max_length=255)
@@ -60,7 +61,7 @@ class CreateInfluencerRequest(BaseModel):
     metadata: Optional[dict] = None
 
     # Mobile sends TitleCase names — lowercase before pattern validation
-    @field_validator('name', mode='before')
+    @field_validator("name", mode="before")
     @classmethod
     def lowercase_name(cls, v):
         if isinstance(v, str):
@@ -112,6 +113,7 @@ class GenerateVideoPromptResponse(BaseModel):
 
 
 # Conversation models
+
 
 class ConversationInfluencer(BaseModel):
     id: str
@@ -172,6 +174,7 @@ class DeleteConversationResponse(BaseModel):
 
 # Message models
 
+
 class SendMessageRequest(BaseModel):
     content: Optional[str] = Field(default=None, max_length=50000)
     message_type: Literal["text", "multimodal", "image", "audio"] = "text"
@@ -200,6 +203,7 @@ class ConversationMessagesResponse(BaseModel):
 
 # Media upload models
 
+
 class UploadResponse(BaseModel):
     url: str
     storage_key: str
@@ -210,6 +214,7 @@ class UploadResponse(BaseModel):
 
 
 # Human chat models
+
 
 class CreateHumanConversationRequest(BaseModel):
     participant_id: str

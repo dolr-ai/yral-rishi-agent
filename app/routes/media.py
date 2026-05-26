@@ -20,7 +20,9 @@ async def upload_media(
     user_id = get_current_user(request)
 
     if type not in ("image", "audio"):
-        raise HTTPException(status_code=422, detail="Invalid type. Must be 'image' or 'audio'")
+        raise HTTPException(
+            status_code=422, detail="Invalid type. Must be 'image' or 'audio'"
+        )
 
     file_bytes = await file.read()
     file_name = file.filename or "upload"

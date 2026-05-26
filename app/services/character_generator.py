@@ -2,11 +2,9 @@ import json
 import logging
 from typing import Optional
 
-import sentry_sdk
-
-from services.ai_client import _call_gemini
-from services import replicate
 import config
+from services import replicate
+from services.ai_client import _call_gemini
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +15,11 @@ class GeminiSafetyBlocked(Exception):
 
 def _is_safety_block(exc: BaseException) -> bool:
     msg = str(exc)
-    return "blockReason=" in msg or "no candidates" in msg.lower() or "finishReason=SAFETY" in msg
+    return (
+        "blockReason=" in msg
+        or "no candidates" in msg.lower()
+        or "finishReason=SAFETY" in msg
+    )
 
 
 GENERATE_PROMPT = """You are an expert AI Character Architect. Transform the user's concept into high-fidelity System Instructions.
@@ -122,8 +124,15 @@ _PERMISSIVE_SAFETY_SETTINGS = [
 ]
 
 SAFETY_REFUSAL_PHRASES = [
-    "i cannot create", "i can't create", "sexually suggestive", "inappropriate",
-    "i cannot generate", "i can't generate", "not appropriate", "violates", "harmful",
+    "i cannot create",
+    "i can't create",
+    "sexually suggestive",
+    "inappropriate",
+    "i cannot generate",
+    "i can't generate",
+    "not appropriate",
+    "violates",
+    "harmful",
 ]
 
 
@@ -179,8 +188,21 @@ async def validate_and_generate_metadata(system_instructions: str) -> dict | Non
 
     try:
         text, _ = await _call_gemini(
-            contents=[{"role": "user", "parts": [{"text": f"{VALIDATE_PROMPT}\n\nSystem Instructions:\n{system_instructions}"}]}],
-            system_instruction={"parts": [{"text": "You are a helpful assistant that returns valid JSON."}]},
+            contents=[
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "text": f"{VALIDATE_PROMPT}\n\nSystem Instructions:\n{system_instructions}"
+                        }
+                    ],
+                }
+            ],
+            system_instruction={
+                "parts": [
+                    {"text": "You are a helpful assistant that returns valid JSON."}
+                ]
+            },
             temperature=0.3,
             max_tokens=config.GEMINI_MAX_TOKENS,
             safety_settings=_PERMISSIVE_SAFETY_SETTINGS,
@@ -192,12 +214,17 @@ async def validate_and_generate_metadata(system_instructions: str) -> dict | Non
         end = text.rfind("}") + 1
         if start >= 0 and end > start:
             metadata = json.loads(text[start:end])
-            metadata["avatar_url"] = await _generate_avatar(metadata.get("image_prompt"))
+            metadata["avatar_url"] = await _generate_avatar(
+                metadata.get("image_prompt")
+            )
             return metadata
         return None
     except ValueError as e:
         if _is_safety_block(e):
-            return {"is_valid": False, "reason": "Your concept was flagged as inappropriate."}
+            return {
+                "is_valid": False,
+                "reason": "Your concept was flagged as inappropriate.",
+            }
         logger.exception("Failed to validate and generate metadata")
         return None
     except Exception:
@@ -206,7 +233,8 @@ async def validate_and_generate_metadata(system_instructions: str) -> dict | Non
 
 
 async def generate_initial_greeting(
-    display_name: str, system_instructions: str,
+    display_name: str,
+    system_instructions: str,
 ) -> tuple[str, list[str]]:
     fallback_greeting = f"Hey! I'm {display_name}! How can I help you today?"
     fallback_suggestions = []
@@ -216,11 +244,16 @@ async def generate_initial_greeting(
 
     try:
         prompt = GREETING_PROMPT.format(
-            display_name=display_name, system_instructions=system_instructions,
+            display_name=display_name,
+            system_instructions=system_instructions,
         )
         text, _ = await _call_gemini(
             contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            system_instruction={"parts": [{"text": "You are a helpful assistant that returns valid JSON."}]},
+            system_instruction={
+                "parts": [
+                    {"text": "You are a helpful assistant that returns valid JSON."}
+                ]
+            },
             temperature=0.7,
             max_tokens=config.GEMINI_MAX_TOKENS,
             safety_settings=_PERMISSIVE_SAFETY_SETTINGS,
@@ -229,8 +262,10 @@ async def generate_initial_greeting(
         end = text.rfind("}") + 1
         if start >= 0 and end > start:
             data = json.loads(text[start:end])
-            return (data.get("initial_greeting", fallback_greeting),
-                    data.get("suggested_messages", fallback_suggestions))
+            return (
+                data.get("initial_greeting", fallback_greeting),
+                data.get("suggested_messages", fallback_suggestions),
+            )
         return (fallback_greeting, fallback_suggestions)
     except Exception:
         logger.exception("Failed to generate greeting")
@@ -238,13 +273,15 @@ async def generate_initial_greeting(
 
 
 async def generate_video_prompt(
-    display_name: str, system_instructions: str,
+    display_name: str,
+    system_instructions: str,
 ) -> str | None:
     if not config.GEMINI_API_KEY:
         return None
     try:
         prompt = VIDEO_PROMPT.format(
-            display_name=display_name, system_instructions=system_instructions,
+            display_name=display_name,
+            system_instructions=system_instructions,
         )
         text, _ = await _call_gemini(
             contents=[{"role": "user", "parts": [{"text": prompt}]}],

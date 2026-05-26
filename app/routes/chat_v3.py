@@ -56,7 +56,9 @@ async def list_unified_conversations(
         ORDER BY c.updated_at DESC
         LIMIT $2 OFFSET $3
         """,
-        user_id, limit, offset,
+        user_id,
+        limit,
+        offset,
     )
 
     total = await pool.fetchval(
@@ -75,7 +77,11 @@ async def list_unified_conversations(
     )
 
     conv_ids = [r["id"] for r in rows]
-    last_messages = await conversation_repo.get_last_messages_batch(pool, conv_ids) if conv_ids else []
+    last_messages = (
+        await conversation_repo.get_last_messages_batch(pool, conv_ids)
+        if conv_ids
+        else []
+    )
 
     last_msg_map = {}
     for lm in last_messages:
@@ -124,8 +130,17 @@ async def list_unified_conversations(
         elif conv_type == "human_chat":
             peer_id = r["participant_b_id"] if r["user_id"] == user_id else r["user_id"]
             base["influencer"] = None
-            base["peer_user"] = {"id": peer_id, "display_name": None, "avatar_url": None}
+            base["peer_user"] = {
+                "id": peer_id,
+                "display_name": None,
+                "avatar_url": None,
+            }
 
         conversations.append(base)
 
-    return {"conversations": conversations, "total": total, "limit": limit, "offset": offset}
+    return {
+        "conversations": conversations,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }

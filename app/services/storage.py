@@ -1,6 +1,5 @@
-import uuid
 import logging
-from datetime import datetime
+import uuid
 
 import boto3
 from botocore.config import Config as BotoConfig
@@ -13,9 +12,15 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 AUDIO_EXTENSIONS = {".mp3", ".m4a", ".wav", ".ogg"}
 
 MIME_TYPES = {
-    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
-    ".gif": "image/gif", ".webp": "image/webp", ".mp3": "audio/mpeg",
-    ".m4a": "audio/mp4", ".wav": "audio/wav", ".ogg": "audio/ogg",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".wav": "audio/wav",
+    ".ogg": "audio/ogg",
 }
 
 
@@ -86,6 +91,7 @@ def generate_presigned_url(key: str) -> str:
 
     if key.startswith("http://") or key.startswith("https://"):
         from urllib.parse import urlparse
+
         host = urlparse(key).hostname or ""
         allowed_hosts = ["gateway.storjshare.io"]
         if any(host.endswith(h) for h in allowed_hosts):
@@ -111,7 +117,9 @@ def generate_presigned_url(key: str) -> str:
 def validate_image(filename: str, size: int):
     ext = _get_extension(filename)
     if ext not in IMAGE_EXTENSIONS:
-        raise ValueError(f"Unsupported image format. Allowed: {', '.join(sorted(IMAGE_EXTENSIONS))}")
+        raise ValueError(
+            f"Unsupported image format. Allowed: {', '.join(sorted(IMAGE_EXTENSIONS))}"
+        )
     if size > config.MAX_IMAGE_SIZE_BYTES:
         raise ValueError(f"Image too large. Max: {config.MAX_IMAGE_SIZE_MB}MB")
 
@@ -119,6 +127,8 @@ def validate_image(filename: str, size: int):
 def validate_audio(filename: str, size: int):
     ext = _get_extension(filename)
     if ext not in AUDIO_EXTENSIONS:
-        raise ValueError(f"Unsupported audio format. Allowed: {', '.join(sorted(AUDIO_EXTENSIONS))}")
+        raise ValueError(
+            f"Unsupported audio format. Allowed: {', '.join(sorted(AUDIO_EXTENSIONS))}"
+        )
     if size > config.MAX_AUDIO_SIZE_BYTES:
         raise ValueError(f"Audio too large. Max: {config.MAX_AUDIO_SIZE_MB}MB")

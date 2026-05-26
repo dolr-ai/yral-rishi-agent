@@ -20,16 +20,24 @@ async def send_message(text: str):
 
 
 async def notify_influencer_banned(influencer_id: str, influencer_name: str):
-    await send_message(f"AI Influencer banned\nID: {influencer_id}\nName: {influencer_name}")
+    await send_message(
+        f"AI Influencer banned\nID: {influencer_id}\nName: {influencer_name}"
+    )
 
 
 async def notify_influencer_ban_failed(influencer_id: str, error: str):
-    await send_message(f"Failed to ban AI Influencer\nID: {influencer_id}\nError: {error}")
+    await send_message(
+        f"Failed to ban AI Influencer\nID: {influencer_id}\nError: {error}"
+    )
 
 
 async def notify_influencer_unbanned(influencer_id: str, influencer_name: str):
-    await send_message(f"AI Influencer unbanned\nID: {influencer_id}\nName: {influencer_name}")
+    await send_message(
+        f"AI Influencer unbanned\nID: {influencer_id}\nName: {influencer_name}"
+    )
 
 
 async def notify_influencer_unban_failed(influencer_id: str, error: str):
-    await send_message(f"Failed to unban AI Influencer\nID: {influencer_id}\nError: {error}")
+    await send_message(
+        f"Failed to unban AI Influencer\nID: {influencer_id}\nError: {error}"
+    )

@@ -94,7 +94,8 @@ async def list_all(pool, limit: int = 50, offset: int = 0) -> list[dict]:
         END, created_at DESC
         LIMIT $1 OFFSET $2
         """,
-        limit, offset,
+        limit,
+        offset,
     )
     return [_row_to_dict(r) for r in rows]
 
@@ -121,7 +122,8 @@ async def list_trending(pool, limit: int = 50, offset: int = 0) -> list[dict]:
         ORDER BY message_count DESC, i.created_at DESC
         LIMIT $1 OFFSET $2
         """,
-        limit, offset,
+        limit,
+        offset,
     )
     return [_row_to_dict(r) for r in rows]
 
@@ -169,7 +171,8 @@ async def update_system_prompt(pool, influencer_id: str, instructions: str):
         SET system_instructions = $1, updated_at = NOW()
         WHERE id = $2
         """,
-        instructions, influencer_id,
+        instructions,
+        influencer_id,
     )
 
 

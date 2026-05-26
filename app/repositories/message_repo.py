@@ -60,7 +60,9 @@ async def get_by_id(pool, message_id: str) -> dict | None:
 
 
 async def get_by_client_id(
-    pool, conversation_id: str, client_message_id: str,
+    pool,
+    conversation_id: str,
+    client_message_id: str,
 ) -> dict | None:
     row = await pool.fetchrow(
         """
@@ -70,7 +72,8 @@ async def get_by_client_id(
         FROM messages
         WHERE conversation_id = $1 AND client_message_id = $2
         """,
-        conversation_id, client_message_id,
+        conversation_id,
+        client_message_id,
     )
     return _row_to_dict(row) if row else None
 
@@ -98,8 +101,11 @@ async def get_assistant_reply(pool, message_id: str) -> dict | None:
 
 
 async def list_by_conversation(
-    pool, conversation_id: str,
-    limit: int = 50, offset: int = 0, order: str = "desc",
+    pool,
+    conversation_id: str,
+    limit: int = 50,
+    offset: int = 0,
+    order: str = "desc",
 ) -> list[dict]:
     order_clause = "ASC" if order.lower() == "asc" else "DESC"
     rows = await pool.fetch(
@@ -112,12 +118,16 @@ async def list_by_conversation(
         ORDER BY created_at {order_clause}
         LIMIT $2 OFFSET $3
         """,
-        conversation_id, limit, offset,
+        conversation_id,
+        limit,
+        offset,
     )
     return [_row_to_dict(r) for r in rows]
 
 
-async def get_recent_for_context(pool, conversation_id: str, limit: int = 11) -> list[dict]:
+async def get_recent_for_context(
+    pool, conversation_id: str, limit: int = 11
+) -> list[dict]:
     rows = await pool.fetch(
         """
         SELECT id, conversation_id, role, sender_id, content, message_type,
@@ -128,13 +138,16 @@ async def get_recent_for_context(pool, conversation_id: str, limit: int = 11) ->
         ORDER BY created_at DESC
         LIMIT $2
         """,
-        conversation_id, limit,
+        conversation_id,
+        limit,
     )
     return [_row_to_dict(r) for r in reversed(rows)]
 
 
 async def get_recent_for_conversations_batch(
-    pool, conversation_ids: list[str], limit_per_conv: int = 10,
+    pool,
+    conversation_ids: list[str],
+    limit_per_conv: int = 10,
 ) -> list[dict]:
     if not conversation_ids:
         return []
@@ -156,7 +169,8 @@ async def get_recent_for_conversations_batch(
         WHERE rn <= $2
         ORDER BY conversation_id, created_at ASC
         """,
-        conversation_ids, limit_per_conv,
+        conversation_ids,
+        limit_per_conv,
     )
     return [_row_to_dict(r) for r in rows]
 
