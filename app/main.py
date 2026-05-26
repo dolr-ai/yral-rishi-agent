@@ -127,3 +127,9 @@ app.include_router(health_router)
 
 from routes.influencers import router as influencers_router
 app.include_router(influencers_router)
+
+from routes.chat import router as chat_router
+app.include_router(chat_router)
+
+from routes.chat_v2 import router as chat_v2_router
+app.include_router(chat_v2_router)
