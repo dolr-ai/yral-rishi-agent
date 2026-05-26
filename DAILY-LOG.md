@@ -106,8 +106,22 @@ Set LANGFUSE_SECRET_KEY, LANGFUSE_PUBLIC_KEY, and LANGFUSE_HOST env vars on the 
 | 2.6 | Redis WebSocket pub/sub | Merged (#160) |
 | 2.7 | Streaming responses (SSE) | Deferred — needs mobile coordination |
 
+## 2026-05-26 — ETL: chat-ai → v2 data migration
+- pg_dump from chat-ai DB on rishi-1 → load into yral_agent_db on rishi-5
+- Influencers: 3,941 rows ✓
+- Conversations: 284,763 rows ✓
+- Messages: 3.3M rows (1.2GB dump, loading in progress)
+
+## 2026-05-26 — Phase 3: Content Safety
+- `app/services/content_safety.py` — three safety layers on every user message:
+  1. Crisis detection: self-harm/suicide keywords → helpline response (India, US, intl)
+  2. Prompt injection: regex patterns for jailbreak/DAN mode → blocked
+  3. Adult content filter: NSFW keywords blocked for non-NSFW influencers
+- Integrated into send-message flow: safety check before LLM call
+- Crisis detection runs even for NSFW influencers (always)
+- 14 new tests pass (8 content_safety + 6 soul_file)
+
 ### Next steps (Rishi)
-1. ETL: take pg_dump of chat-ai DB, run `scripts/etl-from-chat-ai.sh` to load data
-2. Motorola test: open debug APK, see influencer catalog, send message, get AI reply
-3. Set REDIS_HOST=redis-primary on Swarm service to enable cross-node WS delivery
-4. Set Langfuse env vars when ready to enable LLM tracing
+1. Motorola test: open debug APK, see influencer catalog, send message, get AI reply
+2. Set REDIS_HOST=redis-primary on Swarm service to enable cross-node WS delivery
+3. Set Langfuse env vars when ready to enable LLM tracing
