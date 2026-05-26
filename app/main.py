@@ -133,3 +133,6 @@ app.include_router(chat_router)
 
 from routes.chat_v2 import router as chat_v2_router
 app.include_router(chat_v2_router)
+
+from routes.media import router as media_router
+app.include_router(media_router)

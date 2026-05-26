@@ -8,7 +8,9 @@ from fastapi import APIRouter, HTTPException, Request, Query
 from database import get_pool
 from auth import get_current_user
 from repositories import influencer_repo, conversation_repo, message_repo
-from services import ai_client, push_notifications, websocket_manager
+import httpx
+
+from services import ai_client, push_notifications, websocket_manager, storage, replicate
 from models import SendMessageResponse, ChatMessage
 
 logger = logging.getLogger(__name__)
@@ -439,3 +441,105 @@ async def _background_memory_extraction(
             )
     except Exception as e:
         logger.warning(f"Memory extraction failed (non-fatal): {e}")
+
+
+async def _generate_image_prompt_from_context(pool, conversation_id: str) -> str:
+    messages = await message_repo.list_by_conversation(pool, conversation_id, limit=10, offset=0, order="desc")
+    messages.reverse()
+    context_lines = [f"{m['role']}: {m['content']}" for m in messages if m.get("content")]
+    context_str = "\n".join(context_lines)
+
+    system = (
+        "You are an AI assistant helping to visualize a scene. Based on "
+        "the recent conversation, generate a detailed image generation "
+        "prompt that captures the current context, action, or requested "
+        "visual. Output ONLY the prompt, no other text."
+    )
+    user = f"Conversation Context:\n{context_str}\n\nGenerate an image prompt:"
+
+    text, _, _ = await ai_client.generate_response(
+        system_instructions=system,
+        conversation_history=[],
+        user_message=user,
+        is_nsfw=False,
+        media_urls=None,
+    )
+    return text.strip()
+
+
+@router.post("/conversations/{conversation_id}/images", status_code=201)
+async def generate_conversation_image(
+    conversation_id: str, body: dict, request: Request,
+):
+    import config
+
+    user_id = get_current_user(request)
+    pool = await get_pool()
+
+    if not config.REPLICATE_API_TOKEN:
+        raise HTTPException(status_code=503, detail="Image generation service not available")
+
+    conv = await conversation_repo.get_by_id(pool, conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if not await _can_access_conversation(pool, user_id, conv):
+        raise HTTPException(status_code=403, detail="Not your conversation")
+
+    influencer_id = conv.get("influencer_id")
+    if not influencer_id:
+        raise HTTPException(status_code=404, detail="Influencer not found")
+    inf = await influencer_repo.get_by_id(pool, influencer_id)
+    if not inf:
+        raise HTTPException(status_code=404, detail="Influencer not found")
+    if inf.get("is_active") == "discontinued":
+        raise HTTPException(status_code=403, detail="This bot has been deleted and can no longer generate images.")
+
+    final_prompt = (body.get("prompt") or "").strip()
+    if not final_prompt:
+        final_prompt = await _generate_image_prompt_from_context(pool, conversation_id)
+
+    avatar_raw = (inf.get("avatar_url") or "").strip()
+    input_image_url: str | None = None
+    if avatar_raw:
+        if avatar_raw.startswith("http"):
+            input_image_url = avatar_raw
+        else:
+            input_image_url = storage.generate_presigned_url(avatar_raw) or None
+
+    if input_image_url:
+        image_url = await replicate.generate_image_with_reference(final_prompt, input_image_url, aspect_ratio="9:16")
+    else:
+        image_url = await replicate.generate_image(final_prompt, aspect_ratio="9:16")
+
+    if not image_url:
+        raise HTTPException(status_code=503, detail="Failed to generate image from upstream provider")
+
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as http:
+            resp = await http.get(image_url)
+            resp.raise_for_status()
+    except Exception:
+        raise HTTPException(status_code=503, detail="Failed to fetch generated image")
+
+    image_bytes = resp.content
+    if not image_bytes:
+        raise HTTPException(status_code=503, detail="Generated image was empty")
+    content_type = (resp.headers.get("content-type") or "image/jpeg").split(";")[0].strip()
+    if not content_type.startswith("image/"):
+        content_type = "image/jpeg"
+
+    s3_key, _ = await storage.upload(
+        user_id=user_id, file_bytes=image_bytes, file_extension=".jpg", content_type=content_type,
+    )
+
+    msg = await message_repo.create(
+        pool,
+        conversation_id=conversation_id,
+        role="assistant",
+        content="",
+        message_type="image",
+        media_urls=[s3_key],
+        sender_id=influencer_id,
+        token_count=0,
+    )
+    return _format_message(msg)
