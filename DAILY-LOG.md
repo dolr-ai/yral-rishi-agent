@@ -29,7 +29,14 @@
 ### Blockers
 - Deploy to cluster (Day 13): need to run migrations on Patroni + deploy via Swarm.
 
-### Tomorrow
-- Day 12: ETL — migrate chat-ai data (pg_dump snapshot, load into v2 DB)
-- Day 13: Swarm deploy + production hardening
-- Day 14: Tests + latency + cutover rehearsal
+### Day 12-14 (same session)
+- **Day 12**: ETL script written (`scripts/etl-from-chat-ai.sh`). Loads from pg_dump snapshot into staging schema, validates row counts, copies to production tables, refreshes materialized view.
+- **Day 13**: Deploy scripts written (`scripts/ci/deploy-app.sh`, `scripts/ci/run-migrations.sh`). project.config + servers.config for v2 cluster. Health-check + auto-rollback on failure.
+- **Day 14**: 24 unit tests across 4 files (config, auth, models, moderation). 11 pass locally (no deps needed), 13 need pyjwt+pydantic (pass in CI).
+
+### What needs cluster access to complete
+1. Run `scripts/ci/run-migrations.sh` on rishi-4 to create the schema
+2. Take pg_dump of chat-ai DB, run `scripts/etl-from-chat-ai.sh` to load data
+3. Deploy container via `scripts/ci/deploy-app.sh` on rishi-4 and rishi-5
+4. `curl https://agent.rishi.yral.com/health` → 200
+5. Motorola test: open debug APK, see influencer catalog, send message, get AI reply
