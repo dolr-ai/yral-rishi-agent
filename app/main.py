@@ -12,6 +12,7 @@ import config
 import database
 from auth import get_current_user
 from infra import init_sentry
+from middleware import RequestIdMiddleware
 from services import langfuse_tracing
 from routes.chat import router as chat_router
 from routes.chat_v2 import router as chat_v2_router
@@ -98,6 +99,7 @@ if config.CORS_ORIGINS == "*":
 else:
     origins = [o.strip() for o in config.CORS_ORIGINS.split(",")]
 
+app.add_middleware(RequestIdMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
