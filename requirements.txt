@@ -9,3 +9,4 @@ python-multipart==0.0.20
 sentry-sdk[fastapi]==2.22.0
 python-dateutil==2.9.0.post0
 langfuse==2.60.2
+redis==5.2.1

@@ -13,7 +13,7 @@ import database
 from auth import get_current_user
 from infra import init_sentry
 from middleware import RequestIdMiddleware
-from services import langfuse_tracing
+from services import langfuse_tracing, websocket_manager
 from routes.chat import router as chat_router
 from routes.chat_v2 import router as chat_v2_router
 from routes.chat_v3 import router as chat_v3_router
@@ -44,13 +44,19 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to initialize database pool at startup: {e}")
 
     trending_refresher_task = asyncio.create_task(_trending_stats_refresher())
+    redis_sub_task = asyncio.create_task(websocket_manager.start_redis_subscriber())
 
     yield
 
     logger.info("Shutting down...")
     trending_refresher_task.cancel()
+    redis_sub_task.cancel()
     try:
         await trending_refresher_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await redis_sub_task
     except asyncio.CancelledError:
         pass
     langfuse_tracing.flush()
