@@ -21,9 +21,14 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install openai
+      - name: Fail if API key is missing
+        if: ${{ secrets.OPENAI_CODEX_API_KEY == '' }}
+        run: |
+          echo "::error::OPENAI_CODEX_API_KEY secret is not set. Codex review cannot run."
+          exit 1
       - name: Run Codex review
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_CODEX_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: python .github/scripts/codex-review.py
