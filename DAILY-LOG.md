@@ -121,7 +121,28 @@ Set LANGFUSE_SECRET_KEY, LANGFUSE_PUBLIC_KEY, and LANGFUSE_HOST env vars on the 
 - Crisis detection runs even for NSFW influencers (always)
 - 14 new tests pass (8 content_safety + 6 soul_file)
 
-### Next steps (Rishi)
-1. Motorola test: open debug APK, see influencer catalog, send message, get AI reply
-2. Set REDIS_HOST=redis-primary on Swarm service to enable cross-node WS delivery
-3. Set Langfuse env vars when ready to enable LLM tracing
+## 2026-05-27 — Langfuse tracing fixed and operational
+- Root cause: Redis auth (WRONGPASS) + Sentinel vs primary confusion + missing S3 creds
+- Fix: pointed Langfuse at redis-primary:6379 with password, Hetzner S3 at fsn1.your-objectstorage.com
+- Langfuse UI live at https://langfuse-agent.rishi.yral.com
+- Traces flowing: status 207, all ingestion succeeding
+
+## 2026-05-27 — Phase 4: Tiered User Memory
+- `migrations/003_user_memories.sql` — user_memories table with category/key/value, per (user, influencer) pair
+- `app/repositories/memory_repo.py` — upsert, get_for_user, get_all (influencer-specific + global)
+- `app/services/memory.py` — extract_and_store() replaces old flat JSON approach, structured categories
+- Send-message flow updated: reads from user_memories table, writes via background extraction
+- pgvector not available on PG15 Spilo — designed for later upgrade (add embedding column)
+
+## 2026-05-27 — Phase 5: Proactive Messages
+- `migrations/004_proactive_messages.sql` — proactive_messages table (scheduling + delivery tracking)
+- `app/services/proactive.py` — generate_proactive_message() uses influencer personality + user memories
+- Trigger types: welcome_back (24h idle), follow_up, morning_greeting
+- find_inactive_conversations() query for cron integration
+- Delivery via existing push notification + WebSocket broadcast
+
+## 2026-05-27 — Phase 6: First-Turn Nudge
+- `app/services/nudge.py` — should_nudge() checks idle time + message count
+- generate_nudge() creates personality-consistent follow-up for idle conversations
+- Triggers: 5 min for 1-2 message convos, 10 min for 3-4 message convos
+- Ready for background task integration
