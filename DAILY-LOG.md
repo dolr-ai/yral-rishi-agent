@@ -145,4 +145,19 @@ Set LANGFUSE_SECRET_KEY, LANGFUSE_PUBLIC_KEY, and LANGFUSE_HOST env vars on the 
 - `app/services/nudge.py` — should_nudge() checks idle time + message count
 - generate_nudge() creates personality-consistent follow-up for idle conversations
 - Triggers: 5 min for 1-2 message convos, 10 min for 3-4 message convos
-- Ready for background task integration
+- Background task wired in main.py _engagement_loop() — runs every 15 min
+
+## 2026-05-27 — Phase 7: Creator Studio
+- `app/routes/creator.py` — 4 endpoints:
+  - GET /creator/influencers — list creator's own bots with stats
+  - GET /creator/influencers/{id}/analytics — conversation/user/message counts, 24h/7d active
+  - GET /creator/influencers/{id}/conversations — Chat-as-Human view
+  - GET /creator/influencers/{id}/soul-file — get editable system instructions
+
+## 2026-05-27 — Phase 8: Creator Monetization
+- `migrations/005_creator_earnings.sql` — creator_earnings table (amount, source, period, status)
+- `app/routes/earnings.py` — 3 endpoints:
+  - GET /creator/earnings — total summary (confirmed/pending/paid_out)
+  - GET /creator/earnings/by-influencer — per-bot breakdown
+  - GET /creator/earnings/history — paginated transaction history
+- Ready for billing.yral.com webhook integration
