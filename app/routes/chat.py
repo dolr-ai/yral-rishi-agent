@@ -36,7 +36,15 @@ def _format_message(msg: dict) -> dict:
     if media_urls == []:
         media_urls = None
 
+    # Presign S3 keys → HTTP URLs so mobile can display images
+    if media_urls:
+        media_urls = [storage.generate_presigned_url(u) for u in media_urls if u]
+        if not any(media_urls):
+            media_urls = None
+
     audio_url = msg.get("audio_url")
+    if audio_url and not audio_url.startswith("http"):
+        audio_url = storage.generate_presigned_url(audio_url)
 
     created_at = msg["created_at"]
     if isinstance(created_at, datetime):
