@@ -13,10 +13,12 @@ import database
 from auth import get_current_user
 from infra import init_sentry
 from middleware import RequestIdMiddleware
-from services import langfuse_tracing, websocket_manager
+from services import langfuse_tracing, nudge, proactive, websocket_manager
 from routes.chat import router as chat_router
 from routes.chat_v2 import router as chat_v2_router
 from routes.chat_v3 import router as chat_v3_router
+from routes.creator import router as creator_router
+from routes.earnings import router as earnings_router
 from routes.health import router as health_router
 from routes.human_chat import router as human_chat_router
 from routes.influencers import router as influencers_router
@@ -45,18 +47,24 @@ async def lifespan(app: FastAPI):
 
     trending_refresher_task = asyncio.create_task(_trending_stats_refresher())
     redis_sub_task = asyncio.create_task(websocket_manager.start_redis_subscriber())
+    engagement_task = asyncio.create_task(_engagement_loop())
 
     yield
 
     logger.info("Shutting down...")
     trending_refresher_task.cancel()
     redis_sub_task.cancel()
+    engagement_task.cancel()
     try:
         await trending_refresher_task
     except asyncio.CancelledError:
         pass
     try:
         await redis_sub_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await engagement_task
     except asyncio.CancelledError:
         pass
     langfuse_tracing.flush()
@@ -92,6 +100,81 @@ async def _trending_stats_refresher():
             logger.info("influencer_trending_stats: concurrent refresh complete")
         except Exception:
             logger.exception("influencer_trending_stats: concurrent refresh failed")
+
+
+async def _engagement_loop():
+    """Run proactive messages + nudges every 15 min.
+
+    Proactive: find conversations idle for 24h, send bot-initiated check-ins.
+    Nudge: find conversations idle for 5-10 min with few messages, send follow-ups.
+    Only one replica should run this — Postgres row-level locking prevents duplicates.
+    """
+    INTERVAL_SEC = 15 * 60
+
+    # Wait 2 min after startup before first run (let the app stabilize)
+    await asyncio.sleep(120)
+
+    while True:
+        try:
+            pool = await database.get_pool()
+
+            # Proactive messages for 24h-idle conversations
+            inactive = await proactive.find_inactive_conversations(
+                pool, hours=24, limit=20
+            )
+            for conv in inactive:
+                try:
+                    await proactive.send_proactive_message(
+                        pool,
+                        influencer_id=conv["influencer_id"],
+                        user_id=conv["user_id"],
+                        conversation_id=conv["id"],
+                        trigger_type="welcome_back",
+                    )
+                except Exception:
+                    logger.debug(f"Proactive send failed for conv {conv['id']}")
+
+            # Nudges for recently idle conversations
+
+            recent_convs = await pool.fetch(
+                """
+                SELECT c.id, c.influencer_id FROM conversations c
+                WHERE c.conversation_type = 'ai_chat'
+                  AND c.influencer_id IS NOT NULL
+                  AND c.updated_at > NOW() - INTERVAL '30 minutes'
+                  AND c.updated_at < NOW() - INTERVAL '5 minutes'
+                LIMIT 50
+                """,
+            )
+            for conv in recent_convs:
+                try:
+                    if await nudge.should_nudge(pool, conv["id"]):
+                        nudge_text = await nudge.generate_nudge(
+                            pool, conv["id"], conv["influencer_id"]
+                        )
+                        if nudge_text:
+                            from repositories import message_repo
+
+                            await message_repo.create(
+                                pool,
+                                conversation_id=conv["id"],
+                                role="assistant",
+                                content=nudge_text,
+                                message_type="text",
+                                sender_id=conv["influencer_id"],
+                            )
+                except Exception:
+                    logger.debug(f"Nudge failed for conv {conv['id']}")
+
+            logger.info(
+                f"Engagement loop: {len(inactive)} proactive, {len(recent_convs)} nudge candidates"
+            )
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception("Engagement loop error (will retry)")
+
+        await asyncio.sleep(INTERVAL_SEC)
 
 
 app = FastAPI(
@@ -150,4 +233,6 @@ app.include_router(chat_v2_router)
 app.include_router(media_router)
 app.include_router(human_chat_router)
 app.include_router(chat_v3_router)
+app.include_router(creator_router)
+app.include_router(earnings_router)
 app.include_router(ws_router)
