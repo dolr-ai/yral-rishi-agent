@@ -161,3 +161,17 @@ Set LANGFUSE_SECRET_KEY, LANGFUSE_PUBLIC_KEY, and LANGFUSE_HOST env vars on the 
   - GET /creator/earnings/by-influencer — per-bot breakdown
   - GET /creator/earnings/history — paginated transaction history
 - Ready for billing.yral.com webhook integration
+
+## 2026-05-27 — Phase 9: Eval Harness
+- `app/eval/gold_prompts.py` — 50 diverse prompts from real chat-ai conversations
+  - Categories: companion, health, astrology, education, business, entertainment, fashion,
+    family, romance, social, lifestyle, arts, food, technology, travel, beauty, gaming, fantasy
+  - Includes Hinglish, Telugu, Hindi prompts for language mirror testing
+  - Edge cases: minimal input, math, translation, "are you AI?" character break test
+- `app/eval/runner.py` — eval harness that:
+  1. Runs each prompt through generate_response()
+  2. Scores response using Gemini-as-judge on 5 criteria (1-5 scale):
+     in_character, helpful, concise, language_match, safe
+  3. Posts scored traces to Langfuse for dashboard analysis
+  4. Prints summary with per-criterion averages
+- Run: `cd app && python -m eval.runner`
