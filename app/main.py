@@ -226,6 +226,30 @@ async def auth_me(request: Request):
     return {"user_id": user_id}
 
 
+@app.get("/api/v1/debug/whoami", tags=["Debug"])
+async def debug_whoami(request: Request):
+    """Temporary: decode JWT and return full payload. Remove before cutover."""
+    import jwt as pyjwt
+
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith(("Bearer ", "bearer ")):
+        return {"error": "No Bearer token"}
+    token = auth_header[7:]
+    try:
+        payload = pyjwt.decode(
+            token,
+            options={
+                "verify_signature": False,
+                "verify_aud": False,
+                "verify_exp": False,
+            },
+            algorithms=["RS256", "HS256"],
+        )
+        return {"payload": payload, "token_length": len(token)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 app.include_router(health_router)
 app.include_router(influencers_router)
 app.include_router(chat_router)
