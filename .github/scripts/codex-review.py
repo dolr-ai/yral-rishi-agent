@@ -29,8 +29,8 @@ Be concise. Only flag things that would break production or confuse the mobile a
 def main():
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        print("OPENAI_API_KEY not set — skipping review")
-        return
+        print("::error::OPENAI_API_KEY not set — Codex review cannot run")
+        sys.exit(1)
 
     diff = subprocess.run(
         ["git", "diff", "origin/main...HEAD", "--", "app/", "infra/"],
