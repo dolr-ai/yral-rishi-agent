@@ -13,6 +13,7 @@ import httpx
 from services import (
     ai_client,
     content_safety,
+    memory,
     push_notifications,
     soul_file,
     websocket_manager,
@@ -401,22 +402,8 @@ async def send_message(
     history = [m for m in history if m["id"] != user_msg["id"]]
     history = history[-10:]
 
-    # Compose soul file prompt
-    metadata = conv.get("metadata")
-    if isinstance(metadata, str):
-        try:
-            metadata = json.loads(metadata)
-        except (json.JSONDecodeError, TypeError):
-            metadata = {}
-    elif metadata is None:
-        metadata = {}
-
-    memories = metadata.get("memories", {})
-    if isinstance(memories, str):
-        try:
-            memories = json.loads(memories)
-        except (json.JSONDecodeError, TypeError):
-            memories = {}
+    # Compose soul file prompt with tiered memories
+    memories = await memory.get_memories_for_prompt(pool, user_id, influencer_id)
 
     system_instructions = soul_file.compose(
         system_instructions=inf.get("system_instructions", ""),
@@ -464,13 +451,14 @@ async def send_message(
 
     # Background tasks: memory extraction + push notification + WS broadcast
     asyncio.create_task(
-        _background_memory_extraction(
+        memory.extract_and_store(
             pool,
-            conversation_id,
-            content or "",
-            llm_result.content,
-            memories,
-            is_nsfw,
+            user_id=user_id,
+            influencer_id=influencer_id,
+            user_message=content or "",
+            assistant_response=llm_result.content,
+            message_id=user_msg["id"],
+            is_nsfw=is_nsfw,
         )
     )
 
@@ -504,31 +492,6 @@ async def send_message(
         user_message=ChatMessage(**_format_message(user_msg)),
         assistant_message=ChatMessage(**_format_message(assistant_msg)),
     )
-
-
-async def _background_memory_extraction(
-    pool,
-    conversation_id: str,
-    user_message: str,
-    assistant_response: str,
-    existing_memories: dict,
-    is_nsfw: bool,
-):
-    try:
-        updated_memories = await ai_client.extract_memories(
-            user_message,
-            assistant_response,
-            existing_memories,
-            is_nsfw,
-        )
-        if updated_memories != existing_memories:
-            await conversation_repo.update_metadata(
-                pool,
-                conversation_id,
-                {"memories": updated_memories},
-            )
-    except Exception as e:
-        logger.warning(f"Memory extraction failed (non-fatal): {e}")
 
 
 async def _generate_image_prompt_from_context(pool, conversation_id: str) -> str:
