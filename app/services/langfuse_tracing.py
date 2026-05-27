@@ -1,31 +1,34 @@
+"""Langfuse LLM tracing via raw HTTP API.
+
+The Langfuse Python SDK v2.60.2 silently fails on self-hosted instances.
+This module uses the raw /api/public/ingestion endpoint instead, which
+we've verified works (status 207, successes=[{status: 201}]).
+"""
+
+import base64
 import logging
+import uuid
+from datetime import datetime, timezone
+
+import httpx
 
 import config
 
 logger = logging.getLogger(__name__)
 
-_langfuse = None
+_auth_header: str | None = None
 
 
-def _get_langfuse():
-    global _langfuse
-    if _langfuse is not None:
-        return _langfuse
+def _get_auth() -> str | None:
+    global _auth_header
+    if _auth_header is not None:
+        return _auth_header
     if not config.LANGFUSE_SECRET_KEY or not config.LANGFUSE_PUBLIC_KEY:
         return None
-    try:
-        from langfuse import Langfuse
-
-        _langfuse = Langfuse(
-            secret_key=config.LANGFUSE_SECRET_KEY,
-            public_key=config.LANGFUSE_PUBLIC_KEY,
-            host=config.LANGFUSE_HOST or "https://cloud.langfuse.com",
-        )
-        logger.info(f"Langfuse initialized (host={config.LANGFUSE_HOST or 'cloud'})")
-        return _langfuse
-    except Exception as e:
-        logger.warning(f"Langfuse init failed (non-fatal): {e}")
-        return None
+    creds = f"{config.LANGFUSE_PUBLIC_KEY}:{config.LANGFUSE_SECRET_KEY}"
+    _auth_header = "Basic " + base64.b64encode(creds.encode()).decode()
+    logger.info(f"Langfuse tracing enabled (host={config.LANGFUSE_HOST})")
+    return _auth_header
 
 
 def trace_generation(
@@ -43,46 +46,68 @@ def trace_generation(
     is_error: bool = False,
     conversation_id: str | None = None,
 ):
-    """Record an LLM generation to Langfuse. No-op if Langfuse is not configured."""
-    lf = _get_langfuse()
-    if lf is None:
+    auth = _get_auth()
+    if auth is None:
         return
 
+    host = config.LANGFUSE_HOST or "https://cloud.langfuse.com"
+    now = datetime.now(timezone.utc).isoformat()
+    trace_id = str(uuid.uuid4())
+    gen_id = str(uuid.uuid4())
+
+    batch = [
+        {
+            "id": trace_id,
+            "type": "trace-create",
+            "timestamp": now,
+            "body": {
+                "id": trace_id,
+                "name": trace_name,
+                "userId": user_id,
+                "metadata": {
+                    "conversation_id": conversation_id,
+                    **(metadata or {}),
+                },
+            },
+        },
+        {
+            "id": gen_id,
+            "type": "generation-create",
+            "timestamp": now,
+            "body": {
+                "id": gen_id,
+                "traceId": trace_id,
+                "name": f"{provider}/{model}",
+                "model": model,
+                "input": input_text[:2000],
+                "output": output_text[:2000],
+                "usage": {
+                    "input": input_tokens,
+                    "output": output_tokens,
+                    "total": input_tokens + output_tokens,
+                },
+                "metadata": {
+                    "provider": provider,
+                    "latency_ms": round(latency_ms, 1),
+                    "is_error": is_error,
+                },
+                "level": "ERROR" if is_error else "DEFAULT",
+            },
+        },
+    ]
+
     try:
-        trace = lf.trace(
-            name=trace_name,
-            user_id=user_id,
-            metadata={
-                "conversation_id": conversation_id,
-                **(metadata or {}),
-            },
+        resp = httpx.post(
+            f"{host}/api/public/ingestion",
+            json={"batch": batch},
+            headers={"Authorization": auth, "Content-Type": "application/json"},
+            timeout=5,
         )
-        trace.generation(
-            name=f"{provider}/{model}",
-            model=model,
-            input=input_text[:2000],
-            output=output_text[:2000],
-            usage={
-                "input": input_tokens,
-                "output": output_tokens,
-                "total": input_tokens + output_tokens,
-            },
-            metadata={
-                "provider": provider,
-                "latency_ms": round(latency_ms, 1),
-                "is_error": is_error,
-            },
-            level="ERROR" if is_error else "DEFAULT",
-        )
+        if resp.status_code not in (200, 207):
+            logger.debug(f"Langfuse ingestion returned {resp.status_code}")
     except Exception as e:
         logger.debug(f"Langfuse trace failed (non-fatal): {e}")
 
 
 def flush():
-    """Flush pending Langfuse events. Call on shutdown."""
-    lf = _get_langfuse()
-    if lf is not None:
-        try:
-            lf.flush()
-        except Exception:
-            pass
+    pass
