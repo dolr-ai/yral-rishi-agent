@@ -12,10 +12,24 @@ from services import langfuse_tracing
 
 logger = logging.getLogger(__name__)
 
-FALLBACK_ERROR_MESSAGE = (
-    "I'm having trouble responding right now. Please try again in a moment."
-)
 GEMINI_NATIVE_URL = "https://generativelanguage.googleapis.com/v1beta"
+
+# Phase 3.8: tailored fallback text by failure class. Mobile reads
+# LlmResponse.error_code to pick icon/color/retry button.
+ERROR_MESSAGES = {
+    "BLOCKED_CONTENT": "I can't reply to that — try asking me something else.",
+    "TRANSIENT": "I'm having trouble connecting right now. Try again in a moment.",
+    "NO_PROVIDER": "Chat is temporarily unavailable. Please try again later.",
+}
+RETRYABLE_CODES = {"TRANSIENT"}
+
+
+class LlmBlockedError(Exception):
+    """Gemini/OpenRouter refused to generate due to safety/policy."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
 
 
 @dataclass(frozen=True)
@@ -27,6 +41,7 @@ class LlmResponse:
     output_tokens: int
     latency_ms: float
     is_fallback: bool = False
+    error_code: str | None = None  # one of ERROR_MESSAGES keys, or None on success
 
 
 _openrouter_client: AsyncOpenAI | None = None
@@ -222,7 +237,8 @@ async def _call_gemini(
     if not candidates:
         feedback = data.get("promptFeedback") or {}
         block_reason = feedback.get("blockReason", "UNKNOWN")
-        raise ValueError(f"Gemini returned no candidates (blockReason={block_reason})")
+        # Phase 3.8: explicit block classification so mobile shows "rephrase" UX.
+        raise LlmBlockedError(f"blockReason={block_reason}")
 
     parts = candidates[0].get("content", {}).get("parts", [])
     response_text = ""
@@ -233,6 +249,11 @@ async def _call_gemini(
 
     if not response_text:
         finish_reason = candidates[0].get("finishReason", "UNKNOWN")
+        # SAFETY / RECITATION / PROHIBITED_CONTENT all mean "we filtered this."
+        # MAX_TOKENS / OTHER are also empty but not policy blocks; treat them as
+        # transient since retry-with-shorter-context could plausibly work.
+        if finish_reason in {"SAFETY", "RECITATION", "PROHIBITED_CONTENT", "BLOCKLIST"}:
+            raise LlmBlockedError(f"finishReason={finish_reason}")
         raise ValueError(
             f"Gemini returned candidate with no text (finishReason={finish_reason})"
         )
@@ -352,13 +373,14 @@ async def generate_response(
     if not config.GEMINI_API_KEY:
         logger.error("No AI client available (GEMINI_API_KEY not set)")
         return LlmResponse(
-            content=FALLBACK_ERROR_MESSAGE,
+            content=ERROR_MESSAGES["NO_PROVIDER"],
             provider="none",
             model="none",
             input_tokens=0,
             output_tokens=0,
             latency_ms=0,
             is_fallback=True,
+            error_code="NO_PROVIDER",
         )
 
     try:
@@ -398,6 +420,30 @@ async def generate_response(
             output_tokens=token_count,
             latency_ms=latency_ms,
         )
+    except LlmBlockedError as e:
+        logger.warning(f"Gemini blocked the response: {e.reason}")
+        elapsed = (time.monotonic() - t0) * 1000 if "t0" in locals() else 0
+        langfuse_tracing.trace_generation(
+            trace_name="chat-response",
+            user_id=user_id,
+            model=config.GEMINI_MODEL,
+            provider="gemini",
+            input_text=user_message,
+            output_text=f"BLOCKED: {e.reason}",
+            latency_ms=elapsed,
+            is_error=True,
+            conversation_id=conversation_id,
+        )
+        return LlmResponse(
+            content=ERROR_MESSAGES["BLOCKED_CONTENT"],
+            provider="gemini",
+            model=config.GEMINI_MODEL,
+            input_tokens=0,
+            output_tokens=0,
+            latency_ms=elapsed,
+            is_fallback=True,
+            error_code="BLOCKED_CONTENT",
+        )
     except Exception as e:
         logger.error(f"Gemini generation failed: {e}")
         elapsed = (time.monotonic() - t0) * 1000 if "t0" in locals() else 0
@@ -413,13 +459,14 @@ async def generate_response(
             conversation_id=conversation_id,
         )
         return LlmResponse(
-            content=FALLBACK_ERROR_MESSAGE,
+            content=ERROR_MESSAGES["TRANSIENT"],
             provider="gemini",
             model=config.GEMINI_MODEL,
             input_tokens=0,
             output_tokens=0,
             latency_ms=elapsed,
             is_fallback=True,
+            error_code="TRANSIENT",
         )
 
 

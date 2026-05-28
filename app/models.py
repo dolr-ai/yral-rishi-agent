@@ -184,9 +184,16 @@ class SendMessageRequest(BaseModel):
     client_message_id: Optional[str] = Field(default=None, max_length=255)
 
 
+class AssistantError(BaseModel):
+    code: Literal["BLOCKED_CONTENT", "TRANSIENT", "NO_PROVIDER"]
+    message: str
+    retryable: bool
+
+
 class SendMessageResponse(BaseModel):
     user_message: ChatMessage
     assistant_message: Optional[ChatMessage] = None
+    error: Optional[AssistantError] = None
 
 
 class GenerateImageRequest(BaseModel):

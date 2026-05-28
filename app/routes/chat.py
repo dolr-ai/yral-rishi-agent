@@ -20,7 +20,7 @@ from services import (
     storage,
     replicate,
 )
-from models import SendMessageResponse, ChatMessage
+from models import SendMessageResponse, ChatMessage, AssistantError
 
 logger = logging.getLogger(__name__)
 
@@ -457,6 +457,21 @@ async def send_message(
         influencer_id=influencer_id,
         is_typing=False,
     )
+
+    # Phase 3.8: graceful error UX. On AI failure, don't persist the fallback
+    # text as a real assistant message — it would pollute LLM context on retry.
+    # Return assistant_message=None with a structured error so mobile can
+    # render it inline with the right icon/color/retry affordance.
+    if llm_result.error_code:
+        return SendMessageResponse(
+            user_message=ChatMessage(**_format_message(user_msg)),
+            assistant_message=None,
+            error=AssistantError(
+                code=llm_result.error_code,
+                message=llm_result.content,
+                retryable=llm_result.error_code in ai_client.RETRYABLE_CODES,
+            ),
+        )
 
     # Save AI response
     assistant_msg = await message_repo.create(
