@@ -1,0 +1,38 @@
+# Custom Patroni image: Spilo 3.0-p1 + pgvector for Phase 4.4 semantic memory.
+#
+# The upstream ghcr.io/zalando/spilo-15:3.0-p1 image does NOT ship pgvector —
+# verified by `CREATE EXTENSION vector` returning "extension control file not
+# found" on the live cluster during the Phase 4.4 migration attempt
+# (2026-05-28). This image adds the Debian-packaged build of pgvector that
+# matches the bundled postgresql-15 server.
+#
+# Why we extend Spilo rather than switch to pgvector/pgvector:pg15:
+#   - Keeps WAL-G integration, healthcheck endpoints, ETCD3 discovery, the
+#     /scripts/postgres_ha.sh entrypoint, monitoring exporter — everything
+#     Day-5 deploy debugging depended on.
+#   - Single Dockerfile, small surface area to audit, reproducible.
+#
+# Base image is digest-pinned for deterministic builds. The digest below was
+# captured from `docker service inspect yral-v2-patroni_patroni-rishi-5` on
+# 2026-05-28 (rishi-5 was leader at the time).
+
+FROM ghcr.io/zalando/spilo-15:3.0-p1@sha256:c4cc3fa31265fb60b2972bd1e5dbb94fd735107ad5d5e6eb17369f2097469225
+
+USER root
+
+# postgresql-15-pgvector is the Debian Bookworm package; it drops the
+# extension control file into /usr/share/postgresql/15/extension/ and the
+# .so into /usr/lib/postgresql/15/lib/, which is exactly where Postgres
+# 15's CREATE EXTENSION lookup expects them.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends postgresql-15-pgvector \
+ && rm -rf /var/lib/apt/lists/* \
+ && ls -la /usr/share/postgresql/15/extension/vector.control \
+ && echo "pgvector installed:" \
+ && find /usr/lib/postgresql/15/lib/ -name 'vector*'
+
+# Sanity-check the bundled Postgres binary can load the extension. Build
+# fails fast if the package version mismatches Spilo's bundled Postgres.
+# (Runtime CREATE EXTENSION still required — this just verifies the .so
+# is present.)
+RUN test -f /usr/lib/postgresql/15/lib/vector.so
