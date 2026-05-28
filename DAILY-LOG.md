@@ -1,5 +1,15 @@
 # Daily Log
 
+## 2026-05-28 (even later) — Phase 4.6 deployed
+
+- pg_dump snapshot: `~/yral-backups/pre-migration-009-userprofile-20260528-213756.dump` (522 MB, SHA256 `ccdc69ff...`)
+- Migration 009 applied on rishi-4 (current leader): unique index rebuilt with `NULLS NOT DISTINCT`. Verified via `\d user_memories`.
+- Image `yral-rishi-agent:phase-4-6` built on rishi-4 + rishi-5, deployed via `docker service update --image --force` — converged in <10s.
+- `scripts/consolidate_identity_memories.py` run: **3 per-influencer identity rows consolidated → 3 global rows, 0 per-influencer remaining**. Idempotency re-verified by running twice; second run reports 0 candidates.
+- 27/27 endpoint suite: PASS, no regressions.
+
+PR #178 merged. Phase 4 progress: 65% done.
+
 ## 2026-05-28 (later) — Phase 4.6: user profile memory
 
 ### What changed
