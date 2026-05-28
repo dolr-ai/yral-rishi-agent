@@ -1,5 +1,11 @@
 # Daily Log
 
+## 2026-05-28 (later still) — Phase 4.5 deployed
+
+- Image `yral-rishi-agent:phase-4-5` built + deployed (no migration, no backfill).
+- 27/27 endpoint suite: PASS on 2 of 3 consecutive runs; one transient hit the GET /messages 2s latency cap (Gemini latency variance). No real regression.
+- PR #180 merged. Phase 4: 78% done.
+
 ## 2026-05-28 (late) — Phase 4.5: cross-conversation memory recall
 
 ### What changed
