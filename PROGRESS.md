@@ -76,10 +76,10 @@
 | 4.3 | Memories injected into Soul File Layer 4 | ✅ Done | — | #165 |
 | 4.4 | pgvector embeddings for semantic search | ✅ Done | — | #174 (backend) + #175 (Patroni-pgvector image) + #176 (Gemini model fix) + swarm env update (multi-host DATABASE_URL) |
 | 4.5 | Cross-conversation memory recall | ⏳ Pending | 2 | — |
-| 4.6 | User profile memory (name, city, job — permanent) | 🔄 In PR | 1 | #178 |
+| 4.6 | User profile memory (name, city, job — permanent) | ✅ Done | — | #178 |
 | 4.7 | Session memory in Redis (short-term) | ⏳ Pending | 1 | — |
 | 4.8 | Memory consolidation (nightly dedup + merge) | ⏳ Pending | 1 | — |
-| **Phase 4 total** | | **52% done** | **5 days left** | |
+| **Phase 4 total** | | **65% done** | **4 days left** | |
 
 ## PHASE 5: PROACTIVE MESSAGES
 | # | Sub-phase | Status | Est. days | PR |
