@@ -51,6 +51,9 @@ async def lifespan(app: FastAPI):
     redis_sub_task = asyncio.create_task(websocket_manager.start_redis_subscriber())
     engagement_task = asyncio.create_task(_engagement_loop())
     takeover_sweep_task = asyncio.create_task(_takeover_timeout_sweep())
+    from services.memory_consolidation import consolidation_loop
+
+    memory_consolidation_task = asyncio.create_task(consolidation_loop())
 
     yield
 
@@ -59,6 +62,7 @@ async def lifespan(app: FastAPI):
     redis_sub_task.cancel()
     engagement_task.cancel()
     takeover_sweep_task.cancel()
+    memory_consolidation_task.cancel()
     try:
         await trending_refresher_task
     except asyncio.CancelledError:
@@ -73,6 +77,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await takeover_sweep_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await memory_consolidation_task
     except asyncio.CancelledError:
         pass
     langfuse_tracing.flush()
