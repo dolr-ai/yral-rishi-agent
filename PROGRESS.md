@@ -1,8 +1,8 @@
 # Master Feature Tracker — yral-rishi-agent v2 (1000x Vision)
 
-**Last updated:** 2026-05-27 evening
-**Codebase:** 6,194 lines Python, 41 files
-**Total phases:** 22 (Phase 0–21) | **Est. total days remaining:** ~55-70 days
+**Last updated:** 2026-05-28 afternoon
+**Codebase:** ~6,500 lines Python (post Chat as Human + graceful error UX)
+**Total phases:** 22 (Phase 0–21) | **Est. total days remaining:** ~50-65 days
 
 ---
 
@@ -65,7 +65,7 @@
 | 3.5 | Age gating / age verification | ⏳ Pending | 2 | — |
 | 3.6 | CSAM detection | ⏳ Pending | 2 | — |
 | 3.7 | Consent flows for sensitive content | ⏳ Pending | 1 | — |
-| 3.8 | Graceful error UX when Gemini blocks (PROHIBITED_CONTENT, etc.) — backend returns friendly fallback message, mobile shows it inline instead of silent failure | ⏳ Pending | 1 | — |
+| 3.8 | Graceful error UX when Gemini blocks (PROHIBITED_CONTENT, etc.) — backend ✅ done (PR #173, top-level `error` object). Mobile portion pending: render `error.message` inline + "Try again" button for retryable errors. To be picked up after Chat as Human PR merges. | ✅ Done (backend) / ⏳ Pending (mobile) | 0.5 | #173 (backend) |
 | **Phase 3 total** | | **38% done** | **9 days left** | |
 
 ## PHASE 4: TIERED MEMORY
@@ -74,12 +74,12 @@
 | 4.1 | user_memories table + migration | ✅ Done | — | #165 |
 | 4.2 | Per-conversation memory extraction via Gemini | ✅ Done | — | #165 |
 | 4.3 | Memories injected into Soul File Layer 4 | ✅ Done | — | #165 |
-| 4.4 | pgvector embeddings for semantic search | ⏳ Pending | 2 | — |
+| 4.4 | pgvector embeddings for semantic search | ✅ Done | — | #174 + #175 (Patroni-pgvector infra) + #176 (model fix) |
 | 4.5 | Cross-conversation memory recall | ⏳ Pending | 2 | — |
 | 4.6 | User profile memory (name, city, job — permanent) | ⏳ Pending | 1 | — |
 | 4.7 | Session memory in Redis (short-term) | ⏳ Pending | 1 | — |
 | 4.8 | Memory consolidation (nightly dedup + merge) | ⏳ Pending | 1 | — |
-| **Phase 4 total** | | **40% done** | **7 days left** | |
+| **Phase 4 total** | | **52% done** | **5 days left** | |
 
 ## PHASE 5: PROACTIVE MESSAGES
 | # | Sub-phase | Status | Est. days | PR |
@@ -333,6 +333,25 @@
 | — | Mobile Client | 11 | 0 | 11 | 21 |
 | — | Infrastructure | 15 | 6 | 9 | — |
 | **TOTAL** | | **168** | **55** | **113** | **~55-70 days** |
+
+---
+
+## INFRASTRUCTURE BACKLOG
+
+Items surfaced during Phase 4.4 rollout (Spilo pgvector + Patroni failover gap). Not urgent — current setup works — but worth tracking for production cutover.
+
+### Infra-X: pgbouncer hardcoded DB_HOST creates failover gap
+**RESOLVED for agent service** via asyncpg `target_session_attrs=read-write` (#177). Agent now connects to all 3 Patroni nodes with the multi-host URL, and asyncpg auto-discovers the writer — verified via switchover round-trip (rishi-4 → rishi-5 → rishi-6 → rishi-4, write succeeded against the new leader every time).
+
+pgbouncer's `DB_HOST: patroni-rishi-4` is still hardcoded, so any **future** service that goes through pgbouncer (instead of asyncpg-direct like the agent) will break on Patroni failover. Revisit when adding the next service that needs pooled connections. Long-term answer is HAProxy + Patroni REST `/master` endpoint, but that's a separate architectural project.
+
+### Phase 0 re-audit needed before production cutover
+Two Phase 0 assumptions didn't survive contact with reality on 2026-05-28:
+
+1. **Spilo 3.0-p1 was assumed to ship pgvector — it doesn't.** Caught during migration 008. Fixed by extending Spilo with `postgresql-15-pgvector` in `bootstrap/scripts/Dockerfile.patroni-pgvector` (PR #175).
+2. **pgbouncer's hardcoded DB_HOST was assumed to be transparent — it isn't.** Caught after the rolling Patroni restart. Mitigated via Infra-X above.
+
+Recommend a Phase 0 design re-audit before production cutover: enumerate every "assumed-included" or "assumed-transparent" piece of the cluster setup and verify each empirically. Other candidates to check: WAL-G restore drill, Redis Sentinel failover, Caddy cert renewal, Langfuse S3 retention policy.
 
 ---
 
