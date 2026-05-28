@@ -77,9 +77,9 @@
 | 4.4 | pgvector embeddings for semantic search | ✅ Done | — | #174 (backend) + #175 (Patroni-pgvector image) + #176 (Gemini model fix) + swarm env update (multi-host DATABASE_URL) |
 | 4.5 | Cross-conversation memory recall | ✅ Done | — | #180 |
 | 4.6 | User profile memory (name, city, job — permanent) | ✅ Done | — | #178 |
-| 4.7 | Session memory in Redis (short-term) | 🔄 In PR | 1 | #182 |
-| 4.8 | Memory consolidation (nightly dedup + merge) | 🔄 In PR | 1 | #183 |
-| **Phase 4 total** | | **78% done** | **2 days left** | |
+| 4.7 | Session memory in Redis (short-term) | ✅ Done | — | #182 |
+| 4.8 | Memory consolidation (nightly dedup + merge) | ✅ Done | — | #183 |
+| **Phase 4 total** | | **100% done** | **0 days left** | |
 
 ## PHASE 5: PROACTIVE MESSAGES
 | # | Sub-phase | Status | Est. days | PR |
