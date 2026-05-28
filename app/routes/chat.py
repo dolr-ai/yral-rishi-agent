@@ -16,6 +16,7 @@ from services import (
     embeddings,
     memory,
     push_notifications,
+    session_memory,
     soul_file,
     websocket_manager,
     storage,
@@ -418,6 +419,12 @@ async def send_message(
             assistant_message=ChatMessage(**_format_message(assistant_msg)),
         )
 
+    # Phase 4.7: piggyback session-memory update on the post-save async slot.
+    # Fire-and-forget so the hot path doesn't wait on Redis.
+    asyncio.create_task(
+        session_memory.update_from_user_message(user_id, conversation_id, content or "")
+    )
+
     # Fetch history + compute query embedding in parallel.
     # Phase 4.4: the embedding call (~150ms) dominates the prep budget, so we
     # fan it out alongside the history fetch (~5-10ms) to keep wall-clock close
@@ -434,13 +441,27 @@ async def send_message(
             return None
         return await embeddings.embed_text(text)
 
-    history, query_embedding = await asyncio.gather(_fetch_history(), _maybe_embed())
+    async def _read_session():
+        return await session_memory.read(user_id, conversation_id)
+
+    history, query_embedding, session_state = await asyncio.gather(
+        _fetch_history(), _maybe_embed(), _read_session()
+    )
 
     # Compose soul file prompt with tiered memories — semantic top-K if we have
     # an embedding, else all memories (proactive / short-message fallback).
     memories = await memory.get_memories_for_prompt(
         pool, user_id, influencer_id, query_embedding=query_embedding
     )
+
+    # Phase 4.7: inject short-term session signals (mood) alongside long-term
+    # memories. Treated as just-another-fact in the soul file's L4.
+    if (
+        session_state
+        and session_state.get("mood")
+        and session_state["mood"] != "neutral"
+    ):
+        memories["session_mood"] = session_state["mood"]
 
     system_instructions = soul_file.compose(
         system_instructions=inf.get("system_instructions", ""),
