@@ -75,7 +75,7 @@
 | 4.2 | Per-conversation memory extraction via Gemini | ✅ Done | — | #165 |
 | 4.3 | Memories injected into Soul File Layer 4 | ✅ Done | — | #165 |
 | 4.4 | pgvector embeddings for semantic search | ✅ Done | — | #174 (backend) + #175 (Patroni-pgvector image) + #176 (Gemini model fix) + swarm env update (multi-host DATABASE_URL) |
-| 4.5 | Cross-conversation memory recall | ⏳ Pending | 2 | — |
+| 4.5 | Cross-conversation memory recall | 🔄 In PR | 2 | #180 |
 | 4.6 | User profile memory (name, city, job — permanent) | ✅ Done | — | #178 |
 | 4.7 | Session memory in Redis (short-term) | ⏳ Pending | 1 | — |
 | 4.8 | Memory consolidation (nightly dedup + merge) | ⏳ Pending | 1 | — |

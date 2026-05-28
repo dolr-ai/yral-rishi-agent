@@ -91,31 +91,34 @@ async def list_missing_embedding(pool, limit: int = 50) -> list[dict]:
 async def semantic_search(
     pool,
     user_id: str,
-    influencer_id: str,
     query_embedding: list[float],
     top_k: int = 5,
 ) -> list[dict]:
-    """Top-K memories by cosine distance to query_embedding.
+    """Top-K memories by cosine distance, across ALL the user's memories.
 
-    Falls back gracefully: rows with embedding=NULL are excluded by the
-    ORDER BY (NULL sorts last under <=>). If query_embedding is empty,
-    returns no rows.
+    Phase 4.5 (cross-conversation recall): no influencer-scope filter. If
+    a fact the user told influencer A is the closest semantic match to
+    their current message in chat with influencer B, we surface it. The
+    embedding distance does the relevance gatekeeping — irrelevant
+    other-influencer memories naturally fall below the cutoff.
+
+    Rows with embedding=NULL are excluded by the WHERE clause (otherwise
+    they'd sort last under cosine distance but still occupy the LIMIT).
+    Empty query_embedding short-circuits to [].
     """
     if not query_embedding:
         return []
     rows = await pool.fetch(
         """
-        SELECT category, key, value, confidence, updated_at,
-               (embedding <=> $3::vector) AS distance
+        SELECT category, key, value, confidence, updated_at, influencer_id,
+               (embedding <=> $2::vector) AS distance
         FROM user_memories
         WHERE user_id = $1
-          AND (influencer_id = $2 OR influencer_id IS NULL)
           AND embedding IS NOT NULL
-        ORDER BY embedding <=> $3::vector
-        LIMIT $4
+        ORDER BY embedding <=> $2::vector
+        LIMIT $3
         """,
         user_id,
-        influencer_id,
         _vector_literal(query_embedding),
         top_k,
     )
