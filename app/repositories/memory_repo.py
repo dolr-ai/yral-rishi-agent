@@ -17,7 +17,7 @@ def _vector_literal(values: list[float] | None) -> str | None:
 async def upsert(
     pool,
     user_id: str,
-    influencer_id: str,
+    influencer_id: str | None,
     category: str,
     key: str,
     value: str,
@@ -27,6 +27,10 @@ async def upsert(
 ) -> dict:
     """Upsert a memory. If embedding is provided, store it; otherwise leave the
     column NULL and let the backfill / next-write fill it in.
+
+    influencer_id=None marks a global memory (Phase 4.6) — shared across every
+    bot the user chats with. The unique index uses NULLS NOT DISTINCT
+    (migration 009) so global rows dedupe on (user_id, NULL, key).
 
     On UPDATE (key collision), we overwrite the embedding too — the value
     changed, so the old embedding is stale.
