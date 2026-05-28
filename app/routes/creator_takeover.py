@@ -199,3 +199,39 @@ async def takeover_status(conversation_id: str, request: Request):
         else None,
         "remaining_seconds": remaining_seconds(user_last) if active else 0,
     }
+
+
+@router.get("/conversations/{conversation_id}/messages")
+async def creator_list_messages(
+    conversation_id: str,
+    request: Request,
+    limit: int = 50,
+    offset: int = 0,
+    order: str = "desc",
+):
+    """Owner-only mirror of user-side message list.
+
+    Polled every 2-3 seconds by the creator's mobile during takeover.
+    Returns same shape as GET /api/v1/chat/conversations/{id}/messages.
+    Uses idx_messages_conversation_created for sub-100ms response.
+    """
+    await _load_and_authorize(request, conversation_id)
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+
+    pool = await get_pool()
+    messages = await message_repo.list_by_conversation(
+        pool, conversation_id, limit, offset, order
+    )
+    total = await message_repo.count_by_conversation(pool, conversation_id)
+
+    # Reuse the same _format_message shape as user-side chat route.
+    from routes.chat import _format_message
+
+    return {
+        "conversation_id": conversation_id,
+        "messages": [_format_message(m) for m in messages],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
