@@ -1,22 +1,37 @@
 # Daily Log
 
-## 2026-05-28 — Patroni Phase 0 oversight + Phase 4.4 partial progress
+## 2026-05-28 — Phase 4.4 shipped (semantic memory) + 2 Phase 0 lessons
 
-### Phase 0 oversight (write-up for future debugging)
-Spilo image `ghcr.io/zalando/spilo-15:3.0-p1` was assumed to ship pgvector — it does NOT. Verified empirically when migration 008 attempted `CREATE EXTENSION vector` on the live cluster:
-```
-ERROR: extension "vector" is not available
-DETAIL: Could not open extension control file
-"/usr/share/postgresql/15/extension/vector.control": No such file or directory.
-```
-This is the kind of "assumed-included" detail that should live in the cluster bootstrap notes. Adding to PR #175: a custom Patroni image (`yral-rishi-patroni-pgvector`) that extends Spilo with `postgresql-15-pgvector`. Going forward, any new Postgres extensions for Phase 4 or later land in that Dockerfile rather than as separate setup steps.
+### What landed
+- **PR #174** — Phase 4.4 backend (pgvector schema + embedding service + memory_repo semantic_search + hot-path wiring + backfill script + diagnostic endpoint + tests)
+- **PR #175** — Custom Patroni image `ghcr.io/dolr-ai/yral-rishi-patroni-pgvector:spilo-15-3.0-p1` (Spilo 3.0-p1 doesn't ship pgvector; this fix added the apt package)
+- **PR #176** — Gemini embedding model fix (`text-embedding-004` was retired between PR #174 landing and rollout; switched to `gemini-embedding-001` with `outputDimensionality=768` Matryoshka truncation)
+- **Swarm env update (no PR)** — `DATABASE_URL` repointed to multi-host with `target_session_attrs=read-write` via `docker service update --env-add` (no code change required since asyncpg 0.30 supports the libpq option natively). Agent now survives Patroni failovers without manual intervention. Verified via switchover round-trip rishi-4 → rishi-5 → rishi-4, writes succeeded both times. **Tech debt:** logged as Infra-Y — the env var lives only in swarm service spec, not in repo. Codify when we add `bootstrap/scripts/agent-stack.yml`.
+- **Cluster:** all 3 Patroni nodes on the new pgvector image, TL=20 after the rolling restart + failover-test round-trip, all lag=0.
+- **Backfill:** 8/8 user_memories embedded successfully.
+- **Endpoint suite:** 27/27 PASS (including new `GET /api/v1/users/me/memories`).
+- **Latency on `/messages`:** P50 4.58s, P95 8.08s (n=10). Up from ~2.5s pre-Phase-4.4 — embedding adds the lower bound (~150ms via asyncio.gather'd with history fetch), the rest is Gemini LLM variance per prompt. Will gather more data points after Phase 4.5/4.6 to separate signal from noise.
 
-### Phase 4.4 partial progress (deploy paused awaiting infra PR)
-- PR #174 (Phase 4.4 backend) **merged** to main.
-- pg_dump snapshot taken on rishi-5 (leader): `/home/rishi-deploy/yral-backups/pre-migration-008-pgvector-20260528-173210.dump` — 522 MB, SHA256 `8f6da13846507c5fea5ddbac523b9d977309241ab7ca7ec2e7355b618e34150c`.
-- Migration 008 **NOT YET APPLIED** — blocked on Patroni image swap.
-- Backend image **NOT YET BUILT** — waiting for migration to succeed first.
-- Resume sequence: rolling Patroni restart → migration 008 → image build + deploy → backfill → 27/27 endpoint test + latency report.
+### Two Phase 0 lessons (worth a re-audit before production cutover)
+1. **"assumed-included" — Spilo doesn't ship pgvector.** Caught at migration 008. Fixed via PR #175. The "Spilo bundles X" claim needs empirical verification per extension.
+2. **"assumed-transparent" — pgbouncer's `DB_HOST: patroni-rishi-4` is hardcoded.** Caught after the rolling Patroni restart left rishi-6 as leader; pgbouncer kept routing to rishi-4 (a sync standby) → writes broke. Also: the agent's `DATABASE_URL` pinned `patroni-rishi-5` directly, bypassing pgbouncer entirely. PR #177 fixes the agent path with multi-host + `target_session_attrs`; pgbouncer's hardcoding still affects any future pooled-connection service (logged as Infra-X in PROGRESS.md backlog).
+
+Net takeaway: cluster bootstrap notes should enumerate every "assumed-included" / "assumed-transparent" piece and verify each empirically before cutover. Candidates that haven't been re-audited yet: WAL-G restore drill, Redis Sentinel failover, Caddy cert renewal, Langfuse S3 retention.
+
+### Sequence (for tomorrow's debugging)
+1. `pg_dump` snapshot on rishi-5: `~/yral-backups/pre-migration-008-pgvector-20260528-173210.dump` (522 MB, SHA256 `8f6da138...`)
+2. Built + pushed `yral-rishi-patroni-pgvector:spilo-15-3.0-p1` via CI workflow
+3. Rolling restart rishi-6 → rishi-4 → rishi-5, verified pgvector available on each via direct SSH
+4. Applied migration 008 on the (then) leader rishi-6 — extension/column/index all created
+5. Built + deployed `yral-rishi-agent:phase-4-4` on rishi-4/5 (both replicas)
+6. Hit Gemini 404 on embed → patched to `gemini-embedding-001`, rebuilt as `phase-4-4-fix1`, deployed
+7. Backfill failed on read-only — DATABASE_URL pointed at the now-replica rishi-5
+8. Patronictl switchover rishi-6 → rishi-4 (restored intended leader topology)
+9. Swarm `docker service update --env-add DATABASE_URL=...?target_session_attrs=read-write` → backfill succeeded 8/8
+10. Failover round-trip rishi-4 → rishi-5 → rishi-4 to prove `target_session_attrs` works under live failover
+
+### Next
+Phase 4.6 — user profile memory (name, city, job — permanent / cross-influencer). Continues under standing approval.
 
 ## 2026-05-26 — Phase 0 + Phase 1 Days 2-14 (all in one session)
 
