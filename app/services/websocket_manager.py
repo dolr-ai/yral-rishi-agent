@@ -171,3 +171,9 @@ async def broadcast_typing_status(
         }
     )
     await _publish(user_id, event)
+
+
+async def broadcast_event(user_id: str, event_name: str, data: dict):
+    """Generic broadcast — reuses the same Redis pub/sub channel."""
+    event = json.dumps({"event": event_name, "data": data})
+    await _publish(user_id, event)

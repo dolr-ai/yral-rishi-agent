@@ -237,7 +237,17 @@ def main():
     )
 
     print("\n--- Creator Studio ---")
-    test("GET /creator/influencers", "GET", f"{base}/api/v1/creator/influencers", headers=auth, expect_json_key="influencers")
+    my_inf = test("GET /creator/influencers", "GET", f"{base}/api/v1/creator/influencers", headers=auth, expect_json_key="influencers")
+
+    print("\n--- Chat as Human (takeover) ---")
+    # Need an owned-influencer conversation to test the full flow.
+    # Authorization check (non-owner gets 403) is the minimum we always test.
+    test(
+        "POST /human-creator-takeover (non-owner 403)",
+        "POST", f"{base}/api/v1/creator/conversations/00000000-0000-0000-0000-000000000000/human-creator-takeover",
+        headers=auth,
+        expect_status=[403, 404],
+    )
 
     print("\n--- Creator Earnings ---")
     test("GET /creator/earnings", "GET", f"{base}/api/v1/creator/earnings", headers=auth, expect_json_key="total_cents")

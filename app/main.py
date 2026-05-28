@@ -18,6 +18,7 @@ from routes.chat import router as chat_router
 from routes.chat_v2 import router as chat_v2_router
 from routes.chat_v3 import router as chat_v3_router
 from routes.creator import router as creator_router
+from routes.creator_takeover import router as creator_takeover_router
 from routes.earnings import router as earnings_router
 from routes.health import router as health_router
 from routes.human_chat import router as human_chat_router
@@ -48,6 +49,7 @@ async def lifespan(app: FastAPI):
     trending_refresher_task = asyncio.create_task(_trending_stats_refresher())
     redis_sub_task = asyncio.create_task(websocket_manager.start_redis_subscriber())
     engagement_task = asyncio.create_task(_engagement_loop())
+    takeover_sweep_task = asyncio.create_task(_takeover_timeout_sweep())
 
     yield
 
@@ -55,6 +57,7 @@ async def lifespan(app: FastAPI):
     trending_refresher_task.cancel()
     redis_sub_task.cancel()
     engagement_task.cancel()
+    takeover_sweep_task.cancel()
     try:
         await trending_refresher_task
     except asyncio.CancelledError:
@@ -65,6 +68,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await engagement_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await takeover_sweep_task
     except asyncio.CancelledError:
         pass
     langfuse_tracing.flush()
@@ -100,6 +107,56 @@ async def _trending_stats_refresher():
             logger.info("influencer_trending_stats: concurrent refresh complete")
         except Exception:
             logger.exception("influencer_trending_stats: concurrent refresh failed")
+
+
+async def _takeover_timeout_sweep():
+    """Auto-release Chat-as-Human takeovers after 2 min of user inactivity.
+
+    Runs every 30 seconds. Uses the partial index idx_conversations_active_takeover
+    so the scan is cheap (only indexes rows where takeover_active=TRUE).
+    """
+    SWEEP_INTERVAL_SEC = 30
+    TIMEOUT_MINUTES = 2
+
+    await asyncio.sleep(30)  # Let app warm up before first sweep
+
+    from repositories import takeover_repo, message_repo
+
+    while True:
+        try:
+            pool = await database.get_pool()
+            timed_out = await takeover_repo.find_timed_out_takeovers(
+                pool, timeout_minutes=TIMEOUT_MINUTES
+            )
+            for row in timed_out:
+                try:
+                    await takeover_repo.deactivate(pool, row["id"])
+                    creator_display = row.get("bot_name") or "Creator"
+                    await message_repo.create(
+                        pool,
+                        conversation_id=row["id"],
+                        role="system",
+                        content=f"{creator_display} has left the chat.",
+                        message_type="text",
+                        sender_id=row.get("human_creator_user_id"),
+                    )
+                    await websocket_manager.broadcast_event(
+                        row["user_id"],
+                        "human_creator_takeover_ended",
+                        {"conversation_id": row["id"], "reason": "timeout"},
+                    )
+                except Exception:
+                    logger.debug(
+                        f"Takeover auto-release failed for conv {row.get('id')}"
+                    )
+            if timed_out:
+                logger.info(f"Auto-released {len(timed_out)} takeovers (timeout)")
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception("Takeover timeout sweep error (will retry)")
+
+        await asyncio.sleep(SWEEP_INTERVAL_SEC)
 
 
 async def _engagement_loop():
@@ -258,5 +315,6 @@ app.include_router(media_router)
 app.include_router(human_chat_router)
 app.include_router(chat_v3_router)
 app.include_router(creator_router)
+app.include_router(creator_takeover_router)
 app.include_router(earnings_router)
 app.include_router(ws_router)
