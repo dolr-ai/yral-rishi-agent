@@ -1,5 +1,28 @@
 # Daily Log
 
+## 2026-05-28 (later) — Phase 4.6: user profile memory
+
+### What changed
+- `migrations/009_user_profile_memory.sql` — rebuilds the unique index on `user_memories` with `NULLS NOT DISTINCT` so two rows with `(user_id, NULL, key)` collapse into one. Postgres 15 feature; Spilo 15 supports it.
+- `app/services/memory.py` — new `GLOBAL_CATEGORIES = {"identity"}`. Extraction now writes identity-category memories with `influencer_id=NULL` so the user's name / age / location / occupation / language apply across every bot they chat with.
+- `app/repositories/memory_repo.py` — `upsert` type hint widened to `influencer_id: str | None`. Behavior already supported NULL at runtime (asyncpg coerces); this is documentation + clarity.
+- `scripts/consolidate_identity_memories.py` (new) — one-off backfill that takes existing per-influencer identity rows, picks the most-recent value per `(user_id, key)`, upserts it as global, deletes the per-influencer copies. Idempotent.
+- `tests/test_user_profile_memory.py` — guards that `identity` stays in GLOBAL_CATEGORIES and per-relationship buckets stay out.
+
+### Why
+Today the user tells influencer A "my name is Rahul" → memory stored as `(rahul, influencer-A, name='Rahul')`. Same convo with influencer B → another row. Across 200 bots a user actively chats with, that's 200 copies of the same fact, all eating prompt-token budget. With Phase 4.6, identity stays in one global row per `(user, key)` and gets unioned in by the existing `get_all_for_user` query — no retrieval changes needed.
+
+### What's retrievable today vs after
+- Today's `get_memories_for_prompt` already merges per-influencer + global via `WHERE (influencer_id = $1 OR influencer_id IS NULL)`. So even existing rows with influencer_id=NULL (if any) were already being read — the GAP was only on write.
+- Phase 4.6 closes the write-side gap.
+
+### Deploy steps (post-merge)
+1. `pg_dump` snapshot (rule #9)
+2. Apply migration 009 on the leader
+3. Rebuild + deploy the agent image
+4. Run consolidate script inside a container (idempotent — safe even if no rows match)
+5. 27/27 endpoint suite — should stay green (no API changes)
+
 ## 2026-05-28 — Phase 4.4 shipped (semantic memory) + 2 Phase 0 lessons
 
 ### What landed

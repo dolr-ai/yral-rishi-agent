@@ -16,6 +16,13 @@ import config
 logger = logging.getLogger(__name__)
 SEMANTIC_TOP_K = 8
 
+# Phase 4.6: identity facts (name, age, where the user lives, what they do)
+# don't change per-influencer — the user IS the same person across every bot
+# they chat with. Storing these with influencer_id=NULL means they appear in
+# every bot's context, and we only keep one row per (user, key) regardless of
+# which bot they were learned from.
+GLOBAL_CATEGORIES = {"identity"}
+
 EXTRACTION_PROMPT = """Extract factual information about the user from this conversation exchange.
 
 CATEGORIES (use exactly these):
@@ -91,10 +98,16 @@ async def extract_and_store(
             emb_text = embeddings.memory_to_embed_text(category, key, value)
             embedding = await embeddings.embed_text(emb_text)
 
+            # Phase 4.6: identity facts cross influencers; everything else
+            # stays per-(user, influencer).
+            storage_influencer_id = (
+                None if category in GLOBAL_CATEGORIES else influencer_id
+            )
+
             await memory_repo.upsert(
                 pool,
                 user_id=user_id,
-                influencer_id=influencer_id,
+                influencer_id=storage_influencer_id,
                 category=category,
                 key=key,
                 value=value,
