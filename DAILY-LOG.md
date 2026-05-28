@@ -1,5 +1,29 @@
 # Daily Log
 
+## 2026-05-28 (latest) — Phase 4.7 deployed + Phase 4.8: nightly memory consolidation
+
+### Phase 4.7 deployed
+- Image `yral-rishi-agent:phase-4-7` built + deployed on rishi-4/5.
+- 27/27 endpoint suite: PASS on re-run (first run hit a transient timeout on `/influencers/trending` materialized-view refresh — unrelated).
+- Session memory in Redis now live; mood heuristic running on the hot path with zero added wall-clock (parallelized in the existing gather block).
+
+### Phase 4.8 — nightly memory consolidation
+- `app/services/memory_consolidation.py` (new) — background loop that runs every 24h. For each user with embedded memories, self-joins on `<=>` cosine distance, picks pairs below `MERGE_DISTANCE_THRESHOLD = 0.08`, drops the loser (lower confidence; ties broken by older `updated_at`). One batch DELETE per user. Idempotent.
+- `app/main.py` — wires `consolidation_loop` into the lifespan's `asyncio.create_task` family alongside the existing trending refresher, engagement loop, takeover sweep.
+- `tests/test_memory_consolidation.py` — pins threshold + interval + initial delay so a future refactor can't accidentally move the schedule to "every minute" or the threshold to "merge everything."
+
+### Why 0.08 threshold
+Loose enough to catch paraphrases ("loves cricket" / "enjoys watching cricket") via Gemini's 768-dim embedding (after truncation), but well below the typical 0.2-0.4 distance between genuinely different facts. Will tune empirically once we see the first daily consolidation report from prod logs.
+
+### Safety
+- First run is delayed 10 min after container startup (avoid thrashing on rolling deploys)
+- Each merge is one DELETE on rows we've already analyzed in-memory — no long-running transactions
+- Non-fatal: any error in `consolidate_once` is caught, logged, and the loop retries on the next 24h tick
+- Both replicas run the loop, but `id < b.id` join + DELETE…WHERE id=ANY(...) handles the race (lost-update is safe — the loser is going to be deleted from one node or the other, only once)
+
+### Diff size
++186 / -4 across 4 files. No schema change.
+
 ## 2026-05-28 (very late) — Phase 4.7: Redis session memory
 
 ### What changed

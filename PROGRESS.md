@@ -78,7 +78,7 @@
 | 4.5 | Cross-conversation memory recall | ✅ Done | — | #180 |
 | 4.6 | User profile memory (name, city, job — permanent) | ✅ Done | — | #178 |
 | 4.7 | Session memory in Redis (short-term) | 🔄 In PR | 1 | #182 |
-| 4.8 | Memory consolidation (nightly dedup + merge) | ⏳ Pending | 1 | — |
+| 4.8 | Memory consolidation (nightly dedup + merge) | 🔄 In PR | 1 | #183 |
 | **Phase 4 total** | | **78% done** | **2 days left** | |
 
 ## PHASE 5: PROACTIVE MESSAGES
