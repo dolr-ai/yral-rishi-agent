@@ -30,7 +30,7 @@
 | 1.7 | Media upload (1 endpoint) | ✅ Done | — | #158 |
 | 1.8 | Image generation in chat (1 endpoint) | ✅ Done | — | #158 |
 | 1.9 | Human-to-Human chat: create + list + send (3 endpoints) | ✅ Done | — | #158 |
-| 1.10 | Chat as Human (creator takeover mode) — 4 endpoints + hot-path early-exit + 30s timeout sweep | 🔄 In PR | 3 | TBD |
+| 1.10 | Chat as Human (creator takeover mode) — backend ✅ shipped & retested, mobile UI PR to Sarvesh pending (feature-flag-gated, awaiting agent v2 cutover) | ✅ Done (backend) | 1 | #170 (backend, merged 2026-05-28) + mobile PR (pending) |
 | 1.11 | Unified inbox v3 (1 endpoint) | ✅ Done | — | #158 |
 | 1.12 | Billing paywall (calls billing.yral.com) | ✅ Done | — | #158 |
 | 1.13 | WebSocket inbox + WS docs (1 WS + 1 endpoint) | ✅ Done | — | #158 |
@@ -65,7 +65,8 @@
 | 3.5 | Age gating / age verification | ⏳ Pending | 2 | — |
 | 3.6 | CSAM detection | ⏳ Pending | 2 | — |
 | 3.7 | Consent flows for sensitive content | ⏳ Pending | 1 | — |
-| **Phase 3 total** | | **40% done** | **8 days left** | |
+| 3.8 | Graceful error UX when Gemini blocks (PROHIBITED_CONTENT, etc.) — backend returns friendly fallback message, mobile shows it inline instead of silent failure | ⏳ Pending | 1 | — |
+| **Phase 3 total** | | **38% done** | **9 days left** | |
 
 ## PHASE 4: TIERED MEMORY
 | # | Sub-phase | Status | Est. days | PR |
@@ -332,3 +333,22 @@
 | — | Mobile Client | 11 | 0 | 11 | 21 |
 | — | Infrastructure | 15 | 6 | 9 | — |
 | **TOTAL** | | **168** | **55** | **113** | **~55-70 days** |
+
+---
+
+## ✅ RESOLVED — Phase 1.10 takeover bugs (discovered & fixed 2026-05-28)
+
+3 bugs surfaced during Motorola testing of the Chat as Human creator-takeover UI. All fixed in PR #170 (merged 2026-05-28), verified live on agent.rishi.yral.com, and re-tested on Motorola.
+
+| Bug | Symptom | Fix | File |
+|---|---|---|---|
+| 1 | Timer reset on **user** activity instead of creator's | New column `human_creator_last_message_at`; sweep + `remaining_seconds` keyed on it | migration `007_takeover_creator_timer.sql`, `takeover_repo.py`, `takeover_helpers.py` |
+| 2 | Up to 36s gap between local timer expiry and server sweep | `SWEEP_INTERVAL_SEC: 30 → 5`; mobile also proactively calls `human-creator-release` at local 0:00 | `app/main.py`, mobile `ConversationViewModel.startCountdownTicker()` |
+| 3 | "X has left the chat" appeared 2-3× per release | Atomic `deactivate_if_active` returns whether row was actually flipped; system message only written if it was | `takeover_repo.py`, `creator_takeover.py`, `app/main.py` |
+
+**Verification:**
+- Unit tests: `tests/test_takeover.py` — 7 tests including Bug 1 regression guard, all pass.
+- E2E on live cluster: `scripts/test_takeover_e2e.py` — exercises full takeover lifecycle + AI context preservation.
+- Motorola retest (2026-05-28): all 3 scenarios from `~/Claude Projects/yral-mobile/HANDOFF-CHAT-AS-HUMAN.md` pass.
+
+**Mobile UI PR to Sarvesh still pending** — feature-flag-gated, awaiting agent v2 cutover.
