@@ -90,14 +90,16 @@ async def run():
 
     # Verify get_by_id reports takeover active + carries parent_principal_id
     conv_reloaded = await conversation_repo.get_by_id(pool, conv_id)
-    assert conv_reloaded["human_creator_takeover_active"] is True, "takeover should be active"
-    assert conv_reloaded["inf_parent_principal_id"] == creator_id, "parent principal id mismatch"
+    assert conv_reloaded["human_creator_takeover_active"] is True, (
+        "takeover should be active"
+    )
+    assert conv_reloaded["inf_parent_principal_id"] == creator_id, (
+        "parent principal id mismatch"
+    )
     print("  ✓ get_by_id carries takeover state + parent_principal_id in one query")
 
     # Creator sends a factual message (stored as role='assistant' so AI history picks it up)
-    creator_fact = (
-        "Got it — I'll remember that you love cricket and IPL. Who's your favorite team?"
-    )
+    creator_fact = "Got it — I'll remember that you love cricket and IPL. Who's your favorite team?"
     await message_repo.create(
         pool,
         conversation_id=conv_id,
@@ -108,10 +110,28 @@ async def run():
     )
     print(f"  Creator sent fact: '{creator_fact[:60]}...'")
 
-    # Release takeover
-    await takeover_repo.deactivate(pool, conv_id)
+    # Bug 1 regression guard: stamp creator's timestamp and verify
+    await takeover_repo.update_creator_last_message(pool, conv_id)
+    conv_with_creator_ts = await conversation_repo.get_by_id(pool, conv_id)
+    assert conv_with_creator_ts.get("human_creator_last_message_at") is not None, (
+        "Bug 1: human_creator_last_message_at should be set after creator activity"
+    )
+    print("  ✓ human_creator_last_message_at tracked (Bug 1 guard)")
+
+    # Release takeover (returns True since we just activated it)
+    was_active = await takeover_repo.deactivate_if_active(pool, conv_id)
+    assert was_active, "deactivate_if_active should return True for a fresh takeover"
+
+    # Bug 3 regression guard: a second call returns False (idempotency)
+    was_active_again = await takeover_repo.deactivate_if_active(pool, conv_id)
+    assert not was_active_again, (
+        "Bug 3: second deactivate should return False — already inactive"
+    )
+    print("  ✓ deactivate_if_active is idempotent (Bug 3 guard)")
     conv_after = await conversation_repo.get_by_id(pool, conv_id)
-    assert conv_after["human_creator_takeover_active"] is False, "takeover should be inactive"
+    assert conv_after["human_creator_takeover_active"] is False, (
+        "takeover should be inactive"
+    )
     print("  ✓ Takeover released")
 
     # User sends follow-up that REFERENCES the creator's fact
@@ -158,15 +178,17 @@ async def run():
         print("  ✓ AI response references 'cricket' or 'ipl' — context preserved")
     else:
         print(
-            f"  ⚠ AI response did NOT explicitly mention cricket/IPL — but it had the context in history."
+            "  ⚠ AI response did NOT explicitly mention cricket/IPL — but it had the context in history."
         )
-        print("    LLM responses are non-deterministic; this is a soft signal, not a hard fail.")
+        print(
+            "    LLM responses are non-deterministic; this is a soft signal, not a hard fail."
+        )
 
     # Cleanup
     await message_repo.delete_by_conversation(pool, conv_id)
     await conversation_repo.delete(pool, conv_id)
     await pool.execute("DELETE FROM ai_influencers WHERE id = $1", influencer_id)
-    print(f"  Cleaned up test data")
+    print("  Cleaned up test data")
 
     print("\n=== E2E TEST RESULT ===")
     print("  Takeover lifecycle:        PASS")

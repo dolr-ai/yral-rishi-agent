@@ -110,15 +110,21 @@ async def _trending_stats_refresher():
 
 
 async def _takeover_timeout_sweep():
-    """Auto-release Chat-as-Human takeovers after 2 min of user inactivity.
+    """Auto-release Chat-as-Human takeovers after 2 min of creator inactivity.
 
-    Runs every 30 seconds. Uses the partial index idx_conversations_active_takeover
-    so the scan is cheap (only indexes rows where takeover_active=TRUE).
+    Runs every 5 seconds (Bug 2 fix: was 30s — closes a 36s window where the
+    creator could keep typing past the spec'd timeout).
+
+    Bug 3 fix: uses deactivate_if_active() for atomic flip + idempotency. Only
+    the caller that actually flipped the row to FALSE posts the 'left' message,
+    preventing duplicates when manual release races with the sweep.
+
+    Uses idx_conversations_active_takeover partial index — scan is cheap.
     """
-    SWEEP_INTERVAL_SEC = 30
+    SWEEP_INTERVAL_SEC = 5
     TIMEOUT_MINUTES = 2
 
-    await asyncio.sleep(30)  # Let app warm up before first sweep
+    await asyncio.sleep(10)  # Brief warmup before first sweep
 
     from repositories import takeover_repo, message_repo
 
@@ -130,7 +136,12 @@ async def _takeover_timeout_sweep():
             )
             for row in timed_out:
                 try:
-                    await takeover_repo.deactivate(pool, row["id"])
+                    # Atomic flip + idempotency: only proceed if WE flipped it.
+                    was_active = await takeover_repo.deactivate_if_active(
+                        pool, row["id"]
+                    )
+                    if not was_active:
+                        continue  # Manual release beat us — skip duplicate message
                     creator_display = row.get("bot_name") or "Creator"
                     await message_repo.create(
                         pool,

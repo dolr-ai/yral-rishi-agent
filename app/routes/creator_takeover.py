@@ -81,6 +81,7 @@ async def takeover_start(conversation_id: str, request: Request):
 
     started_at = state.get("human_creator_takeover_started_at")
     user_last = state.get("user_last_message_at")
+    creator_last = state.get("human_creator_last_message_at")
     return {
         "status": "active",
         "started_at": started_at.isoformat()
@@ -89,7 +90,10 @@ async def takeover_start(conversation_id: str, request: Request):
         "user_last_message_at": user_last.isoformat()
         if isinstance(user_last, datetime)
         else None,
-        "remaining_seconds": remaining_seconds(user_last),
+        "human_creator_last_message_at": creator_last.isoformat()
+        if isinstance(creator_last, datetime)
+        else None,
+        "remaining_seconds": remaining_seconds(creator_last),
     }
 
 
@@ -100,7 +104,12 @@ async def takeover_release(conversation_id: str, request: Request):
         raise HTTPException(status_code=400, detail="Takeover is not active")
 
     pool = await get_pool()
-    await takeover_repo.deactivate(pool, conversation_id)
+
+    # Bug 3 fix: idempotency guard. If the sweep beat us to it, the row is
+    # already inactive — don't post a duplicate "left" message.
+    was_active = await takeover_repo.deactivate_if_active(pool, conversation_id)
+    if not was_active:
+        return {"status": "released", "note": "already released by sweep"}
 
     creator_display = conv.get("inf_display_name") or "Creator"
     leave_text = f"{creator_display} has left the chat."
@@ -156,9 +165,14 @@ async def takeover_send_message(conversation_id: str, body: dict, request: Reque
         msg["id"],
     )
 
-    # Bump conversation updated_at
+    # Bug 1 fix: reset the 2-min timer on CREATOR activity. Also bump updated_at.
     await pool.execute(
-        "UPDATE conversations SET updated_at = NOW() WHERE id = $1",
+        """
+        UPDATE conversations
+        SET human_creator_last_message_at = NOW(),
+            updated_at = NOW()
+        WHERE id = $1
+        """,
         conversation_id,
     )
 
@@ -189,6 +203,7 @@ async def takeover_status(conversation_id: str, request: Request):
     active = bool(conv.get("human_creator_takeover_active"))
     started_at = conv.get("human_creator_takeover_started_at")
     user_last = conv.get("user_last_message_at")
+    creator_last = conv.get("human_creator_last_message_at")
     return {
         "active": active,
         "started_at": started_at.isoformat()
@@ -197,7 +212,10 @@ async def takeover_status(conversation_id: str, request: Request):
         "user_last_message_at": user_last.isoformat()
         if isinstance(user_last, datetime)
         else None,
-        "remaining_seconds": remaining_seconds(user_last) if active else 0,
+        "human_creator_last_message_at": creator_last.isoformat()
+        if isinstance(creator_last, datetime)
+        else None,
+        "remaining_seconds": remaining_seconds(creator_last) if active else 0,
     }
 
 

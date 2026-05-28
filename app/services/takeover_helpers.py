@@ -8,13 +8,17 @@ from datetime import datetime, timezone
 TAKEOVER_TIMEOUT_SECONDS = 120
 
 
-def remaining_seconds(user_last_message_at) -> int:
-    """Seconds remaining before the takeover auto-releases."""
-    if not user_last_message_at:
+def remaining_seconds(creator_last_message_at) -> int:
+    """Seconds remaining before the takeover auto-releases.
+
+    Timer is driven by the CREATOR's last activity (Bug 1 fix). If the creator
+    doesn't respond within TAKEOVER_TIMEOUT_SECONDS, the AI takes back over.
+    """
+    if not creator_last_message_at:
         return TAKEOVER_TIMEOUT_SECONDS
-    if not isinstance(user_last_message_at, datetime):
+    if not isinstance(creator_last_message_at, datetime):
         return TAKEOVER_TIMEOUT_SECONDS
-    last = user_last_message_at
+    last = creator_last_message_at
     if last.tzinfo is None:
         last = last.replace(tzinfo=timezone.utc)
     elapsed = (datetime.now(timezone.utc) - last).total_seconds()
