@@ -347,6 +347,15 @@ def main():
         expect_status=[403, 404],
     )
 
+    print("\n--- User Memories (Phase 4.4) ---")
+    test(
+        "GET /users/me/memories",
+        "GET",
+        f"{base}/api/v1/users/me/memories",
+        headers=auth,
+        expect_json_key="memories",
+    )
+
     print("\n--- Creator Earnings ---")
     test(
         "GET /creator/earnings",
