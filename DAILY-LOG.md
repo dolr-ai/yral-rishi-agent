@@ -1,5 +1,28 @@
 # Daily Log
 
+## 2026-05-28 (very late) — Phase 4.7: Redis session memory
+
+### What changed
+- `app/services/session_memory.py` (new) — Redis async client (mirrors websocket_manager.py's `_get_redis`). Lightweight mood detector (emoji + keyword heuristic, 4 buckets: happy/sad/excited/stressed/neutral). `update_from_user_message(user_id, conv_id, text)` and `read(user_id, conv_id)` with 1-hour TTL. All Redis failures degrade to no-op.
+- `app/routes/chat.py` — hot path now: (a) fires `update_from_user_message` as `asyncio.create_task` after saving user message (non-blocking), (b) reads session state inside the existing `asyncio.gather(history, embed, session)` parallel fan-out, (c) merges `session_mood` into the `memories` dict before soul-file composition.
+- `tests/test_session_memory.py` — pins the mood-detection heuristics + the Redis key shape.
+
+### Latency impact
+Session-state read is in the parallel `gather` block. Redis round-trip on the swarm overlay is ~1ms — well under the embedding call's ~150ms ceiling. Net hot-path delta: zero.
+
+### Failure modes (all silent degrade)
+- Redis init fails → `_get_redis` returns None → all functions no-op
+- Network blip during `set` → debug-log + continue
+- Cache miss / TTL expiry → `read` returns None → no `session_mood` injected
+
+### Design rationale
+Mood detection lives in Redis, not Postgres, because:
+1. It's derived (rule-based heuristic today, could be LLM-extracted later) — not a fact the user stated
+2. It's ephemeral (1-hour relevance) — emotional state from yesterday shouldn't bias today's reply
+3. It's per-conversation, not per-(user, influencer) — different convos have different moods
+
+Distinct from Phase 4.4/4.6 long-term memory: those go in Postgres + pgvector.
+
 ## 2026-05-28 (later still) — Phase 4.5 deployed
 
 - Image `yral-rishi-agent:phase-4-5` built + deployed (no migration, no backfill).
