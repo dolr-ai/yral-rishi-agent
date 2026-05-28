@@ -1,5 +1,29 @@
 # Daily Log
 
+## 2026-05-28 (end of day) — Phase 4 complete (4.4 / 4.5 / 4.6 / 4.7 / 4.8 all ✅)
+
+- Image `yral-rishi-agent:phase-4-8` deployed on rishi-4/5.
+- Manual `consolidate_once` against live DB: 3 users scanned, 0 pairs merged (no near-duplicates in the current 8-row dataset — expected; the loop is in place for when data grows).
+- 27/27 endpoint suite: PASS on re-run (first run hit the `/trending` materialized-view timeout again — that endpoint is the flakiest of the suite; the materialized view is refreshed every 15 min, and intermediate stalls show up as occasional 2s+ reads).
+
+### Phase 4 final state
+| Sub-phase | Status |
+|---|---|
+| 4.1 user_memories table | ✅ already done (pre-today) |
+| 4.2 Per-conversation memory extraction | ✅ already done |
+| 4.3 Memories injected into Soul File L4 | ✅ already done |
+| 4.4 pgvector embeddings + semantic search | ✅ shipped today (#174 + #175 + #176 + swarm env) |
+| 4.5 Cross-conversation memory recall | ✅ shipped today (#180) |
+| 4.6 User profile memory (identity → global) | ✅ shipped today (#178) |
+| 4.7 Redis session memory (mood) | ✅ shipped today (#182) |
+| 4.8 Nightly memory consolidation | ✅ shipped today (#183) |
+
+### Standing approval cycle closes
+Per the original mandate: "Stop ONLY if: 3. You finish all of Phase 4 — then stop and let me know." Phase 4 is fully shipped. Pausing for the next batch.
+
+### Outstanding non-Phase-4 work queued
+- **Pre-approved on a specific message** but still pending: tiny standalone PR adding the "PROGRESS.md vs DAILY-LOG.md" section to CLAUDE.md (Rishi-specified verbatim content). Will execute next unless redirected.
+
 ## 2026-05-28 (latest) — Phase 4.7 deployed + Phase 4.8: nightly memory consolidation
 
 ### Phase 4.7 deployed
