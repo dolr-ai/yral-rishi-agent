@@ -24,9 +24,7 @@ def _format(row: dict) -> dict:
         "key": row["key"],
         "value": row["value"],
         "confidence": row.get("confidence", 1.0),
-        "updated_at": row["updated_at"].isoformat()
-        if row.get("updated_at")
-        else None,
+        "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
     }
 
 
