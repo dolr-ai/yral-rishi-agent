@@ -1,5 +1,24 @@
 # Daily Log
 
+## 2026-05-28 (late) — Phase 4.5: cross-conversation memory recall
+
+### What changed
+- `app/repositories/memory_repo.py` — `semantic_search` dropped the influencer-scope filter. Was `WHERE user_id=$1 AND (influencer_id=$2 OR IS NULL)`; now just `WHERE user_id=$1`. Vector distance gatekeeps relevance.
+- `app/services/memory.py` — `get_memories_for_prompt` updated to match (drops the influencer_id from the semantic_search call).
+- `tests/test_cross_conversation_recall.py` — pins the contract: signature must NOT take an influencer_id arg; non-query path must fall back to `get_all_for_user`.
+
+### Why
+Phase 4.4 already returns top-K most-relevant memories. The arbitrary `OR influencer_id IS NULL` constraint was a leftover from pre-4.4 where we only had "all memories" retrieval. With semantic search, that scope filter was suppressing genuinely relevant context from other bots. Example: user talks cricket with bot A, then asks bot B about cricket — bot B couldn't recall the earlier fact even though it's an exact semantic match.
+
+### Risk
+Cross-bot leakage of relationship-specific context. Mitigated by:
+1. Semantic gatekeeping — irrelevant memories don't surface (distance ranking)
+2. Identity facts (Phase 4.6) were already global; per-relationship rows surface only when contextually relevant
+3. Backlog item: add per-influencer privacy controls if creators report leakage complaints
+
+### Code size
++34 / -7 across 3 files. No schema change, no migration, no deploy script change.
+
 ## 2026-05-28 (even later) — Phase 4.6 deployed
 
 - pg_dump snapshot: `~/yral-backups/pre-migration-009-userprofile-20260528-213756.dump` (522 MB, SHA256 `ccdc69ff...`)

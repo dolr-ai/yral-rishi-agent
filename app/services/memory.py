@@ -127,13 +127,20 @@ async def get_memories_for_prompt(
 ) -> dict:
     """Get memories formatted for the soul file composer.
 
-    If query_embedding is provided, return the top-K most semantically relevant
-    memories. Otherwise (proactive flow, backfill flow, no current message),
-    fall back to "all memories" — same behavior as before pgvector.
+    Phase 4.5: when query_embedding is provided, semantic search runs across
+    ALL the user's memories regardless of which influencer the row came from.
+    Distance ranking gatekeeps relevance — facts from other bots only surface
+    if they're a closer match than the current bot's own per-relationship
+    memories.
+
+    Without a query (proactive flow, no current message), we fall back to
+    per-(user, influencer) + global identity memories — the pre-Phase-4.5
+    behavior. Cross-conversation recall only kicks in when there's a query
+    to anchor relevance against.
     """
     if query_embedding:
         memories = await memory_repo.semantic_search(
-            pool, user_id, influencer_id, query_embedding, top_k=SEMANTIC_TOP_K
+            pool, user_id, query_embedding, top_k=SEMANTIC_TOP_K
         )
     else:
         memories = await memory_repo.get_all_for_user(pool, user_id, influencer_id)
