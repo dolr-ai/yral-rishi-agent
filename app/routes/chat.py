@@ -13,6 +13,7 @@ import httpx
 from services import (
     ai_client,
     content_safety,
+    embeddings,
     memory,
     push_notifications,
     soul_file,
@@ -417,13 +418,29 @@ async def send_message(
             assistant_message=ChatMessage(**_format_message(assistant_msg)),
         )
 
-    # Fetch conversation history
-    history = await message_repo.get_recent_for_context(pool, conversation_id, 11)
-    history = [m for m in history if m["id"] != user_msg["id"]]
-    history = history[-10:]
+    # Fetch history + compute query embedding in parallel.
+    # Phase 4.4: the embedding call (~150ms) dominates the prep budget, so we
+    # fan it out alongside the history fetch (~5-10ms) to keep wall-clock close
+    # to the slowest single step. Short messages skip the embedding entirely
+    # since semantic search on 1-2 word inputs (e.g. "ok") isn't meaningful.
+    async def _fetch_history():
+        h = await message_repo.get_recent_for_context(pool, conversation_id, 11)
+        h = [m for m in h if m["id"] != user_msg["id"]]
+        return h[-10:]
 
-    # Compose soul file prompt with tiered memories
-    memories = await memory.get_memories_for_prompt(pool, user_id, influencer_id)
+    async def _maybe_embed():
+        text = (content or "").strip()
+        if len(text) < 5:
+            return None
+        return await embeddings.embed_text(text)
+
+    history, query_embedding = await asyncio.gather(_fetch_history(), _maybe_embed())
+
+    # Compose soul file prompt with tiered memories — semantic top-K if we have
+    # an embedding, else all memories (proactive / short-message fallback).
+    memories = await memory.get_memories_for_prompt(
+        pool, user_id, influencer_id, query_embedding=query_embedding
+    )
 
     system_instructions = soul_file.compose(
         system_instructions=inf.get("system_instructions", ""),

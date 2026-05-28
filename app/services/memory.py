@@ -9,10 +9,12 @@ import json
 import logging
 
 from repositories import memory_repo
+from services import embeddings
 from services.ai_client import _call_gemini
 import config
 
 logger = logging.getLogger(__name__)
+SEMANTIC_TOP_K = 8
 
 EXTRACTION_PROMPT = """Extract factual information about the user from this conversation exchange.
 
@@ -82,6 +84,13 @@ async def extract_and_store(
             if not category or not key or not value:
                 continue
 
+            # Compute embedding inline (best-effort; failure stores NULL and
+            # backfill picks it up next pass). This is on the post-message
+            # background task — not the hot path — so latency here doesn't
+            # affect user-visible response time.
+            emb_text = embeddings.memory_to_embed_text(category, key, value)
+            embedding = await embeddings.embed_text(emb_text)
+
             await memory_repo.upsert(
                 pool,
                 user_id=user_id,
@@ -90,15 +99,32 @@ async def extract_and_store(
                 key=key,
                 value=value,
                 source_message_id=message_id,
+                embedding=embedding,
             )
 
     except Exception as e:
         logger.warning(f"Memory extraction failed (non-fatal): {e}")
 
 
-async def get_memories_for_prompt(pool, user_id: str, influencer_id: str) -> dict:
-    """Get all memories formatted as a dict for the soul file composer."""
-    memories = await memory_repo.get_all_for_user(pool, user_id, influencer_id)
+async def get_memories_for_prompt(
+    pool,
+    user_id: str,
+    influencer_id: str,
+    query_embedding: list[float] | None = None,
+) -> dict:
+    """Get memories formatted for the soul file composer.
+
+    If query_embedding is provided, return the top-K most semantically relevant
+    memories. Otherwise (proactive flow, backfill flow, no current message),
+    fall back to "all memories" — same behavior as before pgvector.
+    """
+    if query_embedding:
+        memories = await memory_repo.semantic_search(
+            pool, user_id, influencer_id, query_embedding, top_k=SEMANTIC_TOP_K
+        )
+    else:
+        memories = await memory_repo.get_all_for_user(pool, user_id, influencer_id)
+
     result = {}
     for mem in memories:
         key = f"{mem['category']}_{mem['key']}"

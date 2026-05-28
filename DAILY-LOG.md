@@ -175,3 +175,16 @@ Set LANGFUSE_SECRET_KEY, LANGFUSE_PUBLIC_KEY, and LANGFUSE_HOST env vars on the 
   3. Posts scored traces to Langfuse for dashboard analysis
   4. Prints summary with per-criterion averages
 - Run: `cd app && python -m eval.runner`
+
+## 2026-05-28 — Phase 4.4: pgvector semantic memory
+- `migrations/008_pgvector_semantic_memory.sql` — `CREATE EXTENSION vector`, `ALTER TABLE user_memories ADD COLUMN embedding vector(768)`, ivfflat cosine index. Spilo 3.0 image already ships pgvector so no Patroni rebuild.
+- `app/services/embeddings.py` — Gemini `text-embedding-004` wrapper. `embed_text` (single), `embed_batch` (uses `:batchEmbedContents`). 768-dim. Failures return `None` non-fatally.
+- `app/repositories/memory_repo.py` — added `update_embedding`, `list_missing_embedding`, `semantic_search` (cosine `<=>`); `upsert` now takes optional embedding; `_vector_literal` formats list[float] → pgvector text literal.
+- `app/services/memory.py` — extraction now embeds inline (background, non-hot-path); `get_memories_for_prompt` accepts optional `query_embedding` for semantic top-K (8). Falls back to all-memories for proactive/short-message paths.
+- `app/routes/chat.py` — hot path uses `asyncio.gather(history_fetch, embed_query)` to overlap ~150ms Gemini embed with ~10ms history DB fetch. Skips embedding for messages <5 chars.
+- `app/routes/memories.py` (new) — `GET /api/v1/users/me/memories` diagnostic endpoint. Owner-only; lists global memories, optional `?influencer_id=` for per-bot view.
+- `scripts/backfill_memory_embeddings.py` — idempotent batch backfill (50 rows/batch, `:batchEmbedContents`). Re-runnable. To be run during PR rollout per Rishi A11.
+- `scripts/test_all_endpoints.py` — added `GET /users/me/memories` test → suite is now 27 tests.
+- `tests/test_embeddings.py` — 3 unit tests: embed-text format stability, 768-dim constant guard, `_vector_literal` formatting.
+- **Latency target:** +140-160ms on send-message hot path (Gemini embed dominates). Will measure exact P50/P95 after deploy.
+- **PR:** opening as #174.

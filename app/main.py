@@ -24,6 +24,7 @@ from routes.health import router as health_router
 from routes.human_chat import router as human_chat_router
 from routes.influencers import router as influencers_router
 from routes.media import router as media_router
+from routes.memories import router as memories_router
 from routes.websocket import router as ws_router
 
 logging.basicConfig(
@@ -328,4 +329,5 @@ app.include_router(chat_v3_router)
 app.include_router(creator_router)
 app.include_router(creator_takeover_router)
 app.include_router(earnings_router)
+app.include_router(memories_router)
 app.include_router(ws_router)
