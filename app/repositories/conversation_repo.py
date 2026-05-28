@@ -39,11 +39,15 @@ async def get_by_id(pool, conversation_id: str) -> dict | None:
         """
         SELECT c.id, c.user_id, c.influencer_id, c.created_at, c.updated_at,
                c.metadata, c.conversation_type, c.participant_b_id,
+               c.human_creator_takeover_active, c.human_creator_user_id,
+               c.human_creator_takeover_started_at, c.user_last_message_at,
+               c.human_creator_last_message_at,
                i.id as inf_id, i.name as inf_name,
                i.display_name as inf_display_name,
                i.avatar_url as inf_avatar_url,
                i.category as inf_category,
-               i.suggested_messages as inf_suggested_messages
+               i.suggested_messages as inf_suggested_messages,
+               i.parent_principal_id as inf_parent_principal_id
         FROM conversations c
         LEFT JOIN ai_influencers i ON c.influencer_id = i.id
         WHERE c.id = $1

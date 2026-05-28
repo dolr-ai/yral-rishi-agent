@@ -380,6 +380,26 @@ async def send_message(
         sender_id=user_id,
     )
 
+    # Chat-as-Human early exit: if creator has taken over, skip the LLM entirely.
+    # The takeover state was already fetched in the conversation lookup above (no extra DB hit).
+    if conv.get("human_creator_takeover_active"):
+        from repositories import takeover_repo
+
+        await takeover_repo.update_user_last_message(pool, conversation_id)
+        await websocket_manager.broadcast_event(
+            conv.get("inf_parent_principal_id") or "",
+            "new_user_message_during_takeover",
+            {
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "message": _format_message(user_msg),
+            },
+        )
+        return SendMessageResponse(
+            user_message=ChatMessage(**_format_message(user_msg)),
+            assistant_message=None,
+        )
+
     # Content safety check — runs before LLM call
     is_nsfw = inf.get("is_nsfw", False)
     safety = content_safety.check_message(content or "", is_nsfw_influencer=is_nsfw)
