@@ -74,7 +74,7 @@
 | 4.1 | user_memories table + migration | ✅ Done | — | #165 |
 | 4.2 | Per-conversation memory extraction via Gemini | ✅ Done | — | #165 |
 | 4.3 | Memories injected into Soul File Layer 4 | ✅ Done | — | #165 |
-| 4.4 | pgvector embeddings for semantic search | ✅ Done | — | #174 + #175 (Patroni-pgvector infra) + #176 (model fix) |
+| 4.4 | pgvector embeddings for semantic search | ✅ Done | — | #174 (backend) + #175 (Patroni-pgvector image) + #176 (Gemini model fix) + swarm env update (multi-host DATABASE_URL) |
 | 4.5 | Cross-conversation memory recall | ⏳ Pending | 2 | — |
 | 4.6 | User profile memory (name, city, job — permanent) | ⏳ Pending | 1 | — |
 | 4.7 | Session memory in Redis (short-term) | ⏳ Pending | 1 | — |
@@ -341,9 +341,12 @@
 Items surfaced during Phase 4.4 rollout (Spilo pgvector + Patroni failover gap). Not urgent — current setup works — but worth tracking for production cutover.
 
 ### Infra-X: pgbouncer hardcoded DB_HOST creates failover gap
-**RESOLVED for agent service** via asyncpg `target_session_attrs=read-write` (#177). Agent now connects to all 3 Patroni nodes with the multi-host URL, and asyncpg auto-discovers the writer — verified via switchover round-trip (rishi-4 → rishi-5 → rishi-6 → rishi-4, write succeeded against the new leader every time).
+**RESOLVED for agent service** via asyncpg `target_session_attrs=read-write` (applied as a manual `docker service update --env-add DATABASE_URL=...` swarm env change on 2026-05-28, not yet committed to repo). Agent now connects to all 3 Patroni nodes with the multi-host URL, and asyncpg auto-discovers the writer — verified via switchover round-trip (rishi-4 → rishi-5 → rishi-4, write succeeded against the new leader).
 
 pgbouncer's `DB_HOST: patroni-rishi-4` is still hardcoded, so any **future** service that goes through pgbouncer (instead of asyncpg-direct like the agent) will break on Patroni failover. Revisit when adding the next service that needs pooled connections. Long-term answer is HAProxy + Patroni REST `/master` endpoint, but that's a separate architectural project.
+
+### Infra-Y: agent DATABASE_URL lives only in swarm service env, not in repo
+The multi-host URL change for Infra-X was applied via `docker service update --env-add`. There's no IaC source-of-truth for the agent's env vars yet. Next service-spec change will overwrite it unless we codify. **Action:** when we eventually add a `bootstrap/scripts/agent-stack.yml` (mirroring `patroni-stack.yml`), wire DATABASE_URL through it.
 
 ### Phase 0 re-audit needed before production cutover
 Two Phase 0 assumptions didn't survive contact with reality on 2026-05-28:

@@ -6,7 +6,7 @@
 - **PR #174** — Phase 4.4 backend (pgvector schema + embedding service + memory_repo semantic_search + hot-path wiring + backfill script + diagnostic endpoint + tests)
 - **PR #175** — Custom Patroni image `ghcr.io/dolr-ai/yral-rishi-patroni-pgvector:spilo-15-3.0-p1` (Spilo 3.0-p1 doesn't ship pgvector; this fix added the apt package)
 - **PR #176** — Gemini embedding model fix (`text-embedding-004` was retired between PR #174 landing and rollout; switched to `gemini-embedding-001` with `outputDimensionality=768` Matryoshka truncation)
-- **PR #177** — `DATABASE_URL` repointed to multi-host with `target_session_attrs=read-write`. asyncpg now auto-discovers the leader; agent survives Patroni failovers without manual intervention. Verified via switchover round-trip rishi-4 → rishi-5 → rishi-4, writes succeeded both times.
+- **Swarm env update (no PR)** — `DATABASE_URL` repointed to multi-host with `target_session_attrs=read-write` via `docker service update --env-add` (no code change required since asyncpg 0.30 supports the libpq option natively). Agent now survives Patroni failovers without manual intervention. Verified via switchover round-trip rishi-4 → rishi-5 → rishi-4, writes succeeded both times. **Tech debt:** logged as Infra-Y — the env var lives only in swarm service spec, not in repo. Codify when we add `bootstrap/scripts/agent-stack.yml`.
 - **Cluster:** all 3 Patroni nodes on the new pgvector image, TL=20 after the rolling restart + failover-test round-trip, all lag=0.
 - **Backfill:** 8/8 user_memories embedded successfully.
 - **Endpoint suite:** 27/27 PASS (including new `GET /api/v1/users/me/memories`).
@@ -27,7 +27,7 @@ Net takeaway: cluster bootstrap notes should enumerate every "assumed-included" 
 6. Hit Gemini 404 on embed → patched to `gemini-embedding-001`, rebuilt as `phase-4-4-fix1`, deployed
 7. Backfill failed on read-only — DATABASE_URL pointed at the now-replica rishi-5
 8. Patronictl switchover rishi-6 → rishi-4 (restored intended leader topology)
-9. PR #177 multi-host DATABASE_URL → service env update → backfill succeeded 8/8
+9. Swarm `docker service update --env-add DATABASE_URL=...?target_session_attrs=read-write` → backfill succeeded 8/8
 10. Failover round-trip rishi-4 → rishi-5 → rishi-4 to prove `target_session_attrs` works under live failover
 
 ### Next
