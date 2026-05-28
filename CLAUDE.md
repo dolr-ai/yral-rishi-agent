@@ -33,5 +33,16 @@ One service. One database. Code in app/.
 - Before opening PR: "Would a senior engineer say this is overcomplicated?"
 - Permission deny: ssh to prod, docker service rm, rm -rf, force-push.
 
+## Deploy process (NEVER bypass)
+1. Open PR with changes.
+2. Wait for CI green + Codex review.
+3. Wait for Rishi explicit approval ("merge it" / "approved").
+4. Merge PR to main.
+5. Only THEN build image and deploy.
+
+No exceptions for "hotfixes." A genuine hotfix is a small PR with fast review,
+not a direct push. Direct deploys from unmerged branches cause source/runtime
+drift and skip Codex review.
+
 ## Reading order
 1. This file → 2. app/config.py → 3. app/models.py → 4. app/main.py → 5. app/routes/chat.py
