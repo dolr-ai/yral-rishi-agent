@@ -14,7 +14,14 @@ import config
 
 logger = logging.getLogger(__name__)
 
-EMBEDDING_MODEL = "text-embedding-004"
+# Gemini retired text-embedding-004 between when the Phase 4.4 PR landed and
+# rollout — verified empirically (`/v1beta/models/text-embedding-004:embedContent`
+# returns 404, and `/v1beta/models` no longer lists it). The current stable
+# embedding model is gemini-embedding-001, which defaults to 3072 dimensions
+# but supports Matryoshka truncation via outputDimensionality. We pin 768 to
+# match the user_memories.embedding column type — switching to 3072 would
+# require a schema migration and reindex.
+EMBEDDING_MODEL = "gemini-embedding-001"
 EMBEDDING_DIM = 768
 GEMINI_NATIVE_URL = "https://generativelanguage.googleapis.com/v1beta"
 EMBEDDING_TIMEOUT = 10.0
@@ -36,6 +43,7 @@ async def embed_text(text: str) -> list[float] | None:
     payload = {
         "model": f"models/{EMBEDDING_MODEL}",
         "content": {"parts": [{"text": text}]},
+        "outputDimensionality": EMBEDDING_DIM,
     }
     try:
         async with httpx.AsyncClient(timeout=EMBEDDING_TIMEOUT) as http:
@@ -60,44 +68,21 @@ async def embed_text(text: str) -> list[float] | None:
 
 
 async def embed_batch(texts: list[str]) -> list[list[float] | None]:
-    """Embed a batch of texts. Uses :batchEmbedContents — single HTTP round-trip.
+    """Embed a batch of texts.
 
-    Returns a list parallel to the input. Failed items get None instead of a vector.
+    gemini-embedding-001 does NOT support synchronous :batchEmbedContents
+    (only the long-running asyncBatchEmbedContent op, which is overkill for
+    our backfill scale of <100k rows). We fan out single-text requests in
+    parallel — Gemini's quota is per-RPM, so concurrent calls are fine.
+
+    Returns a list parallel to the input. Failed items get None.
     """
     if not config.GEMINI_API_KEY or not texts:
         return [None] * len(texts)
+    import asyncio
 
-    url = f"{GEMINI_NATIVE_URL}/models/{EMBEDDING_MODEL}:batchEmbedContents"
-    payload = {
-        "requests": [
-            {
-                "model": f"models/{EMBEDDING_MODEL}",
-                "content": {"parts": [{"text": (t or "").strip() or "empty"}]},
-            }
-            for t in texts
-        ]
-    }
-    try:
-        async with httpx.AsyncClient(timeout=EMBEDDING_TIMEOUT * 2) as http:
-            response = await http.post(
-                url,
-                json=payload,
-                params={"key": config.GEMINI_API_KEY},
-                timeout=EMBEDDING_TIMEOUT * 2,
-            )
-            response.raise_for_status()
-        data = response.json()
-        embeddings = data.get("embeddings") or []
-        out: list[list[float] | None] = []
-        for emb in embeddings:
-            values = emb.get("values")
-            out.append(values if values and len(values) == EMBEDDING_DIM else None)
-        while len(out) < len(texts):
-            out.append(None)
-        return out
-    except Exception as e:
-        logger.warning(f"embed_batch failed (non-fatal): {e}")
-        return [None] * len(texts)
+    results = await asyncio.gather(*(embed_text(t) for t in texts))
+    return list(results)
 
 
 def memory_to_embed_text(category: str, key: str, value: str) -> str:
