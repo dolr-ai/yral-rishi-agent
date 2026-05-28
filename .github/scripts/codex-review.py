@@ -32,14 +32,28 @@ def main():
         print("::error::OPENAI_API_KEY not set — Codex review cannot run")
         sys.exit(1)
 
+    # Pathspec must match the workflow's `paths:` filter, otherwise the
+    # workflow fires but this script no-ops.
     diff = subprocess.run(
-        ["git", "diff", "origin/main...HEAD", "--", "app/", "infra/"],
+        [
+            "git",
+            "diff",
+            "origin/main...HEAD",
+            "--",
+            "app/",
+            "infra/",
+            "bootstrap/",
+            ".github/workflows/",
+            "migrations/",
+            "scripts/",
+            "tests/",
+        ],
         capture_output=True,
         text=True,
     ).stdout
 
     if not diff.strip():
-        print("No app/ or infra/ changes — skipping review")
+        print("No reviewable changes — skipping review")
         return
 
     if len(diff) > 100_000:

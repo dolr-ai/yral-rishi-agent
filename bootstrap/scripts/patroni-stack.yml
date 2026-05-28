@@ -147,7 +147,7 @@ services:
 
   patroni-rishi-4:
     <<: *yral_data_plane_defaults
-    image: ghcr.io/zalando/spilo-15:3.0-p1
+    image: ghcr.io/dolr-ai/yral-rishi-patroni-pgvector:spilo-15-3.0-p1
     hostname: patroni-rishi-4
     environment:
       SCOPE: yral-v2-postgres
@@ -218,7 +218,7 @@ services:
 
   patroni-rishi-5:
     <<: *yral_data_plane_defaults
-    image: ghcr.io/zalando/spilo-15:3.0-p1
+    image: ghcr.io/dolr-ai/yral-rishi-patroni-pgvector:spilo-15-3.0-p1
     hostname: patroni-rishi-5
     environment:
       SCOPE: yral-v2-postgres
@@ -270,7 +270,7 @@ services:
 
   patroni-rishi-6:
     <<: *yral_data_plane_defaults
-    image: ghcr.io/zalando/spilo-15:3.0-p1
+    image: ghcr.io/dolr-ai/yral-rishi-patroni-pgvector:spilo-15-3.0-p1
     hostname: patroni-rishi-6
     environment:
       SCOPE: yral-v2-postgres

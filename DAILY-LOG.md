@@ -1,5 +1,23 @@
 # Daily Log
 
+## 2026-05-28 — Patroni Phase 0 oversight + Phase 4.4 partial progress
+
+### Phase 0 oversight (write-up for future debugging)
+Spilo image `ghcr.io/zalando/spilo-15:3.0-p1` was assumed to ship pgvector — it does NOT. Verified empirically when migration 008 attempted `CREATE EXTENSION vector` on the live cluster:
+```
+ERROR: extension "vector" is not available
+DETAIL: Could not open extension control file
+"/usr/share/postgresql/15/extension/vector.control": No such file or directory.
+```
+This is the kind of "assumed-included" detail that should live in the cluster bootstrap notes. Adding to PR #175: a custom Patroni image (`yral-rishi-patroni-pgvector`) that extends Spilo with `postgresql-15-pgvector`. Going forward, any new Postgres extensions for Phase 4 or later land in that Dockerfile rather than as separate setup steps.
+
+### Phase 4.4 partial progress (deploy paused awaiting infra PR)
+- PR #174 (Phase 4.4 backend) **merged** to main.
+- pg_dump snapshot taken on rishi-5 (leader): `/home/rishi-deploy/yral-backups/pre-migration-008-pgvector-20260528-173210.dump` — 522 MB, SHA256 `8f6da13846507c5fea5ddbac523b9d977309241ab7ca7ec2e7355b618e34150c`.
+- Migration 008 **NOT YET APPLIED** — blocked on Patroni image swap.
+- Backend image **NOT YET BUILT** — waiting for migration to succeed first.
+- Resume sequence: rolling Patroni restart → migration 008 → image build + deploy → backfill → 27/27 endpoint test + latency report.
+
 ## 2026-05-26 — Phase 0 + Phase 1 Days 2-14 (all in one session)
 
 ### What completed
