@@ -133,6 +133,7 @@ async def generate_proactive_message(
         is_nsfw=inf.get("is_nsfw", False),
         user_id=user_id,
         conversation_id=conversation_id,
+        archetype=archetype,
     )
 
     if llm_result.is_fallback:

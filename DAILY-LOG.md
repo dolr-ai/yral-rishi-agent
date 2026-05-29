@@ -1,5 +1,31 @@
 # Daily Log
 
+## 2026-05-29 (evening, late) — Task C: Phase 12 per-archetype tuning
+
+Driven by Task B's eval gaps: helpful=2.65 weakest both services, language_match=3.10 mediocre, response verbosity bloated concise scores.
+
+### What changed
+- `app/services/soul_file.py`:
+  - **GLOBAL_RULES** now enumerates specific Indian languages (Hinglish, Hindi, Telugu, Tamil, Bengali, Marathi) so the model can't fall back to English for non-English prompts
+  - **ARCHETYPE_PROMPTS** rewritten with per-archetype sentence caps: companion/entertainer max 3, advisor/educator/creator max 4. Each prompt explicitly tells the model what "good" looks like for its tone.
+  - **Educator gets a worked few-shot example** — English (recursion) + Hinglish (kya AI sach mein learn karta hai?) — so the model can copy the shape
+  - **ARCHETYPE_TUNING** dict: per-archetype (temperature, max_tokens). companion 0.85/600, advisor 0.50/800, entertainer 0.95/500, educator 0.60/800, creator 0.85/700. All max_tokens clamped well under the previous 2048 default; eval showed verbose replies tank concise + helpful.
+  - `tuning_for(category)` helper — case+whitespace tolerant
+- `app/services/ai_client.py` — both `generate_response` and `generate_response_stream` now accept optional `archetype` and look up tuning. OpenRouter path (NSFW) also honors archetype tuning. Unknown archetypes fall back to config defaults (current behavior).
+- `app/routes/chat.py` — both LLM call sites pass `archetype=inf.get("category")`
+- `app/services/proactive.py` — proactive generation also threads archetype through
+- `tests/test_archetype_tuning.py` — 6 tests pinning the tuning values, sentence caps, educator example, multilingual rules
+
+### What's NOT in this PR
+- **Phase 12.2 — advisor → Claude Haiku** is deferred. OpenRouter exposes Anthropic but plumbing per-archetype model selection (vs the current single GEMINI_MODEL + single OPENROUTER_MODEL) is a separate scope. Tracked in PROGRESS Phase 12.2 as still pending.
+- **Phase 12.5 — response diversity** (no repetitive phrases) — separate sub-phase, not addressed here
+
+### Diff
++158 / -19 across 5 files. No schema, no migration.
+
+### Re-eval plan
+After deploy, re-run `scripts/eval_v2_vs_chat_ai.py` and compare to today's baseline. Expected improvements: helpful +0.3 (sentence caps + educator few-shot), language_match +0.4 (enumeration), concise stable or up (max_tokens clamped). If no improvement, the tuning values are the lever to revisit.
+
 ## 2026-05-29 (evening) — batch-2 deploy + verifications
 
 Tasks A + B + D + is_nsfw all live on agent.rishi.yral.com (image `yral-rishi-agent:batch-2`). Migration 012 applied. pg_dump `pre-migration-012-proactive-freq-20260529-143239.dump` taken.
