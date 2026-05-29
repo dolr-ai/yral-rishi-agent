@@ -1,5 +1,38 @@
 # Daily Log
 
+## 2026-05-30 (very late) — Task 4: Phase 7.9 5-minute bot creation wizard
+
+### Flow (4 endpoints under /api/v1/creator/wizard/)
+1. `POST /start` — creator gives a 1-2 sentence concept → Gemini generates 3-5 tailored intake questions (archetype, backstory, voice, would-say / wouldn't-say, opening message). Falls back to a fixed minimal intake when Gemini is flaky.
+2. `POST /sessions/{id}/answer` — record one answer at a time. When all questions are answered, the route generates + caches a structured Soul File draft (system_instructions + display_name + category + initial_greeting).
+3. `GET /sessions/{id}/preview` — synthesize a 5-turn conversation between the draft bot and a synthetic user using the production `generate_response` (so per-archetype tuning applies). Lets the creator see real output before committing.
+4. `POST /sessions/{id}/commit` — finalize. Creates the `ai_influencers` row with the draft, marks the session committed.
+
+### Schema (migration 016)
+`wizard_sessions(id, creator_user_id, concept, questions JSONB, answers JSONB, draft_*, committed_bot_id, ts)`. Abandoned sessions just sit; no cleanup job (creators finish in minutes, not days).
+
+### Files
+- `migrations/016_wizard_sessions.sql`
+- `app/repositories/wizard_repo.py` — JSONB merge for record_answer + save_draft + mark_committed
+- `app/services/wizard.py` — three Gemini calls (intake / draft / preview) + tolerant JSON parser
+- `app/routes/wizard.py` — 4 endpoints
+- `app/main.py` — register wizard_router
+- `scripts/test_all_endpoints.py` — adds wizard endpoint test (suite now 33)
+- `tests/test_wizard.py` — JSON parser pins
+
+### Eval-gate
+Three new Gemini call paths but ONLY reachable via wizard endpoints. The chat send_message + proactive paths are unchanged. Eval should be neutral.
+
+### Spot-check plan (post-deploy)
+The user's spec says "bots produced via this wizard should score HIGHER on average than bots produced via the old generate-prompt flow." Will:
+1. Manually drive the wizard 5x with diverse concepts (companion, advisor, entertainer, educator, creator)
+2. Commit each → real ai_influencers rows
+3. Send some test conversations through each
+4. After the next nightly quality-scorer pass, compare wizard-produced bots' scores vs the existing pool
+
+### Diff
+~540 lines across 7 files.
+
 ## 2026-05-30 (yet later) — Task 3: Phase 7.6 A/B testing for Soul Files
 
 ### Schema (migration 015)

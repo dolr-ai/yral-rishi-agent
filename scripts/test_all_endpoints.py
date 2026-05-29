@@ -403,6 +403,15 @@ def main():
         expect_status=[403, 404],
     )
 
+    print("\n--- Bot Creation Wizard (Phase 7.9) ---")
+    test(
+        "GET /creator/wizard/sessions/{id}/preview (404)",
+        "GET",
+        f"{base}/api/v1/creator/wizard/sessions/00000000-0000-0000-0000-000000000000/preview",
+        headers=auth,
+        expect_status=[403, 404],
+    )
+
     print("\n--- User Memories (Phase 4.4) ---")
     test(
         "GET /users/me/memories",
