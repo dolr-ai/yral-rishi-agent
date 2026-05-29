@@ -167,12 +167,12 @@
 ## PHASE 12: RESPONSE QUALITY
 | # | Sub-phase | Status | Est. days | PR |
 |---|-----------|--------|-----------|-----|
-| 12.1 | Per-archetype few-shot examples (educator example added; others informed by archetype prompts) | 🔄 In PR | 2 | #198 |
-| 12.2 | Different LLM models per archetype (deferred — advisor → Claude Haiku is the spec but needs new OpenRouter wiring) | ⏳ Pending | 1 | — |
-| 12.3 | Different temperature/settings per archetype | 🔄 In PR | 0.5 | #198 |
-| 12.4 | Global response quality guardrails (sentence caps per archetype + language enumeration) | 🔄 In PR | 1 | #198 |
+| 12.1 | Per-archetype few-shot examples (educator example) | ✅ Done (educator) / ⏳ Pending (others) | 2 | #198 + #199 |
+| 12.2 | Different LLM models per archetype (advisor → Claude Haiku — deferred) | ⏳ Pending | 1 | — |
+| 12.3 | Different temperature per archetype (0.50–0.95 range) | ✅ Done | — | #198 |
+| 12.4 | Global response quality guardrails — language enumeration ✅ kept, per-archetype sentence caps reverted after eval regressed | ⚠️ Partial | 1 | #198 → #199 (revert) |
 | 12.5 | Response diversity (no repetitive phrases) | ⏳ Pending | 1 | — |
-| **Phase 12 total** | | **60% in PR** | **2 days left** | |
+| **Phase 12 total** | | **40% done + lesson** | **3 days left** | |
 
 ## PHASE 13: ADVANCED MEMORY
 | # | Sub-phase | Status | Est. days | PR |

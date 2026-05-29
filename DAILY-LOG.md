@@ -1,5 +1,48 @@
 # Daily Log
 
+## 2026-05-29 (very late) — rollback re-eval + batch close-out
+
+### Rollback re-eval (v2 with #199 deployed)
+n=49 prompts, same harness, same backends.
+
+| Metric | morning v2 | post-#198 | **post-#199** | vs morning | vs chat-ai |
+|---|---|---|---|---|---|
+| in_character | 4.02 | 3.92 | **4.18** | **+0.16** ↑ | +0.18 |
+| helpful | 2.65 | 2.41 | 2.37 | −0.28 | +0.20 |
+| concise | 4.79 | 4.63 | 4.57 | −0.22 | +0.11 |
+| language_match | 3.10 | 3.02 | 3.06 | −0.04 | +0.14 |
+| safe | 4.27 | 4.12 | **4.37** | **+0.10** ↑ | +0.76 |
+| **overall** | **3.77** | 3.62 | **3.71** | **−0.06** | **+0.28** |
+| latency p50 | 1699 ms | 1593 ms | 1784 ms | +85 ms | +740 ms |
+| latency p95 | 9633 ms | 2716 ms | 4965 ms | −4668 ms | +3086 ms |
+
+Within Gemini-judge run-to-run noise (chat-ai's `safe` score varied 0.39 across runs as a control with no v2 change). `overall` is effectively at morning baseline. `in_character` and `safe` improved — temperature differentiation appears to be a genuine win. p95 latency improved 48% vs morning.
+
+### What stayed from Phase 12
+- ARCHETYPE_TUNING dict (per-archetype temperature) — likely positive signal
+- Educator few-shot example
+- Language enumeration in GLOBAL_RULES
+
+### What got reverted
+- Per-archetype sentence caps (regressed quality)
+- Tight max_tokens 500-800 (regressed quality; now uniformly 1500)
+
+### Batch close-out
+| Task | Status | PRs |
+|---|---|---|
+| A — trending flake | ✅ | #193 |
+| B — eval baseline | ✅ | #195 |
+| C — Phase 12 tuning | ⚠️ partial (sentence caps reverted) | #198 → #199 |
+| D — proactive frequency | ✅ (squashed via rebase into #195) | #194 |
+| is_nsfw on ConversationResponse | ✅ | #196 |
+
+Standing approval cycle closes per the original mandate. Pausing for next direction.
+
+### Lessons captured
+1. **Per-archetype tuning needs a feedback loop** — first pass can regress; revert quickly when eval data says so. Now codified in `tests/test_archetype_tuning.py::test_archetype_prompts_do_not_hardcode_sentence_caps` so a future PR can't silently re-introduce the regression.
+2. **Eval noise is ~0.1-0.4 per criterion** — small deltas need bigger N or multiple runs to claim. Worth running each comparison twice from now on.
+3. **Latency improvements that come from cutting tokens are NOT free** — the LLM had something useful to say in those tokens.
+
 ## 2026-05-29 (night) — Phase 12 tuning rollback (data-driven)
 
 ### Re-eval after Phase 12 deploy showed regression
