@@ -65,6 +65,10 @@ async def lifespan(app: FastAPI):
 
     streak_task = asyncio.create_task(streak_loop())
 
+    from services.etl_chat_ai import etl_loop
+
+    etl_task = asyncio.create_task(etl_loop())
+
     yield
 
     logger.info("Shutting down...")
@@ -75,6 +79,7 @@ async def lifespan(app: FastAPI):
     memory_consolidation_task.cancel()
     quality_scoring_task.cancel()
     streak_task.cancel()
+    etl_task.cancel()
     try:
         await trending_refresher_task
     except asyncio.CancelledError:
@@ -101,6 +106,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await streak_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await etl_task
     except asyncio.CancelledError:
         pass
     langfuse_tracing.flush()
