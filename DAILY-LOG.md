@@ -1,5 +1,17 @@
 # Daily Log
 
+## 2026-05-29 (afternoon, later) — Phase 2.7 deployed + smoke-tested
+
+- Image `yral-rishi-agent:phase-2-7` deployed on rishi-4/5
+- 27/27 endpoint suite: PASS on re-run (first run hit the recurring `/trending` materialized-view timeout)
+- **SSE smoke test against live cluster (real Gemini):**
+  - Curl to `POST /messages/stream` with `Accept: text/event-stream`
+  - Got: 2× `event: token` chunks streamed in real time, then `event: done` with persisted assistant_message
+  - Wire format matches `docs/SSE-PROTOCOL.md` exactly
+- Codex flagged 2 BUGs + 2 OVERENG. Both BUGs were false positives (parameterized SQL + auth IS called at chat.py:608); OVERENG dismissed per standing approval. Justification posted as PR comment.
+
+PR #189 merged. Phase 2.7 backend ✅. Mobile integration pending — ready to loop in mobile expert with `docs/SSE-PROTOCOL.md` whenever Rishi gives the word.
+
 ## 2026-05-29 (afternoon) — Task 3: SSE streaming backend (Phase 2.7)
 
 ### Endpoint

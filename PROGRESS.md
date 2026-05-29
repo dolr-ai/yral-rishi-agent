@@ -50,7 +50,7 @@
 | 2.4 | Memory enhancement (extraction + injection) | ✅ Done | — | #161 |
 | 2.5 | Request ID middleware (end-to-end tracing) | ✅ Done | — | #160 |
 | 2.6 | Redis cross-node WebSocket pub/sub | ✅ Done | — | #160 |
-| 2.7 | SSE streaming (word-by-word AI responses) | 🔄 In PR | 3 | #189 (backend) |
+| 2.7 | SSE streaming (word-by-word AI responses) | ✅ Done (backend) / ⏳ Pending (mobile integration) | — | #189 (backend) |
 | 2.V1 | Verify: Langfuse receiving traces? | ⏳ Pending | 0.5 | — |
 | 2.V2 | Verify: Redis WS connected or local fallback? | ⏳ Pending | 0.5 | — |
 | **Phase 2 total** | | **85% done** | **4 days left** | |
