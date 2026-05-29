@@ -121,6 +121,41 @@ def test_state_load_empty_returns_epoch_defaults(tmp_path, monkeypatch):
     assert state["_last_sentinel_emit"] is None
 
 
+def test_csv_row_count_handles_embedded_newlines():
+    """The 'count mismatch' check in export_table must count CSV rows
+    (newline-aware), not byte newlines. Otherwise messages with multi-
+    line content trigger spurious mismatches: psql says 3 rows, but
+    `csv_bytes.count(b'\\n')` says 5 because two messages have a
+    `\\n` in their content.
+
+    Regression test for the bug that crashed the first rishi-1 dry-run
+    (32499 rows reported by psql, 77905 bytes-newlines counted)."""
+    import csv as _csv
+    import io as _io
+
+    # Simulate CSV that COPY would emit: messages with multi-line content,
+    # RFC-4180-quoted (newlines inside quoted cells stay raw `\n` bytes).
+    csv_text = (
+        'id,content\n'
+        '1,"plain message"\n'
+        '2,"two line\nmessage"\n'
+        '3,"another\nmultiline\nmessage"\n'
+    )
+    csv_bytes = csv_text.encode()
+
+    # Byte-newline count: 7 (4 row terminators + 3 newlines embedded in
+    # quoted content). Overcounts the actual row count.
+    assert csv_bytes.count(b"\n") == 7
+
+    # CSV row count via the csv module: 4 (header + 3 data rows)
+    csv_row_count = sum(1 for _ in _csv.reader(_io.StringIO(csv_text)))
+    assert csv_row_count == 4
+
+    # The check in export_table must use the CSV row count.
+    actual_data_rows = csv_row_count - 1
+    assert actual_data_rows == 3
+
+
 def test_integrity_emission_intervals_ordered():
     """The four emission cadences must be strictly ordered: sentinel
     (30min) < hourly (60min) < sample (6h). Otherwise a 'is overdue'

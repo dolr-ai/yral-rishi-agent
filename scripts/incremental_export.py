@@ -316,12 +316,19 @@ def export_table(s3, container: str, password: str, table: str, since_iso: str):
     until_iso = max_ts
     csv_bytes = copy_window(container, password, table, since_iso, until_iso)
 
-    # Verify row count matches what count_and_max reported. Header line +
-    # data lines: csv_lines == count + 1.
-    csv_lines = csv_bytes.count(b"\n")
-    if csv_lines != count + 1:
+    # Verify row count matches what count_and_max reported. Must count
+    # CSV rows (newline-aware), NOT byte newlines — message content can
+    # contain literal `\n` characters which RFC 4180 quotes inline but
+    # still produces raw `\n` bytes inside the CSV payload. A byte-newline
+    # count overcounts by the number of embedded newlines.
+    import csv as _csv
+
+    csv_row_count = sum(1 for _ in _csv.reader(io.StringIO(csv_bytes.decode())))
+    actual_data_rows = csv_row_count - 1  # subtract the header row
+    if actual_data_rows != count:
         raise RuntimeError(
-            f"{table}: count mismatch: psql said {count}, COPY produced {csv_lines - 1}"
+            f"{table}: count mismatch: psql said {count}, "
+            f"COPY produced {actual_data_rows}"
         )
 
     gz_buf = io.BytesIO()
