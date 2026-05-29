@@ -61,18 +61,54 @@ def test_safety_batch_limit_bounded():
     assert 100 <= PAGE_SIZE <= 5000
 
 
-def test_chat_ai_dsn_reads_env():
-    """Operator sets CHAT_AI_DATABASE_URL via docker service update; the
-    helper must read it dynamically (not at import time) so swarm env
-    changes take effect on the next loop tick without a code redeploy."""
+def test_chat_ai_dsn_reads_env(tmp_path):
+    """Env-var fallback path. Used in local dev / CI where Swarm secrets
+    aren't available. Helper must read dynamically (not at import time) so
+    `docker service update --env-add` takes effect on the next loop tick."""
     from services.etl_chat_ai import _chat_ai_dsn
 
-    # Default state — unset → None
+    # Point the file path at a non-existent file so the env-var branch is
+    # exercised even on machines that happen to have /run/secrets populated.
+    os.environ["CHAT_AI_DATABASE_URL_FILE"] = str(tmp_path / "does-not-exist")
     os.environ.pop("CHAT_AI_DATABASE_URL", None)
-    assert _chat_ai_dsn() is None
-
-    os.environ["CHAT_AI_DATABASE_URL"] = "postgresql://test"
     try:
+        assert _chat_ai_dsn() is None
+        os.environ["CHAT_AI_DATABASE_URL"] = "postgresql://test"
         assert _chat_ai_dsn() == "postgresql://test"
     finally:
         os.environ.pop("CHAT_AI_DATABASE_URL", None)
+        os.environ.pop("CHAT_AI_DATABASE_URL_FILE", None)
+
+
+def test_chat_ai_dsn_reads_secret_file(tmp_path):
+    """Swarm-secret path — file at CHAT_AI_DATABASE_URL_FILE takes priority
+    over the env var. This is how prod activates the ETL: the secret is
+    mounted at /run/secrets/chat_ai_database_url and the env var is never
+    set, so the DSN stays out of `docker service inspect`."""
+    from services.etl_chat_ai import _chat_ai_dsn
+
+    secret = tmp_path / "chat_ai_database_url"
+    secret.write_text("postgresql://from-file\n")  # trailing newline must strip
+    os.environ["CHAT_AI_DATABASE_URL_FILE"] = str(secret)
+    os.environ["CHAT_AI_DATABASE_URL"] = "postgresql://from-env-should-be-ignored"
+    try:
+        assert _chat_ai_dsn() == "postgresql://from-file"
+    finally:
+        os.environ.pop("CHAT_AI_DATABASE_URL", None)
+        os.environ.pop("CHAT_AI_DATABASE_URL_FILE", None)
+
+
+def test_chat_ai_dsn_empty_file_is_none(tmp_path):
+    """An empty/whitespace-only file means the operator hasn't actually
+    populated the secret yet — must treat as 'unset' so the loop idles
+    instead of trying to connect with an empty DSN."""
+    from services.etl_chat_ai import _chat_ai_dsn
+
+    secret = tmp_path / "chat_ai_database_url"
+    secret.write_text("   \n")
+    os.environ["CHAT_AI_DATABASE_URL_FILE"] = str(secret)
+    os.environ.pop("CHAT_AI_DATABASE_URL", None)
+    try:
+        assert _chat_ai_dsn() is None
+    finally:
+        os.environ.pop("CHAT_AI_DATABASE_URL_FILE", None)
