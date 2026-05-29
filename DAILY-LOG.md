@@ -1,5 +1,51 @@
 # Daily Log
 
+## 2026-05-29 (evening) — S3 ETL pivot Phases 1-3 shipped, Phase 4 deployed but apply blocked on schema mismatch
+
+### The pivot
+Direct V2 → chat-ai asyncpg pull was confirmed unreachable (TCP timeout on the public IPs — chat-ai's Postgres lives on a swarm overlay only). Pivoted to S3-mediated: rishi-1 pushes deltas from inside chat-ai's swarm, V2 pulls from S3.
+
+### PRs merged today
+- **#210** — `fix(etl)`: chat-ai DSN read from Swarm secret file (file-first pattern) — superseded by the S3 pivot below, but the file-first pattern was reused for `chat_ai_s3_credentials`
+- **#211** — `feat(etl)`: Phase 1 — rishi-1 incremental exporter (330 lines + 126 tests). CSV-via-COPY, gzip, boto3 upload, heartbeat + STUCK marker
+- **#212** — `feat(etl)`: Phase 2 — V2 S3 fetcher (replaces direct asyncpg pull). New migration 019 for `etl_processed_files`. Old `etl_integrity.py` gutted to Phase-3-pending stub
+- **#213** — `feat(etl)`: Phase 3 — 4-layer integrity verification (tick/hourly/sample/sentinel) via S3. New migration 020 for `etl_integrity_results`. Three new admin endpoints
+- **#214** — `fix(etl)`: export script — count CSV rows not byte newlines (caught in dry-run; messages with multi-line content over-counted)
+
+### Phase 4 deploy state (frozen overnight, safe)
+- V2 backup taken: `~/yral-backups/pre-migration-019-020-20260529-155852.dump` on rishi-5 (525 MB, sha256 `cb2cdaa78e827a966ca0c5517672fe965a84656dce4709d93aded5eff7d21ab1`)
+- Migrations 019 + 020 applied via leader on rishi-5
+- New V2 image (`47ef5ef`) rolled out — health 200
+- rishi-1 setup complete: `~/.etl-export/{incremental_export.py, credentials, state.json}` with mode 0700 dir / 0600 creds
+- Manual dry-run succeeded after the byte-newline fix: 962 conversations + 32,640 messages + all 4 integrity payloads landed in `s3://rishi-yral/yral-chat-ai/incremental-sync/`
+- cron enabled on rishi-1: `*/5 * * * * python3 ~/.etl-export/incremental_export.py >> ~/.etl-export/etl-export.log 2>&1`
+- V2 Swarm secret `chat_ai_s3_credentials` mounted; old `chat_ai_database_url` removed in same `service update`
+- `/admin/etl-status` shows `s3_credentials_mounted: true`, heartbeat fresh, `stuck_marker: null`
+
+### The block — schema mismatch on apply
+V2's first apply tick (2026-05-29 16:15 UTC) failed on every file with `UniqueViolationError: idx_unique_user_influencer` for conversations and cascading `ForeignKeyViolationError` for messages.
+
+Root cause: **chat-ai allows multiple conversations per (user, influencer) pair; V2's schema enforces at most one** (via `idx_unique_user_influencer` UNIQUE WHERE influencer_id IS NOT NULL). chat-ai has a similar `idx_unique_human_chat` constraint V2 doesn't.
+
+**No data harm.** Nothing recorded in `etl_processed_files`, nothing in V2 modified. State is safe to leave overnight: cron keeps publishing fresh data to S3, V2 loop keeps retrying with warning logs.
+
+### Tomorrow morning — Option A (Rishi's call)
+Skip duplicates with logging, not merge/remap. Saved in memory: `project_etl_option_a_conflict_handling.md`.
+
+1. `ON CONFLICT (user_id, influencer_id) WHERE influencer_id IS NOT NULL DO NOTHING` on conversations
+2. Pre-check `SELECT 1 FROM conversations WHERE id = $1` before each message INSERT; skip + log if missing
+3. New migration 021: `etl_skipped_rows (filename, table, row_id, reason, skipped_at)`
+4. Extend `/admin/etl-status` with `skipped_rows_24h` + per-reason counts
+5. Extend `/admin/etl-integrity/details` with recent skip details
+6. Restart V2 service — queued S3 files reprocess with new logic
+7. Report: rows applied per table, rows skipped per reason, Layer 1 integrity result (drift expected to equal skipped count)
+8. Add runbook entry: "chat-ai duplicate (user, influencer) conversations are not migrated."
+
+Health threshold: check `skipped_rows_24h` after 24h. <50/day = fine. >500/day = revisit (Option B remap or schema discussion).
+
+### What's still untouched
+- Phase 5 (`docs/ETL-OPS-RUNBOOK.md`) — to be merged with the Phase 4-completion PR tomorrow so the runbook reflects final Option A semantics
+
 ## 2026-05-30 (cutover-prep close) — Tasks B + C deployed; ETL idle until cred set
 
 ### Both tasks live on agent.rishi.yral.com
