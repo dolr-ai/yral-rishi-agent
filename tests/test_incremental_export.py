@@ -88,7 +88,8 @@ def test_load_credentials_errors_on_missing_keys(tmp_path, monkeypatch):
 
 def test_state_round_trip(tmp_path, monkeypatch):
     """save then load returns the same shape. atomic write via .tmp +
-    replace, so a crash mid-save can't leave a half-written file."""
+    replace, so a crash mid-save can't leave a half-written file. The
+    integrity fields (_last_*) auto-fill to None on load if absent."""
     mod = _load_module()
     state_file = tmp_path / "state.json"
     monkeypatch.setattr(mod, "STATE_FILE", state_file)
@@ -96,20 +97,104 @@ def test_state_round_trip(tmp_path, monkeypatch):
         "ai_influencers": "2026-05-26T08:00:00+00:00",
         "conversations": "2026-05-26T08:00:00+00:00",
         "messages": "2026-05-26T08:05:00+00:00",
+        "_last_hourly_emit": None,
+        "_last_sample_emit": None,
+        "_last_sentinel_emit": None,
     }
     mod.save_state(payload)
     assert mod.load_state() == payload
 
 
 def test_state_load_empty_returns_epoch_defaults(tmp_path, monkeypatch):
-    """No state file yet = first ever run. Default to epoch so the
-    bootstrap (Phase 4) writes the real start cursor, OR the first tick
-    sweeps all rows if bootstrap was skipped."""
+    """No state file yet = first ever run. Default to epoch for cursors,
+    None for integrity timestamps so all three emit on the very first
+    tick after the script runs."""
     mod = _load_module()
     monkeypatch.setattr(mod, "STATE_FILE", tmp_path / "no-such-file.json")
     state = mod.load_state()
-    assert set(state) == set(mod.SYNCED_TABLES)
-    assert all(v == mod.EPOCH_ISO for v in state.values())
+    # Table-name cursors all at epoch
+    for table in mod.SYNCED_TABLES:
+        assert state[table] == mod.EPOCH_ISO
+    # Integrity timestamps unset → emit on first tick
+    assert state["_last_hourly_emit"] is None
+    assert state["_last_sample_emit"] is None
+    assert state["_last_sentinel_emit"] is None
+
+
+def test_integrity_emission_intervals_ordered():
+    """The four emission cadences must be strictly ordered: sentinel
+    (30min) < hourly (60min) < sample (6h). Otherwise a 'is overdue'
+    gate fires the wrong layer."""
+    mod = _load_module()
+    assert mod.SENTINEL_INTERVAL_SEC < mod.HOURLY_INTERVAL_SEC < mod.SAMPLE_INTERVAL_SEC
+
+
+def test_integrity_watermarks_wider_for_sample(tmp_path):
+    """Sample integrity (every 6h) tolerates more drift than hourly,
+    so its watermark backs off further to make sure all rows have
+    finished their burst windows."""
+    mod = _load_module()
+    assert mod.SAMPLE_WATERMARK_SEC >= mod.HOURLY_WATERMARK_SEC
+
+
+def test_integrity_s3_prefix_correct():
+    """The exporter emits into _integrity/ under the same prefix as
+    the CSV files — matches the V2 verifier's S3_INTEGRITY_PREFIX."""
+    mod = _load_module()
+    assert mod.S3_INTEGRITY_PREFIX == "yral-chat-ai/incremental-sync/_integrity"
+
+
+def test_is_overdue_handles_none():
+    """First-ever run = None state = emit immediately. Without this
+    branch, the first sentinel/hourly/sample never fire."""
+    mod = _load_module()
+    assert mod._is_overdue(None, 60) is True
+
+
+def test_is_overdue_recent_returns_false():
+    """A recent emission keeps the gate closed."""
+    from datetime import datetime, timezone
+
+    mod = _load_module()
+    now = datetime.now(timezone.utc).isoformat()
+    assert mod._is_overdue(now, 3600) is False
+
+
+def test_state_carries_integrity_timestamps(tmp_path, monkeypatch):
+    """State file round-trips the integrity timestamps. Otherwise the
+    gates fire every tick."""
+    mod = _load_module()
+    state_file = tmp_path / "state.json"
+    monkeypatch.setattr(mod, "STATE_FILE", state_file)
+    payload = {
+        "ai_influencers": "2026-05-26T08:00:00+00:00",
+        "conversations": "2026-05-26T08:00:00+00:00",
+        "messages": "2026-05-26T08:00:00+00:00",
+        "_last_hourly_emit": "2026-05-29T13:00:00+00:00",
+        "_last_sample_emit": "2026-05-29T08:00:00+00:00",
+        "_last_sentinel_emit": "2026-05-29T13:30:00+00:00",
+    }
+    mod.save_state(payload)
+    got = mod.load_state()
+    assert got == payload
+
+
+def test_state_load_upgrades_old_file(tmp_path, monkeypatch):
+    """A pre-Phase-3 state file (without the _last_* keys) must
+    auto-upgrade to None defaults rather than KeyError-ing."""
+    mod = _load_module()
+    state_file = tmp_path / "state.json"
+    import json
+    state_file.write_text(json.dumps({
+        "ai_influencers": "2026-05-26T08:00:00+00:00",
+        "conversations": "2026-05-26T08:00:00+00:00",
+        "messages": "2026-05-26T08:00:00+00:00",
+    }))
+    monkeypatch.setattr(mod, "STATE_FILE", state_file)
+    got = mod.load_state()
+    assert got["_last_hourly_emit"] is None
+    assert got["_last_sample_emit"] is None
+    assert got["_last_sentinel_emit"] is None
 
 
 def test_failure_counter_round_trip(tmp_path, monkeypatch):

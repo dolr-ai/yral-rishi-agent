@@ -69,22 +69,63 @@ async def etl_status(request: Request):
     return raw
 
 
+def _iso_serialize(obj):
+    """Recursively turn datetimes into ISO strings so the FastAPI JSON
+    encoder doesn't choke on the nested asyncpg Record values."""
+    from datetime import datetime
+
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    if isinstance(obj, dict):
+        return {k: _iso_serialize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_iso_serialize(v) for v in obj]
+    return obj
+
+
 @router.get("/admin/etl-integrity")
 async def etl_integrity(request: Request):
-    """Latest integrity-check results per check_type + 24h fail/warn counts.
-
-    JWT-gated like /admin/etl-status. Operator dashboard for cutover-readiness.
-    """
+    """Summary: latest result per layer (tick/hourly/sample/sentinel) +
+    24h pass/fail counts. JWT-gated."""
     from auth import get_current_user
     from services.etl_integrity import get_status
-    from datetime import datetime
 
     get_current_user(request)
     pool = await database.get_pool()
     raw = await get_status(pool)
-    # Serialize timestamps
-    for r in raw["latest_per_check"]:
-        v = r.get("checked_at")
-        if isinstance(v, datetime):
-            r["checked_at"] = v.isoformat()
-    return raw
+    return _iso_serialize(raw)
+
+
+@router.get("/admin/etl-integrity/details")
+async def etl_integrity_details(request: Request, layer: str, hours: int = 24):
+    """Drill-in: every result for the given layer in the last N hours.
+
+    `layer` must be one of tick/hourly/sample/sentinel. `hours` clamped
+    to [1, 168] to bound response size."""
+    from auth import get_current_user
+    from services.etl_integrity import get_details
+
+    get_current_user(request)
+    valid = {"tick", "hourly", "sample", "sentinel"}
+    if layer not in valid:
+        raise HTTPException(
+            status_code=400,
+            detail=f"layer must be one of {sorted(valid)}",
+        )
+    hours = max(1, min(168, hours))
+    pool = await database.get_pool()
+    raw = await get_details(pool, layer, hours)
+    return _iso_serialize(raw)
+
+
+@router.get("/admin/etl-integrity/stale")
+async def etl_integrity_stale(request: Request):
+    """How stale is V2 vs. chat-ai's latest message? Reads the last
+    passing sentinel result + V2's MAX(messages.created_at)."""
+    from auth import get_current_user
+    from services.etl_integrity import get_staleness
+
+    get_current_user(request)
+    pool = await database.get_pool()
+    raw = await get_staleness(pool)
+    return _iso_serialize(raw)
