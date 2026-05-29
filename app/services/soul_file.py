@@ -50,9 +50,19 @@ def compose(
     if memories:
         memory_lines = [f"- {k}: {v}" for k, v in memories.items() if v]
         if memory_lines:
+            # Phase 4 polish (Task 1): strong anti-recitation instructions.
+            # Previous wording ("use naturally, don't recite") was too soft —
+            # bots were leading replies with personal facts in Motorola testing.
             layers.append(
-                "**What you know about this user (use naturally, don't recite):**\n"
+                "**Background facts about this user:**\n"
                 + "\n".join(memory_lines)
+                + "\n\n"
+                "Reference these facts ONLY if the user brings up that topic "
+                "OR if it genuinely fits the moment. NEVER lead with personal "
+                'facts. NEVER use phrases like "I remember you said X" or '
+                '"you mentioned X before" — that\'s recitation. Use facts the '
+                "way a real friend would: naturally, sparingly, only when "
+                "relevant."
             )
 
     return LAYER_SEPARATOR.join(layers)

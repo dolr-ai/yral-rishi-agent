@@ -5,16 +5,23 @@ user_memories table. Memories are per (user, influencer) pair with categories.
 Global memories (influencer_id=NULL) apply across all conversations.
 """
 
+import asyncio
 import json
 import logging
 
 from repositories import memory_repo
-from services import embeddings
+from services import embeddings, session_memory
 from services.ai_client import _call_gemini
 import config
 
 logger = logging.getLogger(__name__)
-SEMANTIC_TOP_K = 8
+
+# Phase 4 polish (memory recitation fix, Task 1): inject at most 3 memories
+# per turn so the bot doesn't lead with personal facts. Fetch a bigger buffer
+# from semantic_search and filter overused keys (per-conversation history
+# tracked in Redis via session_memory) before taking the top 3.
+SEMANTIC_TOP_K = 3
+SEMANTIC_SEARCH_BUFFER = 10  # over-fetch so the filter has slack
 
 # Phase 4.6: identity facts (name, age, where the user lives, what they do)
 # don't change per-influencer — the user IS the same person across every bot
@@ -124,29 +131,51 @@ async def get_memories_for_prompt(
     user_id: str,
     influencer_id: str,
     query_embedding: list[float] | None = None,
+    conversation_id: str | None = None,
 ) -> dict:
     """Get memories formatted for the soul file composer.
 
     Phase 4.5: when query_embedding is provided, semantic search runs across
     ALL the user's memories regardless of which influencer the row came from.
-    Distance ranking gatekeeps relevance — facts from other bots only surface
-    if they're a closer match than the current bot's own per-relationship
-    memories.
+    Distance ranking gatekeeps relevance.
+
+    Phase 4 polish (Task 1): we over-fetch SEMANTIC_SEARCH_BUFFER results,
+    drop any keys that have appeared >= MEMORY_REPEAT_LIMIT times in the last
+    MEMORY_HISTORY_DEPTH turns (Redis-tracked per conversation), then take the
+    top SEMANTIC_TOP_K (=3). The chosen keys get recorded back to Redis
+    fire-and-forget so the next turn's filter sees them.
 
     Without a query (proactive flow, no current message), we fall back to
     per-(user, influencer) + global identity memories — the pre-Phase-4.5
-    behavior. Cross-conversation recall only kicks in when there's a query
-    to anchor relevance against.
+    behavior. Cross-conversation recall + variety filter only kick in when
+    there's a query to anchor relevance against.
     """
-    if query_embedding:
-        memories = await memory_repo.semantic_search(
-            pool, user_id, query_embedding, top_k=SEMANTIC_TOP_K
-        )
-    else:
+    if not query_embedding:
         memories = await memory_repo.get_all_for_user(pool, user_id, influencer_id)
+        return {f"{m['category']}_{m['key']}": m["value"] for m in memories}
 
-    result = {}
-    for mem in memories:
+    raw = await memory_repo.semantic_search(
+        pool, user_id, query_embedding, top_k=SEMANTIC_SEARCH_BUFFER
+    )
+
+    overused: set[str] = set()
+    if conversation_id:
+        overused = await session_memory.recently_overused_keys(user_id, conversation_id)
+
+    result: dict[str, str] = {}
+    for mem in raw:
         key = f"{mem['category']}_{mem['key']}"
+        if key in overused:
+            continue
         result[key] = mem["value"]
+        if len(result) >= SEMANTIC_TOP_K:
+            break
+
+    if conversation_id and result:
+        asyncio.create_task(
+            session_memory.record_memory_keys_used(
+                user_id, conversation_id, list(result.keys())
+            )
+        )
+
     return result

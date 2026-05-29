@@ -1,5 +1,28 @@
 # Daily Log
 
+## 2026-05-29 — Task 1: memory recitation fix (Phase 4 polish)
+
+### Why
+Motorola testing surfaced that bots were leading replies with "Mumbai" (the most common identity fact). Two problems:
+1. SEMANTIC_TOP_K=8 over-injected — most LLMs latch onto the first fact and recite it
+2. The L4 prompt said "use naturally, don't recite" — too soft to override the recency bias
+
+### Fix
+- `SEMANTIC_TOP_K`: 8 → 3, with a buffer of 10 in `semantic_search` for the variety filter to work against
+- New Redis-backed per-conversation variety filter in `session_memory.py`: tracks the last 5 turns' injected memory keys, skips any key that appeared 3+ times. Filter is non-fatal (Redis down → empty set, no filter)
+- Layer 4 prompt strengthened with explicit "NEVER lead with personal facts. NEVER say 'I remember you said X'" language
+- `get_memories_for_prompt` now takes an optional `conversation_id` so the filter has scope; caller in `chat.py` updated
+
+### Files
+- `app/services/memory.py` — TOP_K + buffer + conversation_id arg
+- `app/services/session_memory.py` — `record_memory_keys_used` + `recently_overused_keys` (Redis list, JSON-encoded per-turn arrays)
+- `app/services/soul_file.py` — L4 block with strong anti-recitation instructions
+- `app/routes/chat.py` — pass conversation_id
+- `tests/test_memory_recitation_fix.py` — pins constants + the anti-recitation phrasing
+
+### Diff
+~120 / -10 across 5 files. No schema, no migration. Plain rebuild + redeploy.
+
 ## 2026-05-28 (end of day) — Phase 4 complete (4.4 / 4.5 / 4.6 / 4.7 / 4.8 all ✅)
 
 - Image `yral-rishi-agent:phase-4-8` deployed on rishi-4/5.

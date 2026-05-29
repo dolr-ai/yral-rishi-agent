@@ -450,8 +450,14 @@ async def send_message(
 
     # Compose soul file prompt with tiered memories — semantic top-K if we have
     # an embedding, else all memories (proactive / short-message fallback).
+    # conversation_id enables the Phase 4 polish variety filter (recently-used
+    # keys in this convo are skipped).
     memories = await memory.get_memories_for_prompt(
-        pool, user_id, influencer_id, query_embedding=query_embedding
+        pool,
+        user_id,
+        influencer_id,
+        query_embedding=query_embedding,
+        conversation_id=conversation_id,
     )
 
     # Phase 4.7: inject short-term session signals (mood) alongside long-term

@@ -79,7 +79,8 @@
 | 4.6 | User profile memory (name, city, job — permanent) | ✅ Done | — | #178 |
 | 4.7 | Session memory in Redis (short-term) | ✅ Done | — | #182 |
 | 4.8 | Memory consolidation (nightly dedup + merge) | ✅ Done | — | #183 |
-| **Phase 4 total** | | **100% done** | **0 days left** | |
+| 4.9 | Polish: anti-recitation (top-K=3, variety filter, prompt hardening) | 🔄 In PR | 0.5 | #186 |
+| **Phase 4 total** | | **100% done + 1 polish** | **0 days left** | |
 
 ## PHASE 5: PROACTIVE MESSAGES
 | # | Sub-phase | Status | Est. days | PR |
