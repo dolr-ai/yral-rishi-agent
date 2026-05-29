@@ -79,7 +79,7 @@
 | 4.6 | User profile memory (name, city, job — permanent) | ✅ Done | — | #178 |
 | 4.7 | Session memory in Redis (short-term) | ✅ Done | — | #182 |
 | 4.8 | Memory consolidation (nightly dedup + merge) | ✅ Done | — | #183 |
-| 4.9 | Polish: anti-recitation (top-K=3, variety filter, prompt hardening) | 🔄 In PR | 0.5 | #186 |
+| 4.9 | Polish: anti-recitation (top-K=3, variety filter, prompt hardening) | ✅ Done | — | #186 |
 | **Phase 4 total** | | **100% done + 1 polish** | **0 days left** | |
 
 ## PHASE 5: PROACTIVE MESSAGES
@@ -88,7 +88,7 @@
 | 5.1 | Find inactive conversations (24+ hours) | ✅ Done | — | #165 |
 | 5.2 | Generate bot-initiated messages | ✅ Done | — | #165 |
 | 5.3 | Background engagement loop (15 min) | ✅ Done | — | #166 |
-| 5.3p | Polish: proactive quality (3-cap + variety prompt + type rotation) | 🔄 In PR | 1.5 | #187 |
+| 5.3p | Polish: proactive quality (3-cap + variety prompt + type rotation) | ✅ Done | — | #187 |
 | 5.4 | User-configurable frequency (daily/weekly/off) | ⏳ Pending | 1 | — |
 | 5.5 | Context-aware timing (morning greetings, evening) | ⏳ Pending | 1 | — |
 | 5.6 | Streak tracking (reward consistent chatters) | ⏳ Pending | 1 | — |
