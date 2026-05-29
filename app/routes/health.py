@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 import database
 import config
@@ -43,15 +43,20 @@ async def status():
 
 
 @router.get("/admin/etl-status")
-async def etl_status():
+async def etl_status(request: Request):
     """Operator view of the chat-ai → v2 ETL cursor.
 
-    Public (no auth) for now — cutover-readiness only, contains no PII; we
-    can add auth gating once mobile-facing endpoints are cutover. Returns
-    last_sync_ts + last_error + rows_pulled per table.
+    JWT-gated: any authenticated caller can read it. The `last_error` field
+    can include partial connection-string fragments and host names from
+    asyncpg's error messages — we don't want to expose those to random
+    scanners.
     """
+    from auth import get_current_user
     from services.etl_chat_ai import get_status
     from datetime import datetime
+
+    # Raises 401 if no/bad JWT
+    get_current_user(request)
 
     pool = await database.get_pool()
     raw = await get_status(pool)

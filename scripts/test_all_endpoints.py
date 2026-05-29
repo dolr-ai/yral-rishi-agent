@@ -368,6 +368,7 @@ def main():
         "GET /admin/etl-status",
         "GET",
         f"{base}/admin/etl-status",
+        headers=auth,
         expect_json_key="tables",
     )
 
