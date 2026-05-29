@@ -1,18 +1,25 @@
-"""Continuous ETL — pin the table specs + interval + safety caps.
+"""Phase 2 — V2 S3 ETL fetcher pinning.
 
-The live ETL pass is exercised after deploy with the operator-provided
-CHAT_AI_DATABASE_URL; here we just guard the static configuration."""
+The live S3-fetch behavior is exercised after deploy with the operator
+mounted credentials; here we pin static configuration + the pure
+helpers (credential loader, filename regex, CSV parse, table specs).
+"""
 
+import gzip
+import io
 import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
 
+# ─── table specs ──────────────────────────────────────────────────────────
+
+
 def test_synced_tables_in_dependency_order():
-    """ai_influencers must precede conversations (which FK to it), which
-    must precede messages (which FK to conversations). Wrong order = FK
-    violations on first run."""
+    """ai_influencers (no FK), conversations (FK to it), messages (FK
+    to conversations). rishi-1's exporter doesn't care about order; V2
+    apply does, since CSV-per-file means we apply one table per file."""
     from services.etl_chat_ai import SYNCED_TABLES
 
     names = [t["name"] for t in SYNCED_TABLES]
@@ -20,95 +27,137 @@ def test_synced_tables_in_dependency_order():
 
 
 def test_table_specs_have_required_keys():
-    """Each spec needs name, columns, id_column — the upsert SQL builder
-    KeyErrors otherwise. Test catches typos at load time, not at the
-    first 5-min tick."""
     from services.etl_chat_ai import SYNCED_TABLES
 
     for spec in SYNCED_TABLES:
         assert "name" in spec
-        assert isinstance(spec["columns"], list)
-        assert len(spec["columns"]) > 0
+        assert isinstance(spec["columns"], list) and len(spec["columns"]) > 0
         assert "id" in spec["columns"]
         assert "created_at" in spec["columns"]
         assert spec["id_column"] in spec["columns"]
 
 
-def test_upsert_sql_uses_on_conflict_do_nothing():
-    """Idempotency contract: re-running the same window must NOT change
-    existing rows. ON CONFLICT DO NOTHING enforces it."""
-    from services.etl_chat_ai import _build_upsert_sql
-
-    sql = _build_upsert_sql("messages", ["id", "content"], "id")
-    assert "ON CONFLICT (id) DO NOTHING" in sql
-    assert "INSERT INTO messages" in sql
-    assert "$1" in sql and "$2" in sql
+# ─── interval + S3 layout ─────────────────────────────────────────────────
 
 
 def test_interval_5_min():
-    """Below 1 min we'd hammer chat-ai; above 15 we'd stale out."""
+    """Below 1 min would hammer S3; above 15 stales out."""
     from services.etl_chat_ai import SYNC_INTERVAL_SEC
 
     assert 60 <= SYNC_INTERVAL_SEC <= 15 * 60
 
 
-def test_safety_batch_limit_bounded():
-    """Per-tick cap so one ETL tick can't monopolize the loop or pull
-    millions of rows on a runaway."""
-    from services.etl_chat_ai import SAFETY_BATCH_LIMIT, PAGE_SIZE
+def test_s3_layout_matches_exporter():
+    """The fetcher and the rishi-1 exporter must agree on bucket +
+    prefix. Drift here = silent data gap."""
+    from services.etl_chat_ai import S3_BUCKET, S3_PREFIX, S3_ENDPOINT
 
-    assert 10 <= SAFETY_BATCH_LIMIT <= 100
-    assert 100 <= PAGE_SIZE <= 5000
-
-
-def test_chat_ai_dsn_reads_env(tmp_path):
-    """Env-var fallback path. Used in local dev / CI where Swarm secrets
-    aren't available. Helper must read dynamically (not at import time) so
-    `docker service update --env-add` takes effect on the next loop tick."""
-    from services.etl_chat_ai import _chat_ai_dsn
-
-    # Point the file path at a non-existent file so the env-var branch is
-    # exercised even on machines that happen to have /run/secrets populated.
-    os.environ["CHAT_AI_DATABASE_URL_FILE"] = str(tmp_path / "does-not-exist")
-    os.environ.pop("CHAT_AI_DATABASE_URL", None)
-    try:
-        assert _chat_ai_dsn() is None
-        os.environ["CHAT_AI_DATABASE_URL"] = "postgresql://test"
-        assert _chat_ai_dsn() == "postgresql://test"
-    finally:
-        os.environ.pop("CHAT_AI_DATABASE_URL", None)
-        os.environ.pop("CHAT_AI_DATABASE_URL_FILE", None)
+    assert S3_BUCKET == "rishi-yral"
+    assert S3_PREFIX == "yral-chat-ai/incremental-sync"
+    assert S3_ENDPOINT.startswith("https://")
 
 
-def test_chat_ai_dsn_reads_secret_file(tmp_path):
-    """Swarm-secret path — file at CHAT_AI_DATABASE_URL_FILE takes priority
-    over the env var. This is how prod activates the ETL: the secret is
-    mounted at /run/secrets/chat_ai_database_url and the env var is never
-    set, so the DSN stays out of `docker service inspect`."""
-    from services.etl_chat_ai import _chat_ai_dsn
+def test_heartbeat_threshold_reasonable():
+    """rishi-1 emits a heartbeat every 5 min; 15 min = 3 missed ticks
+    before we flag stale. Below 10 min = false positives from network
+    jitter. Above 30 = exporter could be dead an hour and we wouldn't
+    notice."""
+    from services.etl_chat_ai import HEARTBEAT_STALE_SEC
 
-    secret = tmp_path / "chat_ai_database_url"
-    secret.write_text("postgresql://from-file\n")  # trailing newline must strip
-    os.environ["CHAT_AI_DATABASE_URL_FILE"] = str(secret)
-    os.environ["CHAT_AI_DATABASE_URL"] = "postgresql://from-env-should-be-ignored"
-    try:
-        assert _chat_ai_dsn() == "postgresql://from-file"
-    finally:
-        os.environ.pop("CHAT_AI_DATABASE_URL", None)
-        os.environ.pop("CHAT_AI_DATABASE_URL_FILE", None)
+    assert 10 * 60 <= HEARTBEAT_STALE_SEC <= 30 * 60
 
 
-def test_chat_ai_dsn_empty_file_is_none(tmp_path):
-    """An empty/whitespace-only file means the operator hasn't actually
-    populated the secret yet — must treat as 'unset' so the loop idles
-    instead of trying to connect with an empty DSN."""
-    from services.etl_chat_ai import _chat_ai_dsn
+# ─── filename regex ───────────────────────────────────────────────────────
 
-    secret = tmp_path / "chat_ai_database_url"
-    secret.write_text("   \n")
-    os.environ["CHAT_AI_DATABASE_URL_FILE"] = str(secret)
-    os.environ.pop("CHAT_AI_DATABASE_URL", None)
-    try:
-        assert _chat_ai_dsn() is None
-    finally:
-        os.environ.pop("CHAT_AI_DATABASE_URL_FILE", None)
+
+def test_filename_regex_matches_exporter_output():
+    """The exporter writes <YYYYMMDDTHHMMSSZ>_<table>.csv.gz. If the
+    regex drifts, the fetcher silently skips files."""
+    from services.etl_chat_ai import _FILENAME_RE
+
+    m = _FILENAME_RE.match("20260529T144530Z_messages.csv.gz")
+    assert m is not None
+    assert m["table"] == "messages"
+    assert m["ts"] == "20260529T144530Z"
+
+    # Heartbeat + STUCK markers must NOT match — they're handled
+    # separately and would crash the apply path.
+    assert _FILENAME_RE.match("_heartbeat") is None
+    assert _FILENAME_RE.match("STUCK") is None
+    # Old/garbage filenames don't match
+    assert _FILENAME_RE.match("2026-05-29_messages.csv.gz") is None
+    assert _FILENAME_RE.match("20260529T144530Z_messages.csv") is None
+
+
+# ─── credentials loader ───────────────────────────────────────────────────
+
+
+def test_s3_creds_loader_missing_file_returns_none(tmp_path, monkeypatch):
+    """No mounted secret = ETL disabled gracefully. Loop logs once,
+    keeps idling. This is the pre-activation state."""
+    from services.etl_chat_ai import _load_s3_credentials
+
+    monkeypatch.setenv("CHAT_AI_S3_CREDENTIALS_FILE", str(tmp_path / "nope"))
+    assert _load_s3_credentials() is None
+
+
+def test_s3_creds_loader_parses_shell_style(tmp_path, monkeypatch):
+    from services.etl_chat_ai import _load_s3_credentials
+
+    cred_file = tmp_path / "creds"
+    cred_file.write_text(
+        "# header\n"
+        "BACKUP_S3_ACCESS_KEY=key\n"
+        "BACKUP_S3_SECRET_KEY='secret-with-quotes'\n"
+        "EXTRA_IGNORED=whatever\n"
+    )
+    monkeypatch.setenv("CHAT_AI_S3_CREDENTIALS_FILE", str(cred_file))
+    creds = _load_s3_credentials()
+    assert creds["BACKUP_S3_ACCESS_KEY"] == "key"
+    assert creds["BACKUP_S3_SECRET_KEY"] == "secret-with-quotes"
+
+
+def test_s3_creds_loader_missing_keys_returns_none(tmp_path, monkeypatch, caplog):
+    """Half-configured file is treated as 'not mounted' rather than
+    erroring — the loop stays alive and the operator can fix it
+    without restarting V2."""
+    from services.etl_chat_ai import _load_s3_credentials
+
+    cred_file = tmp_path / "creds"
+    cred_file.write_text("BACKUP_S3_ACCESS_KEY=only-this\n")
+    monkeypatch.setenv("CHAT_AI_S3_CREDENTIALS_FILE", str(cred_file))
+    assert _load_s3_credentials() is None
+
+
+# ─── CSV parser ───────────────────────────────────────────────────────────
+
+
+def test_parse_csv_extracts_header_and_rows():
+    """The header line is treated as authoritative for column ordering
+    in the gzipped CSV. A malformed header would silently misalign
+    column values during apply."""
+    from services.etl_chat_ai import _parse_csv
+
+    csv_text = "id,content,created_at\nabc,hello,2026-05-29T14:00:00Z\ndef,world,2026-05-29T14:01:00Z\n"
+    body = gzip.compress(csv_text.encode())
+    header, rows = _parse_csv(body)
+    assert header == ["id", "content", "created_at"]
+    assert len(rows) == 2
+    assert rows[0] == ["abc", "hello", "2026-05-29T14:00:00Z"]
+
+
+def test_parse_csv_empty_file_returns_empty():
+    from services.etl_chat_ai import _parse_csv
+
+    body = gzip.compress(b"")
+    header, rows = _parse_csv(body)
+    assert header == [] and rows == []
+
+
+def test_parse_csv_header_only_no_rows():
+    from services.etl_chat_ai import _parse_csv
+
+    body = gzip.compress(b"id,content,created_at\n")
+    header, rows = _parse_csv(body)
+    assert header == ["id", "content", "created_at"]
+    assert rows == []
