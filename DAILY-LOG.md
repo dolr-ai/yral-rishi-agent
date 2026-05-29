@@ -1,5 +1,47 @@
 # Daily Log
 
+## 2026-05-30 — Task B: continuous incremental ETL from chat-ai (cutover-readiness)
+
+### Why
+Per Rishi's cutover-readiness audit: existing ETL is snapshot-based (Day 9 pg_dump load, now 3 days stale). For cutover we need v2 to mirror chat-ai's data within ~5 min so we can switch Caddy without data loss.
+
+### How (Task B spec)
+- New background task (`services.etl_chat_ai.etl_loop`) runs every 5 min after a 1-min initial delay
+- Reads `CHAT_AI_DATABASE_URL` from env. **If unset, the loop logs once and idles** — operator sets the env var via `docker service update --env-add CHAT_AI_DATABASE_URL=...` to enable. No code redeploy needed.
+- Opens a READ-ONLY asyncpg pool to chat-ai with `default_transaction_read_only=on` — Postgres rejects any accidental write at the session level (second line of defense; first is that this module only emits SELECTs).
+- Pull-and-insert per table in dependency order: `ai_influencers` → `conversations` → `messages`. Cursor = `etl_sync_state.last_sync_ts` per table; SELECT WHERE created_at > $1 ORDER BY created_at LIMIT 1000; INSERT ... ON CONFLICT (id) DO NOTHING into v2. Cursor advances to max(created_at) in the batch.
+- Per-tick safety cap: 50 batches × 1000 rows = 50,000 rows max per table per tick. Prevents a runaway window from monopolizing the loop.
+- Idempotent: re-running the same window is a no-op via ON CONFLICT.
+
+### Schema (migration 017)
+`etl_sync_state` table: one row per synced table, fields `(table_name PRIMARY KEY, last_sync_ts, last_run_at, rows_pulled_total, rows_pulled_last_run, last_error, last_runtime_ms, updated_at)`. Seeded with the 3 tables we sync.
+
+### Files
+- `migrations/017_etl_sync_state.sql`
+- `app/services/etl_chat_ai.py` (new, ~250 lines) — pool helper, per-table sync, run_once, etl_loop, get_status
+- `app/main.py` — wire etl_task into the lifespan family
+- `app/routes/health.py` — new `GET /admin/etl-status` returning per-table cursor + last error (no auth for now — operator-only data, no PII)
+- `scripts/test_all_endpoints.py` — 33 → 34 endpoint tests
+- `tests/test_etl_chat_ai.py` — 6 pins covering dependency order, idempotency contract, interval, safety cap, env-var lookup
+
+### Diff
++390 / -1 across 7 files.
+
+### Hard constraints (per Rishi's directive)
+- READ-ONLY against chat-ai (rishi-1). Default transaction is read-only at the session level — Postgres rejects any accidental write.
+- No schema changes, no privileged operations on rishi-1.
+- I do NOT extract or read chat-ai credentials. Operator (Rishi) provisions the read-only DB user and sets `CHAT_AI_DATABASE_URL` after this PR ships.
+
+### Deploy steps (post-merge)
+1. pg_dump snapshot (per rule #9)
+2. Apply migration 017
+3. Rebuild + deploy
+4. ETL loop starts but is idle (no env var)
+5. **Rishi** provisions a read-only user on chat-ai DB (rishi-1) and provides DSN
+6. `docker service update --env-add CHAT_AI_DATABASE_URL=... --force yral-rishi-agent`
+7. Next loop tick (≤5 min) starts syncing
+8. `GET /admin/etl-status` shows progress
+
 ## 2026-05-30 (close-out) — Batch 3 final eval-gate + close-out
 
 ### Eval-gate result (all 5 tasks deployed)

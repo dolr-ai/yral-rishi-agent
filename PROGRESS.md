@@ -260,7 +260,8 @@
 ## PHASE 21: PRODUCTION CUTOVER (at Rishi's discretion)
 | # | Sub-phase | Status | Est. days | PR |
 |---|-----------|--------|-----------|-----|
-| 21.1 | Final ETL sync (delta since last migration) | ⏳ Pending | 1 | — |
+| 21.1 | Final ETL sync (delta since last migration) | ⏳ Pending — superseded by continuous ETL (Task B, #207) | 1 | — |
+| 21.1c | Continuous incremental ETL from chat-ai (background, every 5 min, gated on CHAT_AI_DATABASE_URL env) | 🔄 In PR | 2 | #207 |
 | 21.2 | 10% rollout via mobile feature flag | ⏳ Pending | 1 | — |
 | 21.3 | Dual-write period (both DBs in sync) | ⏳ Pending | 2 | — |
 | 21.4 | 25% → 50% → 100% gradual rollout | ⏳ Pending | 3 | — |

@@ -363,6 +363,15 @@ def main():
         expect_status=[403, 404],
     )
 
+    print("\n--- ETL status (cutover-readiness) ---")
+    test(
+        "GET /admin/etl-status",
+        "GET",
+        f"{base}/admin/etl-status",
+        headers=auth,
+        expect_json_key="tables",
+    )
+
     print("\n--- Bot Quality Score (Phase 7.7) ---")
     test(
         "GET /creator/influencers/{id}/quality-score (404)",
