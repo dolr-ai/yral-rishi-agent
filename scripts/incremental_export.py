@@ -29,10 +29,10 @@ S3 layout (bucket=rishi-yral, endpoint=hel1.your-objectstorage.com):
 from __future__ import annotations
 
 import gzip
+import hashlib
 import io
 import json
 import logging
-import os
 import subprocess
 import sys
 import time
@@ -50,6 +50,20 @@ S3_ENDPOINT = "https://hel1.your-objectstorage.com"
 S3_REGION = "hel1"
 S3_BUCKET = "rishi-yral"
 S3_PREFIX = "yral-chat-ai/incremental-sync"
+S3_INTEGRITY_PREFIX = f"{S3_PREFIX}/_integrity"
+
+# Integrity emission cadences (in seconds). Cron runs every 5 min, so
+# these gate by elapsed time since last emit — no extra cron entries.
+HOURLY_INTERVAL_SEC = 60 * 60
+SAMPLE_INTERVAL_SEC = 6 * 60 * 60
+SENTINEL_INTERVAL_SEC = 30 * 60
+
+# Layer 1/2 watermarks. Layer 1 (hourly): excludes last 10 min — chat-ai
+# writes can still be in flight. Layer 2 (sample): wider 15-min margin
+# so the same conversation has finished bursting.
+HOURLY_WATERMARK_SEC = 10 * 60
+SAMPLE_WATERMARK_SEC = 15 * 60
+SAMPLE_CONVERSATION_COUNT = 20
 
 CHAT_AI_DB = "chat_ai_db"
 CHAT_AI_USER = "etl_readonly"
@@ -66,6 +80,19 @@ RUN_WARN_SEC = 120
 RUN_FAIL_SEC = 240
 
 SYNCED_TABLES = ("ai_influencers", "conversations", "messages")
+
+# Columns shipped in the sample integrity payload for each conversation.
+# Matches V2's etl_chat_ai.SYNCED_TABLES[conversations][columns].
+SAMPLE_CONVERSATION_COLUMNS = (
+    "id",
+    "user_id",
+    "influencer_id",
+    "conversation_type",
+    "participant_b_id",
+    "metadata",
+    "created_at",
+    "updated_at",
+)
 
 EPOCH_ISO = "1970-01-01T00:00:00+00:00"
 
@@ -99,11 +126,28 @@ def load_credentials() -> dict:
 
 
 def load_state() -> dict:
+    """State shape:
+        {
+          # Per-table sync cursor (set by export_table)
+          "ai_influencers": ISO, "conversations": ISO, "messages": ISO,
+          # Last integrity emission timestamps (set by integrity.py)
+          "_last_hourly_emit":   ISO or None,
+          "_last_sample_emit":   ISO or None,
+          "_last_sentinel_emit": ISO or None,
+        }
+    Old state files (without the _last_* keys) auto-upgrade via the
+    setdefault() defaults below — first tick after upgrade emits all
+    three integrity payloads because they're "infinitely overdue".
+    """
     if STATE_FILE.exists():
-        return json.loads(STATE_FILE.read_text())
-    # First run — initialize per table. Bootstrap step (Phase 4) may
-    # overwrite this with the 2026-05-26 timestamp before first cron tick.
-    return {t: EPOCH_ISO for t in SYNCED_TABLES}
+        state = json.loads(STATE_FILE.read_text())
+    else:
+        # First run — Phase 4 bootstrap may overwrite with 2026-05-26.
+        state = {t: EPOCH_ISO for t in SYNCED_TABLES}
+    state.setdefault("_last_hourly_emit", None)
+    state.setdefault("_last_sample_emit", None)
+    state.setdefault("_last_sentinel_emit", None)
+    return state
 
 
 def save_state(state: dict) -> None:
@@ -121,14 +165,14 @@ def find_patroni_container() -> str:
     own Patroni container regardless of leader role."""
     result = subprocess.run(
         ["docker", "ps", "--format", "{{.Names}}"],
-        check=True, capture_output=True, text=True,
+        check=True,
+        capture_output=True,
+        text=True,
     )
     for name in result.stdout.splitlines():
         if name.startswith(PATRONI_CONTAINER_PREFIX):
             return name
-    raise SystemExit(
-        f"no running container with prefix {PATRONI_CONTAINER_PREFIX!r}"
-    )
+    raise SystemExit(f"no running container with prefix {PATRONI_CONTAINER_PREFIX!r}")
 
 
 # ─── pg query + dump ──────────────────────────────────────────────────────
@@ -138,12 +182,27 @@ def _psql_value(container: str, password: str, sql: str) -> str:
     """Run a single SELECT through psql, return the unquoted scalar."""
     result = subprocess.run(
         [
-            "docker", "exec", "-i", "-e", f"PGPASSWORD={password}",
+            "docker",
+            "exec",
+            "-i",
+            "-e",
+            f"PGPASSWORD={password}",
             container,
-            "psql", "-h", "localhost", "-U", CHAT_AI_USER,
-            "-d", CHAT_AI_DB, "-At", "-c", sql,
+            "psql",
+            "-h",
+            "localhost",
+            "-U",
+            CHAT_AI_USER,
+            "-d",
+            CHAT_AI_DB,
+            "-At",
+            "-c",
+            sql,
         ],
-        check=True, capture_output=True, text=True, timeout=30,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     return result.stdout.strip()
 
@@ -181,12 +240,25 @@ def copy_window(
     )
     result = subprocess.run(
         [
-            "docker", "exec", "-i", "-e", f"PGPASSWORD={password}",
+            "docker",
+            "exec",
+            "-i",
+            "-e",
+            f"PGPASSWORD={password}",
             container,
-            "psql", "-h", "localhost", "-U", CHAT_AI_USER,
-            "-d", CHAT_AI_DB, "-c", copy_sql,
+            "psql",
+            "-h",
+            "localhost",
+            "-U",
+            CHAT_AI_USER,
+            "-d",
+            CHAT_AI_DB,
+            "-c",
+            copy_sql,
         ],
-        check=True, capture_output=True, timeout=300,
+        check=True,
+        capture_output=True,
+        timeout=300,
     )
     return result.stdout
 
@@ -230,7 +302,7 @@ def reset_failure_counter() -> None:
         FAILURE_FILE.unlink()
 
 
-# ─── main per-tick ─────────────────────────────────────────────────────────
+# ─── per-table export ─────────────────────────────────────────────────────
 
 
 def export_table(s3, container: str, password: str, table: str, since_iso: str):
@@ -249,8 +321,7 @@ def export_table(s3, container: str, password: str, table: str, since_iso: str):
     csv_lines = csv_bytes.count(b"\n")
     if csv_lines != count + 1:
         raise RuntimeError(
-            f"{table}: count mismatch: psql said {count}, "
-            f"COPY produced {csv_lines - 1}"
+            f"{table}: count mismatch: psql said {count}, COPY produced {csv_lines - 1}"
         )
 
     gz_buf = io.BytesIO()
@@ -260,14 +331,196 @@ def export_table(s3, container: str, password: str, table: str, since_iso: str):
 
     ts_compact = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     key = f"{S3_PREFIX}/{ts_compact}_{table}.csv.gz"
-    upload(s3, key, payload, metadata={
-        "table": table,
-        "rows": count,
-        "since": since_iso,
-        "until": until_iso,
-        "format": "csv-header",
-    })
+    upload(
+        s3,
+        key,
+        payload,
+        metadata={
+            "table": table,
+            "rows": count,
+            "since": since_iso,
+            "until": until_iso,
+            "format": "csv-header",
+        },
+    )
     return key, until_iso, count
+
+
+# ─── integrity emissions ──────────────────────────────────────────────────
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _is_overdue(last_iso: str | None, interval_sec: int) -> bool:
+    if not last_iso:
+        return True
+    last = datetime.fromisoformat(last_iso)
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - last).total_seconds() >= interval_sec
+
+
+def _ts_compact() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def emit_tick_integrity(
+    s3, container: str, password: str, watermark_iso: str, per_table_rows: dict
+) -> str:
+    """Tick payload: per-table max_created_at + rows_in_tick. V2 cross-
+    checks against the CSV file it just processed for the same window."""
+    tables = {}
+    for table in SYNCED_TABLES:
+        max_created_at = _psql_value(
+            container,
+            password,
+            f"SELECT COALESCE(MAX(created_at)::text, '') FROM {table} "
+            f"WHERE created_at <= '{watermark_iso}'::timestamptz",
+        )
+        tables[table] = {
+            "max_created_at": max_created_at or None,
+            "rows_in_tick": int(per_table_rows.get(table, 0)),
+        }
+    payload = {
+        "watermark_iso": watermark_iso,
+        "tables": tables,
+    }
+    key = f"{S3_INTEGRITY_PREFIX}/tick_{_ts_compact()}.json"
+    upload(s3, key, json.dumps(payload).encode(), metadata={"layer": "tick"})
+    return key
+
+
+def emit_hourly_integrity(s3, container: str, password: str) -> str:
+    """Layer 1 — full row counts per table older than the watermark.
+    V2 runs the same COUNT(*) WHERE created_at < watermark and compares."""
+    watermark = datetime.now(timezone.utc).timestamp() - HOURLY_WATERMARK_SEC
+    watermark_iso = datetime.fromtimestamp(watermark, tz=timezone.utc).isoformat()
+    counts = {}
+    for table in SYNCED_TABLES:
+        n = _psql_value(
+            container,
+            password,
+            f"SELECT COUNT(*) FROM {table} "
+            f"WHERE created_at < '{watermark_iso}'::timestamptz",
+        )
+        counts[table] = int(n)
+    payload = {
+        "snapshot_iso": _utc_now_iso(),
+        "watermark_iso": watermark_iso,
+        "layer_1_row_counts": counts,
+    }
+    key = f"{S3_INTEGRITY_PREFIX}/hourly_{_ts_compact()}.json"
+    upload(s3, key, json.dumps(payload).encode(), metadata={"layer": "hourly"})
+    return key
+
+
+def emit_sample_integrity(s3, container: str, password: str) -> str:
+    """Layer 2 — 20 random conversations + per-message content hash.
+    Hashes (not raw content) keep the payload tiny and avoid shipping
+    user message content through S3 every 6 hours."""
+    watermark = datetime.now(timezone.utc).timestamp() - SAMPLE_WATERMARK_SEC
+    watermark_iso = datetime.fromtimestamp(watermark, tz=timezone.utc).isoformat()
+    sample_ids_raw = _psql_value(
+        container,
+        password,
+        f"SELECT string_agg(id::text, ',') FROM ("
+        f"  SELECT id FROM conversations "
+        f"  WHERE created_at < '{watermark_iso}'::timestamptz "
+        f"  ORDER BY random() LIMIT {SAMPLE_CONVERSATION_COUNT}"
+        f") s",
+    )
+    sample_ids = [s for s in (sample_ids_raw or "").split(",") if s]
+    conversations = []
+    for conv_id in sample_ids:
+        # Full row for the conversation (small — no message content here)
+        col_csv = ", ".join(SAMPLE_CONVERSATION_COLUMNS)
+        row_raw = _psql_value(
+            container,
+            password,
+            f"SELECT row_to_json(c) FROM ("
+            f"  SELECT {col_csv} FROM conversations WHERE id = '{conv_id}'"
+            f") c",
+        )
+        if not row_raw:
+            continue
+        full_row = json.loads(row_raw)
+        # Per-message hash computed Python-side so we don't require
+        # pgcrypto on chat-ai. Network is localhost (docker exec into
+        # the same container as Postgres), so shipping raw content
+        # in-memory is cheap.
+        msgs_raw = _psql_value(
+            container,
+            password,
+            f"SELECT COALESCE(json_agg(json_build_object("
+            f"  'id', id, 'created_at', created_at, 'role', role, "
+            f"  'message_type', message_type, 'content', content"
+            f")), '[]'::json) FROM ("
+            f"  SELECT id, created_at, role, message_type, content "
+            f"  FROM messages WHERE conversation_id = '{conv_id}' "
+            f"  ORDER BY created_at"
+            f") m",
+        )
+        msgs_in = json.loads(msgs_raw) if msgs_raw else []
+        msgs_out = []
+        for m in msgs_in:
+            content_str = m.get("content") or ""
+            msgs_out.append(
+                {
+                    "id": m["id"],
+                    "created_at": m["created_at"],
+                    "role": m["role"],
+                    "message_type": m["message_type"],
+                    "content_sha256": hashlib.sha256(
+                        content_str.encode("utf-8")
+                    ).hexdigest(),
+                }
+            )
+        conversations.append(
+            {
+                "id": conv_id,
+                "full_row_columns": full_row,
+                "messages": msgs_out,
+            }
+        )
+    payload = {
+        "snapshot_iso": _utc_now_iso(),
+        "watermark_iso": watermark_iso,
+        "conversations": conversations,
+    }
+    key = f"{S3_INTEGRITY_PREFIX}/sample_{_ts_compact()}.json"
+    upload(s3, key, json.dumps(payload).encode(), metadata={"layer": "sample"})
+    return key
+
+
+def emit_sentinel_integrity(s3, container: str, password: str) -> str:
+    """Layer 3 — latest message + latest conversation IDs. V2 looks for
+    these and reports staleness if not found within a retry window."""
+    raw = _psql_value(
+        container,
+        password,
+        "SELECT json_build_object("
+        "  'msg_id', (SELECT id FROM messages ORDER BY created_at DESC LIMIT 1),"
+        "  'msg_at', (SELECT created_at FROM messages ORDER BY created_at DESC LIMIT 1),"
+        "  'conv_id', (SELECT id FROM conversations ORDER BY created_at DESC LIMIT 1),"
+        "  'conv_at', (SELECT created_at FROM conversations ORDER BY created_at DESC LIMIT 1)"
+        ")",
+    )
+    latest = json.loads(raw) if raw else {}
+    payload = {
+        "snapshot_iso": _utc_now_iso(),
+        "latest_message_id": latest.get("msg_id"),
+        "latest_message_created_at": latest.get("msg_at"),
+        "latest_conversation_id": latest.get("conv_id"),
+        "latest_conversation_created_at": latest.get("conv_at"),
+    }
+    key = f"{S3_INTEGRITY_PREFIX}/sentinel_{_ts_compact()}.json"
+    upload(s3, key, json.dumps(payload).encode(), metadata={"layer": "sentinel"})
+    return key
+
+
+# ─── main per-tick ─────────────────────────────────────────────────────────
 
 
 def run_once() -> int:
@@ -290,15 +543,52 @@ def run_once() -> int:
             per_table[table] = {"rows": n, "s3_key": key, "cursor": new_cursor}
             log.info(
                 "table=%s rows=%d since=%s -> cursor=%s key=%s",
-                table, n, since, new_cursor, key or "-no-data-",
+                table,
+                n,
+                since,
+                new_cursor,
+                key or "-no-data-",
             )
+
+        # Tick integrity — always. Tiny payload (~200 bytes). Watermark
+        # is "now minus 1 min" — same logic count_and_max used to cap
+        # what we exported, so V2 can compare counts in the same window.
+        watermark = datetime.now(timezone.utc).timestamp() - WATERMARK_SECONDS
+        watermark_iso = datetime.fromtimestamp(watermark, tz=timezone.utc).isoformat()
+        tick_per_table_rows = {t: per_table[t]["rows"] for t in SYNCED_TABLES}
+        emit_tick_integrity(
+            s3,
+            container,
+            creds["ETL_PG_PASSWORD"],
+            watermark_iso,
+            tick_per_table_rows,
+        )
+
+        # Time-gated emissions. _is_overdue handles None → emit on first
+        # tick after the script first runs (or after an upgrade).
+        if _is_overdue(new_state["_last_sentinel_emit"], SENTINEL_INTERVAL_SEC):
+            emit_sentinel_integrity(s3, container, creds["ETL_PG_PASSWORD"])
+            new_state["_last_sentinel_emit"] = _utc_now_iso()
+            log.info("emitted sentinel integrity")
+        if _is_overdue(new_state["_last_hourly_emit"], HOURLY_INTERVAL_SEC):
+            emit_hourly_integrity(s3, container, creds["ETL_PG_PASSWORD"])
+            new_state["_last_hourly_emit"] = _utc_now_iso()
+            log.info("emitted hourly integrity")
+        if _is_overdue(new_state["_last_sample_emit"], SAMPLE_INTERVAL_SEC):
+            emit_sample_integrity(s3, container, creds["ETL_PG_PASSWORD"])
+            new_state["_last_sample_emit"] = _utc_now_iso()
+            log.info("emitted sample integrity")
 
         save_state(new_state)
 
         # Heartbeat — V2 reads this to detect stalled exports.
         heartbeat = datetime.now(timezone.utc).isoformat()
-        upload(s3, f"{S3_PREFIX}/_heartbeat", heartbeat.encode(),
-               metadata={"per_table": json.dumps(per_table)})
+        upload(
+            s3,
+            f"{S3_PREFIX}/_heartbeat",
+            heartbeat.encode(),
+            metadata={"per_table": json.dumps(per_table)},
+        )
 
         reset_failure_counter()
         elapsed = time.monotonic() - t0
@@ -310,16 +600,26 @@ def run_once() -> int:
     except Exception as e:
         elapsed = time.monotonic() - t0
         n_fail = bump_failure_counter()
-        log.error("FAILED after %.1fs (consecutive=%d): %s: %s",
-                  elapsed, n_fail, type(e).__name__, e)
+        log.error(
+            "FAILED after %.1fs (consecutive=%d): %s: %s",
+            elapsed,
+            n_fail,
+            type(e).__name__,
+            e,
+        )
         if n_fail >= 3:
             try:
                 creds = load_credentials()
                 s3 = s3_client(creds)
-                upload(s3, f"{S3_PREFIX}/STUCK",
-                       datetime.now(timezone.utc).isoformat().encode(),
-                       metadata={"consecutive_failures": n_fail,
-                                 "last_error": f"{type(e).__name__}: {e}"})
+                upload(
+                    s3,
+                    f"{S3_PREFIX}/STUCK",
+                    datetime.now(timezone.utc).isoformat().encode(),
+                    metadata={
+                        "consecutive_failures": n_fail,
+                        "last_error": f"{type(e).__name__}: {e}",
+                    },
+                )
                 log.error("wrote STUCK marker to S3")
             except Exception as e2:
                 log.error("could not write STUCK marker: %s", e2)
