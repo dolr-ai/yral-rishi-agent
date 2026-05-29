@@ -116,7 +116,7 @@
 | 7.5 | Soul File Coach (AI helps improve personality via chat) | ✅ Done (backend) / ⏳ Pending (mobile UI) | — | #191 |
 | 7.6 | A/B testing (two soul file versions, compare quality) | ⏳ Pending | 2 | — |
 | 7.7 | Bot quality scorer (automatic conversation rating) | 🔄 In PR | 2 | #201 |
-| 7.8 | Creator recommendations (AI suggests changes) | ⏳ Pending | 1 | — |
+| 7.8 | Creator recommendations (AI suggests changes) | 🔄 In PR | 1 | #203 |
 | 7.9 | 5-minute bot creation wizard (structured intake + preview) | ⏳ Pending | 3 | — |
 | 7.10 | Mobile UI for Creator Studio | ⏳ Pending | 3 | — |
 | **Phase 7 total** | | **30% done** | **14 days left** | |

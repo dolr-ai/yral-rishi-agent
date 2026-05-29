@@ -242,3 +242,65 @@ async def get_quality_score(influencer_id: str, request: Request):
         if isinstance(created_at, datetime)
         else created_at,
     }
+
+
+@router.get("/influencers/{influencer_id}/recommendations")
+async def get_recommendations(influencer_id: str, request: Request):
+    """Phase 7.8: 2-3 specific, actionable Soul File improvements grounded
+    in the latest quality score + a sample of recent bot replies.
+
+    Returns `{recommendations: [...], hint: ?}` — never a 5xx on model
+    failure. Owner-only.
+    """
+    user_id = get_current_user(request)
+    pool = await get_pool()
+
+    inf = await influencer_repo.get_by_id(pool, influencer_id)
+    if not inf:
+        raise HTTPException(status_code=404, detail="Influencer not found")
+    if inf.get("parent_principal_id") != user_id:
+        raise HTTPException(status_code=403, detail="Not your influencer")
+
+    score = await quality_score_repo.latest_for_bot(pool, influencer_id)
+
+    # Sample recent non-proactive bot replies across this bot's conversations
+    # (last 7 days). Anonymized — we send only the bot's own text to the
+    # model, no user_id, no user message.
+    rows = await pool.fetch(
+        """
+        SELECT m.content
+        FROM messages m
+        JOIN conversations c ON m.conversation_id = c.id
+        WHERE c.influencer_id = $1
+          AND m.role = 'assistant'
+          AND COALESCE(m.is_proactive, FALSE) = FALSE
+          AND m.created_at > NOW() - INTERVAL '7 days'
+          AND COALESCE(m.content, '') <> ''
+        ORDER BY m.created_at DESC
+        LIMIT 30
+        """,
+        influencer_id,
+    )
+    sample_replies = [dict(r) for r in rows]
+
+    from services import recommendations as rec_service
+
+    recs = await rec_service.generate_recommendations(
+        bot_name=inf.get("display_name") or inf.get("name") or "this bot",
+        bot_archetype=inf.get("category") or "general",
+        current_instructions=inf.get("system_instructions") or "",
+        quality_score=score,
+        sample_bot_replies=sample_replies,
+    )
+
+    hint = None
+    if not recs:
+        hint = "No recommendations available — bot may be new, or the model didn't return valid output. Retry later."
+
+    return {
+        "influencer_id": influencer_id,
+        "recommendations": recs,
+        "based_on_score": score is not None,
+        "sample_replies_count": len(sample_replies),
+        "hint": hint,
+    }

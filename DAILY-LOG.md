@@ -1,5 +1,45 @@
 # Daily Log
 
+## 2026-05-30 (later) — Task 2: Phase 7.8 creator recommendations
+
+### What it does
+New endpoint `GET /api/v1/creator/influencers/{bot_id}/recommendations` returns 2-3 SPECIFIC actionable Soul File improvements grounded in:
+- The latest nightly quality score (Phase 7.7)
+- Up to 30 recent non-proactive bot replies (last 7 days, anonymized — only bot text, no user_id, no user messages)
+- The bot's current system_instructions + archetype
+
+### Response shape
+```
+{
+  "influencer_id": "...",
+  "recommendations": [
+    {
+      "weakness": "1-2 sentence summary citing a score / observation",
+      "proposed_edit": "exact text to add, replace, or remove in system_instructions",
+      "reasoning": "why this specific edit improves the bot, tied to data"
+    },
+    ...
+  ],
+  "based_on_score": true,
+  "sample_replies_count": 28,
+  "hint": null  // populated when recommendations is empty
+}
+```
+
+The recommendations are designed to drop straight into the Soul File Coach's `proposed_changes` path. Creator can hand a recommendation to the coach to apply atomically (via the existing `/coach/conversations/{id}/apply` endpoint).
+
+### Eval-gate
+This task adds a NEW Gemini call path (recommendations generation), but it's only invoked when a creator calls the new endpoint — the chat send_message and proactive paths are unchanged. Eval should be quality-neutral.
+
+### Files
+- `app/services/recommendations.py` (new) — meta-prompt + Gemini call + parser
+- `app/routes/creator.py` — new endpoint
+- `scripts/test_all_endpoints.py` — 28 → 29 endpoint tests
+- `tests/test_recommendations.py` — parser + format helper pins
+
+### Diff
++253 / -1 across 4 files. No schema, no migration.
+
 ## 2026-05-30 — Task 5: Phase 5.6 streak tracking
 
 ### What it does
