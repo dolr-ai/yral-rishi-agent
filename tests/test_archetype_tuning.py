@@ -43,16 +43,32 @@ def test_tuning_for_handles_casing_and_whitespace():
     assert tuning_for("  Advisor  ") == tuning_for("advisor")
 
 
-def test_archetype_prompts_carry_sentence_caps():
-    """Eval gap: helpful=2.65 was weakest, often because bots wrote essays
-    instead of solving the ask. Each archetype prompt now embeds a sentence
-    cap so the LLM can't drift."""
+def test_archetype_prompts_do_not_hardcode_sentence_caps():
+    """First-pass Phase 12 added explicit `at most N sentences` caps to each
+    archetype prompt; the 2026-05-29 re-eval showed it BACKFIRED (overall
+    3.62 vs morning's 3.77). Caps forced cramped replies that didn't solve
+    the user's ask. GLOBAL_RULES' soft '1-3 sentences max' is the only
+    length guidance now — if a future PR re-adds per-archetype caps, this
+    test fails so we don't silently re-introduce the regression."""
     from services.soul_file import ARCHETYPE_PROMPTS
 
     for archetype, body in ARCHETYPE_PROMPTS.items():
-        # Some form of "at most N sentences" must appear in the prompt
-        assert "at most 3 sentences" in body or "at most 4 sentences" in body, (
-            f"{archetype} prompt is missing its sentence cap"
+        assert "at most 3 sentences" not in body, (
+            f"{archetype} prompt re-introduces a sentence cap that regressed quality"
+        )
+        assert "at most 4 sentences" not in body, (
+            f"{archetype} prompt re-introduces a sentence cap that regressed quality"
+        )
+
+
+def test_archetype_max_tokens_uniform_and_generous():
+    """Rollback target: 1500 across all archetypes. Below 1000 risks cutting
+    off useful replies; above 2048 leaves cache-prefix territory."""
+    from services.soul_file import ARCHETYPE_TUNING
+
+    for archetype, t in ARCHETYPE_TUNING.items():
+        assert 1000 <= t["max_tokens"] <= 2048, (
+            f"{archetype} max_tokens={t['max_tokens']} outside safe range"
         )
 
 
