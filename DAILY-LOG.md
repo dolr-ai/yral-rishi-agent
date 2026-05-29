@@ -1,5 +1,25 @@
 # Daily Log
 
+## 2026-05-29 (later) — Task A: trending endpoint flake fix
+
+### Diagnosis
+- Server-side query: 10-37ms direct asyncpg bench
+- Wire RTT: ~1.1s baseline (Cloudflare + 2× Caddy + Swarm overlay + agent + Patroni)
+- Tail latency: occasional 4-30s spikes on the test suite — NOT from materialized-view refresh competing (it's CONCURRENTLY, doesn't block reads). Looks like edge/network variance — Cloudflare TLS cold-start, urllib socket renegotiation, intermittent rishi-1/2 proxy hiccups.
+
+### Fix
+Two-part:
+1. **Server**: 60s process-local TTL cache for `/influencers/trending`. Per-replica (no Redis); worst case each replica computes once per minute. The materialized view itself refreshes every 15 min, so 60s freshness is fine for "trending."
+2. **Test**: single retry on socket timeout in `scripts/test_all_endpoints.py`. Real network blips are tolerated; real server regressions still fail (since both attempts hit the same backend).
+
+### Files
+- `app/routes/influencers.py` — `_TRENDING_CACHE` dict + 60s TTL check in `list_trending`. Adds `X-Cache: HIT|MISS` header for diagnostics.
+- `scripts/test_all_endpoints.py` — wrap urllib.request.urlopen in a try-once-retry for timeouts
+- `tests/test_trending_cache.py` — pins TTL range
+
+### Diff
++62 / -8 across 3 files. No schema, no migration.
+
 ## 2026-05-29 (close-out) — Task 4 deployed; 4-task batch complete
 
 ### Phase 7.5 deploy

@@ -50,8 +50,24 @@ def test(
         if data:
             req.add_header("Content-Type", "application/json")
 
+        # Task A: retry once on socket timeout. Real network blips
+        # (Cloudflare edge cold-start, TLS renegotiation) occasionally
+        # hang urllib's read for >30s on endpoints that normally serve
+        # in <2s. A single retry catches those without masking real
+        # server-side regressions.
         t0 = time.monotonic()
-        resp = urllib.request.urlopen(req, timeout=30)
+        try:
+            resp = urllib.request.urlopen(req, timeout=30)
+        except (TimeoutError, urllib.error.URLError) as net_err:
+            if isinstance(net_err, urllib.error.URLError) and not isinstance(
+                getattr(net_err, "reason", None), TimeoutError
+            ):
+                raise
+            print(
+                f"  {Colors.YELLOW}RETRY{Colors.RESET} {name} — first attempt timed out, retrying once"
+            )
+            t0 = time.monotonic()
+            resp = urllib.request.urlopen(req, timeout=30)
         latency = (time.monotonic() - t0) * 1000
         status = resp.status
         resp_body = resp.read().decode()

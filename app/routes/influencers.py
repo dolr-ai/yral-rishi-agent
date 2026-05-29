@@ -131,11 +131,40 @@ async def list_influencers(
         )
 
 
+_TRENDING_CACHE: dict[tuple[int, int], tuple[float, dict]] = {}
+_TRENDING_CACHE_TTL_SEC = 60.0
+
+
 @router.get("/influencers/trending")
 async def list_trending(
     limit: int = Query(default=50, le=100),
     offset: int = Query(default=0, ge=0),
 ):
+    """List trending influencers, served from a tiny per-replica TTL cache.
+
+    Task A: occasional 5-30s tail-latency on this endpoint (seen across
+    every batch's 27/27 suite run) traces to edge/network variance, not the
+    DB query itself (10-37ms server-side per direct asyncpg bench). The
+    materialized view already refreshes via REFRESH ... CONCURRENTLY and
+    doesn't block reads.
+
+    A 60s process-local cache eliminates the DB+network round-trip for the
+    common (limit, offset) shapes that drive most traffic. Per-replica
+    cache (no Redis) keeps the fix tiny — worst case each replica
+    recomputes once per minute. The materialized view refresh is on a
+    15-min cycle, so 60s freshness is fine for "trending."
+    """
+    import time
+
+    key = (limit, offset)
+    cached = _TRENDING_CACHE.get(key)
+    now = time.monotonic()
+    if cached and (now - cached[0]) < _TRENDING_CACHE_TTL_SEC:
+        response = JSONResponse(content=cached[1])
+        response.headers["Cache-Control"] = "public, max-age=300"
+        response.headers["X-Cache"] = "HIT"
+        return response
+
     pool = await get_pool()
     influencers = await influencer_repo.list_trending(pool, limit, offset)
     total = await influencer_repo.count_trending(pool)
@@ -147,15 +176,17 @@ async def list_trending(
         inf["conversation_count"] = i.get("conversation_count", 0)
         formatted.append(inf)
 
-    response = JSONResponse(
-        content={
-            "influencers": formatted,
-            "total": total,
-            "limit": limit,
-            "offset": offset,
-        }
-    )
+    payload = {
+        "influencers": formatted,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+    _TRENDING_CACHE[key] = (now, payload)
+
+    response = JSONResponse(content=payload)
     response.headers["Cache-Control"] = "public, max-age=300"
+    response.headers["X-Cache"] = "MISS"
     return response
 
 
