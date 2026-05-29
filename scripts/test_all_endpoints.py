@@ -371,6 +371,13 @@ def main():
         headers=auth,
         expect_json_key="tables",
     )
+    test(
+        "GET /admin/etl-integrity",
+        "GET",
+        f"{base}/admin/etl-integrity",
+        headers=auth,
+        expect_json_key="latest_per_check",
+    )
 
     print("\n--- Bot Quality Score (Phase 7.7) ---")
     test(

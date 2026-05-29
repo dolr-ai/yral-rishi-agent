@@ -1,5 +1,42 @@
 # Daily Log
 
+## 2026-05-30 (later) — Task C: hourly data-integrity verifier (cutover-readiness)
+
+### Three checks per pass
+1. **row_count** — per-table chat-ai vs v2 COUNT(*) diff. pass if |diff| ≤ 500 (≈ 5 min of writes); warn if 500-5000; fail if > 5000.
+2. **sample_conversations** — pick 20 random chat-ai conversations older than 15 min, verify every message present in v2 with matching (id, content, created_at, message_type). 0 mismatches = pass; 1-2 = warn; 3+ = fail.
+3. **fk_integrity** — v2-side: count conversations with influencer_id pointing nowhere + messages with conversation_id pointing nowhere. 0 = pass; else fail.
+
+### Storage
+Migration 018 adds `etl_integrity_checks` table — one row per check per pass with check_type, table_name, counts, diff, JSONB details, status, runtime_ms, checked_at.
+
+### File logging
+Each check is also appended to `/tmp/etl_integrity.log` with a one-line status — per Rishi's spec, no Google Chat alerts for now.
+
+### Endpoint
+`GET /admin/etl-integrity` (JWT-gated): latest result per check_type + 24h fail/warn counts. Operator dashboard for cutover-readiness.
+
+### Loop
+Every 1 hour. 10-min initial delay so the ETL has time to populate before the first integrity scan. Idle if `CHAT_AI_DATABASE_URL` unset (same pattern as Task B).
+
+### Files
+- `migrations/018_etl_integrity_checks.sql`
+- `app/services/etl_integrity.py` (new, ~280 lines)
+- `app/main.py` — register integrity_task
+- `app/routes/health.py` — `/admin/etl-integrity` endpoint
+- `scripts/test_all_endpoints.py` — 34 → 35 endpoint tests
+- `tests/test_etl_integrity.py` — 5 pins (thresholds, interval, ordering, table-list parity with Task B's SYNCED_TABLES)
+
+### Diff
++390 / -0 across 6 files.
+
+### Deploy
+1. pg_dump
+2. Migration 018
+3. Rebuild + deploy
+4. Loop is idle until CHAT_AI_DATABASE_URL is set (same as ETL)
+5. Once set, first integrity pass fires 10 min later; subsequent passes hourly
+
 ## 2026-05-30 — Task B: continuous incremental ETL from chat-ai (cutover-readiness)
 
 ### Why
