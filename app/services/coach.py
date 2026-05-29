@@ -35,6 +35,9 @@ The bot you're coaching:
 Recent anonymized conversations the bot had with users:
 {recent_convs}
 
+Current quality score (latest nightly scoring pass; see Phase 7.7):
+{quality_score_block}
+
 Coaching session so far (most recent at bottom):
 {session_history}
 
@@ -109,6 +112,24 @@ def _try_extract_proposal(text: str) -> dict | None:
     return obj
 
 
+def _format_quality_score(score: dict | None) -> str:
+    """Render the latest bot_quality_scores row for the coach's META_PROMPT.
+
+    None / never-scored → "(no score yet)". Bots can be coached without a
+    score; the coach just relies on the conversation samples + creator goal.
+    """
+    if not score:
+        return "(no score yet — this bot is new or hasn't been sampled.)"
+    return (
+        f"  overall: {score['score_overall']:.2f}/5\n"
+        f"  in_character: {score['score_in_character']:.2f}/5\n"
+        f"  response_quality: {score['score_response_quality']:.2f}/5\n"
+        f"  engagement: {score['score_engagement']:.2f}/5\n"
+        f"  sampled {score['sample_size']} turn pairs across "
+        f"{score['last_n_conversations']} conversations"
+    )
+
+
 async def coach_reply(
     bot_name: str,
     bot_archetype: str,
@@ -116,6 +137,7 @@ async def coach_reply(
     recent_conv_rows: list[dict],
     session_history: list[dict],
     latest_message: str,
+    quality_score: dict | None = None,
 ) -> tuple[str, str | None, str | None]:
     """Run the coach turn. Returns (display_content, proposed_changes, reasoning).
 
@@ -128,6 +150,7 @@ async def coach_reply(
         bot_archetype=bot_archetype or "general",
         current_instructions=current_instructions or "(empty)",
         recent_convs=_format_conv_excerpt(recent_conv_rows),
+        quality_score_block=_format_quality_score(quality_score),
         session_history=_format_session_history(session_history),
         latest_message=latest_message,
     )
