@@ -122,6 +122,10 @@ class ConversationInfluencer(BaseModel):
     avatar_url: str
     category: Optional[str] = None
     suggested_messages: Optional[list[str]] = None
+    # Phase 2.7 SSE follow-up: mobile uses this to skip the streaming endpoint
+    # entirely for NSFW conversations (which fall through to OpenRouter via the
+    # legacy non-streaming path). Avoids a try-and-fail round-trip.
+    is_nsfw: bool = False
 
 
 class ConversationLastMessage(BaseModel):
