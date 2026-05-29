@@ -46,3 +46,17 @@ drift and skip Codex review.
 
 ## Reading order
 1. This file → 2. app/config.py → 3. app/models.py → 4. app/main.py → 5. app/routes/chat.py
+
+## Progress tracking — PROGRESS.md vs DAILY-LOG.md
+
+Two files, two purposes. Don't confuse them.
+
+**PROGRESS.md** — the checklist. Tables of phases + sub-phases with status (✅ Done / ⏳ Pending / 🔄 In PR). Updated IN-PLACE when status changes. Read it when you need to know "what's done and what's left." Source of truth for current state.
+
+**DAILY-LOG.md** — the diary. Date-stamped entries describing what you shipped each day. APPEND-ONLY — new entries go at the top. Read it when you need to know "what happened yesterday/today."
+
+## When you ship anything, update BOTH:
+1. **PROGRESS.md** — flip the relevant row(s) from ⏳ to ✅ (or 🔄 if still in PR). Update the phase total percentage and est days remaining.
+2. **DAILY-LOG.md** — append a new section at the top with today's date, what you shipped, which PRs merged, what's deployed, what's pending. Keep entries skimmable — Rishi reads this in the morning to catch up on the previous day's work.
+
+Both updates land in the same PR as the feature. If you ship a feature without updating these files, the PR is incomplete.
