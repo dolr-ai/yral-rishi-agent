@@ -66,27 +66,51 @@ SYNCED_TABLES: list[dict] = [
     {
         "name": "ai_influencers",
         "columns": [
-            "id", "name", "display_name", "avatar_url", "description",
-            "category", "system_instructions", "personality_traits",
-            "initial_greeting", "suggested_messages", "is_active",
-            "is_nsfw", "parent_principal_id", "source", "metadata",
-            "created_at", "updated_at",
+            "id",
+            "name",
+            "display_name",
+            "avatar_url",
+            "description",
+            "category",
+            "system_instructions",
+            "personality_traits",
+            "initial_greeting",
+            "suggested_messages",
+            "is_active",
+            "is_nsfw",
+            "parent_principal_id",
+            "source",
+            "metadata",
+            "created_at",
+            "updated_at",
         ],
         "id_column": "id",
     },
     {
         "name": "conversations",
         "columns": [
-            "id", "user_id", "influencer_id", "conversation_type",
-            "participant_b_id", "metadata", "created_at", "updated_at",
+            "id",
+            "user_id",
+            "influencer_id",
+            "conversation_type",
+            "participant_b_id",
+            "metadata",
+            "created_at",
+            "updated_at",
         ],
         "id_column": "id",
     },
     {
         "name": "messages",
         "columns": [
-            "id", "conversation_id", "user_id", "role", "content",
-            "message_type", "metadata", "created_at",
+            "id",
+            "conversation_id",
+            "user_id",
+            "role",
+            "content",
+            "message_type",
+            "metadata",
+            "created_at",
         ],
         "id_column": "id",
     },
@@ -95,18 +119,14 @@ _TABLE_SPEC = {t["name"]: t for t in SYNCED_TABLES}
 
 
 # Filename format from rishi-1: <YYYYMMDDTHHMMSSZ>_<table>.csv.gz
-_FILENAME_RE = re.compile(
-    r"^(?P<ts>\d{8}T\d{6}Z)_(?P<table>[a-z_]+)\.csv\.gz$"
-)
+_FILENAME_RE = re.compile(r"^(?P<ts>\d{8}T\d{6}Z)_(?P<table>[a-z_]+)\.csv\.gz$")
 
 
 # ─── credentials ──────────────────────────────────────────────────────────
 
 
 def _s3_credentials_path() -> str:
-    return os.environ.get(
-        "CHAT_AI_S3_CREDENTIALS_FILE", S3_CREDENTIALS_FILE_DEFAULT
-    )
+    return os.environ.get("CHAT_AI_S3_CREDENTIALS_FILE", S3_CREDENTIALS_FILE_DEFAULT)
 
 
 def _load_s3_credentials() -> dict | None:
@@ -160,13 +180,15 @@ def _list_objects_sync(s3, after_iso: str | None) -> list[dict]:
                 continue
             if after_dt and obj["LastModified"] <= after_dt:
                 continue
-            out.append({
-                "key": key,
-                "filename": filename,
-                "last_modified": obj["LastModified"],
-                "etag": obj.get("ETag", "").strip('"'),
-                "size": obj["Size"],
-            })
+            out.append(
+                {
+                    "key": key,
+                    "filename": filename,
+                    "last_modified": obj["LastModified"],
+                    "etag": obj.get("ETag", "").strip('"'),
+                    "size": obj["Size"],
+                }
+            )
     out.sort(key=lambda o: o["last_modified"])
     return out
 
@@ -210,7 +232,9 @@ def _parse_csv(body_gz: bytes) -> tuple[list[str], list[list]]:
     return header, rows[1:]
 
 
-async def _apply_csv(v2_pool, table_name: str, header: list[str], data_rows: list[list]) -> int:
+async def _apply_csv(
+    v2_pool, table_name: str, header: list[str], data_rows: list[list]
+) -> int:
     """COPY data into a temp staging table, then INSERT real ON CONFLICT
     DO NOTHING. Returns rows_inserted (rows_in - rows_skipped_due_to_conflict)."""
     if not data_rows:
@@ -264,8 +288,14 @@ async def _apply_csv(v2_pool, table_name: str, header: list[str], data_rows: lis
 
 
 async def _record_processed(
-    v2_pool, filename: str, table_name: str, rows_applied: int,
-    rows_in_file: int, etag: str, metadata: dict, runtime_ms: int,
+    v2_pool,
+    filename: str,
+    table_name: str,
+    rows_applied: int,
+    rows_in_file: int,
+    etag: str,
+    metadata: dict,
+    runtime_ms: int,
 ):
     await v2_pool.execute(
         """
@@ -275,8 +305,13 @@ async def _record_processed(
         ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, NOW(), $7)
         ON CONFLICT (filename) DO NOTHING
         """,
-        filename, table_name, rows_applied, rows_in_file,
-        etag, json.dumps(metadata), runtime_ms,
+        filename,
+        table_name,
+        rows_applied,
+        rows_in_file,
+        etag,
+        json.dumps(metadata),
+        runtime_ms,
     )
 
 
@@ -297,7 +332,9 @@ async def _advance_cursor(v2_pool, table_name: str, until_iso: str, rows_in_run:
             last_error = NULL,
             updated_at = NOW()
         """,
-        table_name, until_iso, rows_in_run,
+        table_name,
+        until_iso,
+        rows_in_run,
     )
 
 
@@ -305,15 +342,15 @@ async def _advance_cursor(v2_pool, table_name: str, until_iso: str, rows_in_run:
 
 
 async def _get_last_processed_at(v2_pool) -> str | None:
-    return await v2_pool.fetchval(
-        "SELECT MAX(processed_at) FROM etl_processed_files"
-    )
+    return await v2_pool.fetchval("SELECT MAX(processed_at) FROM etl_processed_files")
 
 
 async def _is_already_processed(v2_pool, filename: str) -> bool:
-    return bool(await v2_pool.fetchval(
-        "SELECT 1 FROM etl_processed_files WHERE filename = $1", filename
-    ))
+    return bool(
+        await v2_pool.fetchval(
+            "SELECT 1 FROM etl_processed_files WHERE filename = $1", filename
+        )
+    )
 
 
 async def run_once(v2_pool) -> dict:
@@ -357,8 +394,14 @@ async def run_once(v2_pool) -> dict:
             rows_applied = await _apply_csv(v2_pool, table_name, header, rows)
             runtime_ms = int((time.monotonic() - t0) * 1000)
             await _record_processed(
-                v2_pool, filename, table_name, rows_applied, len(rows),
-                obj["etag"], metadata, runtime_ms,
+                v2_pool,
+                filename,
+                table_name,
+                rows_applied,
+                len(rows),
+                obj["etag"],
+                metadata,
+                runtime_ms,
             )
             # Advance cursor to the "until" boundary from the export,
             # not just LastModified — until_iso is the watermarked
@@ -372,13 +415,19 @@ async def run_once(v2_pool) -> dict:
             overall["per_table"][table_name]["rows"] += rows_applied
             logger.info(
                 "etl_chat_ai: applied %s rows=%d in_file=%d runtime_ms=%d",
-                filename, rows_applied, len(rows), runtime_ms,
+                filename,
+                rows_applied,
+                len(rows),
+                runtime_ms,
             )
         except Exception as e:
             runtime_ms = int((time.monotonic() - t0) * 1000)
             logger.warning(
                 "etl_chat_ai: %s failed after %dms: %s: %s",
-                filename, runtime_ms, type(e).__name__, e,
+                filename,
+                runtime_ms,
+                type(e).__name__,
+                e,
             )
             # Don't record in etl_processed_files — next tick retries.
             # Don't break the loop — try the next file.
@@ -464,6 +513,8 @@ async def get_status(v2_pool) -> dict:
         "heartbeat_age_sec": heartbeat_age_sec,
         "heartbeat_stale": (
             heartbeat_age_sec is None or heartbeat_age_sec > HEARTBEAT_STALE_SEC
-        ) if creds is not None else None,
+        )
+        if creds is not None
+        else None,
         "stuck_marker": stuck,
     }
