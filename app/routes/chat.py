@@ -573,6 +573,200 @@ async def send_message(
     )
 
 
+# ─── Phase 2.7 — SSE streaming ────────────────────────────────────────────
+# Mirror of POST /conversations/{id}/messages but returns text/event-stream
+# with token-by-token output. Same pre-LLM steps (auth, dedup, content
+# safety, memory injection, soul file composition). NSFW influencers fall
+# back to a single bundled done event by calling the non-streaming
+# generate_response — OpenRouter SDK streaming would need its own code path,
+# tracked as Infra-Z if mobile asks for streaming on NSFW.
+
+
+def _sse_event(name: str, data: dict) -> str:
+    return f"event: {name}\ndata: {json.dumps(data)}\n\n"
+
+
+@router.post("/conversations/{conversation_id}/messages/stream")
+async def send_message_stream(
+    conversation_id: str,
+    body: dict,
+    request: Request,
+):
+    """Streaming counterpart to POST /messages.
+
+    Wire format (one SSE event per line group, see docs/SSE-PROTOCOL.md):
+      event: token  | data: {"text": "Hello"}
+      event: done   | data: {"assistant_message": {...}, "provider": "gemini"}
+      event: error  | data: {"code": "BLOCKED_CONTENT", "message": ..., "retryable": false}
+    """
+    import config as cfg
+    from fastapi.responses import StreamingResponse
+
+    if not cfg.ENABLE_SSE_STREAMING:
+        raise HTTPException(status_code=404, detail="SSE streaming disabled")
+
+    user_id = get_current_user(request)
+    pool = await get_pool()
+
+    conv = await conversation_repo.get_by_id(pool, conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if not await _can_access_conversation(pool, user_id, conv):
+        raise HTTPException(status_code=403, detail="Not your conversation")
+
+    influencer_id = conv.get("influencer_id")
+    if not influencer_id:
+        raise HTTPException(
+            status_code=400, detail="Streaming requires AI conversation"
+        )
+    inf = await influencer_repo.get_by_id(pool, influencer_id)
+    if not inf:
+        raise HTTPException(status_code=404, detail="Influencer not found")
+
+    content = body.get("content")
+    message_type = body.get("message_type", "text")
+    media_urls = body.get("media_urls")
+
+    user_msg = await message_repo.create(
+        pool,
+        conversation_id=conversation_id,
+        role="user",
+        content=content,
+        message_type=message_type,
+        media_urls=media_urls,
+        sender_id=user_id,
+    )
+
+    # Content safety pre-check — if blocked, stream the override as a single
+    # token event then done. Same shape mobile expects.
+    is_nsfw = inf.get("is_nsfw", False)
+    safety = content_safety.check_message(content or "", is_nsfw_influencer=is_nsfw)
+
+    async def event_stream():
+        try:
+            if safety.blocked:
+                override = safety.override_response
+                assistant_msg = await message_repo.create(
+                    pool,
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=override,
+                    message_type="text",
+                    sender_id=influencer_id,
+                )
+                yield _sse_event("token", {"text": override})
+                yield _sse_event(
+                    "done",
+                    {
+                        "assistant_message": _format_message(assistant_msg),
+                        "provider": "content_safety",
+                        "blocked": True,
+                    },
+                )
+                return
+
+            history = await message_repo.get_recent_for_context(
+                pool, conversation_id, 11
+            )
+            history = [m for m in history if m["id"] != user_msg["id"]][-10:]
+            memories = await memory.get_memories_for_prompt(
+                pool, user_id, influencer_id, conversation_id=conversation_id
+            )
+            system_instructions = soul_file.compose(
+                system_instructions=inf.get("system_instructions", ""),
+                category=inf.get("category"),
+                memories=memories,
+            )
+
+            full_text = ""
+            llm_result_obj = None
+            async for kind, value in ai_client.generate_response_stream(
+                system_instructions=system_instructions,
+                conversation_history=history,
+                user_message=content or "",
+                is_nsfw=is_nsfw,
+                media_urls=media_urls,
+                user_id=user_id,
+                conversation_id=conversation_id,
+            ):
+                if kind == "text":
+                    full_text += value
+                    yield _sse_event("token", {"text": value})
+                elif kind == "done":
+                    llm_result_obj = value
+                elif kind == "error":
+                    err_code = value.error_code or "TRANSIENT"
+                    yield _sse_event(
+                        "error",
+                        {
+                            "code": err_code,
+                            "message": value.content,
+                            "retryable": err_code in ai_client.RETRYABLE_CODES,
+                        },
+                    )
+                    return
+
+            if not llm_result_obj or not full_text.strip():
+                yield _sse_event(
+                    "error",
+                    {
+                        "code": "TRANSIENT",
+                        "message": ai_client.ERROR_MESSAGES["TRANSIENT"],
+                        "retryable": True,
+                    },
+                )
+                return
+
+            assistant_msg = await message_repo.create(
+                pool,
+                conversation_id=conversation_id,
+                role="assistant",
+                content=full_text,
+                message_type="text",
+                token_count=llm_result_obj.output_tokens,
+                sender_id=influencer_id,
+            )
+
+            # Background side-effects mirror the non-streaming path
+            asyncio.create_task(
+                memory.extract_and_store(
+                    pool,
+                    user_id=user_id,
+                    influencer_id=influencer_id,
+                    user_message=content or "",
+                    assistant_response=full_text,
+                    message_id=user_msg["id"],
+                    is_nsfw=is_nsfw,
+                )
+            )
+
+            yield _sse_event(
+                "done",
+                {
+                    "assistant_message": _format_message(assistant_msg),
+                    "provider": llm_result_obj.provider,
+                    "model": llm_result_obj.model,
+                    "tokens": llm_result_obj.output_tokens,
+                },
+            )
+        except Exception as e:
+            logger.exception(f"SSE stream failed: {e}")
+            yield _sse_event(
+                "error",
+                {
+                    "code": "TRANSIENT",
+                    "message": ai_client.ERROR_MESSAGES["TRANSIENT"],
+                    "retryable": True,
+                },
+            )
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 async def _generate_image_prompt_from_context(pool, conversation_id: str) -> str:
     messages = await message_repo.list_by_conversation(
         pool, conversation_id, limit=10, offset=0, order="desc"

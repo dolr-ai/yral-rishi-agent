@@ -266,6 +266,80 @@ async def _call_gemini(
     return response_text, token_count
 
 
+async def _stream_gemini(
+    contents: list,
+    system_instruction: dict | None = None,
+    temperature: float = 0.7,
+    max_tokens: int = 2048,
+):
+    """Phase 2.7 (SSE) — yields text chunks as they arrive from Gemini.
+
+    Uses Gemini's :streamGenerateContent endpoint with alt=sse, which emits
+    `data: {json}\\n\\n` lines per chunk. We parse each line and yield the
+    text fragment. Final yield is a tuple ('__DONE__', token_count). On a
+    safety/policy block, raises LlmBlockedError exactly like _call_gemini
+    so the route's error handling shape stays consistent.
+    """
+    url = f"{GEMINI_NATIVE_URL}/models/{config.GEMINI_MODEL}:streamGenerateContent"
+    payload = {
+        "contents": contents,
+        "generationConfig": {
+            "temperature": temperature,
+            "maxOutputTokens": max_tokens,
+        },
+    }
+    if system_instruction:
+        payload["systemInstruction"] = system_instruction
+
+    total_text = ""
+    token_count = 0
+    finish_reason: str | None = None
+    async with httpx.AsyncClient(timeout=config.GEMINI_TIMEOUT) as http:
+        async with http.stream(
+            "POST",
+            url,
+            json=payload,
+            params={"key": config.GEMINI_API_KEY, "alt": "sse"},
+            timeout=config.GEMINI_TIMEOUT,
+        ) as response:
+            response.raise_for_status()
+            async for raw_line in response.aiter_lines():
+                if not raw_line or not raw_line.startswith("data:"):
+                    continue
+                data_str = raw_line[len("data:") :].strip()
+                if not data_str:
+                    continue
+                try:
+                    obj = json.loads(data_str)
+                except json.JSONDecodeError:
+                    continue
+                # Capture block reasons surfaced in promptFeedback
+                feedback = obj.get("promptFeedback") or {}
+                if feedback.get("blockReason"):
+                    raise LlmBlockedError(f"blockReason={feedback['blockReason']}")
+                for candidate in obj.get("candidates", []) or []:
+                    finish_reason = candidate.get("finishReason") or finish_reason
+                    for part in candidate.get("content", {}).get("parts", []) or []:
+                        chunk = part.get("text")
+                        if chunk:
+                            total_text += chunk
+                            yield ("text", chunk)
+                usage = obj.get("usageMetadata") or {}
+                if usage.get("candidatesTokenCount"):
+                    token_count = usage["candidatesTokenCount"]
+
+    if not total_text.strip():
+        if finish_reason in {"SAFETY", "RECITATION", "PROHIBITED_CONTENT", "BLOCKLIST"}:
+            raise LlmBlockedError(f"finishReason={finish_reason}")
+        raise ValueError(
+            f"Gemini stream returned no text (finishReason={finish_reason})"
+        )
+
+    if not token_count and total_text:
+        token_count = int(len(total_text) / 4)
+    yield ("done", {"text": total_text, "token_count": token_count})
+
+
 async def _build_user_content(
     text: str | None, media_urls: list[str] | None
 ) -> str | list:
@@ -277,6 +351,121 @@ async def _build_user_content(
     for url in media_urls[:5]:
         parts.append(await _fetch_and_encode_image_openai(url))
     return parts if parts else (text or "")
+
+
+async def generate_response_stream(
+    system_instructions: str,
+    conversation_history: list[dict],
+    user_message: str,
+    is_nsfw: bool = False,
+    media_urls: list[str] | None = None,
+    user_id: str | None = None,
+    conversation_id: str | None = None,
+):
+    """Phase 2.7: streaming counterpart to generate_response.
+
+    Yields ('text', chunk_str) tuples as tokens arrive. Final tuple is
+    ('done', LlmResponse) carrying the full text + metadata so the caller
+    can persist it. On policy block, yields ('error', LlmResponse) with
+    error_code=BLOCKED_CONTENT (same shape as the non-streaming path).
+    On other errors, yields ('error', LlmResponse) with error_code=TRANSIENT.
+
+    NSFW influencers are NOT streamed today (OpenRouter SDK streaming would
+    require a separate code path). The route falls back to the non-streaming
+    endpoint for is_nsfw=True conversations.
+    """
+    if is_nsfw or not config.GEMINI_API_KEY:
+        # Caller will fall back to non-streaming path. Yielding an error here
+        # lets the route surface a typed error rather than hanging.
+        yield (
+            "error",
+            LlmResponse(
+                content=ERROR_MESSAGES["NO_PROVIDER"],
+                provider="none",
+                model="none",
+                input_tokens=0,
+                output_tokens=0,
+                latency_ms=0,
+                is_fallback=True,
+                error_code="NO_PROVIDER",
+            ),
+        )
+        return
+
+    t0 = time.monotonic()
+    system_instruction, contents = await _build_gemini_contents(
+        system_instructions, conversation_history, user_message, media_urls
+    )
+
+    total_text = ""
+    token_count = 0
+    try:
+        async for kind, value in _stream_gemini(
+            contents=contents,
+            system_instruction=system_instruction,
+            temperature=config.GEMINI_TEMPERATURE,
+            max_tokens=config.GEMINI_MAX_TOKENS,
+        ):
+            if kind == "text":
+                total_text += value
+                yield ("text", value)
+            elif kind == "done":
+                token_count = value.get("token_count", 0)
+                total_text = value.get("text", total_text)
+        latency_ms = (time.monotonic() - t0) * 1000
+        langfuse_tracing.trace_generation(
+            trace_name="chat-response-stream",
+            user_id=user_id,
+            model=config.GEMINI_MODEL,
+            provider="gemini",
+            input_text=user_message,
+            output_text=total_text,
+            input_tokens=0,
+            output_tokens=token_count,
+            latency_ms=latency_ms,
+            conversation_id=conversation_id,
+        )
+        yield (
+            "done",
+            LlmResponse(
+                content=total_text,
+                provider="gemini",
+                model=config.GEMINI_MODEL,
+                input_tokens=0,
+                output_tokens=token_count,
+                latency_ms=latency_ms,
+            ),
+        )
+    except LlmBlockedError as e:
+        logger.warning(f"Gemini stream blocked: {e.reason}")
+        yield (
+            "error",
+            LlmResponse(
+                content=ERROR_MESSAGES["BLOCKED_CONTENT"],
+                provider="gemini",
+                model=config.GEMINI_MODEL,
+                input_tokens=0,
+                output_tokens=0,
+                latency_ms=(time.monotonic() - t0) * 1000,
+                is_fallback=True,
+                error_code="BLOCKED_CONTENT",
+            ),
+        )
+    except Exception as e:
+        logger.error(f"Gemini stream failed: {e}")
+        yield (
+            "error",
+            LlmResponse(
+                content=ERROR_MESSAGES["TRANSIENT"],
+                provider="gemini",
+                model=config.GEMINI_MODEL,
+                input_tokens=0,
+                output_tokens=0,
+                latency_ms=(time.monotonic() - t0) * 1000,
+                is_fallback=True,
+                error_code="TRANSIENT",
+            ),
+        )
 
 
 async def generate_response(
