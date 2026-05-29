@@ -21,6 +21,7 @@ async def create(
     token_count: int | None = None,
     client_message_id: str | None = None,
     sender_id: str | None = None,
+    is_proactive: bool = False,
 ) -> dict:
     message_id = str(uuid.uuid4())
     await pool.execute(
@@ -28,8 +29,8 @@ async def create(
         INSERT INTO messages (
             id, conversation_id, role, sender_id, content, message_type,
             media_urls, audio_url, audio_duration_seconds, token_count,
-            client_message_id, status, is_read
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'delivered', FALSE)
+            client_message_id, status, is_read, is_proactive
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'delivered', FALSE, $12)
         """,
         message_id,
         conversation_id,
@@ -42,8 +43,58 @@ async def create(
         audio_duration_seconds,
         token_count,
         client_message_id,
+        is_proactive,
     )
     return await get_by_id(pool, message_id)
+
+
+# Task 2 (Phase 5 polish) — proactive-quality helpers.
+
+PROACTIVE_CAP_WITHOUT_REPLY = 3
+
+
+async def count_unanswered_proactive(pool, conversation_id: str) -> int:
+    """Count proactive messages sent since the last user reply in this
+    conversation. Used by the engagement loop to enforce a 3-cap.
+
+    "Since the last user reply" = since the most recent row with role='user'.
+    If the user has never replied, the count is just all proactive rows.
+    """
+    row = await pool.fetchrow(
+        """
+        WITH last_user AS (
+            SELECT COALESCE(MAX(created_at), 'epoch'::timestamp) AS ts
+            FROM messages
+            WHERE conversation_id = $1 AND role = 'user'
+        )
+        SELECT COUNT(*) AS n
+        FROM messages, last_user
+        WHERE conversation_id = $1
+          AND is_proactive = TRUE
+          AND created_at > last_user.ts
+        """,
+        conversation_id,
+    )
+    return int(row["n"]) if row else 0
+
+
+async def recent_proactive_texts(
+    pool, conversation_id: str, limit: int = 3
+) -> list[str]:
+    """Fetch the last N proactive messages' text — passed to Gemini as
+    "don't repeat these" context when generating the next one."""
+    rows = await pool.fetch(
+        """
+        SELECT content
+        FROM messages
+        WHERE conversation_id = $1 AND is_proactive = TRUE
+        ORDER BY created_at DESC
+        LIMIT $2
+        """,
+        conversation_id,
+        limit,
+    )
+    return [r["content"] for r in rows if r["content"]]
 
 
 async def get_by_id(pool, message_id: str) -> dict | None:
