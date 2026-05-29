@@ -531,6 +531,7 @@ async def send_message(
         media_urls=media_urls,
         user_id=user_id,
         conversation_id=conversation_id,
+        archetype=inf.get("category"),
     )
 
     # Typing indicator STOP
@@ -727,6 +728,7 @@ async def send_message_stream(
                 media_urls=media_urls,
                 user_id=user_id,
                 conversation_id=conversation_id,
+                archetype=inf.get("category"),
             ):
                 if kind == "text":
                     full_text += value

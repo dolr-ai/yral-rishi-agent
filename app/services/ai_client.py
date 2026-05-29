@@ -361,6 +361,7 @@ async def generate_response_stream(
     media_urls: list[str] | None = None,
     user_id: str | None = None,
     conversation_id: str | None = None,
+    archetype: str | None = None,
 ):
     """Phase 2.7: streaming counterpart to generate_response.
 
@@ -397,14 +398,22 @@ async def generate_response_stream(
         system_instructions, conversation_history, user_message, media_urls
     )
 
+    # Phase 12: per-archetype LLM tuning. Lookup is non-fatal — unknown
+    # archetypes fall back to config defaults (current behavior).
+    from services.soul_file import tuning_for
+
+    tuning = tuning_for(archetype)
+    temperature = (tuning or {}).get("temperature", config.GEMINI_TEMPERATURE)
+    max_tokens = (tuning or {}).get("max_tokens", config.GEMINI_MAX_TOKENS)
+
     total_text = ""
     token_count = 0
     try:
         async for kind, value in _stream_gemini(
             contents=contents,
             system_instruction=system_instruction,
-            temperature=config.GEMINI_TEMPERATURE,
-            max_tokens=config.GEMINI_MAX_TOKENS,
+            temperature=temperature,
+            max_tokens=max_tokens,
         ):
             if kind == "text":
                 total_text += value
@@ -476,7 +485,15 @@ async def generate_response(
     media_urls: list[str] | None = None,
     user_id: str | None = None,
     conversation_id: str | None = None,
+    archetype: str | None = None,
 ) -> LlmResponse:
+    # Phase 12: per-archetype LLM tuning. Lookup is non-fatal — unknown
+    # archetypes fall back to config defaults.
+    from services.soul_file import tuning_for
+
+    _tuning = tuning_for(archetype)
+    _temperature = (_tuning or {}).get("temperature", config.GEMINI_TEMPERATURE)
+    _max_tokens = (_tuning or {}).get("max_tokens", config.GEMINI_MAX_TOKENS)
     if is_nsfw:
         client = get_openrouter_client()
         if client:
@@ -510,11 +527,23 @@ async def generate_response(
                     }
                 )
 
+                # Phase 12: archetype tuning also applies to the OpenRouter
+                # (NSFW) path so per-archetype caps work for NSFW companions etc.
+                _or_temp = (
+                    (_tuning or {}).get("temperature")
+                    if _tuning is not None
+                    else config.OPENROUTER_TEMPERATURE
+                )
+                _or_max = (
+                    (_tuning or {}).get("max_tokens")
+                    if _tuning is not None
+                    else config.OPENROUTER_MAX_TOKENS
+                )
                 response = await client.chat.completions.create(
                     model=config.OPENROUTER_MODEL,
                     messages=messages,
-                    max_tokens=config.OPENROUTER_MAX_TOKENS,
-                    temperature=config.OPENROUTER_TEMPERATURE,
+                    max_tokens=_or_max,
+                    temperature=_or_temp,
                 )
                 latency_ms = (time.monotonic() - t0) * 1000
 
@@ -583,8 +612,8 @@ async def generate_response(
         response_text, token_count = await _call_gemini(
             contents=contents,
             system_instruction=system_instruction,
-            temperature=config.GEMINI_TEMPERATURE,
-            max_tokens=config.GEMINI_MAX_TOKENS,
+            temperature=_temperature,
+            max_tokens=_max_tokens,
         )
         latency_ms = (time.monotonic() - t0) * 1000
 
