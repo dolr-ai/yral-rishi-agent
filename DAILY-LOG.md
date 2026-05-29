@@ -1,5 +1,25 @@
 # Daily Log
 
+## 2026-05-29 (afternoon) — Task D: user-configurable proactive frequency (Phase 5.4)
+
+### What changed
+- `migrations/012_proactive_frequency.sql` — new `proactive_frequency VARCHAR(16) DEFAULT 'default'` column on `conversations` with CHECK constraint on `{'default','daily','weekly','off'}` + partial index for the engagement-loop scan
+- `app/services/proactive.py` — `find_inactive_conversations` now skips `off` rows and computes the threshold inline (`weekly`=168h, else legacy 24h). Single scan, no extra round-trips.
+- `app/routes/chat.py` — new endpoint: `PATCH /api/v1/chat/conversations/{id}/proactive-frequency` (owner-only)
+- `tests/test_proactive_frequency.py` — pins allowed values + migration default
+
+### Default behavior unchanged
+Existing rows default to `'default'`. The threshold for `'default'` and `'daily'` is the same 24h that's always been used. `'weekly'` widens it to 168h; `'off'` skips entirely.
+
+### Diff
++96 / -3 across 4 files.
+
+### Deploy
+1. pg_dump → S3
+2. Apply migration 012
+3. Rebuild + deploy
+4. Smoke-test: PATCH the new endpoint on a fresh conv, query DB to verify column updated
+
 ## 2026-05-29 (later) — Task A: trending endpoint flake fix
 
 ### Diagnosis

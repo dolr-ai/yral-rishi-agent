@@ -319,6 +319,42 @@ async def delete_conversation(conversation_id: str, request: Request):
     }
 
 
+# ─── Task D / Phase 5.4: user-configurable proactive frequency ────────────
+
+PROACTIVE_FREQUENCIES = {"default", "daily", "weekly", "off"}
+
+
+@router.patch("/conversations/{conversation_id}/proactive-frequency")
+async def set_proactive_frequency(conversation_id: str, body: dict, request: Request):
+    """User opts each (user, bot) conversation into 'default' / 'daily' /
+    'weekly' / 'off' for proactive bot-initiated messages. Default behavior
+    (24h inactivity threshold) is unchanged for rows that never set this."""
+    user_id = get_current_user(request)
+    pool = await get_pool()
+
+    conv = await conversation_repo.get_by_id(pool, conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if conv["user_id"] != user_id:
+        raise HTTPException(
+            status_code=403, detail="Only the conversation owner can change this"
+        )
+
+    freq = (body or {}).get("frequency")
+    if freq not in PROACTIVE_FREQUENCIES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"frequency must be one of {sorted(PROACTIVE_FREQUENCIES)}",
+        )
+
+    await pool.execute(
+        "UPDATE conversations SET proactive_frequency = $1 WHERE id = $2",
+        freq,
+        conversation_id,
+    )
+    return {"conversation_id": conversation_id, "proactive_frequency": freq}
+
+
 @router.post("/conversations/{conversation_id}/messages")
 async def send_message(
     conversation_id: str,

@@ -89,7 +89,7 @@
 | 5.2 | Generate bot-initiated messages | ✅ Done | — | #165 |
 | 5.3 | Background engagement loop (15 min) | ✅ Done | — | #166 |
 | 5.3p | Polish: proactive quality (3-cap + variety prompt + type rotation) | ✅ Done | — | #187 |
-| 5.4 | User-configurable frequency (daily/weekly/off) | ⏳ Pending | 1 | — |
+| 5.4 | User-configurable frequency (daily/weekly/off) | 🔄 In PR | 1 | #194 |
 | 5.5 | Context-aware timing (morning greetings, evening) | ⏳ Pending | 1 | — |
 | 5.6 | Streak tracking (reward consistent chatters) | ⏳ Pending | 1 | — |
 | 5.V1 | Verify: proactive messages actually sending? | ⏳ Pending | 0.5 | — |

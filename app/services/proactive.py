@@ -207,14 +207,28 @@ async def send_proactive_message(
 
 
 async def find_inactive_conversations(pool, hours: int = 24, limit: int = 100):
-    """Find conversations where the user hasn't sent a message in N hours."""
+    """Find conversations where the user hasn't sent a message in N hours.
+
+    Task D (Phase 5.4): per-conversation `proactive_frequency` overrides the
+    default threshold:
+      'default' / 'daily' → 24h (the legacy behavior)
+      'weekly'            → 168h
+      'off'               → never returned
+    The query computes the effective threshold inline so we keep one scan.
+    """
     rows = await pool.fetch(
         """
         SELECT c.id, c.user_id, c.influencer_id
         FROM conversations c
         WHERE c.conversation_type = 'ai_chat'
           AND c.influencer_id IS NOT NULL
-          AND c.updated_at < NOW() - INTERVAL '1 hour' * $1
+          AND c.proactive_frequency != 'off'
+          AND c.updated_at < NOW() - INTERVAL '1 hour' * (
+              CASE c.proactive_frequency
+                  WHEN 'weekly' THEN 168
+                  ELSE $1
+              END
+          )
           AND c.updated_at > NOW() - INTERVAL '1 hour' * ($1 * 3)
           AND NOT EXISTS (
               SELECT 1 FROM proactive_messages pm
