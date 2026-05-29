@@ -379,6 +379,30 @@ def main():
         expect_status=[403, 404],
     )
 
+    print("\n--- A/B testing (Phase 7.6) ---")
+    test(
+        "POST /creator/influencers/{id}/variant-b (404)",
+        "POST",
+        f"{base}/api/v1/creator/influencers/00000000-0000-0000-0000-000000000000/variant-b",
+        headers=auth,
+        body={"system_instructions": "x"},
+        expect_status=[403, 404],
+    )
+    test(
+        "GET /creator/influencers/{id}/variants/compare (404)",
+        "GET",
+        f"{base}/api/v1/creator/influencers/00000000-0000-0000-0000-000000000000/variants/compare",
+        headers=auth,
+        expect_status=[403, 404],
+    )
+    test(
+        "POST /creator/influencers/{id}/variants/a/promote (404)",
+        "POST",
+        f"{base}/api/v1/creator/influencers/00000000-0000-0000-0000-000000000000/variants/a/promote",
+        headers=auth,
+        expect_status=[403, 404],
+    )
+
     print("\n--- User Memories (Phase 4.4) ---")
     test(
         "GET /users/me/memories",

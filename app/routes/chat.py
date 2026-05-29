@@ -519,8 +519,24 @@ async def send_message(
     ):
         memories["session_mood"] = session_state["mood"]
 
+    # Phase 7.6: A/B routing. If variant B exists for this bot, pick A or B
+    # 50/50 per turn. Record the choice so the compare endpoint can group
+    # samples and the message history can attribute each reply correctly.
+    import random as _random
+    from repositories import variant_repo as _variant_repo
+
+    _variant_b = await _variant_repo.get_variant_b(pool, influencer_id)
+    chosen_instructions = inf.get("system_instructions", "") or ""
+    chosen_variant_label: str | None = None
+    if _variant_b:
+        if _random.random() < 0.5:
+            chosen_variant_label = "a"
+        else:
+            chosen_variant_label = "b"
+            chosen_instructions = _variant_b["system_instructions"]
+
     system_instructions = soul_file.compose(
-        system_instructions=inf.get("system_instructions", ""),
+        system_instructions=chosen_instructions,
         category=inf.get("category"),
         memories=memories,
     )
@@ -577,6 +593,7 @@ async def send_message(
         message_type="text",
         token_count=llm_result.output_tokens,
         sender_id=influencer_id,
+        variant_label=chosen_variant_label,
     )
 
     # Background tasks: memory extraction + push notification + WS broadcast

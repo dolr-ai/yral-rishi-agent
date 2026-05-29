@@ -22,6 +22,7 @@ async def create(
     client_message_id: str | None = None,
     sender_id: str | None = None,
     is_proactive: bool = False,
+    variant_label: str | None = None,
 ) -> dict:
     message_id = str(uuid.uuid4())
     await pool.execute(
@@ -29,8 +30,8 @@ async def create(
         INSERT INTO messages (
             id, conversation_id, role, sender_id, content, message_type,
             media_urls, audio_url, audio_duration_seconds, token_count,
-            client_message_id, status, is_read, is_proactive
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'delivered', FALSE, $12)
+            client_message_id, status, is_read, is_proactive, variant_label
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'delivered', FALSE, $12, $13)
         """,
         message_id,
         conversation_id,
@@ -44,6 +45,7 @@ async def create(
         token_count,
         client_message_id,
         is_proactive,
+        variant_label,
     )
     return await get_by_id(pool, message_id)
 
