@@ -1,5 +1,26 @@
 # Daily Log
 
+## 2026-05-29 (evening) — batch-2 deploy + verifications
+
+Tasks A + B + D + is_nsfw all live on agent.rishi.yral.com (image `yral-rishi-agent:batch-2`). Migration 012 applied. pg_dump `pre-migration-012-proactive-freq-20260529-143239.dump` taken.
+
+### Live verifications
+- **Task A (trending cache)** — first `GET /influencers/trending` call in the suite hit a 30s timeout (as expected — cold cache); the new retry-once path kicked in and succeeded on attempt 2 (3463 ms). 27/27 green. Cache pattern: subsequent runs are sub-second `X-Cache: HIT`.
+- **is_nsfw on ConversationResponse** — `POST /conversations` body now returns `influencer.is_nsfw: false` for non-NSFW bots. Mobile can skip the SSE endpoint upfront for NSFW conversations.
+- **Task D (proactive frequency)** — `PATCH /conversations/{id}/proactive-frequency` accepts `weekly`, rejects `invalid` with 422 + helpful error listing allowed values.
+- 27/27 endpoint suite: PASS.
+
+### Batch-2 PRs merged
+| PR | What | Status |
+|---|---|---|
+| #193 | Trending cache (Task A) | ✅ |
+| #194 | Proactive frequency (Task D) — bundled into #195 squash by rebase | ✅ (code on main, PR closed) |
+| #195 | Eval results (Task B) — also pulled in Task D's content via rebase | ✅ |
+| #196 | is_nsfw on ConversationResponse | ✅ |
+
+### Note on the #194 merge anomaly
+When rebasing #194 onto main (after #195 had already merged), the rebase folded both branches' content into a single commit on the Task D branch. GitHub's squash-merge of #195 picked up the combined diff, and #194's branch then had zero net diff vs main → GitHub auto-closed it. Net outcome: all four PRs' code is on main. Recording the workflow quirk for posterity: when running tasks in parallel that touch overlapping docs (PROGRESS.md, DAILY-LOG.md), rebase before re-pushing or accept that one PR will subsume another at squash time.
+
 ## 2026-05-29 (late afternoon) — Task B: eval results (Phase 9.3-9.5)
 
 50 gold prompts run through BOTH v2 (agent.rishi.yral.com) and chat-ai (chat-ai.rishi.yral.com) via `scripts/eval_v2_vs_chat_ai.py`. Gemini-as-judge scoring on 5 criteria, 1-5 scale. 49/50 prompts completed on both services (one prompt's chat-ai request errored out and was excluded).
