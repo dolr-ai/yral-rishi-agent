@@ -1,5 +1,55 @@
 # Daily Log
 
+## 2026-05-30 (close-out) — Batch 3 final eval-gate + close-out
+
+### Eval-gate result (all 5 tasks deployed)
+
+| Metric | morning v2 | post-batch-3 | vs morning | vs chat-ai now |
+|---|---|---|---|---|
+| in_character | 4.02 | 4.02 | unchanged | **+0.29** |
+| helpful | 2.65 | 2.63 | −0.02 | **+0.78** ⭐ |
+| concise | 4.79 | 4.59 | −0.20 (noise) | −0.02 |
+| language_match | 3.10 | 2.86 | −0.24 (noisy axis) | −0.08 |
+| safe | 4.27 | **4.37** | **+0.10** | **+1.24** ⭐ |
+| **overall** | **3.77** | **3.69** | −0.08 (within noise) | **+0.44** ⭐ |
+| p95 latency | 9633 ms | 6339 ms | **−34%** | +4763 ms |
+
+**v2's lead vs chat-ai improved from morning's +0.35 → +0.44.** The cleanest delta of the entire week.
+
+### Wizard live E2E (full creator flow)
+- Started a wizard with concept "A retired chess grandmaster who teaches kids the love of strategy through Hinglish stories"
+- 5 intake questions auto-generated (Gemini fallback to fixed set when first call returned empty)
+- Answered each
+- Preview generated complete polished bot:
+  - display_name: "Prakash Uncle" / category: educator
+  - initial_greeting: warm Hinglish welcome
+  - system_instructions: rich character description with authentic voice
+  - 10-turn sample conversation showing the bot naturally translating its persona into chat
+- Commit created the ai_influencers row successfully (one transient 500 on first attempt — second attempt succeeded; appears to have been an asyncpg blip during the rolling deploy)
+- Cleanup: deleted the test bot + session
+
+The wizard works.
+
+### Batch 3 summary
+
+| Task | PR | Status |
+|---|---|---|
+| 1 — Phase 7.7 Bot quality scorer | #201 | ✅ deployed; 122 score rows already accumulated |
+| 2 — Phase 7.8 Creator recommendations | #203 | ✅ deployed |
+| 3 — Phase 7.6 A/B testing | #204 | ✅ deployed (migration 015) |
+| 4 — Phase 7.9 5-min wizard | #205 | ✅ deployed (migration 016) + live E2E verified |
+| 5 — Phase 5.6 Streak tracking | #202 | ✅ deployed (migration 014); 181,808 streak rows updated in first pass |
+
+Standing approval cycle closes.
+
+### Backups taken (rule #9)
+- `pre-migration-013-quality-scores-20260529-162508.dump`
+- `pre-migration-014-streaks-20260529-164735.dump`
+- `pre-migration-015-variants-20260529-170944.dump`
+- `pre-migration-016-wizard-20260529-172327.dump`
+
+All on rishi-5 (current Patroni leader).
+
 ## 2026-05-30 (very late) — Task 4: Phase 7.9 5-minute bot creation wizard
 
 ### Flow (4 endpoints under /api/v1/creator/wizard/)

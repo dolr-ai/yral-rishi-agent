@@ -91,7 +91,7 @@
 | 5.3p | Polish: proactive quality (3-cap + variety prompt + type rotation) | ✅ Done | — | #187 |
 | 5.4 | User-configurable frequency (daily/weekly/off) | ✅ Done | — | #194 (squashed into #195 via rebase) |
 | 5.5 | Context-aware timing (morning greetings, evening) | ⏳ Pending | 1 | — |
-| 5.6 | Streak tracking (reward consistent chatters) | 🔄 In PR | 1 | #202 |
+| 5.6 | Streak tracking (reward consistent chatters) | ✅ Done | — | #202 |
 | 5.V1 | Verify: proactive messages actually sending? | ⏳ Pending | 0.5 | — |
 | **Phase 5 total** | | **50% done** | **3.5 days left** | |
 
@@ -114,10 +114,10 @@
 | 7.3 | Conversation logs for creators | ✅ Done | — | #166 |
 | 7.4 | Soul File viewer | ✅ Done | — | #166 |
 | 7.5 | Soul File Coach (AI helps improve personality via chat) | ✅ Done (backend) / ⏳ Pending (mobile UI) | — | #191 |
-| 7.6 | A/B testing (two soul file versions, compare quality) | 🔄 In PR | 2 | #204 |
-| 7.7 | Bot quality scorer (automatic conversation rating) | 🔄 In PR | 2 | #201 |
-| 7.8 | Creator recommendations (AI suggests changes) | 🔄 In PR | 1 | #203 |
-| 7.9 | 5-minute bot creation wizard (structured intake + preview) | 🔄 In PR | 3 | #205 |
+| 7.6 | A/B testing (two soul file versions, compare quality) | ✅ Done | — | #204 |
+| 7.7 | Bot quality scorer (automatic conversation rating) | ✅ Done | — | #201 |
+| 7.8 | Creator recommendations (AI suggests changes) | ✅ Done | — | #203 |
+| 7.9 | 5-minute bot creation wizard (structured intake + preview) | ✅ Done (backend) / ⏳ Pending (mobile UI) | — | #205 |
 | 7.10 | Mobile UI for Creator Studio | ⏳ Pending | 3 | — |
 | **Phase 7 total** | | **30% done** | **14 days left** | |
 
