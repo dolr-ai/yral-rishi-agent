@@ -159,3 +159,60 @@ async def read(user_id: str, conversation_id: str) -> dict | None:
     except Exception as e:
         logger.debug(f"session_memory.read failed (non-fatal): {e}")
         return None
+
+
+# Phase 4 polish — memory recitation fix (Task 1).
+# We track which memory keys were injected over the last few turns so we can
+# skip ones that have appeared too often. Stored as a Redis list of JSON
+# arrays: head = most recent turn, depth-clipped to MEMORY_HISTORY_DEPTH.
+MEMORY_HISTORY_DEPTH = 5  # how many turns of history to look back over
+MEMORY_REPEAT_LIMIT = 3  # if a key appears in >= this many of last 5, skip
+MEMORY_KEYS_PREFIX = "mem_keys:"
+MEMORY_KEYS_TTL_SEC = 3600  # 1 hour — matches session TTL
+
+
+def _memory_keys_key(user_id: str, conversation_id: str) -> str:
+    return f"{MEMORY_KEYS_PREFIX}{user_id}:{conversation_id}"
+
+
+async def record_memory_keys_used(
+    user_id: str, conversation_id: str, keys: list[str]
+) -> None:
+    """Push the keys injected this turn into the rolling Redis list. Non-fatal."""
+    if not keys:
+        return
+    redis = await _get_redis()
+    if not redis:
+        return
+    rkey = _memory_keys_key(user_id, conversation_id)
+    try:
+        await redis.lpush(rkey, json.dumps(keys))
+        await redis.ltrim(rkey, 0, MEMORY_HISTORY_DEPTH - 1)
+        await redis.expire(rkey, MEMORY_KEYS_TTL_SEC)
+    except Exception as e:
+        logger.debug(f"session_memory.record_memory_keys_used failed (non-fatal): {e}")
+
+
+async def recently_overused_keys(user_id: str, conversation_id: str) -> set[str]:
+    """Keys that appeared in >= MEMORY_REPEAT_LIMIT of the last MEMORY_HISTORY_DEPTH turns.
+
+    Caller skips these for the current turn. Empty set on Redis miss / failure
+    — degrade-gracefully, the worst case is we serve the same memory twice.
+    """
+    redis = await _get_redis()
+    if not redis:
+        return set()
+    rkey = _memory_keys_key(user_id, conversation_id)
+    try:
+        raw_items = await redis.lrange(rkey, 0, MEMORY_HISTORY_DEPTH - 1)
+        counts: dict[str, int] = {}
+        for raw in raw_items:
+            try:
+                for k in json.loads(raw):
+                    counts[k] = counts.get(k, 0) + 1
+            except (json.JSONDecodeError, TypeError):
+                continue
+        return {k for k, c in counts.items() if c >= MEMORY_REPEAT_LIMIT}
+    except Exception as e:
+        logger.debug(f"session_memory.recently_overused_keys failed (non-fatal): {e}")
+        return set()
