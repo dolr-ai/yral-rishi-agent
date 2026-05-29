@@ -1,5 +1,45 @@
 # Daily Log
 
+## 2026-05-30 — Task 5: Phase 5.6 streak tracking
+
+### What it does
+Three new columns on `conversations`:
+- `current_streak_days` — consecutive days the user has sent at least one message
+- `longest_streak_days` — peak streak ever
+- `last_streak_date` — last day a user message was counted
+
+Daily background job (`streak_tracker.streak_loop`) recomputes streaks via one SQL UPDATE that:
+- Joins `conversations c` to a CTE of latest user-message dates per conversation
+- Applies streak math (today → unchanged; yesterday → +1; older → reset to 1)
+- Updates `longest_streak_days` to max(longest, current)
+A second pass zeros out streaks for conversations whose user hasn't sent in >1 day.
+
+### Endpoint
+`GET /api/v1/chat/conversations/{id}` (already existed via `_format_conversation`) now returns `current_streak_days`, `longest_streak_days`, `last_streak_date`. Mobile UI to come later (Sarvesh).
+
+### Proactive prompt nod
+`PROACTIVE_PROMPT` got a new `{streak_block}` slot. `_streak_block(days)`:
+- 0-2 days: empty (not interesting)
+- 3-6 days: optional small nod ("only if it fits")
+- 7+ days: "solid streak worth acknowledging warmly — one short callout, then move on"
+
+The model decides whether to mention it; we don't hardcode anything in the bot reply.
+
+### Files
+- `migrations/014_conversation_streaks.sql` — 3 columns + `idx_conversations_last_streak_date`
+- `app/services/streak_tracker.py` — `update_all_streaks_once` + `streak_loop`
+- `app/main.py` — wire the background task
+- `app/repositories/conversation_repo.py` — SELECT streak columns in `get_by_id`
+- `app/routes/chat.py` — `_format_conversation` exposes the 3 fields
+- `app/services/proactive.py` — `{streak_block}` in PROACTIVE_PROMPT + `_streak_block` helper
+- `tests/test_streak_tracker.py` — pins interval + streak-block thresholds
+
+### Diff
++148 / -5 across 7 files. Migration is additive.
+
+### Eval-gate
+The proactive PROMPT changed (added `{streak_block}`), but the streak block is empty for users with <3 day streaks (all current eval prompts). For the eval, the streak_block will always be empty → prompt is byte-identical to before for the eval-relevant code path. Quality should be neutral. Will re-run post-deploy.
+
 ## 2026-05-30 — Task 1: Phase 7.7 bot quality scorer
 
 ### What it does

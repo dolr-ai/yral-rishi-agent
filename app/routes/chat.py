@@ -104,6 +104,14 @@ def _format_conversation(
         "is_nsfw": bool(conv.get("inf_is_nsfw", False)),
     }
 
+    # Phase 5.6: streak fields. The daily background job in
+    # services.streak_tracker updates these; mobile reads them to render a
+    # streak badge. Defaults (0/0/None) work fine for conversations on rows
+    # written before migration 014.
+    last_streak_date = conv.get("last_streak_date")
+    if hasattr(last_streak_date, "isoformat"):
+        last_streak_date = last_streak_date.isoformat()
+
     return {
         "id": conv["id"],
         "user_id": conv["user_id"],
@@ -113,6 +121,9 @@ def _format_conversation(
         "message_count": message_count,
         "last_message": last_message,
         "recent_messages": recent_messages,
+        "current_streak_days": conv.get("current_streak_days") or 0,
+        "longest_streak_days": conv.get("longest_streak_days") or 0,
+        "last_streak_date": last_streak_date,
     }
 
 

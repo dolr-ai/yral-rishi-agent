@@ -62,6 +62,7 @@ Background facts about this user (use sparingly — DO NOT lead with them, DO NO
 This message should be a **{message_type}**: {type_hint}
 Tone: {tone}
 
+{streak_block}
 {variety_block}
 
 Rules:
@@ -72,6 +73,25 @@ Rules:
 - If you have no context about the user, send something general but specific to the message type
 
 Generate ONLY the message text, nothing else."""
+
+
+def _streak_block(streak_days: int) -> str:
+    """Phase 5.6: a subtle nod at 3+ day streaks. Below 3 the streak isn't
+    interesting enough to mention; above 7 we lean into it more warmly. The
+    block becomes a guidance line for Gemini, not a hardcoded reference —
+    the model decides whether to mention the streak based on context."""
+    if streak_days >= 7:
+        return (
+            f"The user has chatted with you {streak_days} days in a row — "
+            "this is a solid streak worth acknowledging warmly if it fits "
+            "naturally. Don't be cheesy; one short callout, then move on."
+        )
+    if streak_days >= 3:
+        return (
+            f"The user has chatted with you {streak_days} days in a row. "
+            "Optional small nod, only if it fits the conversation type."
+        )
+    return ""
 
 
 async def generate_proactive_message(
@@ -117,12 +137,22 @@ async def generate_proactive_message(
     archetype = (inf.get("category") or "").lower().strip()
     tone = ARCHETYPE_TONE.get(archetype, "natural and conversational")
 
+    # Phase 5.6: subtle streak nod
+    streak_row = await pool.fetchrow(
+        "SELECT current_streak_days FROM conversations WHERE id = $1",
+        conversation_id,
+    )
+    streak_block = _streak_block(
+        int(streak_row["current_streak_days"] or 0) if streak_row else 0
+    )
+
     prompt = PROACTIVE_PROMPT.format(
         display_name=inf.get("display_name", "Bot"),
         user_context=user_context,
         message_type=msg_type,
         type_hint=TYPE_HINTS[msg_type],
         tone=tone,
+        streak_block=streak_block,
         variety_block=variety_block,
     )
 
