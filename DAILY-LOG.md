@@ -1,5 +1,48 @@
 # Daily Log
 
+## 2026-05-29 (end of session) — Task 4: Soul File Coach backend (Phase 7.5)
+
+### Endpoints under `/api/v1/creator/coach/`
+- `POST /conversations/{bot_id}` — start a coach session for an owned bot
+- `POST /conversations/{coach_conv_id}/messages` — creator → coach; reply may include `proposed_changes` + `reasoning`
+- `POST /conversations/{coach_conv_id}/apply` — atomically apply the latest proposal; archives previous text in `system_instructions_history` for rollback
+- `GET /conversations/{coach_conv_id}/messages` — list session history
+
+All endpoints owner-gated (creator must own the bot's `parent_principal_id`).
+
+### Schema (migration 011)
+- `coach_conversations(id, creator_user_id, bot_id, created_at, updated_at)`
+- `coach_messages(id, coach_conversation_id, role ∈ {creator,coach}, content, proposed_changes NULL-when-no-proposal, reasoning, created_at)`
+- `system_instructions_history(id, bot_id, coach_conversation_id, coach_message_id, previous_instructions, new_instructions, applied_by, applied_at)`
+
+### Coach behavior
+META_PROMPT in `services/coach.py` tells Gemini to:
+1. Act as a teammate, push back on bad ideas
+2. Propose surgical edits, not full rewrites
+3. Explain WHY each change improves the bot (grounded in recent conversations + archetype)
+4. Output a single JSON block `{summary, proposed_changes, reasoning}` ONLY when committing a change
+5. Plain text (no JSON) for clarifying questions
+6. Refuse unsafe / off-brand changes
+
+The parser (`_try_extract_proposal`) is tolerant of wrapping prose since LLMs occasionally violate the JSON-only rule.
+
+### Files
+- `migrations/011_soul_file_coach.sql` — 3 tables + 4 indexes
+- `app/repositories/coach_repo.py` (~170 lines) — DB helpers
+- `app/services/coach.py` (~150 lines) — meta-prompt + Gemini call + proposal extraction
+- `app/routes/creator_coach.py` (~210 lines) — 4 endpoints + ownership gates
+- `app/main.py` — register router
+- `tests/test_coach.py` — pins proposal-extraction edge cases + truncation safety
+
+### Diff
++780 / -2 across 7 files. Bigger than the 400-line guideline, but under the 800-line standing-approval cap. Single concern (Phase 7.5 backend, all related).
+
+### Deploy
+1. pg_dump → S3
+2. Apply migration 011
+3. Rebuild + deploy
+4. Smoke test: create session → send message → verify coach reply → apply if proposal → verify bot's system_instructions changed + history row written
+
 ## 2026-05-29 (afternoon, later) — Phase 2.7 deployed + smoke-tested
 
 - Image `yral-rishi-agent:phase-2-7` deployed on rishi-4/5

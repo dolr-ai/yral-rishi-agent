@@ -113,7 +113,7 @@
 | 7.2 | Per-influencer analytics (messages, conversations) | ✅ Done | — | #166 |
 | 7.3 | Conversation logs for creators | ✅ Done | — | #166 |
 | 7.4 | Soul File viewer | ✅ Done | — | #166 |
-| 7.5 | Soul File Coach (AI helps improve personality via chat) | ⏳ Pending | 3 | — |
+| 7.5 | Soul File Coach (AI helps improve personality via chat) | 🔄 In PR (backend) | 3 | #191 |
 | 7.6 | A/B testing (two soul file versions, compare quality) | ⏳ Pending | 2 | — |
 | 7.7 | Bot quality scorer (automatic conversation rating) | ⏳ Pending | 2 | — |
 | 7.8 | Creator recommendations (AI suggests changes) | ⏳ Pending | 1 | — |

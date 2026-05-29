@@ -18,6 +18,7 @@ from routes.chat import router as chat_router
 from routes.chat_v2 import router as chat_v2_router
 from routes.chat_v3 import router as chat_v3_router
 from routes.creator import router as creator_router
+from routes.creator_coach import router as creator_coach_router
 from routes.creator_takeover import router as creator_takeover_router
 from routes.earnings import router as earnings_router
 from routes.health import router as health_router
@@ -335,6 +336,7 @@ app.include_router(media_router)
 app.include_router(human_chat_router)
 app.include_router(chat_v3_router)
 app.include_router(creator_router)
+app.include_router(creator_coach_router)
 app.include_router(creator_takeover_router)
 app.include_router(earnings_router)
 app.include_router(memories_router)
