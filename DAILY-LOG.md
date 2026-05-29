@@ -1,5 +1,15 @@
 # Daily Log
 
+## 2026-05-29 (later) — Tasks 1 + 2 deployed
+
+- pg_dump snapshot `pre-migration-010-proactive-20260529-124405.dump` (~498 MB, SHA256 `d57a834f...`) on rishi-4
+- Migration 010 applied on rishi-5 (current leader, TL=22 — cluster had failed over overnight)
+- Image `yral-rishi-agent:polish-1-2` built + deployed on rishi-4/5
+- 27/27 endpoint suite: 27/27 PASS on re-run (first run hit the recurring `/influencers/trending` materialized-view timeout — known flake; logging in backlog)
+- PRs #186 + #187 merged; Phase 4 + Phase 5 polish rows flipped to ✅
+
+Next: Task 3 (SSE streaming, ~2-3 days) → Task 4 (Soul File Coach, ~3 days).
+
 ## 2026-05-29 — Task 2: proactive message quality fix (Phase 5 polish)
 
 ### Why
