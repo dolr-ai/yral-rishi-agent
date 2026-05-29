@@ -89,7 +89,7 @@
 | 5.2 | Generate bot-initiated messages | ✅ Done | — | #165 |
 | 5.3 | Background engagement loop (15 min) | ✅ Done | — | #166 |
 | 5.3p | Polish: proactive quality (3-cap + variety prompt + type rotation) | ✅ Done | — | #187 |
-| 5.4 | User-configurable frequency (daily/weekly/off) | ⏳ Pending | 1 | — |
+| 5.4 | User-configurable frequency (daily/weekly/off) | 🔄 In PR | 1 | #194 |
 | 5.5 | Context-aware timing (morning greetings, evening) | ⏳ Pending | 1 | — |
 | 5.6 | Streak tracking (reward consistent chatters) | ⏳ Pending | 1 | — |
 | 5.V1 | Verify: proactive messages actually sending? | ⏳ Pending | 0.5 | — |
@@ -140,7 +140,7 @@
 |---|-----------|--------|-----------|-----|
 | 9.1 | 50 gold prompts across categories | ✅ Done | — | #168 |
 | 9.2 | Gemini-as-judge scoring | ✅ Done | — | #168 |
-| 9.3 | Run eval and verify results | ⏳ Pending | 0.5 | — |
+| 9.3 | Run eval and verify results | ✅ Done | — | #195 (eval-results-2026-05-29.json + scripts/eval_v2_vs_chat_ai.py) |
 | 9.4 | CI integration (eval runs on AI-touching PRs) | ⏳ Pending | 1 | — |
 | 9.5 | Quality regression alerts | ⏳ Pending | 0.5 | — |
 | **Phase 9 total** | | **40% done** | **2 days left** | |
