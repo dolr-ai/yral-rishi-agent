@@ -56,6 +56,10 @@ async def lifespan(app: FastAPI):
 
     memory_consolidation_task = asyncio.create_task(consolidation_loop())
 
+    from services.quality_scorer import scoring_loop
+
+    quality_scoring_task = asyncio.create_task(scoring_loop())
+
     yield
 
     logger.info("Shutting down...")
@@ -64,6 +68,7 @@ async def lifespan(app: FastAPI):
     engagement_task.cancel()
     takeover_sweep_task.cancel()
     memory_consolidation_task.cancel()
+    quality_scoring_task.cancel()
     try:
         await trending_refresher_task
     except asyncio.CancelledError:
@@ -82,6 +87,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await memory_consolidation_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await quality_scoring_task
     except asyncio.CancelledError:
         pass
     langfuse_tracing.flush()

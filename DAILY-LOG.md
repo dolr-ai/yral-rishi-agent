@@ -1,5 +1,42 @@
 # Daily Log
 
+## 2026-05-30 — Task 1: Phase 7.7 bot quality scorer
+
+### What it does
+Nightly background job (24h cycle, 15-min initial delay so containers warm up) scores each active AI influencer:
+- Samples last **20 conversations**
+- Pulls up to **3 turn pairs** per conversation
+- Runs **Gemini-as-judge** on each pair: in_character, response_quality, engagement (1-5 each)
+- Aggregates into a per-bot row in `bot_quality_scores` with all four scores + sample sizes
+
+Concurrency capped at 5 parallel judge calls. Rough budget: 50 bots × 60 pairs = 3000 calls / night, ~15 min wall clock, free-tier Gemini Flash.
+
+### Files
+- `migrations/013_bot_quality_scores.sql` — table + idx_bqs_bot_recent
+- `app/repositories/quality_score_repo.py` — insert + latest_for_bot + history_for_bot
+- `app/services/quality_scorer.py` — judge prompt, turn-pair extraction, per-bot scoring, scoring_loop wrapper
+- `app/main.py` — wires the loop alongside the existing background tasks
+- `app/routes/creator.py` — new `GET /creator/influencers/{id}/quality-score` (owner-only)
+- `app/services/coach.py` — META_PROMPT now includes a `quality_score_block`; `coach_reply` accepts an optional `quality_score` kwarg; `_format_quality_score` helper renders it
+- `app/routes/creator_coach.py` — pulls latest score in `send_coach_message` and threads it through
+- `scripts/test_all_endpoints.py` — adds the new endpoint as test #28
+- `tests/test_quality_scorer.py` — pins constants + the coach format helper
+
+### Diff
++428 / -8 across 9 files. Migration is additive.
+
+### Eval-gate stance
+This task adds Gemini judge calls in a NEW background path. The chat send_message path is unchanged — soul_file/ai_client/memory not touched. Eval should be quality-neutral. Will re-run the 50-prompt eval post-deploy to confirm; revert via swarm rollback if regressed.
+
+### Deploy
+1. pg_dump
+2. Migration 013 on Patroni leader
+3. Rebuild + deploy
+4. Wait 15 min initial delay
+5. Confirm one nightly pass runs successfully via logs + a couple of `bot_quality_scores` rows
+6. 27/27 → **28/28** endpoint suite (with the new endpoint)
+7. Eval re-run
+
 ## 2026-05-29 (very late) — rollback re-eval + batch close-out
 
 ### Rollback re-eval (v2 with #199 deployed)

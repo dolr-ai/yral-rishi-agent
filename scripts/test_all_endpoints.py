@@ -363,6 +363,15 @@ def main():
         expect_status=[403, 404],
     )
 
+    print("\n--- Bot Quality Score (Phase 7.7) ---")
+    test(
+        "GET /creator/influencers/{id}/quality-score (404)",
+        "GET",
+        f"{base}/api/v1/creator/influencers/00000000-0000-0000-0000-000000000000/quality-score",
+        headers=auth,
+        expect_status=[403, 404],
+    )
+
     print("\n--- User Memories (Phase 4.4) ---")
     test(
         "GET /users/me/memories",

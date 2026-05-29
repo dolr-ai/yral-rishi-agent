@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Request, Query
 
 from database import get_pool
 from auth import get_current_user
-from repositories import influencer_repo
+from repositories import influencer_repo, quality_score_repo
 
 logger = logging.getLogger(__name__)
 
@@ -195,4 +195,50 @@ async def get_soul_file(influencer_id: str, request: Request):
         "personality_traits": inf.get("personality_traits"),
         "initial_greeting": inf.get("initial_greeting"),
         "suggested_messages": inf.get("suggested_messages"),
+    }
+
+
+@router.get("/influencers/{influencer_id}/quality-score")
+async def get_quality_score(influencer_id: str, request: Request):
+    """Phase 7.7: latest bot quality score for an owned bot.
+
+    Returns the most recent row from bot_quality_scores. If the bot has never
+    been scored (new bot, no traffic), returns null fields with a hint.
+    Owner-only auth — non-owners get 403 same as the rest of /creator.
+    """
+    user_id = get_current_user(request)
+    pool = await get_pool()
+
+    inf = await influencer_repo.get_by_id(pool, influencer_id)
+    if not inf:
+        raise HTTPException(status_code=404, detail="Influencer not found")
+    if inf.get("parent_principal_id") != user_id:
+        raise HTTPException(status_code=403, detail="Not your influencer")
+
+    row = await quality_score_repo.latest_for_bot(pool, influencer_id)
+    if not row:
+        return {
+            "influencer_id": influencer_id,
+            "score_overall": None,
+            "score_in_character": None,
+            "score_response_quality": None,
+            "score_engagement": None,
+            "last_n_conversations": 0,
+            "sample_size": 0,
+            "scored_at": None,
+            "hint": "No score yet — bot needs sampled conversations + a nightly scoring pass.",
+        }
+
+    created_at = row["created_at"]
+    return {
+        "influencer_id": influencer_id,
+        "score_overall": row["score_overall"],
+        "score_in_character": row["score_in_character"],
+        "score_response_quality": row["score_response_quality"],
+        "score_engagement": row["score_engagement"],
+        "last_n_conversations": row["last_n_conversations"],
+        "sample_size": row["sample_size"],
+        "scored_at": created_at.isoformat()
+        if isinstance(created_at, datetime)
+        else created_at,
     }

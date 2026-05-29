@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from auth import get_current_user
 from database import get_pool
-from repositories import coach_repo, influencer_repo
+from repositories import coach_repo, influencer_repo, quality_score_repo
 from services import coach as coach_service
 
 logger = logging.getLogger(__name__)
@@ -109,11 +109,16 @@ async def send_coach_message(coach_conversation_id: str, body: dict, request: Re
     )
     recent_rows = [dict(r) for r in recent]
 
+    # Phase 7.7 integration: pull the latest nightly quality score so the
+    # coach can ground its suggestions ("is my bot any good?") in data.
+    latest_score = await quality_score_repo.latest_for_bot(pool, session["bot_id"])
+
     display, proposed, reasoning = await coach_service.coach_reply(
         bot_name=inf.get("display_name") or inf.get("name") or "this bot",
         bot_archetype=inf.get("category") or "general",
         current_instructions=inf.get("system_instructions") or "",
         recent_conv_rows=recent_rows,
+        quality_score=latest_score,
         # Exclude the creator's just-saved message from history; it's the
         # latest_message slot in the meta-prompt instead
         session_history=[m for m in history if m["id"] != creator_msg["id"]],
