@@ -39,6 +39,11 @@ GEMINI_TEMPERATURE = _env_float("GEMINI_TEMPERATURE", 0.7)
 GEMINI_TIMEOUT = _env_int("GEMINI_TIMEOUT", 60)
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 
+# Phase 2.7: SSE streaming for word-by-word AI replies. Mobile decides whether
+# to hit the streaming endpoint or the legacy non-streaming one. Backend
+# default = TRUE so the streaming path is reachable as soon as mobile is ready.
+ENABLE_SSE_STREAMING = _env_bool("ENABLE_SSE_STREAMING", True)
+
 # OpenRouter (NSFW content routing)
 OPENROUTER_API_KEY = _env("OPENROUTER_API_KEY")
 OPENROUTER_MODEL = _env("OPENROUTER_MODEL", "google/gemini-2.5-flash")

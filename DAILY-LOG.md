@@ -1,5 +1,26 @@
 # Daily Log
 
+## 2026-05-29 (afternoon) — Task 3: SSE streaming backend (Phase 2.7)
+
+### Endpoint
+`POST /api/v1/chat/conversations/{id}/messages/stream` returning `text/event-stream`. Three event types: `token`, `done`, `error`. Wire format documented in `docs/SSE-PROTOCOL.md`.
+
+### What changed
+- `app/config.py` — new `ENABLE_SSE_STREAMING` flag (default TRUE — mobile decides whether to USE the endpoint)
+- `app/services/ai_client.py` — new `_stream_gemini` async generator that wraps Gemini's `:streamGenerateContent?alt=sse`; new `generate_response_stream` higher-level wrapper that yields `('text', chunk)` / `('done', LlmResponse)` / `('error', LlmResponse)` tuples and handles `LlmBlockedError` + transient failures with the same classification as the non-streaming path
+- `app/routes/chat.py` — new `send_message_stream` route. Auth + dedup + content-safety pre-check happen synchronously (can return HTTP errors). LLM streaming + DB save + side effects happen inside the SSE generator (yield error events instead of raising).
+- `docs/SSE-PROTOCOL.md` (new) — wire format spec for the mobile expert
+- `tests/test_sse_streaming.py` — pins event-name format, flag default, doc completeness
+
+### NSFW caveat
+OpenRouter SDK streaming is a separate code path; for v1, the streaming endpoint yields `NO_PROVIDER` error for `is_nsfw=TRUE` conversations. Mobile falls back to the legacy `POST /messages` for those. Tracked as Infra-Z for follow-up.
+
+### Backward compat
+Non-streaming `POST /messages` unchanged. Mobile chooses per turn.
+
+### Diff
++330 / -1 across 5 files. No schema, no migration.
+
 ## 2026-05-29 (later) — Tasks 1 + 2 deployed
 
 - pg_dump snapshot `pre-migration-010-proactive-20260529-124405.dump` (~498 MB, SHA256 `d57a834f...`) on rishi-4
