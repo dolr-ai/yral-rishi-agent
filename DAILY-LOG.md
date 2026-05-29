@@ -1,5 +1,34 @@
 # Daily Log
 
+## 2026-05-30 (cutover-prep close) — Tasks B + C deployed; ETL idle until cred set
+
+### Both tasks live on agent.rishi.yral.com
+- **Task B (#207)** — continuous incremental ETL background loop (every 5 min)
+- **Task C (#208)** — hourly integrity verifier
+- Migrations 017 + 018 applied; pg_dump snapshots taken
+- 35/35 endpoint suite green
+- `/admin/etl-status` and `/admin/etl-integrity` both JWT-gated and returning empty (loops idle)
+
+### Activation steps (single command from Rishi)
+Once a read-only DB user is provisioned on chat-ai:
+```
+docker service update --env-add CHAT_AI_DATABASE_URL="postgresql://etl_readonly:****@<chat-ai-host>:5432/chat_ai_db?sslmode=require" --force yral-rishi-agent
+```
+Next loop tick (≤5 min) starts syncing. First integrity pass fires 10 min after that. `GET /admin/etl-status` and `GET /admin/etl-integrity` show progress.
+
+### Backups taken
+- `pre-migration-017-etl-sync-20260529-181608.dump`
+- `pre-migration-018-integrity-20260529-182922.dump`
+
+### What did NOT happen (per Rishi's hard constraint)
+- I did NOT extract chat-ai credentials
+- I did NOT SSH to rishi-1/2/3 for anything beyond verifying the deploy worked from rishi-4/5
+- I did NOT modify chat-ai's schema, config, or run any privileged operation against it
+- The chat-ai pool inside the v2 service opens with `default_transaction_read_only=on` — even a typo'd INSERT in our code would be rejected at the Postgres session level
+
+### Standing approval cycle closes
+Tasks A (latency comparison — deferred), D (rollback docs — deferred), E (Sentry alerts — deferred) per Rishi's adjusted scope. Pausing for next direction.
+
 ## 2026-05-30 (later) — Task C: hourly data-integrity verifier (cutover-readiness)
 
 ### Three checks per pass
