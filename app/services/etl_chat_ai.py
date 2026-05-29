@@ -1,8 +1,11 @@
 """Continuous incremental ETL from chat-ai (read-only) to v2.
 
-Reads `CHAT_AI_DATABASE_URL` from env. If unset, the background loop logs
-once and stays idle — operator sets the env var via swarm service update
-to enable the ETL without a code deploy.
+DSN resolution: first try the file at `CHAT_AI_DATABASE_URL_FILE` (default
+`/run/secrets/chat_ai_database_url`, the Docker Swarm secret mount path),
+fall back to the `CHAT_AI_DATABASE_URL` env var for local dev / CI. If
+neither resolves, the background loop logs once and stays idle — operator
+enables the ETL with `docker service update --secret-add
+chat_ai_database_url` (no code deploy needed).
 
 Pull strategy per table:
   1. Read last_sync_ts from etl_sync_state
@@ -102,7 +105,22 @@ SYNCED_TABLES: list[dict] = [
 
 def _chat_ai_dsn() -> str | None:
     """Operator-provided DSN for the read-only chat-ai connection.
-    None disables the ETL gracefully."""
+
+    File-first, env-var-fallback — same pattern chat-ai uses for its own
+    DATABASE_URL. Default file path is the Swarm secret mount location, so
+    `--secret-add chat_ai_database_url` alone is enough to enable the ETL;
+    no env var needs to set in the service spec, so the DSN never appears
+    in `docker service inspect`. The env var path remains for local dev
+    and CI where Swarm secrets aren't available.
+
+    None disables the ETL gracefully.
+    """
+    secret_file = os.environ.get(
+        "CHAT_AI_DATABASE_URL_FILE", "/run/secrets/chat_ai_database_url"
+    )
+    if os.path.exists(secret_file):
+        with open(secret_file) as f:
+            return f.read().strip() or None
     return os.environ.get("CHAT_AI_DATABASE_URL") or None
 
 
