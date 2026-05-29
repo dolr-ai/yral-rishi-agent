@@ -27,7 +27,8 @@
 | 1.4 | Conversations: create + list v1 + list v2 + messages + mark-read + delete (6 endpoints) | ✅ Done | — | #158 |
 | 1.5 | Send message + AI reply (THE HEART — 1 endpoint) | ✅ Done | — | #158 |
 | 1.6 | Influencer CREATE flow: generate-prompt + validate + create + edit + video-prompt + delete + ban + unban (8 endpoints) | ✅ Done | — | #158 |
-| 1.7 | Media upload (1 endpoint) | ✅ Done | — | #158 |
+| 1.7 | Media upload — image (1 endpoint, mobile UI live) | ✅ Done | — | #158 |
+| 1.7b | Audio upload — backend live, mobile UI pending | ✅ Done (backend) / ⏳ Pending (mobile UI) | 1 | #158 (backend) |
 | 1.8 | Image generation in chat (1 endpoint) | ✅ Done | — | #158 |
 | 1.9 | Human-to-Human chat: create + list + send (3 endpoints) | ✅ Done | — | #158 |
 | 1.10 | Chat as Human (creator takeover mode) — backend ✅ shipped & retested, mobile UI PR to Sarvesh pending (feature-flag-gated, awaiting agent v2 cutover) | ✅ Done (backend) | 1 | #170 (backend, merged 2026-05-28) + mobile PR (pending) |
@@ -35,6 +36,7 @@
 | 1.12 | Billing paywall (calls billing.yral.com) | ✅ Done | — | #158 |
 | 1.13 | WebSocket inbox + WS docs (1 WS + 1 endpoint) | ✅ Done | — | #158 |
 | 1.14 | ETL data migration (3.3M messages) | ✅ Done | — | — |
+| 1.14a | Continuous ETL chat-ai → V2 (S3-mediated pivot, Phases 1-4) | 🔄 In Progress — Phases 1-3 shipped (#211, #212, #213, #214), Phase 4 deployed but apply blocked on `idx_unique_user_influencer` schema mismatch; Option A fix scheduled for 2026-05-30 morning | 0.5 | #211, #212, #213, #214 |
 | 1.15 | Swarm deploy (2 replicas on rishi-4/5) | ✅ Done | — | — |
 | 1.16 | Full Motorola test of all 30 endpoints | ⏳ Tomorrow | 0.5 | — |
 | 1.17 | Latency comparison vs chat-ai | ⏳ Tomorrow | 0.5 | — |
@@ -148,12 +150,12 @@
 ## PHASE 10: SSE STREAMING
 | # | Sub-phase | Status | Est. days | PR |
 |---|-----------|--------|-----------|-----|
-| 10.1 | Backend SSE endpoint (stream tokens from Gemini) | ⏳ Pending | 2 | — |
-| 10.2 | Mobile SSE parser (Kotlin/Ktor SSE client) | ⏳ Pending | 2 | — |
-| 10.3 | JSON fallback path (old clients still work) | ⏳ Pending | 0.5 | — |
-| 10.4 | Feature flag to toggle SSE on/off | ⏳ Pending | 0.5 | — |
-| 10.5 | Sarvesh coordination for production mobile app | ⏳ Pending | 1 | — |
-| **Phase 10 total** | | **Not started** | **6 days** | |
+| 10.1 | Backend SSE endpoint (stream tokens from Gemini) | ✅ Done | — | #189 |
+| 10.2 | Mobile SSE parser (Kotlin/Ktor SSE client) | 🔄 In PR review (Sarvesh) | 0.5 | yral-mobile/rishi/sse-streaming |
+| 10.3 | JSON fallback path (old clients still work) | ✅ Done (carve-outs implemented) | — | — |
+| 10.4 | Feature flag to toggle SSE on/off | ✅ Done (default OFF, Firebase Remote Config) | — | — |
+| 10.5 | Sarvesh coordination for production mobile app | 🔄 PR sent, awaiting review | 1 | — |
+| **Phase 10 total** | | **85% done** | **1.5 days** | |
 
 ## PHASE 11: SHADOW TRAFFIC
 | # | Sub-phase | Status | Est. days | PR |
@@ -274,18 +276,29 @@
 ## MOBILE CLIENT WORK (across phases)
 | # | Feature | Depends on | Status | Est. days |
 |---|---------|-----------|--------|-----------|
-| M1 | H2H chat UI (new screens) | Phase 1 API ✅ | ⏳ Pending | 3 |
-| M2 | Chat as Human toggle UI | Phase 1 API ✅ | ⏳ Pending | 2 |
-| M3 | SSE streaming parser | Phase 10 backend | ⏳ Pending | 2 |
-| M4 | Creator Studio UI | Phase 7 API ✅ | ⏳ Pending | 3 |
-| M5 | Earnings dashboard UI | Phase 8 API ✅ | ⏳ Pending | 2 |
-| M6 | Typing indicator animation | Phase 16 backend | ⏳ Pending | 1 |
-| M7 | Presence / online status | Phase 16 backend | ⏳ Pending | 1 |
-| M8 | Read receipts | Phase 16 backend | ⏳ Pending | 1 |
-| M9 | Skill marketplace UI | Phase 15 backend | ⏳ Pending | 3 |
-| M10 | Private content UI | Phase 14 backend | ⏳ Pending | 2 |
-| M11 | Push notification improvements | Phase 5 | ⏳ Pending | 1 |
-| **Mobile total** | | | | **21 days** |
+| M1 | H2H chat UI (new screens) — TOMORROW priority | Phase 1 API ✅ | ⏳ Pending — tomorrow's top priority | 3 |
+| M2 | Chat as Human toggle UI — in Sarvesh review | Phase 1 API ✅ | 🔄 In PR review | 0 |
+| M3 | SSE streaming parser — in Sarvesh review | Phase 10 backend | 🔄 In PR review | 0 |
+| M4 | Soul File Coach UI — TOMORROW priority — "Make your bot better" entry from bot profile, opens coach chat pre-loaded with bot context, save-on-end summarizes changes applied | Phase 7.5 API ✅ | ⏳ Pending — tomorrow's top priority | 3 |
+| M5 | Audio upload UI — TOMORROW priority — mirror image-upload UX (mic button on input bar, hold-to-record OR file-picker, preview before send) | Phase 1.7 backend ✅ | ⏳ Pending — tomorrow's top priority | 2 |
+| M6 | Creator Studio UI (full dashboard) | Phase 7 API ✅ | ⏳ Pending | 3 |
+| M7 | Earnings dashboard UI | Phase 8 API ✅ | ⏳ Pending | 2 |
+| M8 | Typing indicator animation | Phase 16 backend | ⏳ Pending | 1 |
+| M9 | Presence / online status | Phase 16 backend | ⏳ Pending | 1 |
+| M10 | Read receipts | Phase 16 backend | ⏳ Pending | 1 |
+| M11 | Skill marketplace UI | Phase 15 backend | ⏳ Pending | 3 |
+| M12 | Private content UI | Phase 14 backend | ⏳ Pending | 2 |
+| M13 | Push notification improvements | Phase 5 | ⏳ Pending | 1 |
+| **Mobile total** | | | | **22 days** |
+
+## PHASE 22: AI INFLUENCER PROFILE SECTIONS (NEW — 2026-05-29)
+| # | Sub-phase | Status | Est. days | PR |
+|---|-----------|--------|-----------|-----|
+| 22.1 | Profile section 1 — videos created/uploaded on platform (backend: query by ai_influencer_id from video service; mobile: grid view in profile tab) | ⏳ Pending | 2 | — |
+| 22.2 | Profile section 2 — drafts (saved-but-unpublished content); backend storage + mobile rendering | ⏳ Pending | 2 | — |
+| 22.3 | Profile section 3 — Top 5 video ideas, refreshed daily by AI based on bot's archetype + recent conversations + trending topics; each idea has a "Create" button that opens video creation flow pre-filled with the idea | ⏳ Pending | 3 | — |
+| 22.4 | Mobile UI for all three sections in AI Influencer profile | ⏳ Pending | 3 | — |
+| **Phase 22 total** | | **Not started** | **10 days** | |
 
 ## INFRASTRUCTURE (ongoing)
 | # | Item | Status |
