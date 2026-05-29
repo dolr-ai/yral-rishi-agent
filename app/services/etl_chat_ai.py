@@ -1,46 +1,67 @@
-"""Continuous incremental ETL from chat-ai (read-only) to v2.
+"""S3-pull ETL fetcher for V2 (Phase 2 of the S3 pivot).
 
-DSN resolution: first try the file at `CHAT_AI_DATABASE_URL_FILE` (default
-`/run/secrets/chat_ai_database_url`, the Docker Swarm secret mount path),
-fall back to the `CHAT_AI_DATABASE_URL` env var for local dev / CI. If
-neither resolves, the background loop logs once and stays idle — operator
-enables the ETL with `docker service update --secret-add
-chat_ai_database_url` (no code deploy needed).
+Replaces the direct asyncpg pull from chat-ai (blocked: chat-ai's Postgres
+isn't reachable from rishi-4/5/6). Instead, rishi-1's
+scripts/incremental_export.py pushes CSV deltas to S3 every 5 min, and
+this loop pulls them down and applies them to V2 Postgres.
 
-Pull strategy per table:
-  1. Read last_sync_ts from etl_sync_state
-  2. Connect to chat-ai (read-only)
-  3. SELECT * FROM <table> WHERE created_at > $1 ORDER BY created_at LIMIT page_size
-  4. Batch-INSERT into v2 with ON CONFLICT (id) DO NOTHING — idempotent
-  5. Advance the cursor to the max created_at observed in the batch
-  6. Repeat until empty page or until SAFETY_BATCH_LIMIT batches consumed in
-     a single tick (prevents one huge tick from monopolizing the loop)
+How a tick runs:
+  1. List S3 objects under yral-chat-ai/incremental-sync/ with
+     LastModified > last_processed_at
+  2. Filter out _heartbeat / STUCK markers; keep only *.csv.gz
+  3. For each, in chronological order:
+       a. Download to memory, gunzip, parse CSV header
+       b. COPY CSV into a temp staging table (LIKE real_table)
+       c. INSERT real FROM staging ON CONFLICT (id) DO NOTHING
+       d. Record in etl_processed_files (filename PK = idempotent)
+       e. Advance etl_sync_state cursor for that table
+  4. Read _heartbeat / STUCK objects, expose freshness via /admin/etl-status
 
-Read-only contract: the chat-ai pool is opened with `default_transaction_read_only=on`
-so a typo in the SQL can never write to rishi-1. We also never query
-information_schema / pg_catalog for anything beyond column lists, and
-column lists are hardcoded — no dynamic discovery against chat-ai.
+Credentials: file at /run/secrets/chat_ai_s3_credentials, KEY=VALUE format
+with BACKUP_S3_ACCESS_KEY + BACKUP_S3_SECRET_KEY. If the file is missing,
+the loop logs once and idles — same graceful-disable pattern as the
+DSN-secret-file approach we replaced.
 """
 
+from __future__ import annotations
+
 import asyncio
+import csv
+import gzip
+import io
+import json
 import logging
 import os
+import re
 import time
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
 
-SYNC_INTERVAL_SEC = 5 * 60  # 5 minutes
-INITIAL_DELAY_SEC = 60  # 1 min after startup
-PAGE_SIZE = 1000
-SAFETY_BATCH_LIMIT = 50  # per table per tick — cap one tick at 50k rows
+# ─── config ───────────────────────────────────────────────────────────────
+
+SYNC_INTERVAL_SEC = 5 * 60
+INITIAL_DELAY_SEC = 60
+
+S3_ENDPOINT = "https://hel1.your-objectstorage.com"
+S3_REGION = "hel1"
+S3_BUCKET = "rishi-yral"
+S3_PREFIX = "yral-chat-ai/incremental-sync"
+S3_HEARTBEAT_KEY = f"{S3_PREFIX}/_heartbeat"
+S3_STUCK_KEY = f"{S3_PREFIX}/STUCK"
+
+# Heartbeat older than this = exporter stalled. rishi-1 cron is every 5
+# min, so 15 min = 3 missed ticks.
+HEARTBEAT_STALE_SEC = 15 * 60
+
+S3_CREDENTIALS_FILE_DEFAULT = "/run/secrets/chat_ai_s3_credentials"
 
 
-# Tables synced in dependency order. ai_influencers first (conversations FK
-# to it), conversations next (messages FK), messages last. Each entry pins
-# the column list we copy — narrow to the intersection of chat-ai and v2
-# schemas so v2-only columns (is_proactive, variant_label, etc.) just take
-# their defaults on inserted rows.
+# Same shape as before so existing tests (etl_integrity's
+# CHECKED_TABLES match, V2's status output) keep working unchanged.
+# Column lists are the intersection of chat-ai and V2 schemas — V2-only
+# columns (is_proactive, variant_label, ...) get DB defaults.
 SYNCED_TABLES: list[dict] = [
     {
         "name": "ai_influencers",
@@ -84,238 +105,346 @@ SYNCED_TABLES: list[dict] = [
         "columns": [
             "id",
             "conversation_id",
+            "user_id",
             "role",
-            "sender_id",
             "content",
             "message_type",
-            "media_urls",
-            "audio_url",
-            "audio_duration_seconds",
-            "token_count",
-            "client_message_id",
-            "status",
-            "is_read",
             "metadata",
             "created_at",
         ],
         "id_column": "id",
     },
 ]
+_TABLE_SPEC = {t["name"]: t for t in SYNCED_TABLES}
 
 
-def _chat_ai_dsn() -> str | None:
-    """Operator-provided DSN for the read-only chat-ai connection.
-
-    File-first, env-var-fallback — same pattern chat-ai uses for its own
-    DATABASE_URL. Default file path is the Swarm secret mount location, so
-    `--secret-add chat_ai_database_url` alone is enough to enable the ETL;
-    no env var needs to set in the service spec, so the DSN never appears
-    in `docker service inspect`. The env var path remains for local dev
-    and CI where Swarm secrets aren't available.
-
-    None disables the ETL gracefully.
-    """
-    secret_file = os.environ.get(
-        "CHAT_AI_DATABASE_URL_FILE", "/run/secrets/chat_ai_database_url"
-    )
-    if os.path.exists(secret_file):
-        with open(secret_file) as f:
-            return f.read().strip() or None
-    return os.environ.get("CHAT_AI_DATABASE_URL") or None
+# Filename format from rishi-1: <YYYYMMDDTHHMMSSZ>_<table>.csv.gz
+_FILENAME_RE = re.compile(r"^(?P<ts>\d{8}T\d{6}Z)_(?P<table>[a-z_]+)\.csv\.gz$")
 
 
-_chat_ai_pool = None
-_chat_ai_pool_init_lock = asyncio.Lock()
+# ─── credentials ──────────────────────────────────────────────────────────
 
 
-async def _get_chat_ai_pool():
-    """Lazy asyncpg pool to chat-ai with read-only transaction default.
+def _s3_credentials_path() -> str:
+    return os.environ.get("CHAT_AI_S3_CREDENTIALS_FILE", S3_CREDENTIALS_FILE_DEFAULT)
 
-    The session-level read-only setting is the second line of defense —
-    even if our SQL contains a typo'd INSERT/UPDATE/DELETE, Postgres
-    rejects it. The first line of defense is just that this module only
-    runs SELECTs.
-    """
-    global _chat_ai_pool
-    if _chat_ai_pool is not None:
-        return _chat_ai_pool
-    dsn = _chat_ai_dsn()
-    if not dsn:
+
+def _load_s3_credentials() -> dict | None:
+    """KEY=VALUE shell-style. None = ETL disabled gracefully."""
+    path = _s3_credentials_path()
+    if not os.path.exists(path):
         return None
-    async with _chat_ai_pool_init_lock:
-        if _chat_ai_pool is not None:
-            return _chat_ai_pool
-        try:
-            import asyncpg
-
-            _chat_ai_pool = await asyncpg.create_pool(
-                dsn,
-                min_size=1,
-                max_size=2,
-                # Hard guard: every transaction is read-only by default.
-                server_settings={"default_transaction_read_only": "on"},
-                timeout=30,
-                command_timeout=60,
-            )
-            logger.info("etl_chat_ai: read-only pool to chat-ai initialized")
-        except Exception as e:
-            logger.warning(f"etl_chat_ai: pool init failed (non-fatal): {e}")
-            _chat_ai_pool = None
-    return _chat_ai_pool
+    creds = {}
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            k, _, v = line.partition("=")
+            creds[k.strip()] = v.strip().strip("'\"")
+    if not creds.get("BACKUP_S3_ACCESS_KEY") or not creds.get("BACKUP_S3_SECRET_KEY"):
+        logger.warning("etl_chat_ai: s3 credentials file present but missing keys")
+        return None
+    return creds
 
 
-async def _read_cursor(v2_pool, table_name: str):
-    """Return (last_sync_ts, rows_pulled_total). Falls back to epoch if no row."""
-    row = await v2_pool.fetchrow(
-        "SELECT last_sync_ts, rows_pulled_total FROM etl_sync_state WHERE table_name = $1",
-        table_name,
+def _make_s3_client(creds: dict):
+    import boto3
+
+    return boto3.client(
+        "s3",
+        endpoint_url=S3_ENDPOINT,
+        region_name=S3_REGION,
+        aws_access_key_id=creds["BACKUP_S3_ACCESS_KEY"],
+        aws_secret_access_key=creds["BACKUP_S3_SECRET_KEY"],
     )
-    if row is None:
-        return None, 0
-    return row["last_sync_ts"], int(row["rows_pulled_total"])
 
 
-async def _write_cursor(
+# ─── S3 listing + download (run in a thread to avoid blocking the loop) ──
+
+
+def _list_objects_sync(s3, after_iso: str | None) -> list[dict]:
+    """List CSV.gz objects after the cursor. Heartbeat + STUCK filtered out."""
+    paginator = s3.get_paginator("list_objects_v2")
+    after_dt = datetime.fromisoformat(after_iso) if after_iso else None
+    if after_dt is not None and after_dt.tzinfo is None:
+        after_dt = after_dt.replace(tzinfo=timezone.utc)
+    out = []
+    for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=f"{S3_PREFIX}/"):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            filename = key.rsplit("/", 1)[-1]
+            if not _FILENAME_RE.match(filename):
+                # _heartbeat, STUCK, anything malformed — skip here, the
+                # heartbeat/STUCK status is fetched separately.
+                continue
+            if after_dt and obj["LastModified"] <= after_dt:
+                continue
+            out.append(
+                {
+                    "key": key,
+                    "filename": filename,
+                    "last_modified": obj["LastModified"],
+                    "etag": obj.get("ETag", "").strip('"'),
+                    "size": obj["Size"],
+                }
+            )
+    out.sort(key=lambda o: o["last_modified"])
+    return out
+
+
+def _download_sync(s3, key: str) -> tuple[bytes, dict]:
+    resp = s3.get_object(Bucket=S3_BUCKET, Key=key)
+    body = resp["Body"].read()
+    metadata = resp.get("Metadata", {}) or {}
+    return body, metadata
+
+
+def _read_heartbeat_sync(s3) -> tuple[str | None, str | None]:
+    """Returns (heartbeat_iso, stuck_iso). Either may be None."""
+    heartbeat = None
+    stuck = None
+    try:
+        resp = s3.get_object(Bucket=S3_BUCKET, Key=S3_HEARTBEAT_KEY)
+        heartbeat = resp["Body"].read().decode().strip()
+    except Exception:
+        pass
+    try:
+        resp = s3.get_object(Bucket=S3_BUCKET, Key=S3_STUCK_KEY)
+        stuck = resp["Body"].read().decode().strip()
+    except Exception:
+        pass
+    return heartbeat, stuck
+
+
+# ─── CSV → V2 apply ───────────────────────────────────────────────────────
+
+
+def _parse_csv(body_gz: bytes) -> tuple[list[str], list[list]]:
+    """Returns (header_columns, rows). Rows are str (CSV strings) — type
+    casting happens at COPY time."""
+    raw = gzip.decompress(body_gz)
+    reader = csv.reader(io.StringIO(raw.decode()))
+    rows = list(reader)
+    if not rows:
+        return [], []
+    header = rows[0]
+    return header, rows[1:]
+
+
+async def _apply_csv(
+    v2_pool, table_name: str, header: list[str], data_rows: list[list]
+) -> int:
+    """COPY data into a temp staging table, then INSERT real ON CONFLICT
+    DO NOTHING. Returns rows_inserted (rows_in - rows_skipped_due_to_conflict)."""
+    if not data_rows:
+        return 0
+    spec = _TABLE_SPEC[table_name]
+    shared = [c for c in spec["columns"] if c in header]
+    if not shared:
+        raise RuntimeError(
+            f"{table_name}: CSV header has no overlap with V2 schema; "
+            f"file header={header} spec={spec['columns']}"
+        )
+    csv_idx = {c: header.index(c) for c in shared}
+    id_column = spec["id_column"]
+    shared_csv = ",".join(shared)
+
+    # Emit subset CSV to feed COPY. Use the csv writer so quoting matches
+    # Postgres COPY CSV format (RFC 4180-ish).
+    sub_buf = io.StringIO()
+    sub_writer = csv.writer(sub_buf)
+    sub_writer.writerow(shared)
+    for row in data_rows:
+        sub_writer.writerow([row[csv_idx[c]] for c in shared])
+    sub_bytes = sub_buf.getvalue().encode()
+
+    async with v2_pool.acquire() as conn:
+        async with conn.transaction():
+            staging = f"_etl_staging_{table_name}"
+            await conn.execute(
+                f"CREATE TEMP TABLE {staging} (LIKE {table_name} INCLUDING DEFAULTS) "
+                f"ON COMMIT DROP"
+            )
+            # asyncpg's copy_to_table accepts source=BytesIO and runs
+            # native COPY ... FROM STDIN, so Postgres handles all type
+            # coercion (uuid, jsonb, timestamptz) the same way it would
+            # for psql \COPY.
+            await conn.copy_to_table(
+                staging,
+                source=io.BytesIO(sub_bytes),
+                columns=shared,
+                format="csv",
+                header=True,
+            )
+            before = await conn.fetchval(f"SELECT COUNT(*) FROM {table_name}")
+            await conn.execute(
+                f"INSERT INTO {table_name} ({shared_csv}) "
+                f"SELECT {shared_csv} FROM {staging} "
+                f"ON CONFLICT ({id_column}) DO NOTHING"
+            )
+            after = await conn.fetchval(f"SELECT COUNT(*) FROM {table_name}")
+    return int(after) - int(before)
+
+
+async def _record_processed(
     v2_pool,
+    filename: str,
     table_name: str,
-    new_cursor,
-    rows_pulled_this_run: int,
+    rows_applied: int,
+    rows_in_file: int,
+    etag: str,
+    metadata: dict,
     runtime_ms: int,
-    error: str | None,
 ):
     await v2_pool.execute(
         """
-        UPDATE etl_sync_state
-        SET last_sync_ts = COALESCE($1, last_sync_ts),
-            last_run_at = NOW(),
-            rows_pulled_total = rows_pulled_total + $2,
-            rows_pulled_last_run = $2,
-            last_error = $3,
-            last_runtime_ms = $4,
-            updated_at = NOW()
-        WHERE table_name = $5
+        INSERT INTO etl_processed_files (
+            filename, table_name, rows_applied, rows_in_file,
+            file_etag, s3_metadata, processed_at, runtime_ms
+        ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, NOW(), $7)
+        ON CONFLICT (filename) DO NOTHING
         """,
-        new_cursor,
-        rows_pulled_this_run,
-        error,
-        runtime_ms,
+        filename,
         table_name,
+        rows_applied,
+        rows_in_file,
+        etag,
+        json.dumps(metadata),
+        runtime_ms,
     )
 
 
-def _build_upsert_sql(table_name: str, columns: list[str], id_column: str) -> str:
-    """INSERT ... ON CONFLICT DO NOTHING using the column list. Idempotent."""
-    placeholders = ", ".join(f"${i + 1}" for i in range(len(columns)))
-    col_list = ", ".join(columns)
-    return (
-        f"INSERT INTO {table_name} ({col_list}) "
-        f"VALUES ({placeholders}) "
-        f"ON CONFLICT ({id_column}) DO NOTHING"
+async def _advance_cursor(v2_pool, table_name: str, until_iso: str, rows_in_run: int):
+    """Update etl_sync_state with the new cursor. Same table as Phase 1,
+    schema preserved for /admin/etl-status compatibility."""
+    await v2_pool.execute(
+        """
+        INSERT INTO etl_sync_state (
+            table_name, last_sync_ts, last_run_at, rows_pulled_total,
+            rows_pulled_last_run, last_error, last_runtime_ms, updated_at
+        ) VALUES ($1, $2::timestamp, NOW(), $3, $3, NULL, NULL, NOW())
+        ON CONFLICT (table_name) DO UPDATE SET
+            last_sync_ts = GREATEST(etl_sync_state.last_sync_ts, EXCLUDED.last_sync_ts),
+            last_run_at = NOW(),
+            rows_pulled_total = etl_sync_state.rows_pulled_total + EXCLUDED.rows_pulled_last_run,
+            rows_pulled_last_run = EXCLUDED.rows_pulled_last_run,
+            last_error = NULL,
+            updated_at = NOW()
+        """,
+        table_name,
+        until_iso,
+        rows_in_run,
     )
 
 
-async def _sync_one_table(src_pool, v2_pool, table_spec: dict) -> dict:
-    """Pull-and-insert loop for a single table. Returns stats dict."""
-    table_name = table_spec["name"]
-    columns = table_spec["columns"]
-    id_column = table_spec["id_column"]
-    col_list = ", ".join(columns)
+# ─── orchestration ────────────────────────────────────────────────────────
 
-    cursor, _ = await _read_cursor(v2_pool, table_name)
-    if cursor is None:
-        # The migration seeds these rows; if missing, log and skip.
-        logger.warning(f"etl_chat_ai: no etl_sync_state row for {table_name}")
-        return {"rows_pulled": 0, "batches": 0, "new_cursor": None}
 
-    upsert_sql = _build_upsert_sql(table_name, columns, id_column)
+async def _get_last_processed_at(v2_pool) -> str | None:
+    return await v2_pool.fetchval("SELECT MAX(processed_at) FROM etl_processed_files")
 
-    total_pulled = 0
-    new_cursor = cursor
-    batches = 0
-    while batches < SAFETY_BATCH_LIMIT:
-        rows = await src_pool.fetch(
-            f"""
-            SELECT {col_list}
-            FROM {table_name}
-            WHERE created_at > $1
-            ORDER BY created_at
-            LIMIT {PAGE_SIZE}
-            """,
-            new_cursor,
+
+async def _is_already_processed(v2_pool, filename: str) -> bool:
+    return bool(
+        await v2_pool.fetchval(
+            "SELECT 1 FROM etl_processed_files WHERE filename = $1", filename
         )
-        if not rows:
-            break
-        batches += 1
-
-        # Batch-insert. asyncpg's executemany is fastest for large pages.
-        values = [tuple(r[c] for c in columns) for r in rows]
-        await v2_pool.executemany(upsert_sql, values)
-        total_pulled += len(rows)
-
-        # Advance cursor to the max created_at in this batch
-        new_cursor = rows[-1]["created_at"]
-        if len(rows) < PAGE_SIZE:
-            break
-
-    return {
-        "rows_pulled": total_pulled,
-        "batches": batches,
-        "new_cursor": new_cursor,
-    }
+    )
 
 
 async def run_once(v2_pool) -> dict:
-    """One full ETL pass — used by both the loop and tests."""
-    src_pool = await _get_chat_ai_pool()
-    if src_pool is None:
-        return {"status": "disabled", "reason": "CHAT_AI_DATABASE_URL not set"}
+    """One full S3-fetch pass."""
+    creds = _load_s3_credentials()
+    if creds is None:
+        return {"status": "disabled", "reason": "S3 credentials not mounted"}
 
-    overall = {"status": "ok", "tables": {}}
-    for spec in SYNCED_TABLES:
-        table_name = spec["name"]
+    s3 = _make_s3_client(creds)
+    cursor = await _get_last_processed_at(v2_pool)
+    cursor_iso = cursor.isoformat() if cursor else None
+
+    files = await asyncio.to_thread(_list_objects_sync, s3, cursor_iso)
+    if not files:
+        logger.info("etl_chat_ai: no new files since %s", cursor_iso or "epoch")
+        return {"status": "ok", "files_processed": 0}
+
+    overall = {"status": "ok", "files_processed": 0, "per_table": {}}
+    for obj in files:
+        filename = obj["filename"]
+        match = _FILENAME_RE.match(filename)
+        table_name = match["table"]
+        if table_name not in _TABLE_SPEC:
+            logger.warning("etl_chat_ai: unknown table in filename %s", filename)
+            continue
+        if await _is_already_processed(v2_pool, filename):
+            continue
+
         t0 = time.monotonic()
         try:
-            stats = await _sync_one_table(src_pool, v2_pool, spec)
+            body, metadata = await asyncio.to_thread(_download_sync, s3, obj["key"])
+            header, rows = _parse_csv(body)
+            # Defense: rishi-1's exporter put the row count in metadata.
+            # If CSV line count doesn't match, something corrupted in transit.
+            claimed = int(metadata.get("rows", -1))
+            if claimed >= 0 and claimed != len(rows):
+                raise RuntimeError(
+                    f"{filename}: rows-in-file mismatch: "
+                    f"S3 metadata says {claimed}, CSV has {len(rows)}"
+                )
+            rows_applied = await _apply_csv(v2_pool, table_name, header, rows)
             runtime_ms = int((time.monotonic() - t0) * 1000)
-            await _write_cursor(
+            await _record_processed(
                 v2_pool,
+                filename,
                 table_name,
-                stats["new_cursor"],
-                stats["rows_pulled"],
+                rows_applied,
+                len(rows),
+                obj["etag"],
+                metadata,
                 runtime_ms,
-                error=None,
             )
-            overall["tables"][table_name] = {
-                "rows_pulled": stats["rows_pulled"],
-                "batches": stats["batches"],
-                "runtime_ms": runtime_ms,
-            }
+            # Advance cursor to the "until" boundary from the export,
+            # not just LastModified — until_iso is the watermarked
+            # max(created_at) the exporter actually included.
+            until_iso = metadata.get("until")
+            if until_iso:
+                await _advance_cursor(v2_pool, table_name, until_iso, rows_applied)
+            overall["files_processed"] += 1
+            overall["per_table"].setdefault(table_name, {"files": 0, "rows": 0})
+            overall["per_table"][table_name]["files"] += 1
+            overall["per_table"][table_name]["rows"] += rows_applied
             logger.info(
-                f"etl_chat_ai[{table_name}]: pulled {stats['rows_pulled']} rows "
-                f"({stats['batches']} batches) in {runtime_ms}ms"
+                "etl_chat_ai: applied %s rows=%d in_file=%d runtime_ms=%d",
+                filename,
+                rows_applied,
+                len(rows),
+                runtime_ms,
             )
         except Exception as e:
             runtime_ms = int((time.monotonic() - t0) * 1000)
-            err = str(e)[:500]
-            await _write_cursor(v2_pool, table_name, None, 0, runtime_ms, error=err)
-            overall["tables"][table_name] = {"error": err, "runtime_ms": runtime_ms}
-            logger.warning(f"etl_chat_ai[{table_name}] failed: {err}")
+            logger.warning(
+                "etl_chat_ai: %s failed after %dms: %s: %s",
+                filename,
+                runtime_ms,
+                type(e).__name__,
+                e,
+            )
+            # Don't record in etl_processed_files — next tick retries.
+            # Don't break the loop — try the next file.
+            continue
     return overall
 
 
 async def etl_loop():
-    """Background loop: run_once every SYNC_INTERVAL_SEC."""
     from database import get_pool
 
     await asyncio.sleep(INITIAL_DELAY_SEC)
-    # If CHAT_AI_DATABASE_URL is unset, log once and keep the loop alive in
-    # case the operator sets it later via `docker service update --env-add`.
-    if not _chat_ai_dsn():
+    if _load_s3_credentials() is None:
         logger.info(
-            "etl_chat_ai: CHAT_AI_DATABASE_URL not set; ETL idle. "
-            "Set it via `docker service update --env-add CHAT_AI_DATABASE_URL=...` to enable."
+            "etl_chat_ai: s3 credentials not mounted at %s; ETL idle. "
+            "Mount via `docker service update --secret-add chat_ai_s3_credentials`.",
+            _s3_credentials_path(),
         )
-
     while True:
         try:
             v2_pool = await get_pool()
@@ -323,25 +452,69 @@ async def etl_loop():
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.warning(f"etl_chat_ai loop tick failed (non-fatal): {e}")
+            logger.warning("etl_chat_ai loop tick failed (non-fatal): %s", e)
         await asyncio.sleep(SYNC_INTERVAL_SEC)
 
 
-# ─── /status endpoint helper ──────────────────────────────────────────────
+# ─── status helper for /admin/etl-status ──────────────────────────────────
 
 
 async def get_status(v2_pool) -> dict:
-    """Snapshot for operators: latest cursor + last error per table."""
-    rows = await v2_pool.fetch(
+    """Snapshot for operators: cursors, file counts, heartbeat freshness."""
+    creds = _load_s3_credentials()
+    cursors = await v2_pool.fetch(
         """
         SELECT table_name, last_sync_ts, last_run_at,
                rows_pulled_total, rows_pulled_last_run,
                last_error, last_runtime_ms
-        FROM etl_sync_state
-        ORDER BY table_name
+        FROM etl_sync_state ORDER BY table_name
         """
     )
+    files_24h = await v2_pool.fetchval(
+        """
+        SELECT COUNT(*) FROM etl_processed_files
+        WHERE processed_at > NOW() - INTERVAL '24 hours'
+        """
+    )
+    rows_24h = await v2_pool.fetchval(
+        """
+        SELECT COALESCE(SUM(rows_applied), 0) FROM etl_processed_files
+        WHERE processed_at > NOW() - INTERVAL '24 hours'
+        """
+    )
+    last_processed = await v2_pool.fetchval(
+        "SELECT MAX(processed_at) FROM etl_processed_files"
+    )
+
+    heartbeat = None
+    stuck = None
+    heartbeat_age_sec = None
+    if creds is not None:
+        try:
+            s3 = _make_s3_client(creds)
+            heartbeat, stuck = await asyncio.to_thread(_read_heartbeat_sync, s3)
+            if heartbeat:
+                hb_dt = datetime.fromisoformat(heartbeat.replace("Z", "+00:00"))
+                if hb_dt.tzinfo is None:
+                    hb_dt = hb_dt.replace(tzinfo=timezone.utc)
+                heartbeat_age_sec = int(
+                    (datetime.now(timezone.utc) - hb_dt).total_seconds()
+                )
+        except Exception as e:
+            logger.warning("etl_chat_ai: heartbeat read failed: %s", e)
+
     return {
-        "chat_ai_database_url_set": bool(_chat_ai_dsn()),
-        "tables": [dict(r) for r in rows],
+        "s3_credentials_mounted": creds is not None,
+        "tables": [dict(r) for r in cursors],
+        "files_processed_24h": int(files_24h or 0),
+        "rows_applied_24h": int(rows_24h or 0),
+        "last_processed_at": last_processed.isoformat() if last_processed else None,
+        "heartbeat": heartbeat,
+        "heartbeat_age_sec": heartbeat_age_sec,
+        "heartbeat_stale": (
+            heartbeat_age_sec is None or heartbeat_age_sec > HEARTBEAT_STALE_SEC
+        )
+        if creds is not None
+        else None,
+        "stuck_marker": stuck,
     }
