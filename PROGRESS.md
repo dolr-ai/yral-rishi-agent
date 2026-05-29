@@ -88,6 +88,7 @@
 | 5.1 | Find inactive conversations (24+ hours) | ✅ Done | — | #165 |
 | 5.2 | Generate bot-initiated messages | ✅ Done | — | #165 |
 | 5.3 | Background engagement loop (15 min) | ✅ Done | — | #166 |
+| 5.3p | Polish: proactive quality (3-cap + variety prompt + type rotation) | 🔄 In PR | 1.5 | #187 |
 | 5.4 | User-configurable frequency (daily/weekly/off) | ⏳ Pending | 1 | — |
 | 5.5 | Context-aware timing (morning greetings, evening) | ⏳ Pending | 1 | — |
 | 5.6 | Streak tracking (reward consistent chatters) | ⏳ Pending | 1 | — |

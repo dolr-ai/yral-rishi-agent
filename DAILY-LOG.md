@@ -1,5 +1,32 @@
 # Daily Log
 
+## 2026-05-29 — Task 2: proactive message quality fix (Phase 5 polish)
+
+### Why
+Motorola test: each bot sent 3-4 similar "hey what's up" proactive messages without a user reply. Frequency (24h inactive threshold + 15-min loop) is fine; quality and variety are the problems.
+
+### Three fixes
+1. **Cap on unanswered proactives** — new `is_proactive` boolean column on `messages` (migration 010). After 3 unanswered proactive messages, the engagement loop skips this conversation until the user replies. The 3-cap resets when the user posts.
+2. **Variety prompt** — the last 3 proactive messages get embedded in the next-generation Gemini prompt as "do NOT repeat themes, hooks, opening phrases, or topics from these."
+3. **Type rotation** — each generation randomly picks one of {question, observation, story, light_topic} and aligns tone with the bot's archetype (companion = warm, advisor = thoughtful, entertainer = playful, creator = inspired, educator = intrigued).
+
+### Plus anti-recitation guard
+The PROACTIVE_PROMPT also embeds Task 1's anti-recitation language (DO NOT lead with personal facts, DO NOT recite, DO NOT use "I remember you said X"). Proactive messages were also affected by the same Motorola regression.
+
+### Files
+- `migrations/010_proactive_messages_flag.sql` — column + partial index on `WHERE is_proactive = TRUE`
+- `app/repositories/message_repo.py` — `create()` takes `is_proactive`; new `count_unanswered_proactive` + `recent_proactive_texts`; PROACTIVE_CAP_WITHOUT_REPLY = 3 constant
+- `app/services/proactive.py` — cap check, variety block, type rotation, archetype-aligned tone
+- `tests/test_proactive_quality.py` — pins the constants and the anti-recitation language
+
++221 / -15 across 5 files. Migration is additive (DEFAULT FALSE, existing rows unaffected).
+
+### Deploy steps
+1. pg_dump snapshot
+2. Apply migration 010
+3. Rebuild + deploy
+4. Engagement loop picks up new behavior on next 15-min tick
+
 ## 2026-05-29 — Task 1: memory recitation fix (Phase 4 polish)
 
 ### Why
@@ -22,6 +49,7 @@ Motorola testing surfaced that bots were leading replies with "Mumbai" (the most
 
 ### Diff
 ~120 / -10 across 5 files. No schema, no migration. Plain rebuild + redeploy.
+
 
 ## 2026-05-28 (end of day) — Phase 4 complete (4.4 / 4.5 / 4.6 / 4.7 / 4.8 all ✅)
 
