@@ -67,3 +67,24 @@ async def etl_status(request: Request):
             if isinstance(v, datetime):
                 t[k] = v.isoformat()
     return raw
+
+
+@router.get("/admin/etl-integrity")
+async def etl_integrity(request: Request):
+    """Latest integrity-check results per check_type + 24h fail/warn counts.
+
+    JWT-gated like /admin/etl-status. Operator dashboard for cutover-readiness.
+    """
+    from auth import get_current_user
+    from services.etl_integrity import get_status
+    from datetime import datetime
+
+    get_current_user(request)
+    pool = await database.get_pool()
+    raw = await get_status(pool)
+    # Serialize timestamps
+    for r in raw["latest_per_check"]:
+        v = r.get("checked_at")
+        if isinstance(v, datetime):
+            r["checked_at"] = v.isoformat()
+    return raw

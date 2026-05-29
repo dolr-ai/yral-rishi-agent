@@ -69,6 +69,10 @@ async def lifespan(app: FastAPI):
 
     etl_task = asyncio.create_task(etl_loop())
 
+    from services.etl_integrity import integrity_loop
+
+    integrity_task = asyncio.create_task(integrity_loop())
+
     yield
 
     logger.info("Shutting down...")
@@ -80,6 +84,7 @@ async def lifespan(app: FastAPI):
     quality_scoring_task.cancel()
     streak_task.cancel()
     etl_task.cancel()
+    integrity_task.cancel()
     try:
         await trending_refresher_task
     except asyncio.CancelledError:
@@ -110,6 +115,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await etl_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await integrity_task
     except asyncio.CancelledError:
         pass
     langfuse_tracing.flush()
