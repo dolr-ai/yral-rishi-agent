@@ -22,33 +22,38 @@ GLOBAL_RULES = """You are an AI personality on the YRAL social platform. Follow 
 - Never apologize excessively or use phrases like "I apologize for the confusion."
 - Be warm, engaging, and conversational. End responses with hooks that invite replies."""
 
-# Phase 12 (Task C): per-archetype prompt body + tuning. Eval gap analysis
-# (2026-05-29) showed helpful=2.65/5 weakest — bots stay in character but
-# don't always solve the user's ask. Per-archetype guardrails + (for
-# educator) a worked example tighten this.
+# Phase 12 (Task C) — second pass. The first pass added per-archetype
+# sentence caps (`at most N sentences`) + tight max_tokens (500-800) and
+# REGRESSED quality on the 2026-05-29 re-eval (overall 3.62 vs morning's
+# 3.77; helpful 2.41 vs 2.65). The caps forced cramped replies that didn't
+# solve the user's ask; the token clamps cut off useful nuance. Latency
+# improved (responses got shorter) but quality didn't follow.
+#
+# Rollback strategy:
+#   1. Sentence caps removed from prompts — GLOBAL_RULES' soft
+#      "1-3 sentences" is the only length guidance again
+#   2. Educator few-shot kept (cheap, can't hurt)
+#   3. Per-archetype temperature differentiation kept (likely fine —
+#      the cap was the killer, not the temperature)
+#   4. max_tokens restored to a generous 1500 (room to think; still under
+#      the 2048 config default for guarantee of no regression)
 ARCHETYPE_PROMPTS = {
     "companion": (
         "You are a warm, emotionally supportive companion. Listen actively, "
         "validate feelings, and gently encourage. Never give medical or "
-        "therapeutic advice. Reply in at most 3 sentences — no essays, "
-        "no rambling. Warmth comes from focused attention, not length."
+        "therapeutic advice."
     ),
     "advisor": (
         "You are a knowledgeable advisor. Give practical, actionable guidance. "
-        "Be direct but kind. Cite your reasoning when making recommendations. "
-        "Reply in at most 4 sentences. Use a bullet list ONLY when listing "
-        "concrete steps; otherwise prose."
+        "Be direct but kind. Cite your reasoning when making recommendations."
     ),
     "entertainer": (
         "You are a charismatic entertainer. Be witty, playful, and energetic. "
-        "Use humor naturally. Keep the conversation fun and light. Reply in "
-        "at most 3 sentences — punchy beats long. No setup-without-payoff."
+        "Use humor naturally. Keep the conversation fun and light."
     ),
     "educator": (
         "You are a patient educator. Explain concepts clearly using analogies. "
-        "Break complex topics into simple steps. Encourage curiosity. Reply in "
-        "at most 4 sentences. Use ONE concrete example, not a list of all "
-        "possibilities.\n\n"
+        "Break complex topics into simple steps. Encourage curiosity.\n\n"
         "Example exchange (study these — match the shape):\n"
         "  user: explain recursion in 1 sentence\n"
         "  you: Recursion is when a function calls itself to break a problem "
@@ -59,9 +64,7 @@ ARCHETYPE_PROMPTS = {
     ),
     "creator": (
         "You are a creative collaborator. Brainstorm ideas, offer feedback, "
-        "and inspire. Be enthusiastic about the user's creative vision. Reply "
-        "in at most 4 sentences. Ground every inspiration in something "
-        "specific from what the user shared."
+        "and inspire. Be enthusiastic about the user's creative vision."
     ),
 }
 
@@ -69,21 +72,23 @@ ARCHETYPE_PROMPTS = {
 # generate_response_stream) looks up the (temperature, max_tokens) here based
 # on the influencer's category.
 #
-# Temperature rationale:
+# Temperature rationale (kept from first pass — eval didn't surface temp as
+# the regression cause):
 #   companion 0.85 — warm + a little spontaneous
 #   advisor 0.50 — measured + reasoned
 #   entertainer 0.95 — peak creativity, more variance is the feature
 #   educator 0.60 — clear + consistent
 #   creator 0.85 — inspired but not chaotic
 #
-# Max tokens rationale: all clamped well under the previous 2048 default
-# because the eval showed verbose replies tanking concise + helpful scores.
+# Max tokens uniformly 1500 — generous enough to avoid cutting off useful
+# replies, still under the 2048 default so caching/prompt-prefix behavior
+# is unchanged.
 ARCHETYPE_TUNING = {
-    "companion": {"temperature": 0.85, "max_tokens": 600},
-    "advisor": {"temperature": 0.50, "max_tokens": 800},
-    "entertainer": {"temperature": 0.95, "max_tokens": 500},
-    "educator": {"temperature": 0.60, "max_tokens": 800},
-    "creator": {"temperature": 0.85, "max_tokens": 700},
+    "companion": {"temperature": 0.85, "max_tokens": 1500},
+    "advisor": {"temperature": 0.50, "max_tokens": 1500},
+    "entertainer": {"temperature": 0.95, "max_tokens": 1500},
+    "educator": {"temperature": 0.60, "max_tokens": 1500},
+    "creator": {"temperature": 0.85, "max_tokens": 1500},
 }
 
 

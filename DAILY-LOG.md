@@ -1,5 +1,44 @@
 # Daily Log
 
+## 2026-05-29 (night) — Phase 12 tuning rollback (data-driven)
+
+### Re-eval after Phase 12 deploy showed regression
+Ran `scripts/eval_v2_vs_chat_ai.py` against the freshly-deployed Phase 12 image. Compared to the morning's baseline:
+
+| Metric | v2 morning | v2 post-Phase-12 | Δ |
+|---|---|---|---|
+| p50 latency | 1699 ms | 1593 ms | −106 ms ✓ |
+| **p95 latency** | **9633 ms** | **2716 ms** | **−72%** ✓✓ |
+| mean | 2592 ms | 1703 ms | −889 ms ✓ |
+| in_character | 4.02 | 3.92 | −0.10 ✗ |
+| **helpful** | **2.65** | **2.41** | **−0.24** ✗ |
+| concise | 4.79 | 4.63 | −0.16 ✗ |
+| language_match | 3.10 | 3.02 | −0.08 ✗ |
+| safe | 4.27 | 4.12 | −0.15 ✗ |
+| **overall** | **3.77** | **3.62** | **−0.15** ✗ |
+
+Latency improved a lot (responses got shorter); quality regressed across every criterion. v2 still beats chat-ai but the lead narrowed.
+
+### Diagnosis
+The sentence caps (`at most N sentences`) inside ARCHETYPE_PROMPTS + the tight max_tokens (500-800 vs 2048 default) forced cramped replies that didn't fully solve the user's ask. Latency improved precisely BECAUSE responses got shorter — but they got worse, not better.
+
+Temperature differentiation (0.50-0.95 per archetype) and the language enumeration in GLOBAL_RULES weren't the culprits per the eval data.
+
+### Rollback (this PR)
+- **Sentence caps removed** from every archetype prompt — GLOBAL_RULES' soft "1-3 sentences max" is the only length guidance again
+- **max_tokens uniformly 1500** across all archetypes — generous enough to avoid cut-offs, still under the 2048 default
+- **Educator few-shot kept** — cheap, can't hurt, may help next eval
+- **Temperature differentiation kept** — not the regression cause
+- **Language enumeration in GLOBAL_RULES kept** — neutral effect today, clearer intent for future eval
+
+Test updated to actively guard against accidentally re-introducing the per-archetype sentence cap.
+
+### Expected next eval
+overall ≥ 3.77 (morning baseline), helpful ≥ 2.65. If still regressed, full revert of Phase 12 and stop until Rishi directs otherwise.
+
+### Diff
++24 / -40 across 2 files. Pure tuning rollback.
+
 ## 2026-05-29 (evening, late) — Task C: Phase 12 per-archetype tuning
 
 Driven by Task B's eval gaps: helpful=2.65 weakest both services, language_match=3.10 mediocre, response verbosity bloated concise scores.
