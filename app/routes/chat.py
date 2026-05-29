@@ -99,6 +99,9 @@ def _format_conversation(
         "avatar_url": conv.get("inf_avatar_url") or "",
         "category": conv.get("inf_category"),
         "suggested_messages": suggested,
+        # Phase 2.7 follow-up: mobile reads this to decide whether to use the
+        # streaming endpoint (NSFW = no, fall back to legacy non-streaming).
+        "is_nsfw": bool(conv.get("inf_is_nsfw", False)),
     }
 
     return {

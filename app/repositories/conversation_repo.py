@@ -47,6 +47,7 @@ async def get_by_id(pool, conversation_id: str) -> dict | None:
                i.avatar_url as inf_avatar_url,
                i.category as inf_category,
                i.suggested_messages as inf_suggested_messages,
+               i.is_nsfw as inf_is_nsfw,
                i.parent_principal_id as inf_parent_principal_id
         FROM conversations c
         LEFT JOIN ai_influencers i ON c.influencer_id = i.id
@@ -66,7 +67,8 @@ async def get_existing(pool, user_id: str, influencer_id: str) -> dict | None:
                i.display_name as inf_display_name,
                i.avatar_url as inf_avatar_url,
                i.category as inf_category,
-               i.suggested_messages as inf_suggested_messages
+               i.suggested_messages as inf_suggested_messages,
+               i.is_nsfw as inf_is_nsfw
         FROM conversations c
         LEFT JOIN ai_influencers i ON c.influencer_id = i.id
         WHERE c.user_id = $1 AND c.influencer_id = $2
@@ -94,6 +96,7 @@ async def list_by_user(
                    i.avatar_url as inf_avatar_url,
                    i.category as inf_category,
                    i.suggested_messages as inf_suggested_messages,
+               i.is_nsfw as inf_is_nsfw,
                    COUNT(m.id) as message_count,
                    (SELECT COUNT(*) FROM messages m2
                     WHERE m2.conversation_id = c.id
@@ -123,6 +126,7 @@ async def list_by_user(
                    i.avatar_url as inf_avatar_url,
                    i.category as inf_category,
                    i.suggested_messages as inf_suggested_messages,
+               i.is_nsfw as inf_is_nsfw,
                    COUNT(m.id) as message_count,
                    (SELECT COUNT(*) FROM messages m2
                     WHERE m2.conversation_id = c.id
