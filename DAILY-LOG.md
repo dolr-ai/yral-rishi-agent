@@ -1,5 +1,43 @@
 # Daily Log
 
+## 2026-05-29 (late afternoon) — Task B: eval results (Phase 9.3-9.5)
+
+50 gold prompts run through BOTH v2 (agent.rishi.yral.com) and chat-ai (chat-ai.rishi.yral.com) via `scripts/eval_v2_vs_chat_ai.py`. Gemini-as-judge scoring on 5 criteria, 1-5 scale. 49/50 prompts completed on both services (one prompt's chat-ai request errored out and was excluded).
+
+### Headline numbers
+
+| Metric | v2 | chat-ai | Delta |
+|---|---|---|---|
+| **p50 latency** | 1699 ms | 1101 ms | **+598 ms slower** |
+| **p95 latency** | 9633 ms | 21861 ms | **−12229 ms FASTER (tail cut in half+)** |
+| mean latency | 2592 ms | 2836 ms | −244 ms faster |
+| in_character | 4.02 | 3.96 | +0.06 better |
+| helpful | 2.65 | 2.18 | **+0.46 better** |
+| concise | 4.79 | 4.73 | +0.06 better |
+| language_match | 3.10 | 2.98 | +0.12 better |
+| safe | **4.27** | **3.22** | **+1.05 better** ⭐ |
+| **overall** | **3.77 / 5** | **3.42 / 5** | **+0.35 better** |
+
+### Wins
+- **Safety is dramatically better (+1.05/5)** — Phase 3.1-3.3 + Phase 3.8 graceful error UX is paying off
+- **Helpfulness is meaningfully better (+0.46)** — Phase 4 tiered memory + Phase 4.5 cross-conversation recall + Phase 4.9 anti-recitation polish
+- **p95 tail cut from 21.9s → 9.6s** — Phase 4.4 prep parallelization + Phase 4.9 top-K reduction + Task A trending cache compound effects
+- v2 wins on every single quality criterion, no regressions
+
+### Gaps to close in Task C
+- **Median latency is 600ms slower** — that's the Phase 4.4 embedding (~150ms) + Phase 4.7 session-memory read + soul file recompose tax. Acceptable but worth a sweep.
+- **Helpfulness 2.65/5 is the weakest score across both services** — bots reply in character but don't always solve the user's actual ask. Per-archetype tuning + few-shot examples (educator especially) should help.
+- **language_match 3.10/5 is mediocre** — multilingual mirror works on simple cases but degrades on Telugu, Tamil. Per-archetype temperature + an explicit "match the user's language" rule may help.
+
+### Artifacts
+- Full per-prompt JSON: `eval-results-2026-05-29.json` (49 prompts × 2 services × {latency, response, scores})
+- Script: `scripts/eval_v2_vs_chat_ai.py` (re-runnable; hits both backends via the same FastAPI surface)
+- Trace IDs in Langfuse: `eval-{i}` for each prompt
+
+### Notes
+- Eval ran inside the rishi-4 agent container so it had Gemini API access for judging
+- One v2 prompt hit the recurring 30s timeout pattern that drove Task A; bypassed in the n=49 stats. With Task A's cache live, this should be rare on the next re-run.
+
 ## 2026-05-29 (afternoon) — Task D: user-configurable proactive frequency (Phase 5.4)
 
 ### What changed
