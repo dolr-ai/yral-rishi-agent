@@ -1,5 +1,31 @@
 # Daily Log
 
+## 2026-05-29 (close-out) — Task 4 deployed; 4-task batch complete
+
+### Phase 7.5 deploy
+- pg_dump snapshot `pre-migration-011-coach-20260529-132834.dump` (~499 MB, SHA256 `ccb4a486...`) on rishi-5 (current leader)
+- Migration 011 applied: 3 tables (coach_conversations, coach_messages, system_instructions_history) + 4 indexes
+- Image `yral-rishi-agent:phase-7-5` deployed on rishi-4/5
+- 27/27 endpoint suite: PASS first run, no flakes
+- **Live Gemini smoke test** of the coach service: synthesized a test bot ("companion" archetype, instructions "You are a friendly companion..."), opened a coach session, sent `"I want the bot to be more playful and use light teasing when the user is being too serious. Propose a concrete change."`, got back a structured proposal: display summary, proposed new system_instructions ("Be playful and lighthearted. If the user is being too serious, gently tease them..."), and reasoning grounded in the creator's goal. Cleaned up after.
+
+### 4-task batch summary
+| Task | PR | Status |
+|---|---|---|
+| 1: Memory recitation fix (Phase 4 polish) | #186 | ✅ shipped |
+| 2: Proactive quality fix (Phase 5 polish) | #187 | ✅ shipped (migration 010) |
+| 3: SSE streaming (Phase 2.7) | #189 | ✅ shipped — backend done, mobile pending |
+| 4: Soul File Coach (Phase 7.5) | #191 | ✅ shipped (migration 011) — backend done, mobile UI pending |
+
+Plus 4 docs PRs (#185 CLAUDE.md section, #188 polish-1-2 flip, #190 phase-2-7 flip, #192 phase-7-5 flip).
+
+### Standing approval cycle closes
+Per the 4-task standing approval: scope was Phase 4 polish + Phase 5 polish + Phase 2.7 + Phase 7.5. All four tasks complete and deployed. Pausing for the next batch.
+
+### Notes for tomorrow
+- Mobile integration handoffs needed for: Phase 2.7 SSE (point Sarvesh at `docs/SSE-PROTOCOL.md`), Phase 7.5 Coach UI
+- The flaky `/influencers/trending` endpoint hit timeouts on most of today's suite runs — should investigate the materialized-view refresh path as a small follow-up
+
 ## 2026-05-29 (end of session) — Task 4: Soul File Coach backend (Phase 7.5)
 
 ### Endpoints under `/api/v1/creator/coach/`
