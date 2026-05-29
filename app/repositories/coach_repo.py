@@ -117,12 +117,18 @@ async def latest_proposal(pool, coach_conversation_id: str) -> dict | None:
 async def record_application(
     pool,
     bot_id: str,
-    coach_conversation_id: str,
-    coach_message_id: str,
+    coach_conversation_id: str | None,
+    coach_message_id: str | None,
     previous_instructions: str,
     new_instructions: str,
     applied_by: str,
 ) -> dict:
+    """Audit-log an applied system_instructions change.
+
+    coach_conversation_id / coach_message_id are nullable so changes from
+    other sources (e.g. Phase 7.6 A/B variant promotion) can use the same
+    audit trail without faking foreign-key targets.
+    """
     row = await pool.fetchrow(
         """
         INSERT INTO system_instructions_history (

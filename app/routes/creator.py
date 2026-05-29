@@ -304,3 +304,138 @@ async def get_recommendations(influencer_id: str, request: Request):
         "sample_replies_count": len(sample_replies),
         "hint": hint,
     }
+
+
+# ─── Phase 7.6: A/B testing for Soul File variants ──────────────────────
+
+
+@router.post("/influencers/{influencer_id}/variant-b")
+async def set_variant_b(influencer_id: str, body: dict, request: Request):
+    """Stage an experimental variant B Soul File. Replaces any existing
+    variant B for this bot. Owner-only."""
+    user_id = get_current_user(request)
+    pool = await get_pool()
+
+    inf = await influencer_repo.get_by_id(pool, influencer_id)
+    if not inf:
+        raise HTTPException(status_code=404, detail="Influencer not found")
+    if inf.get("parent_principal_id") != user_id:
+        raise HTTPException(status_code=403, detail="Not your influencer")
+
+    new_text = (body or {}).get("system_instructions")
+    if not isinstance(new_text, str) or not new_text.strip():
+        raise HTTPException(status_code=422, detail="system_instructions is required")
+
+    from repositories import variant_repo
+
+    row = await variant_repo.set_variant_b(
+        pool, influencer_id, new_text.strip(), user_id
+    )
+    return {
+        "id": str(row["id"]),
+        "bot_id": row["bot_id"],
+        "system_instructions": row["system_instructions"],
+        "created_at": row["created_at"].isoformat()
+        if isinstance(row["created_at"], datetime)
+        else row["created_at"],
+        "created_by": row["created_by"],
+    }
+
+
+@router.get("/influencers/{influencer_id}/variants/compare")
+async def compare_variants(influencer_id: str, request: Request):
+    """Side-by-side comparison of variant A (current production) vs
+    variant B (experiment). Pulls labeled samples since variant B was set,
+    runs Gemini-as-judge with the same rubric as Phase 7.7's scorer,
+    returns per-variant aggregate scores + a suggested winner if both
+    sides have enough data. Owner-only."""
+    user_id = get_current_user(request)
+    pool = await get_pool()
+
+    inf = await influencer_repo.get_by_id(pool, influencer_id)
+    if not inf:
+        raise HTTPException(status_code=404, detail="Influencer not found")
+    if inf.get("parent_principal_id") != user_id:
+        raise HTTPException(status_code=403, detail="Not your influencer")
+
+    from repositories import variant_repo
+    from services import ab_compare
+
+    variant_b = await variant_repo.get_variant_b(pool, influencer_id)
+    if not variant_b:
+        raise HTTPException(
+            status_code=409,
+            detail="No variant B is currently staged — POST /variant-b first.",
+        )
+
+    counts = await variant_repo.variant_sample_counts(pool, influencer_id)
+    result = await ab_compare.compare(
+        pool, influencer_id, inf.get("category") or "general"
+    )
+    result["sample_counts"] = counts
+    return result
+
+
+@router.post("/influencers/{influencer_id}/variants/{variant}/promote")
+async def promote_variant(influencer_id: str, variant: str, request: Request):
+    """Promote variant A or B to be the bot's sole production Soul File.
+    Variant B is deleted; if B was chosen, its text replaces ai_influencers
+    .system_instructions. A row is written to system_instructions_history
+    for rollback. Owner-only."""
+    user_id = get_current_user(request)
+    if variant not in ("a", "b"):
+        raise HTTPException(status_code=422, detail="variant must be 'a' or 'b'")
+    pool = await get_pool()
+
+    inf = await influencer_repo.get_by_id(pool, influencer_id)
+    if not inf:
+        raise HTTPException(status_code=404, detail="Influencer not found")
+    if inf.get("parent_principal_id") != user_id:
+        raise HTTPException(status_code=403, detail="Not your influencer")
+
+    from repositories import variant_repo, coach_repo
+
+    variant_b_row = await variant_repo.get_variant_b(pool, influencer_id)
+    if not variant_b_row:
+        raise HTTPException(status_code=409, detail="No variant B is currently staged")
+
+    previous = inf.get("system_instructions") or ""
+    if variant == "a":
+        # Keep A as production; just drop variant B.
+        await variant_repo.delete_variant_b(pool, influencer_id)
+        return {
+            "promoted": "a",
+            "system_instructions_unchanged": True,
+            "previous_instructions": previous,
+        }
+
+    # variant == "b": copy B's text into the bot + audit it.
+    new_text = variant_b_row["system_instructions"]
+    if previous == new_text:
+        await variant_repo.delete_variant_b(pool, influencer_id)
+        raise HTTPException(
+            status_code=409,
+            detail="Variant B is identical to current instructions — nothing to promote",
+        )
+    history_row = await coach_repo.record_application(
+        pool,
+        bot_id=influencer_id,
+        # A/B promotions don't go through the coach; NULL out the coach FKs
+        coach_conversation_id=None,
+        coach_message_id=None,
+        previous_instructions=previous,
+        new_instructions=new_text,
+        applied_by=user_id,
+    )
+    await pool.execute(
+        "UPDATE ai_influencers SET system_instructions = $1 WHERE id = $2",
+        new_text,
+        influencer_id,
+    )
+    await variant_repo.delete_variant_b(pool, influencer_id)
+    return {
+        "promoted": "b",
+        "history_id": str(history_row["id"]),
+        "previous_instructions": previous,
+        "new_instructions": new_text,
+    }

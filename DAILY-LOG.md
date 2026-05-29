@@ -1,5 +1,44 @@
 # Daily Log
 
+## 2026-05-30 (yet later) — Task 3: Phase 7.6 A/B testing for Soul Files
+
+### Schema (migration 015)
+- `soul_file_variants` — one row per bot when a test is staged. `(bot_id, system_instructions, created_at, created_by)`, UNIQUE on `bot_id`.
+- `messages.variant_label VARCHAR(1)` — NULL when no test active or when message is a user reply; `'a'` or `'b'` for bot replies during a test. Partial index `idx_messages_variant` for the compare endpoint's lookup.
+
+Variant A = bot's current `ai_influencers.system_instructions` (always production). Variant B = the row above when present.
+
+### Routing (chat hot path)
+Inside `send_message`, just before soul file compose:
+- Fetch `variant_repo.get_variant_b(bot_id)`
+- If B exists: `random.random() < 0.5` picks A or B. Chosen text → soul file → LLM. The `variant_label` is recorded on the assistant message.
+- If B doesn't exist (default case for ~all bots): zero-overhead path. The compare endpoint won't see any labeled rows.
+
+### Endpoints
+- `POST /api/v1/creator/influencers/{id}/variant-b` — set/replace variant B. Body: `{system_instructions: str}`. Owner-only.
+- `GET /api/v1/creator/influencers/{id}/variants/compare` — judges up to 20 labeled bot replies per variant via Gemini-as-judge (same rubric as Phase 7.7). Returns per-variant aggregate scores + `delta_overall` + a `suggested_winner` once both sides have ≥10 samples. Owner-only.
+- `POST /api/v1/creator/influencers/{id}/variants/{a|b}/promote` — finalize. Promoting A: just drops variant B. Promoting B: copies B's text to `ai_influencers.system_instructions`, writes a `system_instructions_history` row (with NULL coach FKs since this isn't a coach apply), drops B. Owner-only.
+
+### Coach FK loosening
+`coach_repo.record_application` now accepts `coach_conversation_id: str | None` and `coach_message_id: str | None`. The columns were already nullable in the migration 011 schema; the type hints were the only thing pinning them to required.
+
+### Eval-gate
+The chat send_message variant branch adds `await variant_repo.get_variant_b(pool, influencer_id)` per turn — one indexed PK lookup, ~1ms. When no variant B exists (the default for all bots in the eval), the routing path is byte-identical to before. Eval should be neutral.
+
+### Files
+- `migrations/015_soul_file_variants.sql`
+- `app/repositories/variant_repo.py` (new)
+- `app/repositories/coach_repo.py` — nullable coach FKs in `record_application`
+- `app/repositories/message_repo.py` — `create` accepts `variant_label`
+- `app/services/ab_compare.py` (new) — on-demand judge + aggregate per variant
+- `app/routes/creator.py` — 3 new endpoints
+- `app/routes/chat.py` — A/B routing in `send_message`
+- `scripts/test_all_endpoints.py` — 29 → 32 endpoint tests
+- `tests/test_ab_compare.py` — sample threshold + concurrency pins
+
+### Diff
+~600 lines across 9 files.
+
 ## 2026-05-30 (later) — Task 2: Phase 7.8 creator recommendations
 
 ### What it does
