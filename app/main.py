@@ -60,6 +60,10 @@ async def lifespan(app: FastAPI):
 
     quality_scoring_task = asyncio.create_task(scoring_loop())
 
+    from services.streak_tracker import streak_loop
+
+    streak_task = asyncio.create_task(streak_loop())
+
     yield
 
     logger.info("Shutting down...")
@@ -69,6 +73,7 @@ async def lifespan(app: FastAPI):
     takeover_sweep_task.cancel()
     memory_consolidation_task.cancel()
     quality_scoring_task.cancel()
+    streak_task.cancel()
     try:
         await trending_refresher_task
     except asyncio.CancelledError:
@@ -91,6 +96,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await quality_scoring_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await streak_task
     except asyncio.CancelledError:
         pass
     langfuse_tracing.flush()

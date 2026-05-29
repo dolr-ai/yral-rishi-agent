@@ -91,7 +91,7 @@
 | 5.3p | Polish: proactive quality (3-cap + variety prompt + type rotation) | ✅ Done | — | #187 |
 | 5.4 | User-configurable frequency (daily/weekly/off) | ✅ Done | — | #194 (squashed into #195 via rebase) |
 | 5.5 | Context-aware timing (morning greetings, evening) | ⏳ Pending | 1 | — |
-| 5.6 | Streak tracking (reward consistent chatters) | ⏳ Pending | 1 | — |
+| 5.6 | Streak tracking (reward consistent chatters) | 🔄 In PR | 1 | #202 |
 | 5.V1 | Verify: proactive messages actually sending? | ⏳ Pending | 0.5 | — |
 | **Phase 5 total** | | **50% done** | **3.5 days left** | |
 
