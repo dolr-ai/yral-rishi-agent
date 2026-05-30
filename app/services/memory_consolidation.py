@@ -117,10 +117,15 @@ async def consolidate_once(pool) -> dict:
 async def consolidation_loop():
     """Run consolidate_once forever, every 24h, after an initial delay."""
     from database import get_pool
+    from kill_switch import is_enabled
 
     await asyncio.sleep(INITIAL_DELAY_SEC)
     while True:
         try:
+            # Emergency kill-switch (Phase 19.3 stop-gap, 2026-05-30).
+            if not is_enabled("memory_consolidation"):
+                await asyncio.sleep(CONSOLIDATION_INTERVAL_SEC)
+                continue
             pool = await get_pool()
             t0 = asyncio.get_event_loop().time()
             stats = await consolidate_once(pool)
