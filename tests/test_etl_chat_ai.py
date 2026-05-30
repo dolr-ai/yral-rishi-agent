@@ -6,7 +6,6 @@ helpers (credential loader, filename regex, CSV parse, table specs).
 """
 
 import gzip
-import io
 import os
 import sys
 
@@ -161,3 +160,56 @@ def test_parse_csv_header_only_no_rows():
     header, rows = _parse_csv(body)
     assert header == ["id", "content", "created_at"]
     assert rows == []
+
+
+# ─── Option A skip-and-log (signatures + helpers exist) ──────────────────
+
+
+def test_apply_csv_returns_skip_dict_shape():
+    """Option A semantics — _apply_csv must return rows_applied +
+    skipped_conflict + skipped_orphan, not a bare int. Caller wires
+    those into etl_skipped_rows."""
+    import asyncio
+    from services.etl_chat_ai import _apply_csv
+
+    # Empty data_rows is the cheap unit case — no DB needed.
+    result = asyncio.run(_apply_csv(None, "messages", ["id"], []))
+    assert set(result.keys()) == {
+        "rows_applied",
+        "skipped_conflict",
+        "skipped_orphan",
+    }
+    assert result["rows_applied"] == 0
+    assert result["skipped_conflict"] == []
+    assert result["skipped_orphan"] == []
+
+
+def test_record_skipped_exists_and_signature():
+    """Bulk-insert helper. Empty list short-circuits without touching DB."""
+    import asyncio
+    from services.etl_chat_ai import _record_skipped
+
+    # Empty row_ids list must short-circuit (no DB call) — proves the
+    # early-return path so an empty file doesn't crash on missing pool.
+    asyncio.run(_record_skipped(None, "fname", "messages", [], "orphan"))
+
+
+def test_get_skipped_exists():
+    """Helper for /admin/etl-skipped — used by the audit endpoint."""
+    from services.etl_chat_ai import get_skipped
+
+    assert callable(get_skipped)
+
+
+def test_status_dict_includes_skip_fields():
+    """get_status() shape must include skipped_rows_24h + skipped_by_reason
+    so the /admin/etl-status JSON contract stays stable."""
+    import inspect
+    from services.etl_chat_ai import get_status
+
+    # Inspect the source to confirm the return literal mentions the new
+    # keys (hermetic — no DB roundtrip required for this contract check).
+    source = inspect.getsource(get_status)
+    assert "skipped_rows_24h" in source
+    assert "skipped_by_reason" in source
+    assert "skipped_by_table" in source
