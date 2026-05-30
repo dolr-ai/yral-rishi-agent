@@ -118,26 +118,44 @@ async def list_by_user(
             offset,
         )
     else:
+        # Unified inbox: AI conversations AND H2H conversations interleaved
+        # by updated_at. LEFT JOIN (not INNER) so H2H rows where
+        # influencer_id is NULL still surface. WHERE clause splits the
+        # two cases so per-type rules apply correctly:
+        #   - AI: caller must be c.user_id; influencer must exist and
+        #     not be discontinued (i.id IS NOT NULL filters orphans —
+        #     same intent as the soft-delete check, but for hard-deleted
+        #     influencer rows)
+        #   - H2H: caller may be c.user_id OR c.participant_b_id;
+        #     no influencer required
+        # The c.user_id NOT IN (SELECT id FROM ai_influencers) defense
+        # is preserved so bot-side rows can't leak into the user list.
         rows = await pool.fetch(
             """
-            SELECT c.id, c.user_id, c.influencer_id, c.created_at, c.updated_at,
+            SELECT c.id, c.user_id, c.influencer_id, c.participant_b_id,
+                   c.created_at, c.updated_at,
                    c.metadata, c.conversation_type,
                    i.id as inf_id, i.name as inf_name,
                    i.display_name as inf_display_name,
                    i.avatar_url as inf_avatar_url,
                    i.category as inf_category,
                    i.suggested_messages as inf_suggested_messages,
-               i.is_nsfw as inf_is_nsfw,
+                   i.is_nsfw as inf_is_nsfw,
                    COUNT(m.id) as message_count,
                    (SELECT COUNT(*) FROM messages m2
                     WHERE m2.conversation_id = c.id
                     AND m2.is_read = FALSE AND m2.role = 'assistant') as unread_count
             FROM conversations c
-            JOIN ai_influencers i ON c.influencer_id = i.id
+            LEFT JOIN ai_influencers i ON c.influencer_id = i.id
             LEFT JOIN messages m ON c.id = m.conversation_id
-            WHERE c.user_id = $1
-                  AND i.is_active != 'discontinued'
-                  AND c.user_id NOT IN (SELECT id FROM ai_influencers)
+            WHERE c.user_id NOT IN (SELECT id FROM ai_influencers)
+              AND (
+                (c.conversation_type = 'ai_chat' AND c.user_id = $1
+                 AND i.id IS NOT NULL AND i.is_active != 'discontinued')
+                OR
+                (c.conversation_type = 'human_chat'
+                 AND (c.user_id = $1 OR c.participant_b_id = $1))
+              )
             GROUP BY c.id, i.id
             ORDER BY c.updated_at DESC
             LIMIT $2 OFFSET $3
@@ -162,13 +180,19 @@ async def count_by_user(pool, user_id: str, influencer_id: str | None = None) ->
             user_id,
             influencer_id,
         )
+    # Mirror the unified list_by_user WHERE so total matches what's listed.
     return await pool.fetchval(
         """
         SELECT COUNT(*) FROM conversations c
-        JOIN ai_influencers i ON c.influencer_id = i.id
-        WHERE c.user_id = $1
-              AND i.is_active != 'discontinued'
-              AND c.user_id NOT IN (SELECT id FROM ai_influencers)
+        LEFT JOIN ai_influencers i ON c.influencer_id = i.id
+        WHERE c.user_id NOT IN (SELECT id FROM ai_influencers)
+          AND (
+            (c.conversation_type = 'ai_chat' AND c.user_id = $1
+             AND i.id IS NOT NULL AND i.is_active != 'discontinued')
+            OR
+            (c.conversation_type = 'human_chat'
+             AND (c.user_id = $1 OR c.participant_b_id = $1))
+          )
         """,
         user_id,
     )
