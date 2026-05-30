@@ -174,6 +174,51 @@ def _to_naive_utc(dt_or_iso) -> datetime:
     return dt
 
 
+def _canonicalize_for_compare(val) -> str | None:
+    """Stable string form of a field for Layer 2 sample comparison.
+
+    The rishi-1 export serializes timestamps via Postgres `row_to_json`,
+    which renders microseconds with trailing zeros TRIMMED:
+        '2026-03-18T01:48:25.53554'    (chat-ai side, 5-digit μs)
+    V2 reads via asyncpg as a datetime, then .isoformat() always pads:
+        '2026-03-18T01:48:25.535540'   (V2 side, 6-digit μs)
+    Same instant, different render — without this normalize step the
+    Layer 2 sample check flags a spurious mismatch.
+
+    Strategy: if the value LOOKS like an ISO timestamp, parse it and
+    re-emit at fixed 6-digit microsecond precision UTC. Otherwise plain
+    str(). datetime instances also flow through the same parse path so
+    chat-ai-string vs V2-datetime end up at identical bytes."""
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        dt = val
+    elif isinstance(val, str):
+        s = val.strip()
+        # Postgres wire format uses space, ISO uses T — both work
+        looks_like_ts = (
+            len(s) >= 10
+            and s[4] == "-"
+            and s[7] == "-"
+            and (len(s) == 10 or s[10] in ("T", " "))
+        )
+        if not looks_like_ts:
+            return s
+        try:
+            normalized = s.replace(" ", "T", 1) if "T" not in s else s
+            dt = datetime.fromisoformat(normalized)
+        except ValueError:
+            return s
+    else:
+        return str(val)
+    # Normalize to UTC-aware then emit fixed 6-digit microsecond ISO.
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.%f+00:00")
+
+
 def _to_aware_utc(dt_or_iso) -> datetime:
     """Normalize to AWARE UTC datetime — for `TIMESTAMPTZ` columns
     (e.g. etl_integrity_results.snapshot_iso). Same string/datetime
@@ -284,13 +329,12 @@ async def _verify_sample(v2_pool, payload: dict) -> tuple[bool, int, dict]:
         ):
             chat_val = chat.get(col)
             v2_val = v2_conv_row.get(col)
-            # Normalize: datetimes -> iso, all -> str for compare
-            chat_str = str(chat_val) if chat_val is not None else None
-            v2_str = (
-                v2_val.isoformat()
-                if hasattr(v2_val, "isoformat")
-                else (str(v2_val) if v2_val is not None else None)
-            )
+            # See _canonicalize_for_compare — handles the chat-ai
+            # (postgres-row-to-json, trimmed-trailing-zero microseconds)
+            # vs V2 (asyncpg datetime → isoformat, always 6 digits)
+            # rendering gap.
+            chat_str = _canonicalize_for_compare(chat_val)
+            v2_str = _canonicalize_for_compare(v2_val)
             if chat_str != v2_str:
                 mismatches.append(
                     {

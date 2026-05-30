@@ -90,6 +90,65 @@ def test_verify_hourly_uses_naive_utc():
     assert "_to_naive_utc" in src
 
 
+def test_canonicalize_for_compare_microsecond_precision():
+    """Regression for the actual mismatch seen in production Layer 2
+    sample (2026-05-30): chat-ai sent '2026-03-18T01:48:25.53554' (5
+    digit μs, trailing zero trimmed by Postgres row_to_json); V2 had
+    '2026-03-18T01:48:25.535540' (6 digit μs from asyncpg datetime
+    isoformat). Same instant — must canonicalize to equal."""
+    from services.etl_integrity import _canonicalize_for_compare
+
+    chat_ai = "2026-03-18T01:48:25.53554"  # 5 digits
+    v2 = "2026-03-18T01:48:25.535540"  # 6 digits
+    assert _canonicalize_for_compare(chat_ai) == _canonicalize_for_compare(v2)
+
+
+def test_canonicalize_handles_datetime_vs_str_cross():
+    """V2 reads via asyncpg → datetime; chat-ai S3 JSON → str. Both
+    must canonicalize to the same bytes when they represent the same
+    instant."""
+    from datetime import datetime, timezone
+    from services.etl_integrity import _canonicalize_for_compare
+
+    dt = datetime(2026, 3, 18, 1, 48, 25, 535540, tzinfo=timezone.utc)
+    s = "2026-03-18T01:48:25.53554"
+    assert _canonicalize_for_compare(dt) == _canonicalize_for_compare(s)
+
+
+def test_canonicalize_passes_non_timestamp_strings_through():
+    """UUIDs, plain text, JSON blobs — anything that isn't a timestamp
+    string must round-trip unchanged so the comparison is meaningful
+    for those columns too."""
+    from services.etl_integrity import _canonicalize_for_compare
+
+    assert _canonicalize_for_compare("cc792feb-7a2c-4d8d") == "cc792feb-7a2c-4d8d"
+    assert _canonicalize_for_compare("plain text") == "plain text"
+    assert _canonicalize_for_compare(None) is None
+    assert _canonicalize_for_compare("ai_chat") == "ai_chat"
+
+
+def test_canonicalize_handles_postgres_space_format():
+    """Postgres's default text format uses a space separator; ISO uses
+    T. Both must canonicalize to the same string."""
+    from services.etl_integrity import _canonicalize_for_compare
+
+    a = _canonicalize_for_compare("2026-03-18 01:48:25.535540")
+    b = _canonicalize_for_compare("2026-03-18T01:48:25.535540")
+    assert a == b
+
+
+def test_canonicalize_tz_aware_vs_naive_yield_same_string():
+    """If chat-ai's column is naive UTC and V2's is naive UTC, both
+    forms must produce the same canonical output. The canonical form
+    attaches UTC to naive inputs (Postgres stores UTC by convention)."""
+    from datetime import datetime, timezone
+    from services.etl_integrity import _canonicalize_for_compare
+
+    naive = datetime(2026, 3, 18, 1, 48, 25, 535540)
+    aware = datetime(2026, 3, 18, 1, 48, 25, 535540, tzinfo=timezone.utc)
+    assert _canonicalize_for_compare(naive) == _canonicalize_for_compare(aware)
+
+
 def test_filename_regex_recognizes_all_four_layers():
     """The exporter emits four families of files into _integrity/.
     Drift here = the verifier silently ignores a layer."""
