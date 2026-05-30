@@ -129,3 +129,24 @@ async def etl_integrity_stale(request: Request):
     pool = await database.get_pool()
     raw = await get_staleness(pool)
     return _iso_serialize(raw)
+
+
+@router.get("/admin/etl-skipped")
+async def etl_skipped(request: Request, hours: int = 24, reason: str | None = None):
+    """Recent etl_skipped_rows entries — Option A audit trail.
+
+    `reason` must be one of conflict/orphan if provided. `hours` clamped
+    to [1, 168]. Capped at 500 rows in the response."""
+    from auth import get_current_user
+    from services.etl_chat_ai import get_skipped
+
+    get_current_user(request)
+    if reason is not None and reason not in {"conflict", "orphan"}:
+        raise HTTPException(
+            status_code=400,
+            detail="reason must be 'conflict' or 'orphan'",
+        )
+    hours = max(1, min(168, hours))
+    pool = await database.get_pool()
+    raw = await get_skipped(pool, hours, reason)
+    return _iso_serialize(raw)

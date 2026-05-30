@@ -234,11 +234,27 @@ def _parse_csv(body_gz: bytes) -> tuple[list[str], list[list]]:
 
 async def _apply_csv(
     v2_pool, table_name: str, header: list[str], data_rows: list[list]
-) -> int:
-    """COPY data into a temp staging table, then INSERT real ON CONFLICT
-    DO NOTHING. Returns rows_inserted (rows_in - rows_skipped_due_to_conflict)."""
+) -> dict:
+    """COPY data into a temp staging table, then INSERT into the real
+    table with Option A skip-and-log semantics.
+
+    Returns:
+        {
+            "rows_applied":     int — count actually inserted
+            "skipped_conflict": list[str] — row ids that hit a UNIQUE
+                                            constraint (existing row stays)
+            "skipped_orphan":   list[str] — row ids whose parent FK
+                                            doesn't exist in V2
+                                            (only messages today)
+        }
+
+    See [project_etl_option_a_conflict_handling] for why we use bare
+    ON CONFLICT DO NOTHING (no target) — V2 has multiple UNIQUE
+    constraints chat-ai doesn't (idx_unique_user_influencer,
+    idx_unique_human_chat), and only bare-no-target catches them all.
+    """
     if not data_rows:
-        return 0
+        return {"rows_applied": 0, "skipped_conflict": [], "skipped_orphan": []}
     spec = _TABLE_SPEC[table_name]
     shared = [c for c in spec["columns"] if c in header]
     if not shared:
@@ -277,14 +293,78 @@ async def _apply_csv(
                 format="csv",
                 header=True,
             )
-            before = await conn.fetchval(f"SELECT COUNT(*) FROM {table_name}")
-            await conn.execute(
-                f"INSERT INTO {table_name} ({shared_csv}) "
-                f"SELECT {shared_csv} FROM {staging} "
-                f"ON CONFLICT ({id_column}) DO NOTHING"
-            )
-            after = await conn.fetchval(f"SELECT COUNT(*) FROM {table_name}")
-    return int(after) - int(before)
+
+            # Messages need pre-filtering for FK validity. Conversations
+            # (and ai_influencers) only need ON CONFLICT for unique-
+            # constraint handling. See module docstring for why we use
+            # bare ON CONFLICT (no target) — V2 has multiple UNIQUE
+            # constraints chat-ai doesn't (idx_unique_user_influencer,
+            # idx_unique_human_chat), and only bare-no-target catches them
+            # all in a single statement.
+            inserted_rows = []
+            orphan_ids = []
+            if table_name == "messages":
+                where_clause = (
+                    "WHERE EXISTS (SELECT 1 FROM conversations c "
+                    "WHERE c.id = s.conversation_id)"
+                )
+                inserted_rows = await conn.fetch(
+                    f"INSERT INTO {table_name} ({shared_csv}) "
+                    f"SELECT {shared_csv} FROM {staging} s "
+                    f"{where_clause} "
+                    f"ON CONFLICT DO NOTHING "
+                    f"RETURNING {id_column}"
+                )
+                # Orphans: in staging without a matching parent in v2.
+                orphans = await conn.fetch(
+                    f"SELECT s.{id_column} FROM {staging} s "
+                    f"WHERE NOT EXISTS (SELECT 1 FROM conversations c "
+                    f"WHERE c.id = s.conversation_id)"
+                )
+                orphan_ids = [str(r[id_column]) for r in orphans]
+            else:
+                inserted_rows = await conn.fetch(
+                    f"INSERT INTO {table_name} ({shared_csv}) "
+                    f"SELECT {shared_csv} FROM {staging} "
+                    f"ON CONFLICT DO NOTHING "
+                    f"RETURNING {id_column}"
+                )
+
+            inserted_ids = {str(r[id_column]) for r in inserted_rows}
+            # Conflict skips: in staging, not orphaned, not inserted.
+            staging_ids = await conn.fetch(f"SELECT {id_column} FROM {staging}")
+            staging_id_set = {str(r[id_column]) for r in staging_ids}
+            conflict_ids = list(staging_id_set - inserted_ids - set(orphan_ids))
+
+    return {
+        "rows_applied": len(inserted_ids),
+        "skipped_conflict": conflict_ids,
+        "skipped_orphan": orphan_ids,
+    }
+
+
+async def _record_skipped(
+    v2_pool,
+    filename: str,
+    table_name: str,
+    row_ids: list[str],
+    reason: str,
+):
+    """Bulk-insert into etl_skipped_rows. The composite UNIQUE
+    (filename, table_name, row_id, reason) keeps re-application of the
+    same file idempotent — same skipped row produces the same audit
+    entry, no duplicates."""
+    if not row_ids:
+        return
+    await v2_pool.executemany(
+        """
+        INSERT INTO etl_skipped_rows
+            (filename, table_name, row_id, reason)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (filename, table_name, row_id, reason) DO NOTHING
+        """,
+        [(filename, table_name, rid, reason) for rid in row_ids],
+    )
 
 
 async def _record_processed(
@@ -391,8 +471,21 @@ async def run_once(v2_pool) -> dict:
                     f"{filename}: rows-in-file mismatch: "
                     f"S3 metadata says {claimed}, CSV has {len(rows)}"
                 )
-            rows_applied = await _apply_csv(v2_pool, table_name, header, rows)
+            apply_result = await _apply_csv(v2_pool, table_name, header, rows)
+            rows_applied = apply_result["rows_applied"]
+            conflict_ids = apply_result["skipped_conflict"]
+            orphan_ids = apply_result["skipped_orphan"]
             runtime_ms = int((time.monotonic() - t0) * 1000)
+
+            # Record skipped rows BEFORE recording the file as processed,
+            # so a crash here leaves the file un-recorded and the next
+            # tick retries everything (cleanly idempotent because the
+            # skip-log UNIQUE de-dupes too).
+            await _record_skipped(
+                v2_pool, filename, table_name, conflict_ids, "conflict"
+            )
+            await _record_skipped(v2_pool, filename, table_name, orphan_ids, "orphan")
+
             await _record_processed(
                 v2_pool,
                 filename,
@@ -410,13 +503,21 @@ async def run_once(v2_pool) -> dict:
             if until_iso:
                 await _advance_cursor(v2_pool, table_name, until_iso, rows_applied)
             overall["files_processed"] += 1
-            overall["per_table"].setdefault(table_name, {"files": 0, "rows": 0})
+            overall["per_table"].setdefault(
+                table_name,
+                {"files": 0, "rows": 0, "skipped_conflict": 0, "skipped_orphan": 0},
+            )
             overall["per_table"][table_name]["files"] += 1
             overall["per_table"][table_name]["rows"] += rows_applied
+            overall["per_table"][table_name]["skipped_conflict"] += len(conflict_ids)
+            overall["per_table"][table_name]["skipped_orphan"] += len(orphan_ids)
             logger.info(
-                "etl_chat_ai: applied %s rows=%d in_file=%d runtime_ms=%d",
+                "etl_chat_ai: applied %s rows=%d skipped_conflict=%d "
+                "skipped_orphan=%d in_file=%d runtime_ms=%d",
                 filename,
                 rows_applied,
+                len(conflict_ids),
+                len(orphan_ids),
                 len(rows),
                 runtime_ms,
             )
@@ -486,6 +587,32 @@ async def get_status(v2_pool) -> dict:
         "SELECT MAX(processed_at) FROM etl_processed_files"
     )
 
+    # Option A skip counts (24h). Per-reason breakdown so we know whether
+    # drift is from conflicts (= V2 already had this user/pair) or orphans
+    # (= parent conversation never landed — usually a cascade of a prior
+    # conflict).
+    skipped_total_24h = await v2_pool.fetchval(
+        """
+        SELECT COUNT(*) FROM etl_skipped_rows
+        WHERE skipped_at > NOW() - INTERVAL '24 hours'
+        """
+    )
+    skipped_by_reason = await v2_pool.fetch(
+        """
+        SELECT reason, COUNT(*) AS n FROM etl_skipped_rows
+        WHERE skipped_at > NOW() - INTERVAL '24 hours'
+        GROUP BY reason
+        """
+    )
+    skipped_by_table = await v2_pool.fetch(
+        """
+        SELECT table_name, reason, COUNT(*) AS n FROM etl_skipped_rows
+        WHERE skipped_at > NOW() - INTERVAL '24 hours'
+        GROUP BY table_name, reason
+        ORDER BY table_name, reason
+        """
+    )
+
     heartbeat = None
     stuck = None
     heartbeat_age_sec = None
@@ -508,6 +635,9 @@ async def get_status(v2_pool) -> dict:
         "tables": [dict(r) for r in cursors],
         "files_processed_24h": int(files_24h or 0),
         "rows_applied_24h": int(rows_24h or 0),
+        "skipped_rows_24h": int(skipped_total_24h or 0),
+        "skipped_by_reason": {r["reason"]: int(r["n"]) for r in skipped_by_reason},
+        "skipped_by_table": [dict(r) for r in skipped_by_table],
         "last_processed_at": last_processed.isoformat() if last_processed else None,
         "heartbeat": heartbeat,
         "heartbeat_age_sec": heartbeat_age_sec,
@@ -517,4 +647,40 @@ async def get_status(v2_pool) -> dict:
         if creds is not None
         else None,
         "stuck_marker": stuck,
+    }
+
+
+# ─── skip-audit helper for /admin/etl-skipped ────────────────────────────
+
+
+async def get_skipped(v2_pool, hours: int, reason: str | None) -> dict:
+    """Recent skipped rows with filtering. Capped at 500 to bound payload.
+    Used by /admin/etl-skipped for audit drill-in."""
+    if reason:
+        rows = await v2_pool.fetch(
+            """
+            SELECT filename, table_name, row_id, reason, skipped_at
+            FROM etl_skipped_rows
+            WHERE reason = $1
+              AND skipped_at > NOW() - ($2 || ' hours')::interval
+            ORDER BY skipped_at DESC LIMIT 500
+            """,
+            reason,
+            str(hours),
+        )
+    else:
+        rows = await v2_pool.fetch(
+            """
+            SELECT filename, table_name, row_id, reason, skipped_at
+            FROM etl_skipped_rows
+            WHERE skipped_at > NOW() - ($1 || ' hours')::interval
+            ORDER BY skipped_at DESC LIMIT 500
+            """,
+            str(hours),
+        )
+    return {
+        "hours": hours,
+        "reason": reason,
+        "result_count": len(rows),
+        "results": [dict(r) for r in rows],
     }
