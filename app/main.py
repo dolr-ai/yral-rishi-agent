@@ -74,6 +74,10 @@ async def lifespan(app: FastAPI):
 
     integrity_task = asyncio.create_task(integrity_loop())
 
+    from services.email_digest import digest_loop
+
+    digest_task = asyncio.create_task(digest_loop())
+
     yield
 
     logger.info("Shutting down...")
@@ -86,6 +90,7 @@ async def lifespan(app: FastAPI):
     streak_task.cancel()
     etl_task.cancel()
     integrity_task.cancel()
+    digest_task.cancel()
     try:
         await trending_refresher_task
     except asyncio.CancelledError:
@@ -120,6 +125,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await integrity_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await digest_task
     except asyncio.CancelledError:
         pass
     langfuse_tracing.flush()

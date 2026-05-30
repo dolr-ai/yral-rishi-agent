@@ -170,6 +170,50 @@ async def _integrity_tile(pool) -> dict:
     }
 
 
+async def _email_digest_tile(pool) -> dict:
+    """Last digest run summary — tells Rishi at a glance whether
+    today's 02:30 UTC cron fired AND whether SMTP delivered."""
+    try:
+        from services.email_digest import get_latest_digest
+
+        row = await get_latest_digest(pool)
+        if row is None:
+            return {
+                "title": "Daily email digest (Phase 24.5)",
+                "status": "off",
+                "primary": "No runs yet",
+                "details": "First cron fires at 02:30 UTC. Force-run via "
+                "/admin/email-digest/preview?force=1",
+                "link": "/admin/email-digest/preview",
+            }
+
+        rendered = row["rendered_at"]
+        age = int((datetime.now(timezone.utc) - rendered).total_seconds())
+        sent = row["sent"]
+        error = row["error"] or ""
+        if sent:
+            status, primary = "ok", f"Sent {_humanize_seconds(age)}"
+        elif "SMTP_HOST not configured" in error:
+            status, primary = "warn", "Built but SMTP not configured"
+        else:
+            status, primary = "fail", f"Last send failed: {error[:60]}"
+        return {
+            "title": "Daily email digest (Phase 24.5)",
+            "status": status,
+            "primary": primary,
+            "details": f"For {row['for_date']} · rendered {rendered.isoformat()}",
+            "link": "/admin/email-digest/preview",
+        }
+    except Exception as e:
+        return {
+            "title": "Daily email digest (Phase 24.5)",
+            "status": "fail",
+            "primary": "endpoint error",
+            "details": str(e)[:200],
+            "link": "/admin/email-digest/preview",
+        }
+
+
 def _placeholder_tile(title: str, planned_pr: str, why: str) -> dict:
     """Future-wiring stub. Visible empty-state so Rishi knows what's
     coming and where it'll land. The 'off' grey color flags
@@ -253,6 +297,7 @@ async def admin_dashboard(request: Request):
     tiles = [
         await _etl_tile(pool),
         await _integrity_tile(pool),
+        await _email_digest_tile(pool),
         # Placeholder tiles — each later PR replaces its placeholder with
         # a real status read. The Wired-in-PR-#N text gives Rishi a clear
         # forward roadmap from the dashboard itself.
@@ -296,3 +341,51 @@ async def admin_dashboard(request: Request):
     tiles_html = "\n    ".join(_render_tile(t) for t in tiles)
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     return HTMLResponse(_HTML_TEMPLATE.format(tiles_html=tiles_html, now=now))
+
+
+@router.get("/admin/email-digest/preview")
+async def email_digest_preview(request: Request):
+    """Render the latest stored digest (built by the daily 02:30 UTC
+    cron) so Rishi can preview without needing email. Also handy if a
+    digest got spam-filtered and Rishi wants to read it directly.
+
+    ?force=1 builds a fresh digest right now (used for testing without
+    waiting for cron). Always uses the same auth path as /dashboard."""
+    _check_auth_flexible(request)
+    pool = await database.get_pool()
+
+    from services.email_digest import (
+        get_latest_digest,
+        send_digest_now,
+        render_html,
+        render_plain,
+    )
+
+    if request.query_params.get("force") == "1":
+        result = await send_digest_now(pool)
+        digest = result["digest"]
+        send_note = f"sent={result['sent']} error={result['error'] or 'none'}"
+    else:
+        row = await get_latest_digest(pool)
+        if row is None:
+            return HTMLResponse(
+                "<html><body><p>No digest runs recorded yet. "
+                "Visit <code>?force=1</code> to build one now, or wait for "
+                "the daily 02:30 UTC cron.</p></body></html>"
+            )
+        digest = row["body_json"]
+        if isinstance(digest, str):
+            import json as _json
+
+            digest = _json.loads(digest)
+        send_note = f"sent={row['sent']} error={row['error'] or 'none'}"
+
+    if request.query_params.get("format") == "text":
+        return HTMLResponse(
+            f"<pre>{render_plain(digest)}</pre>"
+            f"<p style='font-size:11px;color:#9e9e9e'>send: {send_note}</p>"
+        )
+    return HTMLResponse(
+        render_html(digest)
+        + f"<p style='font-size:11px;color:#9e9e9e'>send: {send_note}</p>"
+    )
