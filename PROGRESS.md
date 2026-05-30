@@ -1,8 +1,8 @@
 # Master Feature Tracker — yral-rishi-agent v2 (1000x Vision)
 
-**Last updated:** 2026-05-28 afternoon
+**Last updated:** 2026-05-30 evening
 **Codebase:** ~6,500 lines Python (post Chat as Human + graceful error UX)
-**Total phases:** 22 (Phase 0–21) | **Est. total days remaining:** ~50-65 days
+**Total phases:** 24 (Phase 0–24) | **Est. total days remaining:** ~75-90 days
 
 ---
 
@@ -41,7 +41,7 @@
 | 1.14a | Continuous ETL chat-ai → V2 (S3-mediated pivot, Phases 1-4) | 🔄 In Progress — Phases 1-3 shipped (#211, #212, #213, #214), Phase 4 deployed but apply blocked on `idx_unique_user_influencer` schema mismatch; Option A fix scheduled for 2026-05-30 morning | 0.5 | #211, #212, #213, #214 |
 | 1.15 | Swarm deploy (2 replicas on rishi-4/5) | ✅ Done | — | — |
 | 1.16 | Full Motorola test of all 30 endpoints | ⏳ Tomorrow | 0.5 | — |
-| 1.17 | Latency comparison vs chat-ai | ⏳ Tomorrow | 0.5 | — |
+| 1.17 | Latency comparison vs chat-ai — DEFERRED to pre-cutover per Rishi 2026-05-30. Run only after all backend features complete + ~2 days before Phase 21 cutover. Automated p50/p95/p99 script vs CLAUDE.md 50%-faster target. | ⏳ Deferred — pre-cutover | 0.5 | — |
 | 1.18 | Automated endpoint test script (24/24 PASS) | ✅ Done | — | #169 |
 | **Phase 1 total** | | **90% done** | **2 days left** | |
 
@@ -244,12 +244,13 @@
 ## PHASE 19: RATE LIMITING & PROTECTION
 | # | Sub-phase | Status | Est. days | PR |
 |---|-----------|--------|-----------|-----|
-| 19.1 | Per-user rate limiting (req/min + req/hour) | ⏳ Pending | 1 | — |
-| 19.2 | Runaway cost circuit breaker | ⏳ Pending | 0.5 | — |
+| 19.1 | Per-user rate limiting (req/min + req/hour) — config hot-editable via admin endpoint, no redeploy needed. Surfaces in 19.6 dashboard so Rishi can see who's hitting limits without ADHD-context-switching. | ✅ Done | — | #232 |
+| 19.2 | Runaway cost circuit breaker — per-user daily LLM spend ceiling, hot-editable via admin endpoint. Sentry alert + 19.6 dashboard entry when triggered. | ⏳ Pending | 1 | — |
 | 19.3 | DDoS protection (Caddy-level) | ⏳ Pending | 1 | — |
 | 19.4 | Dead letter queue for failed tasks | ⏳ Pending | 1 | — |
 | 19.5 | Synthetic user heartbeat (canary every 5 min) | ⏳ Pending | 1 | — |
-| **Phase 19 total** | | **Not started** | **4.5 days** | |
+| 19.6 | Admin observability page (single bookmarkable URL) — shows: top rate-limited users in last 24h, cost-breaker activations, security events from 24.x, backup-drill status, last-run timestamps. JWT-gated. ADHD-friendly: one page Rishi opens once a day, sees everything. | ✅ Done | — | #229 |
+| **Phase 19 total** | | **33% done** | **4 days** | |
 
 ## PHASE 20: SELF-HOSTED LLM (Month 6+)
 | # | Sub-phase | Status | Est. days | PR |
@@ -303,6 +304,53 @@
 | 22.4 | Mobile UI for all three sections in AI Influencer profile | ⏳ Pending | 3 | — |
 | **Phase 22 total** | | **Not started** | **10 days** | |
 
+## PHASE 24: SECURITY & SAFETY DRILLS (NEW — 2026-05-30)
+
+**Driver:** Rishi 2026-05-30: "How do we make sure that there has been no keys leaked in the entire code base and I want to do a regular safety drill also to check that nothing can attack our entire system."
+
+**Goal:** Prove the surface area is safe, surface any vulnerabilities, and keep doing so automatically.
+
+| # | Sub-phase | Status | Est. days | PR |
+|---|-----------|--------|-----------|-----|
+| 24.1 | Codebase secret scan — `gitleaks` full-history scan once (entire repo + .env files + bootstrap/ + scripts/), remediation of any real finds (force-push only after Rishi explicit approval), GitHub Actions workflow that runs `gitleaks` on every PR. Report saved to `docs/security/secret-scan-baseline.md`. | ⏳ Pending | 1 | — |
+| 24.2 | Weekly automated safety drill — cron job (e.g., Sun 03:00 UTC) running a script against production that exercises: (a) auth bypass (hit auth-required endpoints without token, expect 401), (b) token tampering (modified JWT, expect 401), (c) IDOR (try to access another user's conversation, expect 403/404), (d) SQL injection (special chars in query params), (e) path traversal in path params, (f) large payload (10MB JSON body — expect 413), (g) rate limit verification (overwhelm a single endpoint, expect 429), (h) cost circuit breaker verification (try to burn money rapidly, expect breaker trip), (i) WebSocket malformed frame, (j) Caddy-level slowloris attempt. Each test idempotent + safe to run weekly. Report saved to `/admin/safety-drill/latest`, surfaced on 19.6 dashboard with PASS/FAIL per category. Sentry alert on any new FAIL. | ⏳ Pending | 2 | — |
+| 24.3 | Dependency vulnerability scan — `pip-audit` (Python) + Trivy (Docker images) wired into CI. Reports saved to `docs/security/dep-audit/`. Renovate or Dependabot for automated patch PRs. | ⏳ Pending | 1 | — |
+| 24.4 | Secret rotation runbook — written process for rotating each external key (Gemini, OpenRouter, Replicate, S3, Sentry DSN, Langfuse, billing.yral.com auth). Stored at `docs/security/secret-rotation-runbook.md`. NOT automated rotation in V1 — just the runbook so Rishi can rotate in a hurry if needed. | ⏳ Pending | 0.5 | — |
+| 24.5 | Email digest (daily, 08:00 IST) — single email to rishi@gobazzinga.io summarizing: rate-limited users yesterday, cost-breaker hits, security drill last status, backup-drill last status, any new Sentry alerts. Same data as 19.6 dashboard, pushed not pulled. ADHD-friendly — Rishi doesn't have to remember to check. | ✅ Done (plumbing — SMTP config pending) | — | #230, #231 |
+| **Phase 24 total** | | **Not started** | **5.5 days** | |
+
+## PHASE 23: SKILLS FRAMEWORK (NEW — 2026-05-30)
+
+**Design doc:** `docs/SKILLS-FEATURE-DESIGN.md` (Session 7 / Coach Strategy, 2026-05-30, reviewed with Codex).
+
+**The strategic insight:** YRAL Agent v2 already has the bones of a Coach OS. The skill framework adds the smallest thin layer that turns it into an Expert Factory — one Python dict + one new table + one prompt-composer change — that lets the same engine power nutrition coaches, news briefings, travel advisors, language tutors, and the long tail of verticals without hand-tuning each one.
+
+**Mental model:** Influencer = archetype (personality) × skill (job-to-be-done). Same skill pairs with different archetypes (Kareena = advisor × nutrition_coach; Rohan-the-bro = entertainer × nutrition_coach). Soft compatibility per skill (nutrition_coach pairs with advisor + educator, NOT companion — companion's "no medical advice" rule contradicts the skill's job).
+
+**V1 scope locked:** one skill (`nutrition_coach`), one influencer (Kareena), three behaviors (store goal + scheduled check-ins + adherence via existing `current_streak_days`). ~420 lines total — above the CLAUDE.md 100-line ceiling, Rishi sign-off captured.
+
+**Personal dogfood motivation (Rishi, 2026-05-30):** "I myself can start using the AI Nutrition feature and give feedback on what is improving and what all is lagging. It will help me dogfood the app for myself."
+
+**Prerequisites — Phase 23 starts only AFTER all of these complete:**
+- M1 H2H chat mobile UI shipped
+- M4 Soul File Coach UI shipped ("Make your bot better" button)
+- M5 Audio upload UI shipped
+- Streaming backup verified (offsite S3 + restore drill)
+- Phase 21 production cutover live (end of next week target — ~2026-06-07)
+
+| # | Sub-phase | Status | Est. days | PR |
+|---|-----------|--------|-----------|-----|
+| 23.1 | Migrations: `user_skill_state` table + `ai_influencers.skill_slug` column | ⏳ Pending | 0.5 | — |
+| 23.2 | `app/services/skills.py` — SKILLS Python dict with `nutrition_coach` entry | ⏳ Pending | 0.5 | — |
+| 23.3 | `app/services/soul_file.py` — add skill + user_skill_state layers (order: GLOBAL → ARCHETYPE → SKILL → PER_INFLUENCER → USER_STATE → MEMORIES) | ⏳ Pending | 0.5 | — |
+| 23.4 | `app/repositories/skill_state_repo.py` — get / upsert / list_due | ⏳ Pending | 0.5 | — |
+| 23.5 | `app/routes/skills.py` — 3 endpoints (POST state, GET state, PATCH preferences) + first-turn onboarding hook in chat.py | ⏳ Pending | 1 | — |
+| 23.6 | `app/services/proactive.py` — `find_due_skill_events` + `generate_skill_message` (reuses existing 15-min engagement loop) | ⏳ Pending | 1 | — |
+| 23.7 | Assign Kareena `skill_slug=nutrition_coach`; Rishi dogfoods on Motorola end-to-end for 1 week | ⏳ Pending | 0.5 | — |
+| **Phase 23 total** | | **Not started** | **4.5 days** | |
+
+**Phase 24+ (deferred — expansion):** Once V1 is proven via Rishi's dogfooding, each new skill is one `SKILLS` dict entry + maybe a check-in prompt template. No new tables, no new services. Candidates: `daily_briefing` (India News, Stock Market), `travel_advisor`, `real_estate_advisor`, `running_coach`, `hyrox_coach`, `language_coach`, `study_coach`, `creator_growth_coach`. ~1 day per skill.
+
 ## INFRASTRUCTURE (ongoing)
 | # | Item | Status |
 |---|------|--------|
@@ -347,12 +395,15 @@
 | 16 | Real-time Features | 5 | 0 | 5 | 5.5 |
 | 17 | Analytics & Dashboard | 6 | 0 | 6 | 8 |
 | 18 | Meta-AI Advisor | 4 | 0 | 4 | 5 |
-| 19 | Rate Limiting | 5 | 0 | 5 | 4.5 |
+| 19 | Rate Limiting + Observability | 6 | 0 | 6 | 6 |
 | 20 | Self-hosted LLM | 6 | 0 | 6 | 12 |
 | 21 | Production Cutover | 7 | 0 | 7 | 8 |
+| 22 | AI Influencer Profile Sections | 4 | 0 | 4 | 10 |
+| 23 | Skills Framework (post-cutover, dogfood) | 7 | 0 | 7 | 4.5 |
+| 24 | Security & Safety Drills | 5 | 0 | 5 | 5.5 |
 | — | Mobile Client | 11 | 0 | 11 | 21 |
 | — | Infrastructure | 15 | 6 | 9 | — |
-| **TOTAL** | | **168** | **55** | **113** | **~55-70 days** |
+| **TOTAL** | | **186** | **55** | **131** | **~75-90 days** |
 
 ---
 
