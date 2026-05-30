@@ -91,7 +91,15 @@ Each backup is the full chat-ai database, ~520 MB compressed (likely 3-5 GB unco
 
 Restore the chat-ai backup into a fresh, isolated Postgres instance — not the running Patroni cluster on rishi-4/5/6.
 
-**Provisioning:** `docker run -d --name chat-ai-restore-sidecar -v /var/lib/restore:/var/lib/postgresql/data postgres:16` on rishi-5 (where there's known free disk per earlier ops). 50-80 GB volume to hold the restored DB (3-5 GB data + WAL headroom). Tear down after extraction.
+**Provisioning:** `docker run -d --name chat-ai-restore-sidecar -v /var/lib/restore:/var/lib/postgresql/data postgres:16` on **rishi-4** (async replica). 50-80 GB volume to hold the restored DB (3-5 GB data + WAL headroom). Tear down after extraction.
+
+**Why rishi-4 and not rishi-5 (leader) or rishi-6 (sync_standby):**
+- Cluster snapshot (2026-05-30): rishi-5=leader, rishi-4=async replica, rishi-6=sync_standby
+- rishi-4: 933 G free / 59 G avail RAM
+- rishi-6: 901 G free / 57 G avail RAM
+- Disk + RAM are within 3% of each other — that's a wash
+- The deciding factor is **sync_standby**. Every V2 commit on rishi-5 waits for an fsync on rishi-6 before acknowledging the client. Heavy sidecar I/O on rishi-6 would backpressure V2's commit path. rishi-4 is async — replication lag isn't on the leader's commit critical path, so the same sidecar load has zero user-facing latency cost.
+- rishi-5 (leader) is also a non-starter — sidecar there directly competes with V2's primary write workload.
 
 **Why a separate sidecar, not V2 prod:**
 - V2 is serving live traffic; we don't want a 3-5 GB restore touching its shared buffers
@@ -218,11 +226,40 @@ _FILENAME_RE = re.compile(
 
 The apply logic doesn't change — staging+COPY+INSERT ON CONFLICT DO NOTHING handles both shapes.
 
-### 7c. (Optional) Single-flight lease on apply
+### 7c. Single-flight lease on apply — **DEFERRED (per Rishi Q4)**
 
-The V2-replica race we deferred earlier (one file processed by both replicas, second gets PK-conflict no-op) is harmless during normal operation but wastes ~2× the apply work during a 5-hour bootstrap. **If we want to make the bootstrap finish faster**, this is the time to add a `SELECT FOR UPDATE` lease on `etl_processed_files` so only one replica picks up each file.
+The V2-replica race (one file processed by both replicas, second gets PK-conflict no-op) is harmless during normal operation but wastes ~2× the apply work during a 5-hour bootstrap.
 
-**Recommendation:** ship without the lease change first. If apply runtime > 6 hours becomes a problem, add the lease as a follow-up PR.
+**Per Rishi's Q4 answer:** **Wait.** Ship this post-bootstrap as a steady-state optimization. Don't add variables to the one-time critical run. The 2× apply duplication is wasted CPU/network, not a correctness issue — the bootstrap still completes correctly, just slower.
+
+### 7e. Progress visibility endpoint — **NEW (per Rishi add (i))**
+
+Rishi needs URL-readable progress during the 5-7 h run (no SSH). Adding `GET /admin/bootstrap-progress` (JWT-gated, matches the other `/admin/*` endpoints):
+
+```json
+{
+  "status": "in_progress" | "complete" | "not_started",
+  "current_wave": "ai_influencers" | "conversations" | "messages" | "done",
+  "wave_files_total":     {ai_influencers: N, conversations: N, messages: N},
+  "wave_files_processed": {ai_influencers: N, conversations: N, messages: N},
+  "rows_applied_total": N,
+  "rows_applied_last_5min": N,
+  "rate_rows_per_min": N,
+  "eta_minutes": N,
+  "started_at": "ISO8601",
+  "elapsed_minutes": N
+}
+```
+
+Implementation: query `etl_processed_files` WHERE `filename LIKE 'historical_%'`, group by table from the filename regex, count + rate from `processed_at` deltas over last 5 min. ETA = (total - processed) / rate.
+
+`wave_files_total` is sourced by counting matching keys in the S3 `historical_*` prefix; cached for 60 s to avoid hammering S3 from polling.
+
+Adds ~50 LOC to `app/routes/health.py` + a helper in `app/services/etl_chat_ai.py`. Ships in the same PR as `historical_export.py` + the regex extension (per Q3: one PR, tightly coupled feature).
+
+### 7f. (Optional) Migration 024 — `bootstrap_runs` marker table
+
+A single-row marker table to record bootstrap start/end/status. Useful for ops visibility and to prevent accidental concurrent bootstraps. ~15 lines.
 
 ### 7d. New `migrations/024_historical_bootstrap_marker.sql` (optional)
 
@@ -267,47 +304,68 @@ In practice: if Stage 2 fires, we'd likely accept the partial apply (it's still 
 
 ## 9. Execution sequence (proposed)
 
-To be executed **only on Rishi's explicit go-ahead** (this doc, reviewed and approved):
+To be executed **only on Rishi's explicit go-ahead** (this doc, reviewed and approved).
 
-1. **Pre-flight checks** (~15 min)
-   - Confirm latest `yral-chat-ai/daily/*.sql.gz` is < 24h old
-   - Confirm rishi-5 has > 100 GB free disk
-   - Confirm V2 ETL is healthy (`/admin/etl-status` heartbeat fresh, no STUCK marker)
-   - **Backup V2 Postgres** per rule #9 (`pre-bootstrap-rebootstrap-<ts>.dump`)
+**Timing window:** start 22:00 UTC (per Rishi Q2). 5-7 h runtime puts completion at 03:00-05:00 UTC = 08:30-10:30 IST = Rishi's morning. Verification + sidecar teardown by the time Rishi reads in.
 
-2. **Ship code changes** (~30 min)
-   - PR with `scripts/historical_export.py`, `_FILENAME_RE` regex extension, optional migration 024
-   - CI + Codex + merge + deploy
+### 9.1 Pre-flight checks (~15 min)
+- Confirm latest `yral-chat-ai/daily/*.sql.gz` is < 24h old
+- Confirm rishi-4 has > 100 GB free disk (most recent check: 933 G free)
+- Confirm V2 ETL is healthy (`/admin/etl-status` heartbeat fresh, no STUCK marker)
+- **Backup V2 Postgres — explicit per Rishi add (ii) + rule #9:**
+   - `pg_dump --format=custom` from rishi-5 leader (peer auth pattern, matches yesterday's migrations 019/020/021)
+   - File: `pre-bootstrap-rebootstrap-<utc-ts>.dump`
+   - **Two copies:** local at `~/yral-backups/` on rishi-5 (default home location, matches existing convention) AND uploaded to S3 at `s3://rishi-yral/yral-rishi-agent/pre-bootstrap-snapshots/`
+   - **30-day retention** explicit: S3 object tagged with `lifecycle=30d` metadata; local copy preserved for the same 30-day window via a `find ~/yral-backups -name 'pre-bootstrap-*' -mtime +30 -delete` cleanup. **This is a data-write rollback safety net (not a schema-change requirement) — rule #9 still applies because bootstrap is data-modifying at scale.**
+   - Record sha256 in DAILY-LOG.md before proceeding to step 9.2 — same audit-trail discipline as the migration backups
 
-3. **Sidecar restore** (~45 min)
-   - Provision docker container with mounted volume on rishi-5
-   - Download latest backup from S3
-   - pg_restore into the sidecar
-   - Validate by querying total row counts
+### 9.2 Ship code changes (~30 min)
+- ONE PR (per Rishi Q3 — tightly coupled feature) containing:
+   - `scripts/historical_export.py`
+   - `_FILENAME_RE` regex extension in `app/services/etl_chat_ai.py`
+   - `GET /admin/bootstrap-progress` endpoint (per Rishi add (i)) + supporting helper
+   - Optional `migrations/024_bootstrap_runs.sql` marker table
+- CI + Codex + merge + deploy
 
-4. **Extraction + upload** (~90 min)
-   - Run `historical_export.py` against the sidecar
-   - 66 message CSVs + ~6 conv CSVs + 1 influencer CSV, uploaded with `historical_` prefix
-   - Wave barriers enforced via heartbeat polling
+### 9.3 Sidecar restore (~45 min)
+- Provision docker container with mounted volume **on rishi-4** (async replica — see 4a for rationale)
+- Download latest backup from S3
+- pg_restore into the sidecar
+- Validate by querying total row counts
 
-5. **Apply** (~3-5 hours — V2 picks up automatically)
-   - Monitor `/admin/etl-status` for `files_processed_24h` growth
-   - Watch for `STUCK` markers, integrity verifier failures
-   - On any per-file failure: pause uploads, investigate
+### 9.4 Extraction + upload (~90 min)
+- Run `historical_export.py` against the sidecar
+- 66 message CSVs + ~6 conv CSVs + 1 influencer CSV, uploaded with `historical_` prefix
+- Wave barriers enforced via heartbeat polling
 
-6. **Verification** (~30 min)
-   - Layer 1 count diff: ≤ Option-A skip count
-   - Layer 2 random sample: 0 unexplained mismatches
-   - Layer 3 boundary message: present in V2
+### 9.5 Apply (~3-5 hours — V2 picks up automatically)
+- Monitor via `GET /admin/bootstrap-progress` (URL Rishi can read from anywhere — no SSH)
+- Also `GET /admin/etl-status` for `files_processed_24h` growth (existing endpoint)
+- Watch for `STUCK` markers, integrity verifier failures
+- **On any per-file failure: pause uploads, ping Rishi (per Q5 — CLAUDE.md rule 10)**
 
-7. **Sidecar teardown** (~5 min)
-   - Confirm verification passed
-   - Stop + remove sidecar container
-   - Delete volume
-   - Update `DAILY-LOG.md` with bootstrap outcome
-   - Update memory: bootstrap complete date
+### 9.6 Verification (~30 min)
+- Layer 1 count diff: ≤ Option-A skip count
+- Layer 2 random sample: 0 unexplained mismatches
+- Layer 3 boundary message: present in V2
+- **On verification failure: stop and ping Rishi (per Q5).** Do not auto-rerun corrective passes.
 
-**Total wall-clock: 6-8 hours, single-operator (me + Rishi watching).**
+### 9.7 Sidecar teardown (~5 min)
+- Confirm verification passed
+- Stop + remove sidecar container
+- Delete volume
+- Update `DAILY-LOG.md` with bootstrap outcome
+- Update memory: bootstrap complete date
+
+**Total wall-clock: 6-8 hours.**
+
+**Timing alignment (22:00 UTC start, per Q2):**
+- 22:00 UTC — kick off (Rishi 03:30 IST, asleep — autonomous run)
+- 22:30 UTC — sidecar restore done
+- 24:00 UTC — extraction done, apply begins
+- 03:00-05:00 UTC — apply + verification complete (Rishi 08:30-10:30 IST, waking)
+- Rishi reads `DAILY-LOG.md` + `/admin/bootstrap-progress` first thing, sees green
+- If something stopped mid-run per Q5, Rishi sees that too — same dashboards
 
 ---
 
@@ -323,13 +381,22 @@ To be executed **only on Rishi's explicit go-ahead** (this doc, reviewed and app
 | Hetzner egress charges | Low | S3 → V2 (same Hetzner region) is internal traffic, no charges. |
 | Bootstrap conflicts with running incremental (race) | Low | Different filename prefixes (`historical_` vs `<ts>_`); `etl_processed_files` UNIQUE on filename rejects any accidental overlap. |
 
-### Open questions for Rishi
+### Open questions for Rishi — **all 5 answered advisory; final approval on the full doc read tomorrow morning**
 
-1. **Sidecar host:** rishi-5 has free disk per earlier ops. Confirm acceptable, or specify alternate host.
-2. **Bootstrap timing window:** ideally low-chat-ai-traffic to keep backup-restore-extract clean. Suggest 02:00-08:00 UTC (chat-ai's quietest window historically). Confirm.
-3. **Code change PRs:** ship `scripts/historical_export.py` + regex extension as ONE PR or split? Recommend one PR — they're a tightly coupled feature.
-4. **Lease change (7c):** ship the SELECT FOR UPDATE single-flight lease as a pre-bootstrap optimization, or wait?
-5. **If verification fails:** auto-rerun corrective pass or stop-and-ping-Rishi? Recommend stop-and-ping for the first bootstrap; we can automate retries once we trust the pipeline.
+| # | Question | Rishi's advisory | Reflected in doc section |
+|---|---|---|---|
+| Q1 | Sidecar host | **rishi-4** (async replica; sync_standby risks backpressure) | §4a |
+| Q2 | Bootstrap timing | **22:00 UTC start** (completes 03:00-05:00 UTC = 08:30-10:30 IST = Rishi's morning) | §9 timing block |
+| Q3 | PR shape | **One PR** (export + regex extension + new progress endpoint are tightly coupled) | §9.2 |
+| Q4 | Lease change | **Wait** — ship post-bootstrap as steady-state optimization, don't add variables to the one-time critical run | §7c |
+| Q5 | Verification failure | **Stop and ping Rishi** (CLAUDE.md rule 10) | §9.5, §9.6 |
+
+### Adds beyond the 5 questions
+
+| Add | Rishi's ask | Reflected in doc section |
+|---|---|---|
+| (i) Progress visibility | URL-readable rows-per-minute, current wave, ETA — no SSH | §7e new `GET /admin/bootstrap-progress` endpoint |
+| (ii) Rollback safety | Explicit pg_dump snapshot pre-bootstrap, local + S3, 30-day retention. Rule #9 applies even though this is a data-write not a schema change. | §9.1 (pre-flight step strengthened with retention requirements) |
 
 ---
 
