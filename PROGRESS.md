@@ -32,6 +32,7 @@
 | 1.8 | Image generation in chat (1 endpoint) | ✅ Done | — | #158 |
 | 1.9 | Human-to-Human chat: create + list + send (3 endpoints) | ✅ Done | — | #158 |
 | 1.9a | H2H polish: sender_id in message API responses (unblocks mobile bubble alignment) | ✅ Done | — | TBD |
+| 1.9b | H2H polish: v2 inbox surfaces H2H rows (LEFT JOIN + participant_b OR-clause + metadata-bulk peer enrichment) | ✅ Done | — | TBD |
 | 1.10 | Chat as Human (creator takeover mode) — backend ✅ shipped & retested, mobile UI PR to Sarvesh pending (feature-flag-gated, awaiting agent v2 cutover) | ✅ Done (backend) | 1 | #170 (backend, merged 2026-05-28) + mobile PR (pending) |
 | 1.11 | Unified inbox v3 (1 endpoint) | ✅ Done | — | #158 |
 | 1.12 | Billing paywall (calls billing.yral.com) | ✅ Done | — | #158 |

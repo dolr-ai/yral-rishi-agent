@@ -103,8 +103,56 @@ async def _list_for_user(
             "created_at": _format_dt(lm["created_at"]),
         }
 
+    # H2H peer ids — the participant who isn't the caller. Collected up
+    # front so we can batch-resolve display info via metadata-bulk in one
+    # round trip rather than N. Same helper the bot-side path uses.
+    h2h_peer_ids: list[str] = []
+    for c in conversations:
+        if c.get("conversation_type") == "human_chat":
+            peer = (
+                c.get("participant_b_id")
+                if c.get("user_id") == user_id
+                else c.get("user_id")
+            )
+            if peer:
+                h2h_peer_ids.append(peer)
+    peer_profiles = (
+        await _fetch_user_profiles(list(set(h2h_peer_ids))) if h2h_peer_ids else {}
+    )
+
     formatted = []
     for c in conversations:
+        conv_type = c.get("conversation_type") or "ai_chat"
+        if conv_type == "human_chat":
+            peer_id = (
+                c.get("participant_b_id")
+                if c.get("user_id") == user_id
+                else c.get("user_id")
+            ) or ""
+            peer_meta = peer_profiles.get(
+                peer_id,
+                {
+                    "principal_id": peer_id,
+                    "username": None,
+                    "profile_picture_url": None,
+                },
+            )
+            formatted.append(
+                {
+                    "id": c["id"],
+                    "user_id": c["user_id"],
+                    "influencer_id": None,
+                    "conversation_type": conv_type,
+                    "influencer": None,
+                    "user": peer_meta,
+                    "created_at": _format_dt(c["created_at"]),
+                    "updated_at": _format_dt(c["updated_at"]),
+                    "message_count": c.get("message_count", 0),
+                    "unread_count": c.get("unread_count", 0),
+                    "last_message": last_msg_map.get(c["id"]),
+                }
+            )
+            continue
         influencer_info = {
             "id": c.get("inf_id") or c.get("influencer_id") or "",
             "name": c.get("inf_name") or "",
@@ -119,6 +167,7 @@ async def _list_for_user(
                 "id": c["id"],
                 "user_id": c["user_id"],
                 "influencer_id": c.get("influencer_id"),
+                "conversation_type": conv_type,
                 "influencer": influencer_info,
                 "user": None,
                 "created_at": _format_dt(c["created_at"]),
