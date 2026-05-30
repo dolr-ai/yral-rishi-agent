@@ -1,5 +1,64 @@
 # Daily Log
 
+## 2026-05-30 — ETL Option A live; cursor refactor; H2H verified; sender_id polish
+
+### ETL fully operational
+
+Option A (skip + log duplicate/orphaned rows) shipped, deployed, applying real data. Pipeline catching up on yesterday's backlog plus today's new activity.
+
+**Per-table cursors live (from `etl_processed_files` join):**
+- `ai_influencers`: epoch (no new rows on chat-ai)
+- `conversations`: cursor at `2026-05-30 07:04:30`, 91 rows applied
+- `messages`: cursor at `2026-05-30 07:43:43`, 1212 rows applied
+
+**24h totals (catch-up window, NOT steady state):**
+- 78 files processed
+- 1303 rows applied
+- 1088 rows skipped (535 conflict + 553 orphan)
+- 6 distinct conversation conflicts (the actual Option A class)
+- Heartbeat fresh (124s), no STUCK marker
+
+**Crossing the 500/day "revisit" threshold — context required.** The 1088 skips include yesterday's backlog being processed today; steady state is much lower. Estimate after 24h of post-catchup steady state: ~1500 if orphan rate stays at current level, much lower if orphans are dominated by parent-skipped cascade (which they appear to be — only 6 distinct conv conflicts but 553 distinct orphan messages → average 92 orphans per skipped conv, consistent with active chat history). **Real call on Option A vs B requires waiting through steady-state — should land tomorrow's morning check.**
+
+### PRs merged today (6 total)
+
+- **#216** — `feat(etl)`: Option A skip + log + audit table (migration 021)
+- **#217** — `fix(etl)`: disambiguate `$3` param types in `_advance_cursor` (BIGINT vs INT casts)
+- **#218** — `fix(etl)`: parse `until_iso` to datetime (asyncpg timestamp codec)
+- **#219** — `refactor(etl)`: drop `_advance_cursor`, derive cursors from `etl_processed_files` (eliminates the 3-bug cascade)
+- **#220** — `feat(api)`: expose `sender_id` in message API responses (mobile H2H bubble alignment)
+
+### Backups taken (rule #9)
+
+- `~/yral-backups/pre-migration-021-skipped-rows-20260530-064352.dump` on rishi-5 (526 MB, sha256 `c9e18c1b795161c82c10b4596b7c309f65009ac2f43274944b21e97a315c31f5`)
+
+### H2H verification — mobile expert is clear
+
+All 5 invariants verified ✅:
+- 3a No LLM call on H2H send (`chat.py:389` rejects pre-LLM; `human_chat.py` has zero LLM imports)
+- 3b No memory extraction (only ws broadcast + push notification background tasks)
+- 3c No content_safety on H2H (deliberate, matches "deliver, don't censor" intent)
+- 3d Engagement loops exclude H2H (proactive + nudge both filter `conversation_type = 'ai_chat'`)
+- 3e v3 inbox returns both AI + H2H with correct `influencer`/`peer_user` field set
+
+Endpoint suite: 34/35 PASS. The 1 FAIL is an unrelated stale-test (`/admin/etl-integrity` test checks the old key `latest_per_check` which Phase 3 renamed to `latest_per_layer`) — small fix to backlog.
+
+Minor non-regression flag: `peer_user.display_name` and `avatar_url` are returned as `None` from v3 inbox. Mobile will need either the principal ID display or a separate user-info call.
+
+### Integrity loop status
+
+Has not yet fired since the morning's deploys. INITIAL_DELAY is 10 min per deploy, and we did 4 deploys today (Option A + 3 cursor-fix iterations). Integrity will start ticking ~10 min after the last deploy and chew through the backlog of 14 hourly + 26 sentinel + 3 sample + 177 tick payloads queued in S3.
+
+### Tomorrow morning's check
+
+Re-pull `/admin/etl-status` + `/admin/etl-integrity` + `/admin/etl-skipped` after 24h of stable operation. If `skipped_rows_24h` is still >500 in a steady-state window, schedule the Option B (remap) discussion.
+
+### Loose follow-ups (low priority)
+
+- Drop `etl_sync_state` table in a future migration (now vestigial, no readers/writers)
+- Update `scripts/test_all_endpoints.py` for the `latest_per_check` → `latest_per_layer` rename
+- Two V2 replicas race on the same S3 file (eventually consistent via filename PK, but wasted work) — could add SELECT FOR UPDATE on a lease table for single-flight
+
 ## 2026-05-29 (evening) — S3 ETL pivot Phases 1-3 shipped, Phase 4 deployed but apply blocked on schema mismatch
 
 ### The pivot
