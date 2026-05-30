@@ -13,6 +13,7 @@ import database
 from auth import get_current_user
 from infra import init_sentry
 from middleware import RequestIdMiddleware
+from rate_limiter import RateLimitMiddleware, hydrate_from_db
 from services import langfuse_tracing, nudge, proactive, websocket_manager
 from routes.chat import router as chat_router
 from routes.chat_v2 import router as chat_v2_router
@@ -77,6 +78,13 @@ async def lifespan(app: FastAPI):
     from services.email_digest import digest_loop
 
     digest_task = asyncio.create_task(digest_loop())
+
+    # Hydrate rate-limit config from DB into Redis so the middleware
+    # reads the operator-tuned values, not just the defaults. Idempotent.
+    try:
+        await hydrate_from_db(await database.get_pool())
+    except Exception as e:
+        logger.warning("rate_limiter hydrate failed (limiter uses defaults): %s", e)
 
     yield
 
@@ -315,6 +323,7 @@ else:
     origins = [o.strip() for o in config.CORS_ORIGINS.split(",")]
 
 app.add_middleware(RequestIdMiddleware)
+app.add_middleware(RateLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
