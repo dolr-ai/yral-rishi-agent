@@ -376,7 +376,11 @@ def main():
         "GET",
         f"{base}/admin/etl-integrity",
         headers=auth,
-        expect_json_key="latest_per_check",
+        # Phase 3 renamed this key (PR #213) from latest_per_check (old
+        # 3-layer integrity model) to latest_per_layer (new 4-layer
+        # tick/hourly/sample/sentinel model). Test script lagged the
+        # rename until this commit.
+        expect_json_key="latest_per_layer",
     )
 
     print("\n--- Bot Quality Score (Phase 7.7) ---")
