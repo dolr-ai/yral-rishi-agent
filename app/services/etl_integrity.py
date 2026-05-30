@@ -141,6 +141,57 @@ def _download_json_sync(s3, key: str) -> dict:
     return json.loads(resp["Body"].read())
 
 
+# ─── datetime adapters for asyncpg ───────────────────────────────────────
+#
+# asyncpg validates parameter types client-side before sending to Postgres.
+# A SQL `::cast` in the query doesn't save you — by the time Postgres sees
+# the cast, asyncpg has already rejected the param. The rules:
+#
+#   TIMESTAMP (without time zone) column → naive datetime (no tzinfo)
+#   TIMESTAMPTZ (with time zone) column  → aware datetime (with tzinfo)
+#   either column type with a str param  → asyncpg won't coerce; parse first
+#
+# Two adapters below normalize from "whatever we have" to "what asyncpg
+# expects for this column type." See
+# memory/feedback_audit_codebase_wide_when_fixing_typecodec.md for the
+# rule + the cascade of fix PRs (#217-#220, this one) that led to it.
+
+
+def _to_naive_utc(dt_or_iso) -> datetime:
+    """Normalize to NAIVE UTC datetime — for `TIMESTAMP` columns
+    (e.g. messages.created_at, conversations.created_at). Accepts a
+    datetime or an ISO string; either way the result has no tzinfo and
+    represents UTC wall-clock."""
+    if isinstance(dt_or_iso, str):
+        s = dt_or_iso.strip()
+        if "T" not in s and " " in s:
+            s = s.replace(" ", "T", 1)
+        dt = datetime.fromisoformat(s)
+    else:
+        dt = dt_or_iso
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def _to_aware_utc(dt_or_iso) -> datetime:
+    """Normalize to AWARE UTC datetime — for `TIMESTAMPTZ` columns
+    (e.g. etl_integrity_results.snapshot_iso). Same string/datetime
+    flexibility, result always has tzinfo=UTC."""
+    if isinstance(dt_or_iso, str):
+        s = dt_or_iso.strip()
+        if "T" not in s and " " in s:
+            s = s.replace(" ", "T", 1)
+        dt = datetime.fromisoformat(s)
+    else:
+        dt = dt_or_iso
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt
+
+
 # ─── verifiers ────────────────────────────────────────────────────────────
 
 
@@ -155,9 +206,9 @@ async def _verify_tick(v2_pool, payload: dict) -> tuple[bool, int, dict]:
     from datetime import timedelta
 
     watermark_iso = payload["watermark_iso"]
-    watermark_dt = datetime.fromisoformat(watermark_iso)
-    if watermark_dt.tzinfo is None:
-        watermark_dt = watermark_dt.replace(tzinfo=timezone.utc)
+    # created_at on conversations/messages is TIMESTAMP (no tz). Use the
+    # naive-UTC adapter so asyncpg's codec accepts the param.
+    watermark_dt = _to_naive_utc(watermark_iso)
     grace = timedelta(seconds=INTEGRITY_INTERVAL_SEC + 5)
     window_start = watermark_dt - grace
 
@@ -182,9 +233,8 @@ async def _verify_hourly(v2_pool, payload: dict) -> tuple[bool, int, dict]:
     """V2 runs the same COUNT(*) WHERE created_at < watermark and
     compares each table to the chat-ai count rishi-1 reported."""
     watermark_iso = payload["watermark_iso"]
-    watermark_dt = datetime.fromisoformat(watermark_iso)
-    if watermark_dt.tzinfo is None:
-        watermark_dt = watermark_dt.replace(tzinfo=timezone.utc)
+    # created_at columns are TIMESTAMP (naive). See _to_naive_utc.
+    watermark_dt = _to_naive_utc(watermark_iso)
     drifts = {}
     total_drift = 0
     for table, expected in payload["layer_1_row_counts"].items():
@@ -375,17 +425,19 @@ async def _record(
     details: dict,
     runtime_ms: int,
 ):
+    # snapshot_iso column is TIMESTAMPTZ → asyncpg wants an aware
+    # datetime, not a string (the $3::timestamptz cast can't save us).
     await v2_pool.execute(
         """
         INSERT INTO etl_integrity_results (
             layer, snapshot_filename, snapshot_iso, passed, drift_count,
             details, runtime_ms
-        ) VALUES ($1, $2, $3::timestamptz, $4, $5, $6::jsonb, $7)
+        ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
         ON CONFLICT (snapshot_filename) DO NOTHING
         """,
         layer,
         filename,
-        snapshot_iso,
+        _to_aware_utc(snapshot_iso),
         passed,
         drift_count,
         json.dumps(details),
