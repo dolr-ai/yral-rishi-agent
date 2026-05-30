@@ -57,6 +57,9 @@ def _format_message(msg: dict) -> dict:
         "id": msg["id"],
         "conversation_id": msg.get("conversation_id"),
         "role": msg["role"],
+        # See human_chat._format_message — mobile uses sender_id for
+        # bubble alignment. Symmetric across AI + H2H wire formats.
+        "sender_id": msg.get("sender_id"),
         "content": msg.get("content"),
         "message_type": msg["message_type"],
         "media_urls": media_urls,

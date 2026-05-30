@@ -47,6 +47,10 @@ def _format_message(msg: dict) -> dict:
         "id": msg["id"],
         "conversation_id": msg.get("conversation_id"),
         "role": msg["role"],
+        # Mobile needs sender_id to render "is this message mine?" bubble
+        # alignment in H2H — role is always 'user' for both participants
+        # so sender_id is the only disambiguator.
+        "sender_id": msg.get("sender_id"),
         "content": msg.get("content"),
         "message_type": msg["message_type"],
         "media_urls": media_urls,
