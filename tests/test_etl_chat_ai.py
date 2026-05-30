@@ -201,37 +201,16 @@ def test_get_skipped_exists():
     assert callable(get_skipped)
 
 
-def test_parse_until_iso_handles_postgres_space_format():
-    """rishi-1 emits timestamps from psql with a space separator (e.g.,
-    '2026-05-30 07:14:02.058352'). asyncpg's timestamp codec wants a
-    datetime instance, not a string. _parse_until_iso normalizes both
-    space and T-separated forms, attaches UTC if no tzinfo."""
-    from datetime import datetime, timezone
-    from services.etl_chat_ai import _parse_until_iso
+def test_advance_cursor_removed_in_favor_of_derived():
+    """_advance_cursor + _parse_until_iso were removed — cursors are now
+    derived from etl_processed_files at query time inside get_status.
+    Single source of truth, no more asyncpg type quirks on the write
+    path. If a future refactor adds them back, this test fails and
+    you have to think about it."""
+    from services import etl_chat_ai
 
-    # rishi-1 wire format (space-separated, no tz)
-    dt = _parse_until_iso("2026-05-30 07:14:02.058352")
-    assert isinstance(dt, datetime)
-    assert dt.tzinfo == timezone.utc
-    assert dt.year == 2026 and dt.month == 5 and dt.day == 30
-
-    # ISO 8601 format also supported (in case future emitter switches)
-    dt2 = _parse_until_iso("2026-05-30T07:14:02.058352+00:00")
-    assert dt2.tzinfo is not None
-
-
-def test_advance_cursor_disambiguates_param_types():
-    """Regression for the AmbiguousParameterError we hit on 2026-05-30:
-    rows_pulled_total is BIGINT, rows_pulled_last_run is INT — both
-    columns can't share the same $-placeholder without explicit casts,
-    or asyncpg's type deducer raises. The fix is `$3::bigint, $3::int`.
-    Pinning so a future refactor doesn't silently drop the casts."""
-    import inspect
-    from services.etl_chat_ai import _advance_cursor
-
-    source = inspect.getsource(_advance_cursor)
-    assert "$3::bigint" in source
-    assert "$3::int" in source
+    assert not hasattr(etl_chat_ai, "_advance_cursor")
+    assert not hasattr(etl_chat_ai, "_parse_until_iso")
 
 
 def test_status_dict_includes_skip_fields():
@@ -246,3 +225,16 @@ def test_status_dict_includes_skip_fields():
     assert "skipped_rows_24h" in source
     assert "skipped_by_reason" in source
     assert "skipped_by_table" in source
+
+
+def test_status_derives_cursors_from_processed_files():
+    """The cursor SQL in get_status must source from etl_processed_files,
+    not the vestigial etl_sync_state. Catches accidental revert."""
+    import inspect
+    from services.etl_chat_ai import get_status
+
+    source = inspect.getsource(get_status)
+    # Derived approach uses s3_metadata->>'until' over the join
+    assert "s3_metadata->>'until'" in source
+    # Old approach used a direct SELECT from etl_sync_state for cursors
+    assert "FROM etl_sync_state" not in source
