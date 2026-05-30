@@ -252,6 +252,22 @@ async def send_digest_now(pool) -> dict:
     return {"sent": sent, "error": error, "digest": digest}
 
 
+def _parse_rendered_at(s: str) -> datetime:
+    """Convert the digest's ISO string back to a tz-aware datetime so
+    asyncpg accepts it for the TIMESTAMPTZ column. asyncpg validates
+    types client-side BEFORE Postgres sees any ::cast, so the cast in
+    SQL alone isn't enough — see memory
+    feedback_audit_codebase_wide_when_fixing_typecodec for the
+    fuller rule + the prior PRs (#217-#222) that traced this family of
+    bugs."""
+    if "T" not in s and " " in s:
+        s = s.replace(" ", "T", 1)
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 async def _record_run(pool, digest: dict, sent: bool, error: str):
     """Persist the digest so the preview endpoint can read recent
     runs. The history table is small (max 30 rows kept) — bounded by
@@ -261,9 +277,9 @@ async def _record_run(pool, digest: dict, sent: bool, error: str):
     await pool.execute(
         """
         INSERT INTO email_digest_runs (rendered_at, for_date, body_json, sent, error)
-        VALUES ($1::timestamptz, $2, $3::jsonb, $4, $5)
+        VALUES ($1, $2, $3::jsonb, $4, $5)
         """,
-        digest["rendered_at"],
+        _parse_rendered_at(digest["rendered_at"]),
         digest["for_date"],
         _json.dumps(digest),
         sent,
