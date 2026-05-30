@@ -524,6 +524,7 @@ async def run_once(v2_pool) -> dict:
 
 async def etl_loop():
     from database import get_pool
+    from kill_switch import is_enabled
 
     await asyncio.sleep(INITIAL_DELAY_SEC)
     if _load_s3_credentials() is None:
@@ -534,6 +535,11 @@ async def etl_loop():
         )
     while True:
         try:
+            # Emergency kill-switch (env symmetry). Non-Gemini, but
+            # included so ops can stop the whole background side.
+            if not is_enabled("etl"):
+                await asyncio.sleep(SYNC_INTERVAL_SEC)
+                continue
             v2_pool = await get_pool()
             await run_once(v2_pool)
         except asyncio.CancelledError:

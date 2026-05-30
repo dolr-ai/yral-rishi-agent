@@ -100,10 +100,17 @@ async def update_all_streaks_once(pool) -> dict:
 async def streak_loop():
     """Run update_all_streaks_once every 24h after an initial delay."""
     from database import get_pool
+    from kill_switch import is_enabled
 
     await asyncio.sleep(INITIAL_DELAY_SEC)
     while True:
         try:
+            # Emergency kill-switch — env-var symmetry with the Gemini
+            # loops, even though streak_tracker doesn't call Gemini.
+            # Lets ops kill the whole background side with one config.
+            if not is_enabled("streak"):
+                await asyncio.sleep(STREAK_UPDATE_INTERVAL_SEC)
+                continue
             pool = await get_pool()
             t0 = asyncio.get_event_loop().time()
             stats = await update_all_streaks_once(pool)

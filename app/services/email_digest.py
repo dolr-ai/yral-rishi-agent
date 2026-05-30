@@ -329,10 +329,14 @@ async def digest_loop():
     via for_date — won't double-send if the loop wakes twice in the
     same target minute."""
     from database import get_pool
+    from kill_switch import is_enabled
 
     while True:
         try:
             await asyncio.sleep(DIGEST_TICK_INTERVAL_SEC)
+            # Emergency kill-switch (env symmetry). Non-Gemini.
+            if not is_enabled("email_digest"):
+                continue
             now = datetime.now(timezone.utc)
             if not (
                 now.hour == DIGEST_TARGET_HOUR_UTC

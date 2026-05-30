@@ -19,20 +19,39 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 # ─── pure-function env logic (kill_switch.py has no deps) ────────────────
 
 
+ALL_LOOPS = (
+    "proactive",
+    "nudge",
+    "quality_scorer",
+    "memory_extraction",
+    "memory_consolidation",
+    "streak",
+    "integrity",
+    "email_digest",
+    "etl",
+)
+ALL_ENV_KEYS = (
+    "GEMINI_BACKGROUND_LOOPS_ENABLED",
+    "ENABLE_PROACTIVE_LOOP",
+    "ENABLE_NUDGE_LOOP",
+    "ENABLE_QUALITY_SCORER",
+    "ENABLE_MEMORY_EXTRACTION",
+    "ENABLE_MEMORY_CONSOLIDATION",
+    "ENABLE_STREAK_LOOP",
+    "ENABLE_INTEGRITY_LOOP",
+    "ENABLE_EMAIL_DIGEST",
+    "ENABLE_ETL_LOOP",
+)
+
+
 def test_default_enabled_when_no_env_set(monkeypatch):
     """No env vars set = all loops enabled. We don't want a fresh
     deploy to silently disable background loops."""
-    for key in (
-        "GEMINI_BACKGROUND_LOOPS_ENABLED",
-        "ENABLE_PROACTIVE_LOOP",
-        "ENABLE_NUDGE_LOOP",
-        "ENABLE_QUALITY_SCORER",
-        "ENABLE_MEMORY_EXTRACTION",
-    ):
+    for key in ALL_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
     from kill_switch import is_enabled
 
-    for loop in ("proactive", "nudge", "quality_scorer", "memory_extraction"):
+    for loop in ALL_LOOPS:
         assert is_enabled(loop), f"{loop} should default-enabled"
 
 
@@ -40,16 +59,13 @@ def test_master_false_disables_all(monkeypatch):
     """The whole point — one env-var flip kills every background loop."""
     monkeypatch.setenv("GEMINI_BACKGROUND_LOOPS_ENABLED", "false")
     # Per-loop flags unset (default true) — master must still win
-    for key in (
-        "ENABLE_PROACTIVE_LOOP",
-        "ENABLE_NUDGE_LOOP",
-        "ENABLE_QUALITY_SCORER",
-        "ENABLE_MEMORY_EXTRACTION",
-    ):
+    for key in ALL_ENV_KEYS:
+        if key == "GEMINI_BACKGROUND_LOOPS_ENABLED":
+            continue
         monkeypatch.delenv(key, raising=False)
     from kill_switch import is_enabled
 
-    for loop in ("proactive", "nudge", "quality_scorer", "memory_extraction"):
+    for loop in ALL_LOOPS:
         assert not is_enabled(loop), f"{loop} should be disabled with master=false"
 
 
@@ -92,14 +108,31 @@ def test_unknown_loop_name_defaults_open():
 
 def test_current_state_lists_all_known_loops():
     """current_state powers the diagnostics + future dashboard tile.
-    Must enumerate all 4 known loops + master, with current env values."""
+    Must enumerate all 9 known loops + master, with current env values."""
     from kill_switch import current_state
 
     state = current_state()
     assert "master" in state
     assert state["master"]["env"] == "GEMINI_BACKGROUND_LOOPS_ENABLED"
-    for loop in ("proactive", "nudge", "quality_scorer", "memory_extraction"):
-        assert loop in state["loops"]
+    for loop in ALL_LOOPS:
+        assert loop in state["loops"], f"{loop} missing from current_state"
+
+
+def test_all_5_new_loops_gated_at_source():
+    """Source-inspection: each new background loop has its is_enabled
+    gate at the top of the loop function. Without this the env flag
+    does nothing in production."""
+    pairs = (
+        ("app/services/memory_consolidation.py", '"memory_consolidation"'),
+        ("app/services/streak_tracker.py", '"streak"'),
+        ("app/services/etl_integrity.py", '"integrity"'),
+        ("app/services/email_digest.py", '"email_digest"'),
+        ("app/services/etl_chat_ai.py", '"etl"'),
+    )
+    for path, gate_name in pairs:
+        src = _read(path)
+        assert "from kill_switch import is_enabled" in src, f"missing import in {path}"
+        assert f"is_enabled({gate_name})" in src, f"missing gate in {path}"
 
 
 # ─── source-inspection — gates are at the right call sites ───────────────

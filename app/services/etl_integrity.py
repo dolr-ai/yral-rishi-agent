@@ -575,12 +575,18 @@ async def run_once(v2_pool) -> dict:
 
 async def integrity_loop():
     from database import get_pool
+    from kill_switch import is_enabled
 
     await asyncio.sleep(INITIAL_DELAY_SEC)
     if _load_s3_credentials() is None:
         logger.info("etl_integrity: s3 credentials not mounted; verifier idle")
     while True:
         try:
+            # Emergency kill-switch — env symmetry. Non-Gemini, but
+            # included so ops can quiesce the whole background side.
+            if not is_enabled("integrity"):
+                await asyncio.sleep(INTEGRITY_INTERVAL_SEC)
+                continue
             v2_pool = await get_pool()
             await run_once(v2_pool)
         except asyncio.CancelledError:

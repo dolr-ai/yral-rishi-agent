@@ -29,10 +29,22 @@ import os
 _MASTER_KEY = "GEMINI_BACKGROUND_LOOPS_ENABLED"
 
 _PER_LOOP_KEYS = {
+    # Phase 1 loops (in #235, all gated): the Gemini-calling background
+    # loops the incident-2026-05-29 spec required to stop.
     "proactive": "ENABLE_PROACTIVE_LOOP",
     "nudge": "ENABLE_NUDGE_LOOP",
     "quality_scorer": "ENABLE_QUALITY_SCORER",
     "memory_extraction": "ENABLE_MEMORY_EXTRACTION",
+    # Phase 2 loops (this PR): the remaining background loops named
+    # by the Diagnostic Session. memory_consolidation calls embeddings
+    # which used to share the Gemini key; streak / integrity / digest /
+    # etl don't call Gemini directly but get env-var symmetry so ops
+    # can stop the whole background side with one config block.
+    "memory_consolidation": "ENABLE_MEMORY_CONSOLIDATION",
+    "streak": "ENABLE_STREAK_LOOP",
+    "integrity": "ENABLE_INTEGRITY_LOOP",
+    "email_digest": "ENABLE_EMAIL_DIGEST",
+    "etl": "ENABLE_ETL_LOOP",
 }
 
 
