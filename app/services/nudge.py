@@ -48,6 +48,14 @@ async def should_nudge(pool, conversation_id: str, idle_minutes: int = 5) -> boo
     if not last_msg or last_msg["role"] != "assistant":
         return False
 
+    # Cap: skip if we've already sent the max unanswered nudges (default 1).
+    # If the user didn't respond to our previous nudge, sending another
+    # is spam. The cap resets when the user sends a message — at that
+    # point count_unanswered_nudge starts at 0 again.
+    unanswered = await message_repo.count_unanswered_nudge(pool, conversation_id)
+    if unanswered >= message_repo.NUDGE_CAP_WITHOUT_REPLY:
+        return False
+
     from datetime import datetime, timezone, timedelta
 
     threshold = idle_minutes if msg_count <= 2 else idle_minutes * 2

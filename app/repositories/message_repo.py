@@ -22,6 +22,7 @@ async def create(
     client_message_id: str | None = None,
     sender_id: str | None = None,
     is_proactive: bool = False,
+    is_nudge: bool = False,
     variant_label: str | None = None,
 ) -> dict:
     message_id = str(uuid.uuid4())
@@ -30,8 +31,9 @@ async def create(
         INSERT INTO messages (
             id, conversation_id, role, sender_id, content, message_type,
             media_urls, audio_url, audio_duration_seconds, token_count,
-            client_message_id, status, is_read, is_proactive, variant_label
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'delivered', FALSE, $12, $13)
+            client_message_id, status, is_read, is_proactive, is_nudge,
+            variant_label
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'delivered', FALSE, $12, $13, $14)
         """,
         message_id,
         conversation_id,
@@ -45,14 +47,19 @@ async def create(
         token_count,
         client_message_id,
         is_proactive,
+        is_nudge,
         variant_label,
     )
     return await get_by_id(pool, message_id)
 
 
 # Task 2 (Phase 5 polish) — proactive-quality helpers.
+# Phase 6.3p polish — nudge cap (parallel pattern). 1, not 3 — nudges
+# fire every 15 min during early-conversation idle; one try is plenty.
+# If the user didn't respond, they're not engaging right now.
 
 PROACTIVE_CAP_WITHOUT_REPLY = 3
+NUDGE_CAP_WITHOUT_REPLY = 1
 
 
 async def count_unanswered_proactive(pool, conversation_id: str) -> int:
@@ -73,6 +80,29 @@ async def count_unanswered_proactive(pool, conversation_id: str) -> int:
         FROM messages, last_user
         WHERE conversation_id = $1
           AND is_proactive = TRUE
+          AND created_at > last_user.ts
+        """,
+        conversation_id,
+    )
+    return int(row["n"]) if row else 0
+
+
+async def count_unanswered_nudge(pool, conversation_id: str) -> int:
+    """Count nudge messages sent since the last user reply. Used by the
+    Phase 6 nudge engine to enforce a 1-cap (see NUDGE_CAP_WITHOUT_REPLY).
+    Same shape as count_unanswered_proactive — kept symmetric so future
+    cap-pattern audits see both at once."""
+    row = await pool.fetchrow(
+        """
+        WITH last_user AS (
+            SELECT COALESCE(MAX(created_at), 'epoch'::timestamp) AS ts
+            FROM messages
+            WHERE conversation_id = $1 AND role = 'user'
+        )
+        SELECT COUNT(*) AS n
+        FROM messages, last_user
+        WHERE conversation_id = $1
+          AND is_nudge = TRUE
           AND created_at > last_user.ts
         """,
         conversation_id,
