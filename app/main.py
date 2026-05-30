@@ -251,23 +251,33 @@ async def _engagement_loop():
         try:
             pool = await database.get_pool()
 
-            # Proactive messages for 24h-idle conversations
-            inactive = await proactive.find_inactive_conversations(
-                pool, hours=24, limit=20
-            )
-            for conv in inactive:
-                try:
-                    await proactive.send_proactive_message(
-                        pool,
-                        influencer_id=conv["influencer_id"],
-                        user_id=conv["user_id"],
-                        conversation_id=conv["id"],
-                        trigger_type="welcome_back",
-                    )
-                except Exception:
-                    logger.debug(f"Proactive send failed for conv {conv['id']}")
+            # Emergency kill-switch (Phase 19.3 stop-gap, 2026-05-30).
+            # Skip the inactive-conv scan AND the Gemini-calling
+            # send_proactive_message when either gate is off.
+            from kill_switch import is_enabled as _ks
 
-            # Nudges for recently idle conversations
+            if _ks("proactive"):
+                # Proactive messages for 24h-idle conversations
+                inactive = await proactive.find_inactive_conversations(
+                    pool, hours=24, limit=20
+                )
+                for conv in inactive:
+                    try:
+                        await proactive.send_proactive_message(
+                            pool,
+                            influencer_id=conv["influencer_id"],
+                            user_id=conv["user_id"],
+                            conversation_id=conv["id"],
+                            trigger_type="welcome_back",
+                        )
+                    except Exception:
+                        logger.debug(f"Proactive send failed for conv {conv['id']}")
+
+            # Nudges for recently idle conversations — gated separately
+            # so ops can disable just one of the two engagement systems.
+            if not _ks("nudge"):
+                await asyncio.sleep(INTERVAL_SEC)
+                continue
 
             recent_convs = await pool.fetch(
                 """

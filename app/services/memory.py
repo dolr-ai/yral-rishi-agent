@@ -59,6 +59,14 @@ async def extract_and_store(
     message_id: str | None = None,
     is_nsfw: bool = False,
 ):
+    # Emergency kill-switch (2026-05-30) — this function fires from
+    # chat.send_message via asyncio.create_task AFTER the user's reply
+    # lands. Skipping is safe: the user never sees the memory call,
+    # they just don't get personalization improvement from this turn.
+    from kill_switch import is_enabled
+
+    if not is_enabled("memory_extraction"):
+        return
     if not config.GEMINI_API_KEY:
         return
 

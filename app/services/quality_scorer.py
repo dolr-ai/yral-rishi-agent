@@ -239,10 +239,17 @@ async def score_all_bots_once(pool) -> dict:
 async def scoring_loop():
     """Run score_all_bots_once every 24h after an initial delay."""
     from database import get_pool
+    from kill_switch import is_enabled
 
     await asyncio.sleep(INITIAL_DELAY_SEC)
     while True:
         try:
+            # Emergency kill-switch — skip the Gemini-calling scoring
+            # pass entirely. The wakeup cadence stays so re-enabling
+            # is a single env flip.
+            if not is_enabled("quality_scorer"):
+                await asyncio.sleep(SCORING_INTERVAL_SEC)
+                continue
             pool = await get_pool()
             t0 = asyncio.get_event_loop().time()
             stats = await score_all_bots_once(pool)
