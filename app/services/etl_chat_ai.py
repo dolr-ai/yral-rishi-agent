@@ -14,8 +14,12 @@ How a tick runs:
        b. COPY CSV into a temp staging table (LIKE real_table)
        c. INSERT real FROM staging ON CONFLICT (id) DO NOTHING
        d. Record in etl_processed_files (filename PK = idempotent)
-       e. Advance etl_sync_state cursor for that table
   4. Read _heartbeat / STUCK objects, expose freshness via /admin/etl-status
+
+Cursor display is derived from etl_processed_files at query time —
+see get_status. The standalone cursor table (etl_sync_state) was
+dropped in migration 022 (it was a constant source of asyncpg type
+bugs and provided only display value).
 
 Credentials: file at /run/secrets/chat_ai_s3_credentials, KEY=VALUE format
 with BACKUP_S3_ACCESS_KEY + BACKUP_S3_SECRET_KEY. If the file is missing,
