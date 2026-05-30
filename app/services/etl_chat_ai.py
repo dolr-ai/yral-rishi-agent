@@ -397,13 +397,19 @@ async def _record_processed(
 
 async def _advance_cursor(v2_pool, table_name: str, until_iso: str, rows_in_run: int):
     """Update etl_sync_state with the new cursor. Same table as Phase 1,
-    schema preserved for /admin/etl-status compatibility."""
+    schema preserved for /admin/etl-status compatibility.
+
+    Note: rows_pulled_total is BIGINT, rows_pulled_last_run is INT —
+    using the same $3 placeholder for both makes asyncpg's type deducer
+    raise AmbiguousParameterError. Explicit casts disambiguate the
+    placeholder for each target column.
+    """
     await v2_pool.execute(
         """
         INSERT INTO etl_sync_state (
             table_name, last_sync_ts, last_run_at, rows_pulled_total,
             rows_pulled_last_run, last_error, last_runtime_ms, updated_at
-        ) VALUES ($1, $2::timestamp, NOW(), $3, $3, NULL, NULL, NOW())
+        ) VALUES ($1, $2::timestamp, NOW(), $3::bigint, $3::int, NULL, NULL, NOW())
         ON CONFLICT (table_name) DO UPDATE SET
             last_sync_ts = GREATEST(etl_sync_state.last_sync_ts, EXCLUDED.last_sync_ts),
             last_run_at = NOW(),

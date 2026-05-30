@@ -201,6 +201,20 @@ def test_get_skipped_exists():
     assert callable(get_skipped)
 
 
+def test_advance_cursor_disambiguates_param_types():
+    """Regression for the AmbiguousParameterError we hit on 2026-05-30:
+    rows_pulled_total is BIGINT, rows_pulled_last_run is INT — both
+    columns can't share the same $-placeholder without explicit casts,
+    or asyncpg's type deducer raises. The fix is `$3::bigint, $3::int`.
+    Pinning so a future refactor doesn't silently drop the casts."""
+    import inspect
+    from services.etl_chat_ai import _advance_cursor
+
+    source = inspect.getsource(_advance_cursor)
+    assert "$3::bigint" in source
+    assert "$3::int" in source
+
+
 def test_status_dict_includes_skip_fields():
     """get_status() shape must include skipped_rows_24h + skipped_by_reason
     so the /admin/etl-status JSON contract stays stable."""
