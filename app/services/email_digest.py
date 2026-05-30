@@ -126,6 +126,28 @@ def _section_placeholder(title: str, planned_pr: str) -> dict:
     }
 
 
+async def _section_rate_limits(pool) -> dict:
+    """Live data: rate-limit config + 24h rejection count."""
+    try:
+        from rate_limiter import get_status
+
+        s = await get_status()
+        limits = s.get("current_limits", {})
+        return {
+            "title": "Per-user rate limits (Phase 19.1)",
+            "lines": [
+                f"Redis available:  {s.get('redis_available')}",
+                f"Rejections (24h): {s.get('rejections_24h', 0)}",
+                f"per-user/min:     {limits.get('per_user_per_min', '?')}",
+                f"per-user/hour:    {limits.get('per_user_per_hour', '?')}",
+                f"per-ip/min:       {limits.get('per_ip_per_min', '?')}",
+                f"per-ip/hour:      {limits.get('per_ip_per_hour', '?')}",
+            ],
+        }
+    except Exception as e:
+        return {"title": "Per-user rate limits", "lines": [f"[error: {e}]"]}
+
+
 async def build_digest(pool) -> dict:
     """Assemble the full digest. Live sections call into existing
     services; placeholder sections are stubs the future PRs replace.
@@ -144,7 +166,7 @@ async def build_digest(pool) -> dict:
     sections = [
         await _section_etl(pool),
         await _section_integrity(pool),
-        _section_placeholder("Per-user rate limits", "PR Phase 19.1"),
+        await _section_rate_limits(pool),
         _section_placeholder("Cost circuit breaker", "PR Phase 19.2"),
         _section_placeholder("Weekly safety drill", "PR Phase 24.2"),
         _section_placeholder("Backup restore drill", "PR I10"),

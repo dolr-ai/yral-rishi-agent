@@ -34,12 +34,15 @@ def test_digest_renders_both_plain_and_html():
     assert "def render_html" in src
 
 
-def test_digest_has_six_placeholder_sections():
-    """Same systems as the dashboard tiles. If they drift apart, Rishi
-    sees inconsistent state across the two surfaces."""
+def test_digest_has_placeholder_sections_for_remaining_planned_systems():
+    """Same systems as the dashboard tiles. When a protective system
+    ships, its placeholder flips to a live section IN THE SAME PR (per
+    the ADHD-observability memory rule). This test lists only the
+    systems still NOT YET shipped."""
     src = _read("app/services/email_digest.py")
+    # Phase 19.1 (rate limits) shipped in PR #232 — flipped to live
+    # _section_rate_limits. Update this list as more flip.
     for planned in (
-        "PR Phase 19.1",  # rate limits
         "PR Phase 19.2",  # cost breaker
         "PR Phase 24.1",  # secret scan
         "PR Phase 24.2",  # safety drill

@@ -170,6 +170,52 @@ async def _integrity_tile(pool) -> dict:
     }
 
 
+async def _rate_limit_tile(pool) -> dict:
+    """Phase 19.1 live tile — current limits + 24h rejection count."""
+    try:
+        from rate_limiter import get_status
+
+        s = await get_status()
+        rejections = s.get("rejections_24h", 0)
+        limits = s.get("current_limits", {})
+        if not s.get("redis_available"):
+            return {
+                "title": "Per-user rate limits (Phase 19.1)",
+                "status": "warn",
+                "primary": "Redis unavailable — limiter degraded open",
+                "details": "All requests pass through; investigate Redis health",
+                "link": "/admin/rate-limits/status",
+            }
+        # A few rejections = working as intended; thousands = attack or
+        # a misconfigured client
+        if rejections > 1000:
+            status = "fail"
+        elif rejections > 0:
+            status = "warn"
+        else:
+            status = "ok"
+        return {
+            "title": "Per-user rate limits (Phase 19.1)",
+            "status": status,
+            "primary": f"{rejections} rejections (24h)",
+            "details": (
+                f"per-user: {limits.get('per_user_per_min', '?')}/min, "
+                f"{limits.get('per_user_per_hour', '?')}/hr · "
+                f"per-IP: {limits.get('per_ip_per_min', '?')}/min, "
+                f"{limits.get('per_ip_per_hour', '?')}/hr"
+            ),
+            "link": "/admin/rate-limits/status",
+        }
+    except Exception as e:
+        return {
+            "title": "Per-user rate limits (Phase 19.1)",
+            "status": "fail",
+            "primary": "endpoint error",
+            "details": str(e)[:200],
+            "link": "/admin/rate-limits/status",
+        }
+
+
 async def _email_digest_tile(pool) -> dict:
     """Last digest run summary — tells Rishi at a glance whether
     today's 02:30 UTC cron fired AND whether SMTP delivered."""
@@ -298,14 +344,10 @@ async def admin_dashboard(request: Request):
         await _etl_tile(pool),
         await _integrity_tile(pool),
         await _email_digest_tile(pool),
+        await _rate_limit_tile(pool),
         # Placeholder tiles — each later PR replaces its placeholder with
         # a real status read. The Wired-in-PR-#N text gives Rishi a clear
         # forward roadmap from the dashboard itself.
-        _placeholder_tile(
-            "Per-user rate limits",
-            "PR Phase 19.1",
-            "req/min + req/hour, hot-editable via admin endpoint",
-        ),
         _placeholder_tile(
             "Cost circuit breaker",
             "PR Phase 19.2",
@@ -341,6 +383,51 @@ async def admin_dashboard(request: Request):
     tiles_html = "\n    ".join(_render_tile(t) for t in tiles)
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     return HTMLResponse(_HTML_TEMPLATE.format(tiles_html=tiles_html, now=now))
+
+
+# ─── Phase 19.1 — rate-limit config + status ────────────────────────────
+
+
+@router.get("/admin/rate-limits/config")
+async def get_rate_limit_config(request: Request):
+    """Current per-{user,ip} per-{min,hour} limits. Same shape as the
+    PUT body so Rishi can read → edit → PUT round-trip from a curl."""
+    _check_auth_flexible(request)
+    from rate_limiter import get_current_limits
+
+    return JSONResponse({"limits": await get_current_limits()})
+
+
+@router.put("/admin/rate-limits/config")
+async def put_rate_limit_config(request: Request):
+    """Hot-edit one or more limits. Body shape: {"key": "per_user_per_min",
+    "value": 120}. Writes DB (durable) AND Redis (live across replicas).
+
+    Per memory feedback-adhd-observability-and-security-baseline: knobs
+    must be hot-editable from an admin endpoint, never just env."""
+    user = _check_auth_flexible(request)
+    body = await request.json()
+    key = body.get("key")
+    value = body.get("value")
+    from rate_limiter import update_limit
+
+    try:
+        await update_limit(await database.get_pool(), key, int(value), user)
+    except (ValueError, TypeError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    from rate_limiter import get_current_limits
+
+    return JSONResponse({"updated": {key: value}, "limits": await get_current_limits()})
+
+
+@router.get("/admin/rate-limits/status")
+async def get_rate_limit_status(request: Request):
+    """Drill-in for the dashboard tile — current limits + 24h
+    rejection count + 10 most-recent rejected calls."""
+    _check_auth_flexible(request)
+    from rate_limiter import get_status
+
+    return JSONResponse(await get_status())
 
 
 @router.get("/admin/email-digest/preview")
