@@ -395,52 +395,13 @@ async def _record_processed(
     )
 
 
-def _parse_until_iso(until_iso: str) -> datetime:
-    """rishi-1 emits postgres-formatted timestamps like
-    '2026-05-30 07:14:02.058352' (space separator, no tzinfo) into the
-    S3 metadata `until` field. asyncpg won't auto-coerce strings to
-    datetime for timestamp columns, so we parse here.
-
-    Postgres's default text format uses a space; fromisoformat handles
-    that since 3.11. We normalize to UTC-aware so the DB sees the same
-    instant rishi-1 measured."""
-    s = until_iso.strip()
-    if "T" not in s and " " in s:
-        s = s.replace(" ", "T", 1)
-    dt = datetime.fromisoformat(s)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt
-
-
-async def _advance_cursor(v2_pool, table_name: str, until_iso: str, rows_in_run: int):
-    """Update etl_sync_state with the new cursor. Same table as Phase 1,
-    schema preserved for /admin/etl-status compatibility.
-
-    Two asyncpg quirks handled here:
-      * rows_pulled_total is BIGINT, rows_pulled_last_run is INT — sharing
-        a placeholder raises AmbiguousParameterError. Explicit casts fix it.
-      * timestamp columns require a datetime.datetime instance, not a
-        string. _parse_until_iso handles the rishi-1 wire format.
-    """
-    await v2_pool.execute(
-        """
-        INSERT INTO etl_sync_state (
-            table_name, last_sync_ts, last_run_at, rows_pulled_total,
-            rows_pulled_last_run, last_error, last_runtime_ms, updated_at
-        ) VALUES ($1, $2, NOW(), $3::bigint, $3::int, NULL, NULL, NOW())
-        ON CONFLICT (table_name) DO UPDATE SET
-            last_sync_ts = GREATEST(etl_sync_state.last_sync_ts, EXCLUDED.last_sync_ts),
-            last_run_at = NOW(),
-            rows_pulled_total = etl_sync_state.rows_pulled_total + EXCLUDED.rows_pulled_last_run,
-            rows_pulled_last_run = EXCLUDED.rows_pulled_last_run,
-            last_error = NULL,
-            updated_at = NOW()
-        """,
-        table_name,
-        _parse_until_iso(until_iso),
-        rows_in_run,
-    )
+# Note: _advance_cursor was removed in favor of deriving cursors from
+# etl_processed_files at query time (see get_status). It was a constant
+# source of asyncpg type quirks (ambiguous params, tz-aware-vs-naive
+# datetime, string-vs-datetime) and provided only display value — file
+# selection always used MAX(processed_at) FROM etl_processed_files.
+# Single source of truth is cleaner than maintaining a parallel
+# denormalized cursor table.
 
 
 # ─── orchestration ────────────────────────────────────────────────────────
@@ -521,12 +482,8 @@ async def run_once(v2_pool) -> dict:
                 metadata,
                 runtime_ms,
             )
-            # Advance cursor to the "until" boundary from the export,
-            # not just LastModified — until_iso is the watermarked
-            # max(created_at) the exporter actually included.
-            until_iso = metadata.get("until")
-            if until_iso:
-                await _advance_cursor(v2_pool, table_name, until_iso, rows_applied)
+            # Cursors are derived from etl_processed_files at query
+            # time — see get_status. No separate write needed here.
             overall["files_processed"] += 1
             overall["per_table"].setdefault(
                 table_name,
@@ -586,14 +543,41 @@ async def etl_loop():
 
 
 async def get_status(v2_pool) -> dict:
-    """Snapshot for operators: cursors, file counts, heartbeat freshness."""
+    """Snapshot for operators: cursors, file counts, heartbeat freshness.
+
+    Cursors are derived from etl_processed_files — single source of truth.
+    `last_sync_ts` is the max `s3_metadata->>'until'` value (the
+    watermarked chat-ai timestamp the exporter actually included), NOT
+    `processed_at` (which is V2's apply time).
+    """
     creds = _load_s3_credentials()
     cursors = await v2_pool.fetch(
         """
-        SELECT table_name, last_sync_ts, last_run_at,
-               rows_pulled_total, rows_pulled_last_run,
-               last_error, last_runtime_ms
-        FROM etl_sync_state ORDER BY table_name
+        SELECT
+            t.name AS table_name,
+            COALESCE(
+                MAX(p.s3_metadata->>'until'),
+                '1970-01-01T00:00:00+00:00'
+            ) AS last_sync_ts,
+            MAX(p.processed_at) AS last_run_at,
+            COALESCE(SUM(p.rows_applied), 0) AS rows_pulled_total,
+            COALESCE(MAX(p.rows_applied) FILTER (
+                WHERE p.processed_at = (
+                    SELECT MAX(p2.processed_at) FROM etl_processed_files p2
+                    WHERE p2.table_name = t.name
+                )
+            ), 0) AS rows_pulled_last_run,
+            COALESCE(MAX(p.runtime_ms) FILTER (
+                WHERE p.processed_at = (
+                    SELECT MAX(p2.processed_at) FROM etl_processed_files p2
+                    WHERE p2.table_name = t.name
+                )
+            ), NULL) AS last_runtime_ms,
+            NULL::text AS last_error
+        FROM (VALUES ('ai_influencers'), ('conversations'), ('messages')) AS t(name)
+        LEFT JOIN etl_processed_files p ON p.table_name = t.name
+        GROUP BY t.name
+        ORDER BY t.name
         """
     )
     files_24h = await v2_pool.fetchval(
