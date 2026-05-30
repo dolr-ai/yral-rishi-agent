@@ -395,21 +395,40 @@ async def _record_processed(
     )
 
 
+def _parse_until_iso(until_iso: str) -> datetime:
+    """rishi-1 emits postgres-formatted timestamps like
+    '2026-05-30 07:14:02.058352' (space separator, no tzinfo) into the
+    S3 metadata `until` field. asyncpg won't auto-coerce strings to
+    datetime for timestamp columns, so we parse here.
+
+    Postgres's default text format uses a space; fromisoformat handles
+    that since 3.11. We normalize to UTC-aware so the DB sees the same
+    instant rishi-1 measured."""
+    s = until_iso.strip()
+    if "T" not in s and " " in s:
+        s = s.replace(" ", "T", 1)
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 async def _advance_cursor(v2_pool, table_name: str, until_iso: str, rows_in_run: int):
     """Update etl_sync_state with the new cursor. Same table as Phase 1,
     schema preserved for /admin/etl-status compatibility.
 
-    Note: rows_pulled_total is BIGINT, rows_pulled_last_run is INT —
-    using the same $3 placeholder for both makes asyncpg's type deducer
-    raise AmbiguousParameterError. Explicit casts disambiguate the
-    placeholder for each target column.
+    Two asyncpg quirks handled here:
+      * rows_pulled_total is BIGINT, rows_pulled_last_run is INT — sharing
+        a placeholder raises AmbiguousParameterError. Explicit casts fix it.
+      * timestamp columns require a datetime.datetime instance, not a
+        string. _parse_until_iso handles the rishi-1 wire format.
     """
     await v2_pool.execute(
         """
         INSERT INTO etl_sync_state (
             table_name, last_sync_ts, last_run_at, rows_pulled_total,
             rows_pulled_last_run, last_error, last_runtime_ms, updated_at
-        ) VALUES ($1, $2::timestamp, NOW(), $3::bigint, $3::int, NULL, NULL, NOW())
+        ) VALUES ($1, $2, NOW(), $3::bigint, $3::int, NULL, NULL, NOW())
         ON CONFLICT (table_name) DO UPDATE SET
             last_sync_ts = GREATEST(etl_sync_state.last_sync_ts, EXCLUDED.last_sync_ts),
             last_run_at = NOW(),
@@ -419,7 +438,7 @@ async def _advance_cursor(v2_pool, table_name: str, until_iso: str, rows_in_run:
             updated_at = NOW()
         """,
         table_name,
-        until_iso,
+        _parse_until_iso(until_iso),
         rows_in_run,
     )
 

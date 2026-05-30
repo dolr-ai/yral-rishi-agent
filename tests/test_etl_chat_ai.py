@@ -201,6 +201,25 @@ def test_get_skipped_exists():
     assert callable(get_skipped)
 
 
+def test_parse_until_iso_handles_postgres_space_format():
+    """rishi-1 emits timestamps from psql with a space separator (e.g.,
+    '2026-05-30 07:14:02.058352'). asyncpg's timestamp codec wants a
+    datetime instance, not a string. _parse_until_iso normalizes both
+    space and T-separated forms, attaches UTC if no tzinfo."""
+    from datetime import datetime, timezone
+    from services.etl_chat_ai import _parse_until_iso
+
+    # rishi-1 wire format (space-separated, no tz)
+    dt = _parse_until_iso("2026-05-30 07:14:02.058352")
+    assert isinstance(dt, datetime)
+    assert dt.tzinfo == timezone.utc
+    assert dt.year == 2026 and dt.month == 5 and dt.day == 30
+
+    # ISO 8601 format also supported (in case future emitter switches)
+    dt2 = _parse_until_iso("2026-05-30T07:14:02.058352+00:00")
+    assert dt2.tzinfo is not None
+
+
 def test_advance_cursor_disambiguates_param_types():
     """Regression for the AmbiguousParameterError we hit on 2026-05-30:
     rows_pulled_total is BIGINT, rows_pulled_last_run is INT — both
