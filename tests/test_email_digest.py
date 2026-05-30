@@ -110,6 +110,21 @@ def test_migration_024_creates_email_digest_runs():
     assert "sent BOOLEAN" in src
 
 
+def test_record_run_parses_rendered_at_to_datetime():
+    """Regression for the asyncpg TIMESTAMPTZ codec bug (this hit
+    production on first force-build immediately after #230 deploy).
+    The SQL ::timestamptz cast doesn't save us — asyncpg validates
+    param types client-side before Postgres sees the cast. Must pass
+    a datetime instance, not a string."""
+    src = _read("app/services/email_digest.py")
+    # The helper that converts string → tz-aware datetime
+    assert "def _parse_rendered_at" in src
+    # And the call site uses it instead of passing the raw string
+    assert '_parse_rendered_at(digest["rendered_at"])' in src
+    # The dead ::timestamptz cast is removed (asyncpg never sees it)
+    assert "$1::timestamptz" not in src
+
+
 def test_subject_prefix_makes_filtering_easy():
     """Rishi can set a Gmail filter on the prefix to bypass spam."""
     src = _read("app/services/email_digest.py")
