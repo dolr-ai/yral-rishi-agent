@@ -74,6 +74,19 @@ def test_middleware_degrades_open_when_redis_unavailable():
     assert "degrading open" in src or "degraded open" in src
 
 
+def test_dispatch_wraps_all_redis_calls_in_try_except():
+    """Regression for the 2026-05-30 incident: Redis AuthenticationError
+    from _hit_and_check.pipeline.execute() wasn't caught, so every
+    request 500'd. The whole dispatch body must be wrapped so any
+    Redis-side failure (auth, conn refused, timeout, pipeline error)
+    degrades open."""
+    src = _read("app/rate_limiter.py")
+    # The dispatch method must have a try/except that wraps the body
+    assert "async def dispatch" in src
+    # Specifically check the except logs the degrade
+    assert "rate_limiter: dispatch error (degrading open):" in src
+
+
 def test_update_limit_validates_inputs():
     """A typo'd key or negative value in a PUT body shouldn't corrupt
     config. Validation runs before the DB write."""

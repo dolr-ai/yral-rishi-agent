@@ -264,7 +264,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     """Counts every request by JWT.sub when available, else by IP.
 
     Skips entirely for SKIP_PREFIXES (health, admin, websocket). Skips
-    silently if Redis is unreachable — defense-not-correctness."""
+    silently if Redis is unreachable — defense-not-correctness.
+
+    Hot-fix 2026-05-30: the whole dispatch is wrapped in try/except so
+    that ANY Redis-side failure (auth, connection refused, timeout,
+    pipeline error) degrades open instead of 500-ing every request.
+    Original code wrapped get_current_limits() and a few helpers but
+    not the _hit_and_check pipeline.execute() call — when Redis
+    rejected commands with AuthenticationError, every request 500'd."""
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -272,29 +279,38 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             if path.startswith(prefix):
                 return await call_next(request)
 
-        redis = await _get_redis()
-        if redis is None:
-            return await call_next(request)
+        try:
+            redis = await _get_redis()
+            if redis is None:
+                return await call_next(request)
 
-        limits = await get_current_limits()
-        now = datetime.now(timezone.utc)
+            limits = await get_current_limits()
+            now = datetime.now(timezone.utc)
 
-        user = _user_from_request(request)
-        if user is not None:
-            allowed, key_exceeded, used, limit = await _hit_and_check(
-                redis, user, "per_user", now, limits
+            user = _user_from_request(request)
+            if user is not None:
+                allowed, key_exceeded, used, limit = await _hit_and_check(
+                    redis, user, "per_user", now, limits
+                )
+                if not allowed:
+                    await _record_rejection(redis, user, "per_user", key_exceeded)
+                    return _too_many_response(key_exceeded, used, limit)
+            else:
+                ip = _client_ip(request)
+                allowed, key_exceeded, used, limit = await _hit_and_check(
+                    redis, ip, "per_ip", now, limits
+                )
+                if not allowed:
+                    await _record_rejection(redis, ip, "per_ip", key_exceeded)
+                    return _too_many_response(key_exceeded, used, limit)
+        except Exception as e:
+            # Defense: a limiter outage must NEVER take down the user
+            # request path. Logged so ops can see when this fires.
+            logger.warning(
+                "rate_limiter: dispatch error (degrading open): %s: %s",
+                type(e).__name__,
+                e,
             )
-            if not allowed:
-                await _record_rejection(redis, user, "per_user", key_exceeded)
-                return _too_many_response(key_exceeded, used, limit)
-        else:
-            ip = _client_ip(request)
-            allowed, key_exceeded, used, limit = await _hit_and_check(
-                redis, ip, "per_ip", now, limits
-            )
-            if not allowed:
-                await _record_rejection(redis, ip, "per_ip", key_exceeded)
-                return _too_many_response(key_exceeded, used, limit)
 
         return await call_next(request)
 
