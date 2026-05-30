@@ -148,6 +148,34 @@ async def _section_rate_limits(pool) -> dict:
         return {"title": "Per-user rate limits", "lines": [f"[error: {e}]"]}
 
 
+async def _section_cost_breaker(pool) -> dict:
+    """Live data: cost-breaker cap + 24h trip count + today's top 5
+    spenders (the dashboard tile shows top 10; digest shows top 5 to
+    keep the email body short)."""
+    try:
+        from cost_breaker import get_status
+
+        s = await get_status(pool)
+        caps = s.get("caps", {})
+        lines = [
+            f"Redis available:     {s.get('redis_available')}",
+            f"Trips (24h):         {s.get('trips_24h', 0)}",
+            f"per-user-daily cap:  ${caps.get('per_user_daily_cents', 0) / 100:.2f}",
+            f"per-user-daily alert: ${caps.get('per_user_daily_alert_cents', 0) / 100:.2f}",
+        ]
+        top = s.get("top_spenders_today", [])
+        if top:
+            lines.append("Top spenders today:")
+            for r in top[:5]:
+                lines.append(
+                    f"  {r['user_id'][:20]:20s} ${r['spent_cents'] / 100:.4f} "
+                    f"({r['calls']} calls)"
+                )
+        return {"title": "Cost circuit breaker (Phase 19.2)", "lines": lines}
+    except Exception as e:
+        return {"title": "Cost circuit breaker", "lines": [f"[error: {e}]"]}
+
+
 async def build_digest(pool) -> dict:
     """Assemble the full digest. Live sections call into existing
     services; placeholder sections are stubs the future PRs replace.
@@ -167,7 +195,7 @@ async def build_digest(pool) -> dict:
         await _section_etl(pool),
         await _section_integrity(pool),
         await _section_rate_limits(pool),
-        _section_placeholder("Cost circuit breaker", "PR Phase 19.2"),
+        await _section_cost_breaker(pool),
         _section_placeholder("Weekly safety drill", "PR Phase 24.2"),
         _section_placeholder("Backup restore drill", "PR I10"),
         _section_placeholder("Dependency vulnerabilities", "PR Phase 24.3"),

@@ -8,6 +8,7 @@ import httpx
 from openai import AsyncOpenAI
 
 import config
+import database
 from services import langfuse_tracing
 
 logger = logging.getLogger(__name__)
@@ -487,6 +488,33 @@ async def generate_response(
     conversation_id: str | None = None,
     archetype: str | None = None,
 ) -> LlmResponse:
+    # Phase 19.2 cost circuit breaker — pre-call check. If the user's
+    # daily LLM spend has already exceeded the cap, refuse the call
+    # with a COST_CAP error so the response path can surface a clear
+    # message to the user instead of an empty/fail response.
+    from cost_breaker import check as cost_check, record_trip
+
+    allowed, spent, cap = await cost_check(user_id) if user_id else (True, 0, 0)
+    if not allowed:
+        # Durable trip log + Sentry alert
+        try:
+            pool = await database.get_pool()
+            await record_trip(pool, user_id, spent, cap)
+        except Exception:
+            pass
+        return LlmResponse(
+            content=(
+                "I've hit my daily usage limit. This resets at midnight UTC. "
+                "Try again then, or reach out if you think this is an error."
+            ),
+            provider="cost_breaker",
+            model="n/a",
+            input_tokens=0,
+            output_tokens=0,
+            latency_ms=0.0,
+            error_code="COST_CAP",
+        )
+
     # Phase 12: per-archetype LLM tuning. Lookup is non-fatal — unknown
     # archetypes fall back to config defaults.
     from services.soul_file import tuning_for
@@ -577,6 +605,21 @@ async def generate_response(
                     conversation_id=conversation_id,
                 )
 
+                # Phase 19.2 cost record — fire-and-forget so an
+                # accounting failure doesn't fail the chat response.
+                try:
+                    from cost_breaker import record as _cost_record
+
+                    await _cost_record(
+                        await database.get_pool(),
+                        user_id,
+                        config.OPENROUTER_MODEL,
+                        input_tokens,
+                        token_count,
+                        None,
+                    )
+                except Exception:
+                    pass
                 return LlmResponse(
                     content=response_text,
                     provider="openrouter",
@@ -630,6 +673,21 @@ async def generate_response(
             conversation_id=conversation_id,
         )
 
+        # Phase 19.2 cost record. Fire-and-forget — a logging failure
+        # must not break the chat response.
+        try:
+            from cost_breaker import record as _cost_record
+
+            await _cost_record(
+                await database.get_pool(),
+                user_id,
+                config.GEMINI_MODEL,
+                0,  # input_tokens not exposed by Gemini API today
+                token_count,
+                None,
+            )
+        except Exception:
+            pass
         return LlmResponse(
             content=response_text,
             provider="gemini",

@@ -170,6 +170,51 @@ async def _integrity_tile(pool) -> dict:
     }
 
 
+async def _cost_breaker_tile(pool) -> dict:
+    """Phase 19.2 live tile — daily cap + 24h trip count + Redis health."""
+    try:
+        from cost_breaker import get_status
+
+        s = await get_status(pool)
+        caps = s.get("caps", {})
+        trips = s.get("trips_24h", 0)
+        if not s.get("redis_available"):
+            return {
+                "title": "Cost circuit breaker (Phase 19.2)",
+                "status": "warn",
+                "primary": "Redis unavailable — breaker degraded open",
+                "details": f"Cap: ${caps.get('per_user_daily_cents', 0) / 100:.2f}/user/day",
+                "link": "/admin/cost-breaker/status",
+            }
+        # 0 trips = green (everyone's under cap)
+        # 1-9 trips = amber (a few users hitting caps; investigate)
+        # 10+ trips = red (likely an attack or a misconfigured client)
+        if trips >= 10:
+            status = "fail"
+        elif trips > 0:
+            status = "warn"
+        else:
+            status = "ok"
+        return {
+            "title": "Cost circuit breaker (Phase 19.2)",
+            "status": status,
+            "primary": f"{trips} trips (24h)",
+            "details": (
+                f"per-user/day cap: ${caps.get('per_user_daily_cents', 0) / 100:.2f} · "
+                f"alert: ${caps.get('per_user_daily_alert_cents', 0) / 100:.2f}"
+            ),
+            "link": "/admin/cost-breaker/status",
+        }
+    except Exception as e:
+        return {
+            "title": "Cost circuit breaker (Phase 19.2)",
+            "status": "fail",
+            "primary": "endpoint error",
+            "details": str(e)[:200],
+            "link": "/admin/cost-breaker/status",
+        }
+
+
 async def _rate_limit_tile(pool) -> dict:
     """Phase 19.1 live tile — current limits + 24h rejection count."""
     try:
@@ -345,14 +390,10 @@ async def admin_dashboard(request: Request):
         await _integrity_tile(pool),
         await _email_digest_tile(pool),
         await _rate_limit_tile(pool),
+        await _cost_breaker_tile(pool),
         # Placeholder tiles — each later PR replaces its placeholder with
         # a real status read. The Wired-in-PR-#N text gives Rishi a clear
         # forward roadmap from the dashboard itself.
-        _placeholder_tile(
-            "Cost circuit breaker",
-            "PR Phase 19.2",
-            "Per-user daily LLM spend ceiling, hot-editable cap",
-        ),
         _placeholder_tile(
             "Weekly safety drill",
             "PR Phase 24.2",
@@ -428,6 +469,47 @@ async def get_rate_limit_status(request: Request):
     from rate_limiter import get_status
 
     return JSONResponse(await get_status())
+
+
+# ─── Phase 19.2 — cost circuit breaker config + status ─────────────────
+
+
+@router.get("/admin/cost-breaker/config")
+async def get_cost_breaker_config(request: Request):
+    """Current per-user daily cents cap + alert threshold."""
+    _check_auth_flexible(request)
+    from cost_breaker import get_current_caps
+
+    return JSONResponse({"caps_cents": await get_current_caps()})
+
+
+@router.put("/admin/cost-breaker/config")
+async def put_cost_breaker_config(request: Request):
+    """Hot-edit. Body: {"key": "per_user_daily_cents", "value_cents": 200}.
+    Writes DB + Redis (same dual-write pattern as rate-limits config)."""
+    user = _check_auth_flexible(request)
+    body = await request.json()
+    key = body.get("key")
+    value_cents = body.get("value_cents")
+    from cost_breaker import update_cap, get_current_caps
+
+    try:
+        await update_cap(await database.get_pool(), key, int(value_cents), user)
+    except (ValueError, TypeError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return JSONResponse(
+        {"updated": {key: value_cents}, "caps_cents": await get_current_caps()}
+    )
+
+
+@router.get("/admin/cost-breaker/status")
+async def get_cost_breaker_status(request: Request):
+    """Drill-in for the tile — caps + 24h trip count + today's top 10
+    spenders (so Rishi can see who's burning budget)."""
+    _check_auth_flexible(request)
+    from cost_breaker import get_status
+
+    return JSONResponse(await get_status(await database.get_pool()))
 
 
 @router.get("/admin/email-digest/preview")

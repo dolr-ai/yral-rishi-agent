@@ -40,10 +40,9 @@ def test_digest_has_placeholder_sections_for_remaining_planned_systems():
     the ADHD-observability memory rule). This test lists only the
     systems still NOT YET shipped."""
     src = _read("app/services/email_digest.py")
-    # Phase 19.1 (rate limits) shipped in PR #232 — flipped to live
-    # _section_rate_limits. Update this list as more flip.
+    # Phase 19.1 shipped in #232, 19.2 shipped in this PR.
+    # Update this list as more placeholders flip.
     for planned in (
-        "PR Phase 19.2",  # cost breaker
         "PR Phase 24.1",  # secret scan
         "PR Phase 24.2",  # safety drill
         "PR Phase 24.3",  # dep vuln

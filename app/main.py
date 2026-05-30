@@ -86,6 +86,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("rate_limiter hydrate failed (limiter uses defaults): %s", e)
 
+    # Phase 19.2 cost breaker — same hydrate pattern.
+    try:
+        from cost_breaker import hydrate_from_db as cost_hydrate
+
+        await cost_hydrate(await database.get_pool())
+    except Exception as e:
+        logger.warning("cost_breaker hydrate failed (uses defaults): %s", e)
+
     yield
 
     logger.info("Shutting down...")
