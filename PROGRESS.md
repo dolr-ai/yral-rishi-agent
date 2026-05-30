@@ -104,6 +104,7 @@
 | 6.1 | Detect idle mid-conversation (30+ min) | ✅ Done | — | #165 |
 | 6.2 | Generate follow-up nudge | ✅ Done | — | #165 |
 | 6.3 | Wired into engagement loop | ✅ Done | — | #166 |
+| 6.3p | Polish: 1-cap on unanswered nudges (parallel to Phase 5.3p proactive cap) | ✅ Done | — | TBD |
 | 6.4 | Mobile presence heartbeat (pause nudge on screen leave) | ⏳ Pending | 1 | — |
 | 6.5 | Chip dismissal on new bot message | ⏳ Pending | 0.5 | — |
 | 6.V1 | Verify: nudges actually sending? | ⏳ Pending | 0.5 | — |

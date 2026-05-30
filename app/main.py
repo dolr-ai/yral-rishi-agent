@@ -277,6 +277,7 @@ async def _engagement_loop():
                                 content=nudge_text,
                                 message_type="text",
                                 sender_id=conv["influencer_id"],
+                                is_nudge=True,
                             )
                 except Exception:
                     logger.debug(f"Nudge failed for conv {conv['id']}")
