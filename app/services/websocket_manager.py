@@ -57,8 +57,9 @@ async def _get_redis():
     """Get async Redis client. Returns None if Redis is not configured."""
     try:
         import redis.asyncio as aioredis
+        from redis_config import get_redis_url
 
-        redis_url = config._env("REDIS_URL")
+        redis_url = get_redis_url()
         if redis_url:
             return aioredis.from_url(redis_url)
 

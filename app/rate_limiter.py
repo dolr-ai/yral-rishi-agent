@@ -86,8 +86,9 @@ async def _get_redis():
         return _redis_client
     try:
         import redis.asyncio as aioredis
+        from redis_config import get_redis_url
 
-        url = os.environ.get("REDIS_URL")
+        url = get_redis_url()
         if url:
             _redis_client = aioredis.from_url(url, decode_responses=True)
         else:

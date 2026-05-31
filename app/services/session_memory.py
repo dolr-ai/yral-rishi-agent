@@ -36,8 +36,9 @@ async def _get_redis():
         return _redis_client
     try:
         import redis.asyncio as aioredis
+        from redis_config import get_redis_url
 
-        redis_url = config._env("REDIS_URL")
+        redis_url = get_redis_url()
         if redis_url:
             _redis_client = aioredis.from_url(redis_url, decode_responses=True)
         else:
