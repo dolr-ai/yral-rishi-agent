@@ -1,3 +1,9 @@
+# ===========================================================================
+# DECOMMISSIONED 2026-06-01 — service removed from production swarm.
+# DO NOT DEPLOY / DO NOT MOVE TO .github/workflows/.
+# Original service: yral-rishi-agent-influencer-and-profile-directory
+# Replaced by: monolith service yral-rishi-agent (rishi-4/5).
+# ===========================================================================
 # ---------------------------------------------------------------------------
 # per-service-ci.yml — the per-service CI workflow TEMPLATE.
 #
