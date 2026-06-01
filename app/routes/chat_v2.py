@@ -122,29 +122,60 @@ async def _list_for_user(
 
     formatted = []
     for c in conversations:
-        conv_type = c.get("conversation_type") or "ai_chat"
-        if conv_type == "human_chat":
-            peer_id = (
-                c.get("participant_b_id")
-                if c.get("user_id") == user_id
-                else c.get("user_id")
-            ) or ""
-            peer_meta = peer_profiles.get(
-                peer_id,
-                {
-                    "principal_id": peer_id,
-                    "username": None,
-                    "profile_picture_url": None,
-                },
-            )
+        # Per-row try/except — logs the exact row that crashes so we can
+        # trace the unexplained 500/503 on /api/v2/chat/conversations
+        # (mobile expert RCA 2026-05-30/06-01). Re-raises after logging
+        # so behavior is unchanged. Remove once the cause is identified
+        # and fixed.
+        try:
+            conv_type = c.get("conversation_type") or "ai_chat"
+            if conv_type == "human_chat":
+                peer_id = (
+                    c.get("participant_b_id")
+                    if c.get("user_id") == user_id
+                    else c.get("user_id")
+                ) or ""
+                peer_meta = peer_profiles.get(
+                    peer_id,
+                    {
+                        "principal_id": peer_id,
+                        "username": None,
+                        "profile_picture_url": None,
+                    },
+                )
+                formatted.append(
+                    {
+                        "id": c["id"],
+                        "user_id": c["user_id"],
+                        "influencer_id": None,
+                        "conversation_type": conv_type,
+                        "influencer": None,
+                        "user": peer_meta,
+                        "created_at": _format_dt(c["created_at"]),
+                        "updated_at": _format_dt(c["updated_at"]),
+                        "message_count": c.get("message_count", 0),
+                        "unread_count": c.get("unread_count", 0),
+                        "last_message": last_msg_map.get(c["id"]),
+                    }
+                )
+                continue
+            influencer_info = {
+                "id": c.get("inf_id") or c.get("influencer_id") or "",
+                "name": c.get("inf_name") or "",
+                "display_name": c.get("inf_display_name") or "",
+                "avatar_url": c.get("inf_avatar_url"),
+                "is_online": c.get("inf_is_active") != "discontinued"
+                if c.get("inf_is_active")
+                else True,
+            }
             formatted.append(
                 {
                     "id": c["id"],
                     "user_id": c["user_id"],
-                    "influencer_id": None,
+                    "influencer_id": c.get("influencer_id"),
                     "conversation_type": conv_type,
-                    "influencer": None,
-                    "user": peer_meta,
+                    "influencer": influencer_info,
+                    "user": None,
                     "created_at": _format_dt(c["created_at"]),
                     "updated_at": _format_dt(c["updated_at"]),
                     "message_count": c.get("message_count", 0),
@@ -152,31 +183,19 @@ async def _list_for_user(
                     "last_message": last_msg_map.get(c["id"]),
                 }
             )
-            continue
-        influencer_info = {
-            "id": c.get("inf_id") or c.get("influencer_id") or "",
-            "name": c.get("inf_name") or "",
-            "display_name": c.get("inf_display_name") or "",
-            "avatar_url": c.get("inf_avatar_url"),
-            "is_online": c.get("inf_is_active") != "discontinued"
-            if c.get("inf_is_active")
-            else True,
-        }
-        formatted.append(
-            {
-                "id": c["id"],
-                "user_id": c["user_id"],
-                "influencer_id": c.get("influencer_id"),
-                "conversation_type": conv_type,
-                "influencer": influencer_info,
-                "user": None,
-                "created_at": _format_dt(c["created_at"]),
-                "updated_at": _format_dt(c["updated_at"]),
-                "message_count": c.get("message_count", 0),
-                "unread_count": c.get("unread_count", 0),
-                "last_message": last_msg_map.get(c["id"]),
-            }
-        )
+        except Exception:
+            logger.exception(
+                "chat_v2._list_for_user: row format failed "
+                "principal=%s row_id=%s conv_type=%s user_id=%s "
+                "participant_b_id=%s inf_id=%s",
+                user_id,
+                c.get("id"),
+                c.get("conversation_type"),
+                c.get("user_id"),
+                c.get("participant_b_id"),
+                c.get("inf_id"),
+            )
+            raise
 
     return {
         "conversations": formatted,
