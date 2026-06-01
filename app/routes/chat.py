@@ -139,6 +139,14 @@ async def _can_access_conversation(pool, user_id: str, conv: dict) -> bool:
         parent = await influencer_repo.get_parent_principal(pool, conv["influencer_id"])
         if parent == user_id:
             return True
+    # H2H: participant_b can read/mark-read their own conversation.
+    # PR #228 expanded the inbox list to include H2H rows for the recipient, but
+    # this helper still gated detail endpoints (GET /messages, POST /read,
+    # /messages/stream, /images) on creator+influencer only — so the recipient
+    # saw the row but tapping it returned 403. Adding participant_b auto-heals
+    # all 4 endpoints that share this helper.
+    if conv.get("participant_b_id") == user_id:
+        return True
     return False
 
 
