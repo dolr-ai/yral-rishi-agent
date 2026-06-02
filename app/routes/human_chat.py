@@ -265,7 +265,9 @@ async def send_human_message(conversation_id: str, request: Request):
                 "avatar_url": None,
                 "is_online": True,
             },
-            unread_count=await message_repo.count_unread(pool, conversation_id, recipient_id),
+            unread_count=await message_repo.count_unread(
+                pool, conversation_id, recipient_id
+            ),
         )
     )
 
