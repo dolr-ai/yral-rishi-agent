@@ -16,6 +16,7 @@ Pinned interface (DO NOT change without updating the design doc):
         messages: list[dict],
         temperature: float | None = None,
         max_tokens: int | None = None,
+        extra_body: dict | None = None,
         timeout: float = 60.0,
     ) -> LlmResponse: ...
 
@@ -27,9 +28,16 @@ Pinned interface (DO NOT change without updating the design doc):
         messages: list[dict],
         temperature: float | None = None,
         max_tokens: int | None = None,
+        extra_body: dict | None = None,
         timeout: float = 60.0,
     ) -> AsyncIterator[tuple[str, str]]: ...
         # yields (kind, value) where kind in {"delta", "done", "error"}
+
+`extra_body` is merged into the JSON request body alongside the standard
+fields. Required for internal_vllm (Qwen 3.6 thinking-mode disable):
+    extra_body={"chat_template_kwargs": {"enable_thinking": False}}
+Standard providers (OpenAI, OpenRouter) silently ignore unknown keys, so
+the same code path works for all targets — no per-provider branching.
 
 `LlmResponse` is the existing dataclass from `app/services/ai_client.py`
 — reused, not redefined, so the response shape stays symmetric across

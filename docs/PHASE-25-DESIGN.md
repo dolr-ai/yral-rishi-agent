@@ -74,9 +74,31 @@ Every LLM call site is named by a stable `process` string. This is what the admi
 | `openai` | 10 | Conservative; tier-1 OpenAI usually allows much more, but cost-breaker matters more than throughput |
 | `openrouter` | 10 | Same |
 | `together` | 10 | Same |
-| `saikat_selfhosted` | 5 | Single GPU box; lower default until benchmarked |
-| `vllm_local` | 5 | Same |
+| `internal_vllm` | 5 → 10–20 after our own benchmark | See "Self-hosted vLLM" section below. Anshuman's synthetic test hit 0 rate-limit errors at 90 concurrent; we start conservative |
 | `ollama` | 2 | Dev-only path; tight default |
+
+### Self-hosted vLLM (`internal_vllm`)
+
+Anshuman shipped the self-hosted endpoint 2026-06-02. Saikat owns the GPU/hosting infra; Anshuman wrote the serving stack. Provider name is **`internal_vllm`** (person-neutral — owners rotate, the stack persists; named after the technology). Credit lives in the GLOSSARY entry + this design doc, not in the key.
+
+| Field | Value |
+|---|---|
+| Provider key | `internal_vllm` |
+| base_url | `https://model.ansuman.yral.com/v1` |
+| Default model | `Qwen/Qwen3.6-27B-FP8` |
+| Streaming | Supported (`stream=True`) |
+| API-key Swarm secret | `INTERNAL_VLLM_API_KEY` (mounted file-first via `/run/secrets/INTERNAL_VLLM_API_KEY`, env fallback per existing pattern) |
+| Required extra-body | `{"chat_template_kwargs": {"enable_thinking": false}}` — Qwen 3.6's "thinking mode" produces verbose CoT prefixes we don't want for chat workloads. OFF by default for every process that points at this provider |
+| Concurrency cap (initial) | 5 |
+| Concurrency cap (post-benchmark target) | 10–20 |
+| Anshuman benchmark (synthetic) | 92.57 tok/s decode throughput, 0 rate-limit errors at 90 concurrent |
+| Reference gist | https://gist.github.com/ansuman-yral/f20f7b2cd794ed6fec2a50eb75e262ea |
+
+**Why start at 5 even though 90 worked synthetic:** Real chat workloads have bursty long-tails. Production memory/quality_scorer batches can fire 50+ requests in a 1s window when migrations run. We want the first failure mode to be "wait in the semaphore queue" not "crash Anshuman's GPU box." Once Phase 25.7 (integration test) shows real-world stable load behavior, bump in `llm_process_config` table — no redeploy.
+
+**Implementation note for 25.1:** the `openai_compatible` client needs to thread `extra_body` through to the underlying HTTP request body. Per OpenAI spec, fields outside the standard set are silently accepted by every implementation we've tested (OpenAI ignores unknown keys, OpenRouter passes them through, vLLM consumes `chat_template_kwargs`). One per-provider config knob in the registry handles this without conditional logic in the client.
+
+**API-key handoff plan:** Rishi will paste `INTERNAL_VLLM_API_KEY` to me SSH-side when Phase 25.7 (integration test) is ready to run, NOT before. Today's PR only encodes the secret name; no key material in the design doc, the registry, or any committed file.
 
 **Implementation sketch:**
 
