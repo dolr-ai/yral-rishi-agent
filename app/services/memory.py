@@ -11,7 +11,7 @@ import logging
 
 from repositories import memory_repo
 from services import embeddings, session_memory
-from services.ai_client import _call_gemini
+from services import llm_registry
 import config
 
 logger = logging.getLogger(__name__)
@@ -76,17 +76,19 @@ async def extract_and_store(
     )
 
     try:
-        contents = [{"role": "user", "parts": [{"text": prompt}]}]
-        system_instruction = {
-            "parts": [{"text": "Return valid JSON only. No markdown, no explanation."}]
-        }
-
-        response_text, _ = await _call_gemini(
-            contents=contents,
-            system_instruction=system_instruction,
+        response = await llm_registry.call(
+            process="memory_extraction",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Return valid JSON only. No markdown, no explanation.",
+                },
+                {"role": "user", "content": prompt},
+            ],
             temperature=0.1,
             max_tokens=1024,
         )
+        response_text = response.content
 
         start = response_text.find("[")
         end = response_text.rfind("]") + 1

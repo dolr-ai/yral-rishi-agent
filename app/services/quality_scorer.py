@@ -50,8 +50,9 @@ Return ONLY JSON: {{"in_character": N, "response_quality": N, "engagement": N}}"
 async def _judge_pair(
     bot_archetype: str, user_message: str, bot_message: str
 ) -> dict | None:
-    """Run one Gemini-as-judge call. Returns parsed scores or None on failure."""
-    from services import ai_client
+    """Run one LLM-as-judge call via the registry. Returns parsed scores or
+    None on failure."""
+    from services import llm_registry
 
     prompt = JUDGE_PROMPT.format(
         bot_archetype=bot_archetype or "general",
@@ -59,19 +60,23 @@ async def _judge_pair(
         bot_message=(bot_message or "")[:500],
     )
     try:
-        result = await ai_client.generate_response(
-            system_instructions=(
-                "You are a strict AI response quality judge. Return only "
-                "valid JSON. Reserve 5 for genuinely excellent; 3 is acceptable."
-            ),
-            conversation_history=[],
-            user_message=prompt,
-            is_nsfw=False,
+        response = await llm_registry.call(
+            process="quality_scorer",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a strict AI response quality judge. Return only "
+                        "valid JSON. Reserve 5 for genuinely excellent; 3 is acceptable."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
         )
     except Exception as e:
         logger.debug(f"quality_scorer judge failed: {e}")
         return None
-    text = result.content
+    text = response.content
     start, end = text.find("{"), text.rfind("}") + 1
     if start < 0 or end <= start:
         return None

@@ -5,21 +5,24 @@ api_key_secret_path)`. See docs/PHASE-25-DESIGN.md for the 3 design
 decisions (in-house client, process names, per-provider semaphore) and
 the 5 resolved open questions.
 
-What lives here (Phase 25.2 scope):
+What lives here (Phase 25.2 + 25.3 scope):
   - PROCESS_NAMES tuple
   - PROVIDERS dict (concurrency cap, base_url, secret path, cost-basis)
-  - DEFAULT_REGISTRY (process → provider + model + timeout + extras)
-  - call() — main dispatcher
+  - LLM_DEFAULTS (process → provider + model + timeout) — prod defaults
+  - call() — main dispatcher; routes Gemini to gemini.py, others to
+    openai_compatible.py via a uniform interface
   - current_config() — read accessor for admin endpoint / dashboard
   - _semaphore() — per-provider lazy semaphore cache
   - Env-var override (Q3): LLM_PROCESS__<UPPER_NAME>=<provider>/<model>
 
 What's NOT here yet (deferred to follow-up PRs):
-  - DB-backed overrides + reload_config_from_db (25.2 polish or 25.4)
-  - PATCH /admin/llm-registry endpoint (25.4)
-  - Cost recording to llm_costs table (25.5)
-  - Retry-ladder → Gemini fallback orchestration (25.x — Q5 design)
-  - Wiring existing call sites (proactive, quality_scorer, ...) (25.3)
+  - DB-backed overrides + reload_config_from_db (25.4)
+  - PATCH /admin/llm-registry endpoint (25.4 — chains immediately)
+  - Cost recording to llm_costs table (25.5; pg_dump per Rule 9)
+  - Retry-ladder → Google Chat webhook → bounded Gemini fallback (25.x)
+  - registry.call_stream() — streaming dispatcher. Chat hot-path
+    orchestration (NSFW fallback, multimodal, archetype tuning) stays
+    in ai_client.generate_response_stream until 25.3b.
 """
 
 import asyncio
@@ -108,60 +111,60 @@ PROVIDERS: dict[str, dict[str, Any]] = {
 # Default routing — each process points at one (provider, model) pair.
 # Production overrides will land via the admin endpoint + llm_process_config
 # table in 25.4. Today, env vars can override per process (see _process_config).
-DEFAULT_REGISTRY: dict[str, dict[str, Any]] = {
+LLM_DEFAULTS: dict[str, dict[str, Any]] = {
     "user_chat_main": {
         "provider": "gemini",
-        "model": "gemini-2.0-flash",
+        "model": "gemini-2.5-flash",
         "timeout_sec": 60.0,
     },
     "audio_transcription": {
         "provider": "gemini",
-        "model": "gemini-2.0-flash",
+        "model": "gemini-2.5-flash",
         "timeout_sec": 60.0,
     },
     "proactive_generation": {
         "provider": "gemini",
-        "model": "gemini-2.0-flash",
+        "model": "gemini-2.5-flash",
         "timeout_sec": 120.0,
     },
     "quality_scorer": {
         "provider": "gemini",
-        "model": "gemini-2.0-flash",
+        "model": "gemini-2.5-flash",
         "timeout_sec": 120.0,
     },
     "memory_extraction": {
         "provider": "gemini",
-        "model": "gemini-2.0-flash",
+        "model": "gemini-2.5-flash",
         "timeout_sec": 120.0,
     },
     "memory_consolidation": {
         "provider": "gemini",
-        "model": "gemini-2.0-flash",
+        "model": "gemini-2.5-flash",
         "timeout_sec": 180.0,
     },
     "soul_file_coach": {
         "provider": "gemini",
-        "model": "gemini-2.0-flash",
+        "model": "gemini-2.5-flash",
         "timeout_sec": 60.0,
     },
     "nudge_generation": {
         "provider": "gemini",
-        "model": "gemini-2.0-flash",
+        "model": "gemini-2.5-flash",
         "timeout_sec": 120.0,
     },
     "character_generator": {
         "provider": "gemini",
-        "model": "gemini-2.0-flash",
+        "model": "gemini-2.5-flash",
         "timeout_sec": 180.0,
     },
     "ai_influencer_wizard_simulation": {
         "provider": "gemini",
-        "model": "gemini-2.0-flash",
+        "model": "gemini-2.5-flash",
         "timeout_sec": 180.0,
     },
     "soul_file_recommendations": {
         "provider": "gemini",
-        "model": "gemini-2.0-flash",
+        "model": "gemini-2.5-flash",
         "timeout_sec": 120.0,
     },
 }
@@ -203,13 +206,13 @@ def _resolve_api_key(provider: str) -> str:
 def _process_config(process: str) -> dict[str, Any]:
     """Resolve the effective config for one process. Order:
       1. Env override (Q3): LLM_PROCESS__<UPPER_NAME>=<provider>/<model>
-      2. DEFAULT_REGISTRY
+      2. LLM_DEFAULTS
     DB-backed overrides land in a follow-up PR (25.4)."""
-    if process not in DEFAULT_REGISTRY:
+    if process not in LLM_DEFAULTS:
         raise KeyError(
             f"llm_registry: unknown process '{process}'. Known: {sorted(PROCESS_NAMES)}"
         )
-    cfg = dict(DEFAULT_REGISTRY[process])
+    cfg = dict(LLM_DEFAULTS[process])
 
     env_key = f"LLM_PROCESS__{process.upper()}"
     override = os.environ.get(env_key)
@@ -246,46 +249,52 @@ async def call(
     messages: list[dict],
     temperature: float | None = None,
     max_tokens: int | None = None,
+    extra_body: dict | None = None,
 ) -> LlmResponse:
     """Main dispatch — process name → provider's client.complete(...).
 
     Wraps the call in the per-provider concurrency semaphore so we never
     exceed the provider's rate-limit budget. Cost recording happens in
     the caller (25.5); this function returns the same LlmResponse shape
-    the existing ai_client.generate_response returns."""
+    the existing ai_client.generate_response returns.
+
+    `extra_body` is the per-invocation escape hatch for provider-specific
+    knobs (Gemini's `safetySettings`, vLLM's `chat_template_kwargs`).
+    Caller-supplied extras override provider defaults on key collision.
+    """
     cfg = _process_config(process)
     provider = cfg["provider"]
     provider_meta = PROVIDERS[provider]
 
+    # Merge: provider default → caller extras (caller wins on collision).
+    merged_extra = dict(provider_meta.get("default_extra_body") or {})
+    if extra_body:
+        merged_extra.update(extra_body)
+
     sem = _semaphore(provider)
     async with sem:
+        # Pick the client by provider. Gemini has its own native-API
+        # client (different wire format from OpenAI spec); everything
+        # else goes through openai_compatible. Both clients expose the
+        # same complete()/complete_stream() interface so dispatch is
+        # uniform — no special-casing beyond the import.
         if provider == "gemini":
-            # Gemini's native API isn't OpenAI-spec, and the existing
-            # ai_client.generate_response signature is legacy (system_
-            # instructions, conversation_history, user_message — not a
-            # unified messages list). Extracting a gemini.py client that
-            # accepts the messages-list shape is Phase 25.3 scope. Until
-            # then, callers that need Gemini must keep using ai_client
-            # directly. The registry knows about Gemini for dashboard /
-            # current_config purposes, but won't dispatch to it.
-            raise NotImplementedError(
-                f"llm_registry.call(process={process!r}): provider=gemini routing "
-                f"lands in Phase 25.3 alongside call-site extraction. Until then, "
-                f"use ai_client.generate_response directly OR override this process "
-                f"to a non-gemini provider via LLM_PROCESS__{process.upper()}=..."
-            )
+            from services.llm_clients import gemini as gemini_client
 
-        # All non-gemini providers use the OpenAI-compatible client.
-        from services.llm_clients import openai_compatible
+            client_module = gemini_client
+        else:
+            from services.llm_clients import openai_compatible
 
-        return await openai_compatible.complete(
+            client_module = openai_compatible
+
+        return await client_module.complete(
             provider=provider,
-            base_url=provider_meta["base_url"],
+            base_url=provider_meta.get("base_url"),
             api_key=_resolve_api_key(provider),
             model=cfg["model"],
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
-            extra_body=provider_meta.get("default_extra_body"),
+            extra_body=merged_extra or None,
             timeout=cfg.get("timeout_sec", 60.0),
         )

@@ -4,7 +4,7 @@ from typing import Optional
 
 import config
 from services import replicate
-from services.ai_client import _call_gemini
+from services import llm_registry
 
 logger = logging.getLogger(__name__)
 
@@ -145,13 +145,17 @@ async def generate_system_instructions(concept: str) -> str | None:
     if not config.GEMINI_API_KEY:
         return None
     try:
-        text, _ = await _call_gemini(
-            contents=[{"role": "user", "parts": [{"text": concept}]}],
-            system_instruction={"parts": [{"text": GENERATE_PROMPT}]},
+        response = await llm_registry.call(
+            process="character_generator",
+            messages=[
+                {"role": "system", "content": GENERATE_PROMPT},
+                {"role": "user", "content": concept},
+            ],
             temperature=config.GEMINI_TEMPERATURE,
             max_tokens=config.GEMINI_MAX_TOKENS,
-            safety_settings=_PERMISSIVE_SAFETY_SETTINGS,
+            extra_body={"safetySettings": _PERMISSIVE_SAFETY_SETTINGS},
         )
+        text = response.content
         if contains_safety_refusal(text):
             return None
         return text.strip()
@@ -187,26 +191,23 @@ async def validate_and_generate_metadata(system_instructions: str) -> dict | Non
         return None
 
     try:
-        text, _ = await _call_gemini(
-            contents=[
+        response = await llm_registry.call(
+            process="character_generator",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a helpful assistant that returns valid JSON.",
+                },
                 {
                     "role": "user",
-                    "parts": [
-                        {
-                            "text": f"{VALIDATE_PROMPT}\n\nSystem Instructions:\n{system_instructions}"
-                        }
-                    ],
-                }
+                    "content": f"{VALIDATE_PROMPT}\n\nSystem Instructions:\n{system_instructions}",
+                },
             ],
-            system_instruction={
-                "parts": [
-                    {"text": "You are a helpful assistant that returns valid JSON."}
-                ]
-            },
             temperature=0.3,
             max_tokens=config.GEMINI_MAX_TOKENS,
-            safety_settings=_PERMISSIVE_SAFETY_SETTINGS,
+            extra_body={"safetySettings": _PERMISSIVE_SAFETY_SETTINGS},
         )
+        text = response.content
         if contains_safety_refusal(text):
             return {"is_valid": False, "reason": "Content was flagged as inappropriate"}
 
@@ -247,17 +248,20 @@ async def generate_initial_greeting(
             display_name=display_name,
             system_instructions=system_instructions,
         )
-        text, _ = await _call_gemini(
-            contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            system_instruction={
-                "parts": [
-                    {"text": "You are a helpful assistant that returns valid JSON."}
-                ]
-            },
+        response = await llm_registry.call(
+            process="character_generator",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a helpful assistant that returns valid JSON.",
+                },
+                {"role": "user", "content": prompt},
+            ],
             temperature=0.7,
             max_tokens=config.GEMINI_MAX_TOKENS,
-            safety_settings=_PERMISSIVE_SAFETY_SETTINGS,
+            extra_body={"safetySettings": _PERMISSIVE_SAFETY_SETTINGS},
         )
+        text = response.content
         start = text.find("{")
         end = text.rfind("}") + 1
         if start >= 0 and end > start:
@@ -283,13 +287,17 @@ async def generate_video_prompt(
             display_name=display_name,
             system_instructions=system_instructions,
         )
-        text, _ = await _call_gemini(
-            contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            system_instruction={"parts": [{"text": "You are a helpful assistant."}]},
+        response = await llm_registry.call(
+            process="character_generator",
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": prompt},
+            ],
             temperature=0.7,
             max_tokens=config.GEMINI_MAX_TOKENS,
-            safety_settings=_PERMISSIVE_SAFETY_SETTINGS,
+            extra_body={"safetySettings": _PERMISSIVE_SAFETY_SETTINGS},
         )
+        text = response.content
         return text.strip() if text else None
     except Exception:
         logger.exception("Failed to generate video prompt")

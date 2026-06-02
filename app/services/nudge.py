@@ -11,7 +11,7 @@ Nudge triggers:
 import logging
 
 from repositories import message_repo, influencer_repo
-from services.ai_client import _call_gemini
+from services import llm_registry
 import config
 
 logger = logging.getLogger(__name__)
@@ -83,15 +83,16 @@ async def generate_nudge(pool, conversation_id: str, influencer_id: str) -> str 
     )
 
     try:
-        text, _ = await _call_gemini(
-            contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            system_instruction={
-                "parts": [{"text": inf.get("system_instructions", "")}]
-            },
+        response = await llm_registry.call(
+            process="nudge_generation",
+            messages=[
+                {"role": "system", "content": inf.get("system_instructions", "")},
+                {"role": "user", "content": prompt},
+            ],
             temperature=0.8,
             max_tokens=256,
         )
-        return text.strip() if text else None
+        return response.content.strip() if response.content else None
     except Exception as e:
         logger.warning(f"Nudge generation failed: {e}")
         return None

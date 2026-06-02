@@ -17,7 +17,7 @@ Behavior:
 import json
 import logging
 
-from services.ai_client import _call_gemini
+from services import llm_registry
 
 logger = logging.getLogger(__name__)
 
@@ -155,23 +155,23 @@ async def coach_reply(
         latest_message=latest_message,
     )
 
-    contents = [{"role": "user", "parts": [{"text": prompt}]}]
-    system_instruction = {
-        "parts": [
+    response = await llm_registry.call(
+        process="soul_file_coach",
+        messages=[
             {
-                "text": "You are a specialist AI personality coach. Be precise, "
-                "respectful, and honest. Output JSON when proposing changes; "
-                "plain text otherwise."
-            }
-        ]
-    }
-
-    response_text, _ = await _call_gemini(
-        contents=contents,
-        system_instruction=system_instruction,
+                "role": "system",
+                "content": (
+                    "You are a specialist AI personality coach. Be precise, "
+                    "respectful, and honest. Output JSON when proposing changes; "
+                    "plain text otherwise."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
         temperature=0.5,
         max_tokens=2048,
     )
+    response_text = response.content
 
     proposal = _try_extract_proposal(response_text)
     if proposal:

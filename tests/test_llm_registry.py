@@ -134,19 +134,117 @@ def test_semaphore_is_per_provider_via_lazy_cache():
     assert "asyncio.Semaphore(cap)" in src
 
 
-# ─── Gemini routing deferred to 25.3 ──────────────────────────────────────
+# ─── Gemini dispatch (25.3 — Gemini client now wired) ────────────────────
 
 
-def test_gemini_dispatch_raises_until_25_3():
-    """25.2 deliberately DOES NOT wire Gemini — the legacy ai_client
-    signature doesn't accept a messages-list and extracting a clean
-    gemini.py client is 25.3 scope. Until then the registry MUST raise
-    NotImplementedError for provider=gemini so we don't silently fail
-    through to a half-built path."""
+def test_gemini_dispatch_uses_dedicated_client():
+    """25.3 wires the new gemini.py client. Registry routes Gemini to it
+    instead of raising NotImplementedError. Both clients (gemini +
+    openai_compatible) expose the same complete()/complete_stream()
+    interface so the dispatch body has no per-provider special-casing
+    beyond the import."""
     src = _read("app/services/llm_registry.py")
     assert 'provider == "gemini"' in src
-    assert "NotImplementedError" in src
-    assert "25.3" in src
+    assert "from services.llm_clients import gemini" in src
+    assert "client_module.complete" in src
+    # No more NotImplementedError for Gemini
+    assert "NotImplementedError" not in src
+
+
+def test_gemini_client_has_symmetric_interface():
+    """gemini.py must expose complete() + complete_stream() with the same
+    keyword-args shape as openai_compatible so registry dispatch is
+    uniform. Pin both function signatures."""
+    src = _read("app/services/llm_clients/gemini.py")
+    assert "async def complete(" in src
+    assert "async def complete_stream(" in src
+    # Same kwargs as openai_compatible — provider, base_url, api_key,
+    # model, messages, temperature, max_tokens, extra_body, timeout
+    assert "provider: str" in src
+    assert "messages: list[dict]" in src
+    assert "extra_body: dict | None = None" in src
+
+
+def test_gemini_client_translates_messages_to_contents():
+    """OpenAI messages → Gemini contents conversion: system messages
+    hoisted into systemInstruction; assistant role renamed to model."""
+    src = _read("app/services/llm_clients/gemini.py")
+    assert "_messages_to_gemini_contents" in src
+    # Role rename
+    assert '"model"' in src and '"assistant"' in src
+    # System hoisting
+    assert "systemInstruction" in src
+
+
+def test_llm_defaults_uses_production_gemini_model():
+    """The defaults must reflect what production actually runs today
+    (gemini-2.5-flash, per config.GEMINI_MODEL). Aspirational model
+    names like 2.0-flash are NOT the production reality."""
+    src = _read("app/services/llm_registry.py")
+    assert "gemini-2.5-flash" in src
+    # gemini-2.0-flash was the placeholder I had in 25.2 scaffolding;
+    # must be gone now.
+    assert "gemini-2.0-flash" not in src
+
+
+def test_llm_defaults_constant_name():
+    """Per Rishi 2026-06-02 spec: the constant is named LLM_DEFAULTS,
+    not DEFAULT_REGISTRY (which was my 25.2 placeholder)."""
+    src = _read("app/services/llm_registry.py")
+    assert "LLM_DEFAULTS" in src
+    # The placeholder name must NOT ship
+    assert "DEFAULT_REGISTRY" not in src
+
+
+# ─── extra_body per-invocation override (25.3) ───────────────────────────
+
+
+def test_call_accepts_extra_body_param():
+    """character_generator passes Gemini-specific safetySettings via
+    extra_body. Per-invocation extra_body must merge over provider
+    default (caller wins on key collision)."""
+    src = _read("app/services/llm_registry.py")
+    assert "extra_body: dict | None = None" in src
+    assert "merged_extra" in src or "caller wins" in src
+
+
+# ─── call-site migrations (25.3) ──────────────────────────────────────────
+
+
+def test_simple_callers_migrated_to_registry():
+    """7 process-bound call sites must use llm_registry.call(process=...)
+    instead of the legacy ai_client._call_gemini import. Any future
+    refactor that re-introduces _call_gemini in these files is a smell."""
+    for path in (
+        "app/services/memory.py",
+        "app/services/coach.py",
+        "app/services/nudge.py",
+        "app/services/recommendations.py",
+        "app/services/character_generator.py",
+        "app/services/quality_scorer.py",
+    ):
+        src = _read(path)
+        # No more direct legacy import
+        assert "from services.ai_client import _call_gemini" not in src, (
+            f"{path}: still imports legacy _call_gemini"
+        )
+        # Registry import present
+        assert "llm_registry" in src, f"{path}: missing llm_registry import"
+        # registry.call invoked with a process= kwarg
+        assert "llm_registry.call(" in src, f"{path}: no registry.call invocation"
+
+
+def test_wizard_intake_and_draft_migrated_preview_deferred():
+    """Wizard has 3 LLM calls; intake + draft migrate, preview stays on
+    generate_response because it needs the archetype tuning path
+    (intentionally part of 25.3b chat-orchestration scope)."""
+    src = _read("app/services/wizard.py")
+    # The intake + draft prompts now go through the registry
+    assert "llm_registry.call(" in src
+    assert src.count('process="ai_influencer_wizard_simulation"') >= 2
+    # Preview keeps using generate_response (the archetype-tuning path);
+    # this is the documented exception
+    assert "await generate_response(" in src
 
 
 # ─── openai_compatible client wiring ──────────────────────────────────────
@@ -159,7 +257,9 @@ def test_registry_dispatches_to_openai_compatible_for_non_gemini():
     PROVIDERS, no new client module."""
     src = _read("app/services/llm_registry.py")
     assert "from services.llm_clients import openai_compatible" in src
-    assert "openai_compatible.complete" in src
+    # The dispatch uses a `client_module` indirection after 25.3 to
+    # uniformly call either gemini.complete or openai_compatible.complete
+    assert "client_module.complete" in src or "openai_compatible.complete" in src
 
 
 def test_openai_compatible_threads_extra_body_through():

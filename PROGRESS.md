@@ -328,9 +328,9 @@
 
 | # | Sub-phase | Status | Est. days | PR |
 |---|-----------|--------|-----------|-----|
-| 25.1 | `app/services/llm_clients/openai_compatible.py` — HTTPX client against /v1/chat/completions with streaming + error handling + token usage extraction; works against OpenAI, OpenRouter, Together, vLLM, Saikat self-hosted, Ollama | ⏳ Pending | 1 | — |
-| 25.2 | `app/services/llm_registry.py` — provider registry + per-process routing logic; default config in code, hot-overrides in `llm_process_config` table | ⏳ Pending | 1 | — |
-| 25.3 | Wire all 9 background loops + user-facing chat to use registry instead of direct Gemini import; all call sites become `llm.call(process="quality_scorer", messages=...)` | ⏳ Pending | 1 | — |
+| 25.1 | `app/services/llm_clients/openai_compatible.py` — HTTPX client against /v1/chat/completions with streaming + error handling + token usage extraction; works against OpenAI, OpenRouter, Together, vLLM, Saikat self-hosted, Ollama | ✅ Done | — | #250 |
+| 25.2 | `app/services/llm_registry.py` — provider registry + per-process routing logic; default config in code, hot-overrides in `llm_process_config` table | ✅ Done (table-backed overrides land in 25.4) | — | #250 |
+| 25.3 | Wire all 9 background loops + user-facing chat to use registry instead of direct Gemini import; all call sites become `llm.call(process="quality_scorer", messages=...)` | 🔄 In Progress — 7 processes migrated (memory_extraction, soul_file_coach, nudge_generation, soul_file_recommendations, ai_influencer_wizard_simulation×2, character_generator×4, quality_scorer); user_chat_main + audio_transcription + proactive_generation + wizard preview deferred to 25.3b (depend on ai_client.generate_response chat-orchestration refactor — NSFW fallback + multimodal + archetype tuning) | 0.5 left | — |
 | 25.4 | `PATCH /admin/llm-registry` — hot-edit which process uses which provider/model (JWT-gated); 19.6 dashboard tile shows current routing | ⏳ Pending | 0.5 | — |
 | 25.5 | Extend Phase 19/24 cost tracking with `provider` and `model` columns on `llm_costs` table; per-provider daily spend rollup on dashboard | ⏳ Pending | 0.5 | — |
 | 25.6 | Per-provider eval harness — extend Phase 9 to run the 50-gold-prompt eval against (provider, model) tuples; comparison report so we can SEE that switching memory_extraction to Qwen-14B doesn't regress quality before flipping the switch | ⏳ Pending | 1 | — |
