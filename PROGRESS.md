@@ -33,7 +33,7 @@
 | 1.9 | Human-to-Human chat: create + list + send (3 endpoints) | ✅ Done | — | #158 |
 | 1.9a | H2H polish: sender_id in message API responses (unblocks mobile bubble alignment) | ✅ Done | — | TBD |
 | 1.9b | H2H polish: v2 inbox surfaces H2H rows (LEFT JOIN + participant_b OR-clause + metadata-bulk peer enrichment) | ✅ Done | — | TBD |
-| 1.10 | Chat as Human (creator takeover mode) — backend ✅ shipped & retested, mobile UI PR to Sarvesh pending (feature-flag-gated, awaiting agent v2 cutover) | ✅ Done (backend) | 1 | #170 (backend, merged 2026-05-28) + mobile PR (pending) |
+| 1.10 | Chat as Human (creator takeover mode) — backend ✅ shipped & retested. Mobile UI ✅ shipped via yral-mobile PR #1172 (merged 2026-05-29). Feature-flag-gated, default OFF. Awaiting agent v2 cutover before flag flip. | ✅ Done | — | #170 (backend, merged 2026-05-28) + yral-mobile #1172 (mobile, merged 2026-05-29) |
 | 1.11 | Unified inbox v3 (1 endpoint) | ✅ Done | — | #158 |
 | 1.12 | Billing paywall (calls billing.yral.com) | ✅ Done | — | #158 |
 | 1.13 | WebSocket inbox + WS docs (1 WS + 1 endpoint) | ✅ Done | — | #158 |
@@ -54,7 +54,7 @@
 | 2.4 | Memory enhancement (extraction + injection) | ✅ Done | — | #161 |
 | 2.5 | Request ID middleware (end-to-end tracing) | ✅ Done | — | #160 |
 | 2.6 | Redis cross-node WebSocket pub/sub | ✅ Done | — | #160 |
-| 2.7 | SSE streaming (word-by-word AI responses) | ✅ Done (backend) / ⏳ Pending (mobile integration) | — | #189 (backend) |
+| 2.7 | SSE streaming (word-by-word AI responses) — backend ✅ live (#189). Mobile SSE parser ✅ shipped via yral-mobile PR #1173 (merged 2026-06-02). Feature-flag-gated, default OFF. | ✅ Done | — | #189 (backend) + yral-mobile #1173 (mobile, merged 2026-06-02) |
 | 2.V1 | Verify: Langfuse receiving traces? | ⏳ Pending | 0.5 | — |
 | 2.V2 | Verify: Redis WS connected or local fallback? | ⏳ Pending | 0.5 | — |
 | **Phase 2 total** | | **85% done** | **4 days left** | |
@@ -154,11 +154,11 @@
 | # | Sub-phase | Status | Est. days | PR |
 |---|-----------|--------|-----------|-----|
 | 10.1 | Backend SSE endpoint (stream tokens from Gemini) | ✅ Done | — | #189 |
-| 10.2 | Mobile SSE parser (Kotlin/Ktor SSE client) | 🔄 In PR review (Sarvesh) | 0.5 | yral-mobile/rishi/sse-streaming |
+| 10.2 | Mobile SSE parser (Kotlin/Ktor SSE client) | ✅ Done — yral-mobile #1173 merged 2026-06-02, feature-flag-gated default OFF | — | yral-mobile #1173 |
 | 10.3 | JSON fallback path (old clients still work) | ✅ Done (carve-outs implemented) | — | — |
 | 10.4 | Feature flag to toggle SSE on/off | ✅ Done (default OFF, Firebase Remote Config) | — | — |
-| 10.5 | Sarvesh coordination for production mobile app | 🔄 PR sent, awaiting review | 1 | — |
-| **Phase 10 total** | | **85% done** | **1.5 days** | |
+| 10.5 | Sarvesh coordination for production mobile app | ✅ Done — yral-mobile #1173 merged 2026-06-02 | — | yral-mobile #1173 |
+| **Phase 10 total** | | **✅ Complete (awaiting flag flip at cutover)** | **0 days left** | |
 
 ## PHASE 11: SHADOW TRAFFIC
 | # | Sub-phase | Status | Est. days | PR |
@@ -284,8 +284,8 @@
 | # | Feature | Depends on | Status | Est. days |
 |---|---------|-----------|--------|-----------|
 | M1 | H2H chat UI (new screens) — TOMORROW priority | Phase 1 API ✅ | ⏳ Pending — tomorrow's top priority | 3 |
-| M2 | Chat as Human toggle UI — in Sarvesh review | Phase 1 API ✅ | 🔄 In PR review | 0 |
-| M3 | SSE streaming parser — in Sarvesh review | Phase 10 backend | 🔄 In PR review | 0 |
+| M2 | Chat as Human toggle UI — yral-mobile #1172 merged 2026-05-29 (feature-flag-gated default OFF) | Phase 1 API ✅ | ✅ Done | 0 |
+| M3 | SSE streaming parser — yral-mobile #1173 merged 2026-06-02 (feature-flag-gated default OFF) | Phase 10 backend | ✅ Done | 0 |
 | M4 | Soul File Coach UI — TOMORROW priority — "Make your bot better" entry from bot profile, opens coach chat pre-loaded with bot context, save-on-end summarizes changes applied | Phase 7.5 API ✅ | ⏳ Pending — tomorrow's top priority | 3 |
 | M5 | Audio upload UI — TOMORROW priority — mirror image-upload UX (mic button on input bar, hold-to-record OR file-picker, preview before send) | Phase 1.7 backend ✅ | ⏳ Pending — tomorrow's top priority | 2 |
 | M6 | Creator Studio UI (full dashboard) | Phase 7 API ✅ | ⏳ Pending | 3 |
