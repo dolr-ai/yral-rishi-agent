@@ -63,7 +63,7 @@ def test_load_credentials_parses_shell_style(tmp_path, monkeypatch):
         "# comment line\n"
         "ETL_PG_PASSWORD=plain-pwd\n"
         "BACKUP_S3_ACCESS_KEY='quoted-key'\n"
-        '\n'
+        "\n"
         'BACKUP_S3_SECRET_KEY="double-quoted"\n'
     )
     monkeypatch.setattr(mod, "CRED_FILE", cred_file)
@@ -81,6 +81,7 @@ def test_load_credentials_errors_on_missing_keys(tmp_path, monkeypatch):
     cred_file.write_text("ETL_PG_PASSWORD=only-this-one\n")
     monkeypatch.setattr(mod, "CRED_FILE", cred_file)
     import pytest
+
     with pytest.raises(SystemExit) as e:
         mod.load_credentials()
     assert "missing keys" in str(e.value)
@@ -136,7 +137,7 @@ def test_csv_row_count_handles_embedded_newlines():
     # Simulate CSV that COPY would emit: messages with multi-line content,
     # RFC-4180-quoted (newlines inside quoted cells stay raw `\n` bytes).
     csv_text = (
-        'id,content\n'
+        "id,content\n"
         '1,"plain message"\n'
         '2,"two line\nmessage"\n'
         '3,"another\nmultiline\nmessage"\n'
@@ -220,11 +221,16 @@ def test_state_load_upgrades_old_file(tmp_path, monkeypatch):
     mod = _load_module()
     state_file = tmp_path / "state.json"
     import json
-    state_file.write_text(json.dumps({
-        "ai_influencers": "2026-05-26T08:00:00+00:00",
-        "conversations": "2026-05-26T08:00:00+00:00",
-        "messages": "2026-05-26T08:00:00+00:00",
-    }))
+
+    state_file.write_text(
+        json.dumps(
+            {
+                "ai_influencers": "2026-05-26T08:00:00+00:00",
+                "conversations": "2026-05-26T08:00:00+00:00",
+                "messages": "2026-05-26T08:00:00+00:00",
+            }
+        )
+    )
     monkeypatch.setattr(mod, "STATE_FILE", state_file)
     got = mod.load_state()
     assert got["_last_hourly_emit"] is None

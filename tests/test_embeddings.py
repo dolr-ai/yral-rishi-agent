@@ -11,10 +11,7 @@ def test_memory_to_embed_text_shape():
     must produce embeddings in the same vector space."""
     from services.embeddings import memory_to_embed_text
 
-    assert (
-        memory_to_embed_text("identity", "name", "Rahul")
-        == "identity: name = Rahul"
-    )
+    assert memory_to_embed_text("identity", "name", "Rahul") == "identity: name = Rahul"
     assert (
         memory_to_embed_text("preferences", "favorite_food", "biryani")
         == "preferences: favorite_food = biryani"

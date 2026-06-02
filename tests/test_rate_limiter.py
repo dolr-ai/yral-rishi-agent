@@ -122,7 +122,10 @@ def test_dashboard_tile_replaces_placeholder():
     AND be called in the dashboard's tile list."""
     src = _read("app/routes/admin_dashboard.py")
     # The placeholder for 19.1 is removed
-    assert '"Per-user rate limits",' not in src or '_placeholder_tile(\n            "Per-user rate limits"' not in src
+    assert (
+        '"Per-user rate limits",' not in src
+        or '_placeholder_tile(\n            "Per-user rate limits"' not in src
+    )
     # The live tile function exists and is called
     assert "async def _rate_limit_tile" in src
     assert "await _rate_limit_tile(pool)" in src
@@ -142,8 +145,12 @@ def test_migration_025_seeds_defaults():
     src = _read("migrations/025_rate_limit_config.sql")
     assert "CREATE TABLE IF NOT EXISTS rate_limit_config" in src
     assert "value INT NOT NULL CHECK (value > 0)" in src
-    for key in ("per_user_per_min", "per_user_per_hour",
-                "per_ip_per_min", "per_ip_per_hour"):
+    for key in (
+        "per_user_per_min",
+        "per_user_per_hour",
+        "per_ip_per_min",
+        "per_ip_per_hour",
+    ):
         assert f"'{key}'" in src
 
 

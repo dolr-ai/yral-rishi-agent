@@ -139,16 +139,23 @@ def test_semaphore_is_per_provider_via_lazy_cache():
 
 def test_gemini_dispatch_uses_dedicated_client():
     """25.3 wires the new gemini.py client. Registry routes Gemini to it
-    instead of raising NotImplementedError. Both clients (gemini +
-    openai_compatible) expose the same complete()/complete_stream()
-    interface so the dispatch body has no per-provider special-casing
-    beyond the import."""
+    via the same complete()/complete_stream() interface as
+    openai_compatible — dispatch has no per-provider special-casing
+    beyond the import.
+
+    25.3b note: NotImplementedError appears elsewhere in the file
+    (call_transcribe raises it for non-Gemini providers). The
+    constraint here is that GEMINI's call() dispatch isn't gated by it."""
     src = _read("app/services/llm_registry.py")
     assert 'provider == "gemini"' in src
     assert "from services.llm_clients import gemini" in src
     assert "client_module.complete" in src
-    # No more NotImplementedError for Gemini
-    assert "NotImplementedError" not in src
+    # Locate the Gemini branch in call() (not call_transcribe), confirm
+    # it doesn't raise NotImplementedError.
+    call_pos = src.find("async def call(")
+    call_stream_pos = src.find("async def call_stream(", call_pos)
+    call_body = src[call_pos:call_stream_pos] if call_stream_pos > 0 else src[call_pos:]
+    assert "NotImplementedError" not in call_body
 
 
 def test_gemini_client_has_symmetric_interface():

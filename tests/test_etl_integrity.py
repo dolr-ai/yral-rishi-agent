@@ -23,7 +23,9 @@ def test_to_naive_utc_strips_tzinfo():
     assert naive.year == 2026 and naive.hour == 12
 
     # tz-aware in IST → naive UTC (wall-clock converted)
-    ist = datetime(2026, 5, 30, 17, 30, 0, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+    ist = datetime(
+        2026, 5, 30, 17, 30, 0, tzinfo=timezone(timedelta(hours=5, minutes=30))
+    )
     naive2 = _to_naive_utc(ist)
     assert naive2.tzinfo is None
     assert naive2.hour == 12  # 17:30 IST = 12:00 UTC

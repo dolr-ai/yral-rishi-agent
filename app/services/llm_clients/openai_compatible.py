@@ -19,7 +19,7 @@ from typing import AsyncIterator
 
 import httpx
 
-from services.ai_client import LlmResponse
+from services.llm_types import LlmResponse
 
 logger = logging.getLogger(__name__)
 

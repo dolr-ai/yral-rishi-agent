@@ -23,20 +23,25 @@ from typing import AsyncIterator
 
 import httpx
 
-import config
-from services.ai_client import LlmBlockedError, LlmResponse
+from services.llm_types import LlmBlockedError, LlmResponse
 
 logger = logging.getLogger(__name__)
 
 GEMINI_NATIVE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
 
-def _messages_to_gemini_contents(
+async def _messages_to_gemini_contents(
     messages: list[dict],
 ) -> tuple[list[dict], dict | None]:
     """Convert OpenAI messages → (contents, system_instruction) for Gemini.
 
-    OpenAI shape: [{"role": "system|user|assistant", "content": "..."}]
+    OpenAI shape:
+      [{"role": "system|user|assistant", "content": "..."}]  # string
+      [{"role": "user", "content": [
+          {"type": "text", "text": "..."},
+          {"type": "image_url", "image_url": {"url": "..."}},
+      ]}]  # multimodal content list
+
     Gemini shape:
       contents: [{"role": "user|model", "parts": [{"text": "..."}]}]
       systemInstruction: {"parts": [{"text": "..."}]}  (separate, not in contents)
@@ -44,22 +49,72 @@ def _messages_to_gemini_contents(
     Notes:
       - Gemini uses "model" where OpenAI uses "assistant" — rename.
       - System messages get hoisted out of contents into the dedicated
-        systemInstruction field. If there are multiple system messages,
-        concatenate (rare in practice).
-      - Only string content is supported here; multimodal stays in the
-        legacy ai_client.generate_response path until 25.3b.
+        systemInstruction field. Multiple system messages concatenate.
+      - Multimodal (image_url) content is fetched+base64-encoded into
+        Gemini's inlineData format. Image fetch is lazy-imported from
+        ai_client to avoid a circular import; that helper already has
+        size-limit + SSRF defenses.
     """
+    import asyncio
+
     system_parts: list[str] = []
     contents: list[dict] = []
+    image_tasks: list[tuple[int, int, object]] = []
+
     for msg in messages:
         role = msg.get("role", "user")
-        content = msg.get("content") or ""
+        content = msg.get("content")
         if role == "system":
-            if content:
+            if isinstance(content, str) and content:
                 system_parts.append(content)
             continue
         gemini_role = "model" if role == "assistant" else "user"
-        contents.append({"role": gemini_role, "parts": [{"text": content}]})
+
+        parts: list[dict | None] = []
+        if isinstance(content, str):
+            if content:
+                parts.append({"text": content})
+        elif isinstance(content, list):
+            # OpenAI multimodal content array
+            from services.ai_client import _fetch_and_encode_image
+
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                t = item.get("type")
+                if t == "text":
+                    text = item.get("text") or ""
+                    if text:
+                        parts.append({"text": text})
+                elif t == "image_url":
+                    url_obj = item.get("image_url") or {}
+                    url = url_obj.get("url") if isinstance(url_obj, dict) else url_obj
+                    if url:
+                        placeholder_idx = len(parts)
+                        parts.append(None)
+                        image_tasks.append(
+                            (
+                                len(contents),
+                                placeholder_idx,
+                                _fetch_and_encode_image(url),
+                            )
+                        )
+
+        if parts:
+            contents.append({"role": gemini_role, "parts": parts})
+
+    if image_tasks:
+        coroutines = [task[2] for task in image_tasks]
+        results = await asyncio.gather(*coroutines, return_exceptions=True)
+        for (content_idx, part_idx, _), result in zip(image_tasks, results):
+            if isinstance(result, Exception):
+                contents[content_idx]["parts"][part_idx] = {
+                    "text": "[image — failed to load]"
+                }
+            else:
+                contents[content_idx]["parts"][part_idx] = result
+        for entry in contents:
+            entry["parts"] = [p for p in entry["parts"] if p is not None]
 
     system_instruction = (
         {"parts": [{"text": "\n\n".join(system_parts)}]} if system_parts else None
@@ -88,7 +143,7 @@ async def complete(
     Gemini's native API uses fixed URL + payload shape — base_url is
     ignored, extra_body is merged into generationConfig if present.
     """
-    contents, system_instruction = _messages_to_gemini_contents(messages)
+    contents, system_instruction = await _messages_to_gemini_contents(messages)
 
     payload: dict = {"contents": contents}
     gen_config: dict = {}
@@ -193,7 +248,7 @@ async def complete_stream(
     """
     import json
 
-    contents, system_instruction = _messages_to_gemini_contents(messages)
+    contents, system_instruction = await _messages_to_gemini_contents(messages)
     payload: dict = {"contents": contents}
     gen_config: dict = {}
     if temperature is not None:
@@ -242,17 +297,73 @@ async def complete_stream(
             yield ("done", "")
 
 
-# ─── Backward-compat shim for legacy callers ─────────────────────────────
-#
-# config.GEMINI_API_KEY is the env-var fallback. The registry uses
-# _resolve_api_key (file-first /run/secrets/<NAME>) — that's the canonical
-# path. This helper just lets callers that haven't migrated yet keep
-# working without explicitly threading the key through.
+# ─── Audio modality (25.3b) ───────────────────────────────────────────────
 
 
-def _api_key_or_raise() -> str:
-    """Public helper for ai_client.py during the wiring transition.
-    Once 25.3b migrates the chat orchestration, this disappears."""
-    if not config.GEMINI_API_KEY:
-        raise RuntimeError("gemini: no GEMINI_API_KEY configured")
-    return config.GEMINI_API_KEY
+async def transcribe(
+    *,
+    provider: str,
+    base_url: str | None,
+    api_key: str,
+    model: str,
+    audio_url: str,
+    timeout: float = 60.0,
+) -> LlmResponse:
+    """Gemini audio transcription via the native generateContent endpoint
+    with audio inline content. Different request shape from chat — audio
+    bytes go in the user message parts as `inlineData`. Returns a
+    LlmResponse where `content` is the transcript text.
+
+    Distinct from complete() because the request shape differs and the
+    registry exposes a separate capability flag (`supports_transcribe`)
+    so admin routing can show which providers handle which modality.
+    """
+    started = time.monotonic()
+
+    # Fetch + base64-encode audio. Reuse ai_client's image fetcher path
+    # at the byte level — same SSRF + size-limit defenses apply.
+    from services.ai_client import _fetch_image_bytes_and_mime
+
+    mime, audio_bytes = await _fetch_image_bytes_and_mime(audio_url)
+    if not mime or not isinstance(audio_bytes, bytes):
+        raise RuntimeError(f"gemini.transcribe: failed to fetch audio at {audio_url}")
+
+    import base64
+
+    encoded = base64.b64encode(audio_bytes).decode("ascii")
+
+    payload = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {"text": "Transcribe this audio. Return only the transcription."},
+                    {"inlineData": {"mimeType": mime, "data": encoded}},
+                ],
+            }
+        ]
+    }
+    url = f"{GEMINI_NATIVE_URL}/models/{model}:generateContent"
+
+    async with httpx.AsyncClient(timeout=timeout) as http:
+        response = await http.post(
+            url, json=payload, params={"key": api_key}, timeout=timeout
+        )
+        response.raise_for_status()
+        data = response.json()
+
+    candidates = data.get("candidates") or []
+    if not candidates:
+        raise LlmBlockedError("transcription returned no candidates")
+    parts = candidates[0].get("content", {}).get("parts", []) or []
+    text = "".join(p.get("text", "") for p in parts).strip()
+    usage = data.get("usageMetadata") or {}
+
+    return LlmResponse(
+        content=text,
+        provider=provider,
+        model=model,
+        input_tokens=int(usage.get("promptTokenCount") or 0),
+        output_tokens=int(usage.get("candidatesTokenCount") or 0),
+        latency_ms=(time.monotonic() - started) * 1000.0,
+    )
