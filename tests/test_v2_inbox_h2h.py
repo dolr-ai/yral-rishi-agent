@@ -212,24 +212,42 @@ def test_count_unread_signature_takes_viewer_principal():
     and the function would error out — that's the desired regression
     catch."""
     src = _read("app/repositories/message_repo.py")
-    assert "async def count_unread(pool, conversation_id: str, viewer_principal: str)" in src
-    assert "async def mark_as_read(pool, conversation_id: str, viewer_principal: str)" in src
+    assert (
+        "async def count_unread(pool, conversation_id: str, viewer_principal: str)"
+        in src
+    )
+    assert (
+        "async def mark_as_read(pool, conversation_id: str, viewer_principal: str)"
+        in src
+    )
 
 
 def test_callers_pass_correct_viewer_to_unread_helpers():
     """All 5 known callers must pass the right viewer principal. If a
-    future refactor drops the second arg, this test catches it."""
-    chat_src = _read("app/routes/chat.py")
-    human_src = _read("app/routes/human_chat.py")
-    takeover_src = _read("app/routes/creator_takeover.py")
-    proactive_src = _read("app/services/proactive.py")
+    future refactor drops the second arg, this test catches it.
+
+    Strips ALL whitespace from the source before checking so that
+    ruff-format's multi-line splits don't break the assertion (we care
+    about the call shape, not the formatting)."""
+    import re
+
+    def _strip(s: str) -> str:
+        return re.sub(r"\s", "", s)
+
+    chat_src = _strip(_read("app/routes/chat.py"))
+    human_src = _strip(_read("app/routes/human_chat.py"))
+    takeover_src = _strip(_read("app/routes/creator_takeover.py"))
+    proactive_src = _strip(_read("app/services/proactive.py"))
 
     # POST /read: viewer is the caller (user_id)
-    assert "message_repo.mark_as_read(pool, conversation_id, user_id)" in chat_src
-    assert "message_repo.count_unread(pool, conversation_id, user_id)" in chat_src
+    assert "message_repo.mark_as_read(pool,conversation_id,user_id)" in chat_src
+    assert "message_repo.count_unread(pool,conversation_id,user_id)" in chat_src
     # H2H send: viewer is the recipient (the other peer)
-    assert "message_repo.count_unread(pool, conversation_id, recipient_id)" in human_src
+    assert "message_repo.count_unread(pool,conversation_id,recipient_id)" in human_src
     # Creator takeover: viewer is the user (conv["user_id"])
-    assert 'message_repo.count_unread(pool, conversation_id, conv["user_id"])' in takeover_src
+    assert (
+        'message_repo.count_unread(pool,conversation_id,conv["user_id"])'
+        in takeover_src
+    )
     # Proactive AI nudge: viewer is the user (recipient of AI message)
-    assert "message_repo.count_unread(pool, conversation_id, user_id)" in proactive_src
+    assert "message_repo.count_unread(pool,conversation_id,user_id)" in proactive_src
