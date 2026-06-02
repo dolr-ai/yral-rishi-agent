@@ -113,3 +113,33 @@ def test_chat_v2_includes_conversation_type_in_response():
     this explicit (matches the v3 endpoint's contract)."""
     src = _read("app/routes/chat_v2.py")
     assert '"conversation_type": conv_type' in src
+
+
+# ─── _can_access_conversation: H2H recipient bug fix (2026-06-01) ─────────
+#
+# Bug: PR #228 expanded H2H access on the inbox LIST endpoint
+# (GET /api/v2/chat/conversations) but didn't propagate the same expansion
+# to the access helper that gates the DETAIL endpoints in app/routes/chat.py
+# (GET /messages, POST /read, POST /messages/stream, POST /images).
+# Recipient saw the row + preview but tapping it returned 403.
+# Fix: also honor conv["participant_b_id"] in the helper.
+
+
+def test_can_access_conversation_honors_participant_b():
+    """The detail-endpoint gate must let the H2H recipient through, not
+    just the creator + AI principal + influencer parent. Without this
+    branch, the recipient saw the row in their inbox but tapping it
+    returned 403 from /messages, /read, /messages/stream, and /images
+    (all four share this helper)."""
+    src = _read("app/routes/chat.py")
+    assert 'conv.get("participant_b_id") == user_id' in src
+
+
+def test_can_access_conversation_helper_still_used_by_messages_endpoint():
+    """Sanity pin: the fix only helps if the GET /messages endpoint
+    actually calls this helper. If a future refactor inlines or replaces
+    the check, the recipient bug returns silently."""
+    src = _read("app/routes/chat.py")
+    assert "_can_access_conversation" in src
+    # The helper must be awaited at the /messages route (line ~278)
+    assert "await _can_access_conversation(" in src
