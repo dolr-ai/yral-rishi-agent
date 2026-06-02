@@ -162,14 +162,23 @@ def test_memory_extract_gates_at_top():
     """extract_and_store fires from chat.send_message via
     asyncio.create_task after the user reply lands. The kill-switch
     check must be at the TOP of the function so a flipped switch
-    short-circuits before any Gemini call."""
+    short-circuits before any LLM call.
+
+    Phase 25.3 migration: memory.py now calls llm_registry.call() for
+    memory_extraction (was direct _call_gemini before). The gate-position
+    pin tracks the new call site marker."""
     src = _read("app/services/memory.py")
     assert "from kill_switch import is_enabled" in src
     assert 'is_enabled("memory_extraction")' in src
-    # Pin position: the check must come before _call_gemini
+    # Pin position: the kill-switch check must come BEFORE the LLM call.
+    # Accept either the new registry-based call or the legacy direct
+    # _call_gemini, so the test survives partial migrations + future
+    # refactors.
     gate_pos = src.find('is_enabled("memory_extraction")')
-    gemini_pos = src.find("_call_gemini(")
-    assert gate_pos > 0 and gemini_pos > 0 and gate_pos < gemini_pos
+    llm_pos = src.find("llm_registry.call(")
+    legacy_pos = src.find("_call_gemini(")
+    call_pos = llm_pos if llm_pos > 0 else legacy_pos
+    assert gate_pos > 0 and call_pos > 0 and gate_pos < call_pos
 
 
 def test_user_facing_chat_path_NOT_gated():

@@ -16,7 +16,8 @@ prose because Gemini occasionally violates the JSON-only instruction.
 import json
 import logging
 
-from services.ai_client import _call_gemini, generate_response
+from services import llm_registry
+from services.ai_client import generate_response
 
 logger = logging.getLogger(__name__)
 
@@ -108,14 +109,19 @@ async def generate_intake_questions(concept: str) -> list[dict]:
     """
     prompt = INTAKE_PROMPT.format(concept=concept)
     try:
-        text, _ = await _call_gemini(
-            contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            system_instruction={
-                "parts": [{"text": "Return only valid JSON. No markdown fences."}]
-            },
+        response = await llm_registry.call(
+            process="ai_influencer_wizard_simulation",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Return only valid JSON. No markdown fences.",
+                },
+                {"role": "user", "content": prompt},
+            ],
             temperature=0.6,
             max_tokens=2048,
         )
+        text = response.content
     except Exception as e:
         logger.warning(f"wizard.generate_intake_questions failed: {e}")
         return []
@@ -154,14 +160,19 @@ async def generate_draft(concept: str, answers: dict) -> dict | None:
         answers_block = "(no answers — fall back to the concept alone)"
     prompt = DRAFT_PROMPT.format(concept=concept, answers_block=answers_block)
     try:
-        text, _ = await _call_gemini(
-            contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            system_instruction={
-                "parts": [{"text": "Return only valid JSON. No markdown fences."}]
-            },
+        response = await llm_registry.call(
+            process="ai_influencer_wizard_simulation",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Return only valid JSON. No markdown fences.",
+                },
+                {"role": "user", "content": prompt},
+            ],
             temperature=0.5,
             max_tokens=2048,
         )
+        text = response.content
     except Exception as e:
         logger.warning(f"wizard.generate_draft failed: {e}")
         return None

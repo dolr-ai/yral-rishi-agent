@@ -11,7 +11,7 @@ can hand a recommendation straight to the coach to apply.
 import json
 import logging
 
-from services.ai_client import _call_gemini
+from services import llm_registry
 
 logger = logging.getLogger(__name__)
 
@@ -131,26 +131,25 @@ async def generate_recommendations(
         sample_replies_block=_format_sample_replies(sample_bot_replies),
     )
 
-    contents = [{"role": "user", "parts": [{"text": prompt}]}]
-    system_instruction = {
-        "parts": [
-            {
-                "text": (
-                    "You are a specialist AI personality coach. Output JSON ONLY. "
-                    "Be specific. Skip polish; focus on behavior changes."
-                )
-            }
-        ]
-    }
     try:
-        response_text, _ = await _call_gemini(
-            contents=contents,
-            system_instruction=system_instruction,
+        response = await llm_registry.call(
+            process="soul_file_recommendations",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a specialist AI personality coach. Output JSON ONLY. "
+                        "Be specific. Skip polish; focus on behavior changes."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
             temperature=0.4,
             max_tokens=2048,
         )
+        response_text = response.content
     except Exception as e:
-        logger.warning(f"recommendations: gemini call failed: {e}")
+        logger.warning(f"recommendations: llm call failed: {e}")
         return []
 
     parsed = _parse_recommendations(response_text)
