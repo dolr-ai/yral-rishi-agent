@@ -1,8 +1,21 @@
 # Phase 25 — Multi-provider LLM architecture: design
 
-Status: **DRAFT — design only, no implementation yet.** Approval gate before scaffolding turns into real code.
+Status: **APPROVED 2026-06-02 by Rishi** — 3 decisions locked, 5 open questions answered (Q4 + Q5 expanded). Implementation begins in a follow-up PR.
 
 This document is the source of truth for the 3 decisions that have to be locked before any of 25.1–25.9 ships.
+
+## ⭐ Approval summary (2026-06-02)
+
+- **Decision 1 (in-house):** ✅ approved as-is.
+- **Decision 2 (process names):** ✅ approved with 2 renames — see "Renames 2026-06-02" below.
+- **Decision 3 (per-provider concurrency cap):** ✅ approved as-is. Caps: gemini=20, openai/openrouter/together=10, internal_vllm=5, ollama=2.
+- **Q1 (image gen in registry):** NO — keep out.
+- **Q2 (audio transcription):** YES — route via registry, Gemini-only for now.
+- **Q3 (local-dev override):** env vars in the form `LLM_PROCESS__<NAME>=<provider>/<model>`.
+- **Q4 (cost-breaker scope):** per-user **cross-provider**, plus a new `cost_basis` column on `llm_costs` (`real` / `synthetic`). `internal_vllm` logs synthetic per-token cost (suggested **$0.00005/1k tokens**) representing compute share, NOT real money. Dashboard separately reports "real $ spent" vs "compute share consumed." See "Cost basis" below.
+- **Q5 (self-hosted failure):** new retry ladder — see "Failure handling: retry ladder + Gemini fallback" below.
+
+**ADHD-friendly editability rule (REINFORCED):** every cap, every provider mapping, every concurrency limit, every retry count, every fallback cap MUST be exposed on the Phase 19.6 + 25.9 admin dashboard with two-click Edit affordance. **No knob ships buried in env vars only.** Per [[feedback-adhd-observability-and-security-baseline]] memory.
 
 ---
 
@@ -47,8 +60,8 @@ Every LLM call site is named by a stable `process` string. This is what the admi
 | `soul_file_coach` | `coach.py:169` | Gemini | warm | Possibly self-hosted Qwen-14B |
 | `nudge_generation` | `nudge.py:86` | Gemini | background | Cheap candidate |
 | `character_generator` | `character_generator.py:148, 190, 250, 286` | Gemini | background | 4 sub-prompts; one process name, multiple invocations |
-| `wizard_simulation` | `wizard.py:202` | Gemini | background | 50-turn simulation loop |
-| `recommendations` | `recommendations.py` | Gemini | background | Re-confirm in 25.3 audit |
+| `ai_influencer_wizard_simulation` | `wizard.py:202` | Gemini | background | 50-turn simulation loop. Renamed 2026-06-02 to disambiguate from any future generic-wizard process |
+| `soul_file_recommendations` | `recommendations.py` | Gemini | background | Renamed 2026-06-02 to make ownership explicit — this is the soul-file recommender, not a generic one |
 
 **Embeddings** (`embeddings.py`) and **image generation** (Replicate) are out of scope — different request shapes, different cost models. Phase 25 is `/v1/chat/completions`-shaped processes only.
 
@@ -148,6 +161,53 @@ async def call(*, process: str, messages: list[dict], **kwargs) -> LlmResponse:
 
 ---
 
+## Failure handling — retry ladder + Gemini fallback (Q5 expanded 2026-06-02)
+
+Originally Q5 recommended "no automatic fallback." Rishi expanded this to a bounded retry-then-fallback ladder that preserves the registry's intent (control which provider serves which process) while not letting transient self-hosted failures break user-facing chat.
+
+**Per-request flow when the registered provider call fails:**
+
+1. **Retry on same provider** — N retries, default **3**, exponential backoff with jitter (200ms → 400ms → 800ms ± 50ms jitter). Standard pattern; lives in the openai_compatible client (or gemini client, symmetric).
+
+2. **Webhook alert on retry exhaustion** — POST to a Google Chat webhook so we *see* this happening in real time. Webhook URL lives in Swarm secret `LLM_FALLBACK_ALERT_WEBHOOK`. Payload: `{process, provider, model, error, attempted_at, user_id_if_user_facing}`. Rishi will provide the URL when ready; design encodes the secret name today, the wiring lands in 25.1.
+
+3. **Fallback to Gemini for *that one request*** — drops back to `gemini-2.0-flash` (or whatever the user-chat default is) so the user gets a reply. Per-request, not per-state: the registry config for the process is **not** mutated. Once the registered provider recovers, the next request goes to it normally.
+
+4. **Bounded fallback cap** — a separate "fallback budget" cap, default **$5/day shared across all users**, tracked in `llm_costs` with `cost_basis='real'` and a special `is_fallback=true` flag. Prevents the abuse pattern "deliberately trigger fallback to drain paid Gemini quota." Once the fallback cap is hit, fallback turns OFF for the rest of the UTC day; requests with no fallback either succeed-on-retry or surface a 5xx to the caller.
+
+5. **Auto-resume** — no manual reset needed. Fallback is per-request; once internal_vllm is healthy again, requests stop falling back automatically.
+
+**ADHD-editability tie-in:** retry count, retry-backoff base, webhook URL, fallback cap $/day are all knobs on the 19.6 + 25.9 admin dashboard. Two-click edit.
+
+**Why not "fall back forever until manually reset":** state-based fallback hides the underlying problem — internal_vllm could be down for hours and we wouldn't notice unless Gemini bill spikes. Per-request fallback + webhook makes the failure loud while keeping users served.
+
+---
+
+## Cost basis — real $ vs synthetic compute share (Q4 expanded 2026-06-02)
+
+The Phase 19 cost breaker exists to protect against **real $** burn. After Phase 25, traffic spreads across providers including `internal_vllm` (free in dollar terms — we own the GPU). A naïve per-user $/day cap that only counts real $ becomes increasingly meaningless as we route more traffic to the self-hosted endpoint.
+
+**Solution:** new column `cost_basis` on `llm_costs` table with values `real` or `synthetic`.
+
+- **Real:** Gemini, OpenAI, OpenRouter, Together — actual per-token pricing from the provider's published rates. Phase 19.2's per-user cap counts these.
+- **Synthetic:** internal_vllm — compute-share pricing at a suggested **$0.00005/1k tokens** (configurable per provider in registry). Represents "this user consumed X amount of shared GPU." Phase 19.2's per-user cap counts these too — so a user hammering internal_vllm hits the per-user daily cap eventually, but at a much higher token volume than they would if they were hammering Gemini.
+
+**Dashboard separates the two reports:**
+
+- Tile 1: "Real $ spent today" (sum where cost_basis=real). This is what we pay vendors.
+- Tile 2: "Compute share consumed today" (sum where cost_basis=synthetic, denominated in the same $-equivalent so the math composes).
+- Tile 3 (existing): "Per-user $/day" cap status across both — the protective cap.
+
+**Why synthetic instead of zero?**
+
+If internal_vllm logs zero cost, the per-user breaker becomes a no-op for self-hosted traffic. A user could chat infinitely against internal_vllm with no protection — that becomes a GPU DoS vector. Synthetic pricing makes the cap mean "you've consumed enough compute resources that we want you to slow down regardless of who paid."
+
+**Why $0.00005/1k tokens specifically?**
+
+Roughly 20x cheaper than Gemini Flash's real rate (~$0.001/1k input tokens). Reflects that we *do* spend on GPU+power; we just don't pay per token. Tunable in registry — adjust as the GPU bill firms up.
+
+---
+
 ## Scope of this PR
 
 - ✅ This design doc (`docs/PHASE-25-DESIGN.md`)
@@ -160,14 +220,12 @@ async def call(*, process: str, messages: list[dict], **kwargs) -> LlmResponse:
 
 ---
 
-## Open questions (need Rishi's call before 25.1 implementation)
+## Open questions — RESOLVED 2026-06-02
 
-1. **Image generation** stays on Replicate — confirm or include in registry? Today Replicate is a separate code path; for symmetry it could become a "process" with provider=replicate. **Recommendation: leave outside the registry for now**, Phase 25 is `/v1/chat/completions`-shaped only. Image generation is a Phase 22+ concern.
-
-2. **Audio transcription** stays Gemini-only — confirm? OpenAI Whisper-via-OpenAI-API is `/v1/audio/transcriptions`, a different endpoint shape. **Recommendation: leave Gemini-only**, route through registry as `audio_transcription` process with `gemini-native` provider, no openai_compatible fallback for now. Phase 25.x follow-up can add a `/v1/audio/transcriptions` client when needed.
-
-3. **Where do new `llm_process_config` overrides live during local dev?** Default config is in `llm_registry.py` as a Python dict. Production overrides land in Postgres. For local dev, do we want env-var overrides (`LLM_PROCESS__QUALITY_SCORER=openrouter/qwen-14b`) or a JSON file? **Recommendation: env vars** (matches existing config pattern), keep it simple.
-
-4. **Cost breaker per-provider vs cross-provider** — Phase 19.2 today caps per-user daily $ on Gemini. After Phase 25 the user could spread spend across providers. **Recommendation: keep per-user cap cross-provider** (total $ regardless of which provider served), add per-provider visibility on the dashboard.
-
-5. **Gemini fallback when OpenAI-compatible fails** — if `quality_scorer` is configured for `openrouter/qwen-14b` and the call fails, do we fall back to Gemini? **Recommendation: NO automatic fallback** in 25.1. The whole point of Phase 25 is to control which provider serves which process; silent fallback to Gemini defeats that. Failures should surface as failures so the dashboard alerts.
+| # | Question | Resolution |
+|---|---|---|
+| Q1 | Image generation in registry? | **NO** — keep on Replicate, out of the registry. Phase 25 is `/v1/chat/completions`-shaped only. |
+| Q2 | Audio transcription routing? | **YES via registry**, Gemini-only for now. Process name: `audio_transcription` with `gemini-native` provider. A `/v1/audio/transcriptions` client lands as a Phase 25.x follow-up if/when needed. |
+| Q3 | Local-dev override mechanism? | **Env vars**: `LLM_PROCESS__<UPPER_PROCESS_NAME>=<provider>/<model>`. Matches existing config pattern. Example: `LLM_PROCESS__QUALITY_SCORER=openrouter/qwen-14b`. |
+| Q4 | Cost breaker per-provider vs cross-provider? | **Cross-provider per-user**, with new `cost_basis` column (`real` / `synthetic`). See "Cost basis" section above for full design. |
+| Q5 | Auto-fallback to Gemini? | **YES with bounded retry ladder.** 3 retries on same provider → Google Chat webhook alert → per-request Gemini fallback → fallback budget cap ($5/day shared default) → auto-resume. See "Failure handling: retry ladder" section above. |

@@ -44,6 +44,6 @@ PROCESS_NAMES: tuple[str, ...] = (
     "soul_file_coach",
     "nudge_generation",
     "character_generator",
-    "wizard_simulation",
-    "recommendations",
+    "ai_influencer_wizard_simulation",
+    "soul_file_recommendations",
 )
