@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-05-30 evening
 **Codebase:** ~6,500 lines Python (post Chat as Human + graceful error UX)
-**Total phases:** 24 (Phase 0–24) | **Est. total days remaining:** ~75-90 days
+**Total phases:** 25 (Phase 0–25) | **Est. total days remaining:** ~80-95 days
 
 ---
 
@@ -252,20 +252,23 @@
 | 19.6 | Admin observability page (single bookmarkable URL) — shows: top rate-limited users in last 24h, cost-breaker activations, security events from 24.x, backup-drill status, last-run timestamps. JWT-gated. ADHD-friendly: one page Rishi opens once a day, sees everything. | ✅ Done | — | #229 |
 | **Phase 19 total** | | **33% done** | **4 days** | |
 
-## PHASE 20: SELF-HOSTED LLM (Month 6+)
+## PHASE 20: SELF-HOSTED LLM (Saikat-coordinated, depends on Phase 25)
+**Note:** Phase 20 now follows Phase 25 (multi-provider architecture). Saikat's self-hosted endpoint becomes ONE of many providers wired through the registry, not a special-case integration.
+
 | # | Sub-phase | Status | Est. days | PR |
 |---|-----------|--------|-----------|-----|
-| 20.1 | GPU server from Saikat (H100/A100) | ⏳ Pending | 1 | — |
-| 20.2 | vLLM / TGI deployment | ⏳ Pending | 2 | — |
+| 20.1 | GPU server from Saikat (H100/A100) | 🔄 In progress per Rishi 2026-05-30 | 1 | — |
+| 20.2 | vLLM / TGI deployment exposing OpenAI-compatible /v1/chat/completions | ⏳ Pending | 2 | — |
 | 20.3 | Model selection (Llama/Qwen/Mistral/DeepSeek) | ⏳ Pending | 1 | — |
 | 20.4 | Fine-tune on YRAL conversation data | ⏳ Pending | 5 | — |
-| 20.5 | Latency benchmark vs Gemini | ⏳ Pending | 1 | — |
-| 20.6 | Gradual rollout (non-critical turns first) | ⏳ Pending | 2 | — |
+| 20.5 | Latency benchmark vs Gemini (via Phase 25.6 eval harness) | ⏳ Pending | 1 | — |
+| 20.6 | Gradual rollout — flip processes one at a time via Phase 25.4 admin endpoint (no redeploy needed) | ⏳ Pending | 2 | — |
 | **Phase 20 total** | | **Not started** | **12 days** | |
 
 ## PHASE 21: PRODUCTION CUTOVER (at Rishi's discretion)
 | # | Sub-phase | Status | Est. days | PR |
 |---|-----------|--------|-----------|-----|
+| 21.0 | **Auto-deploy from CI build to swarm service.** Surfaced 2026-06-02: PR #241 merged + image built by CI but swarm spec never updated → required a manual `docker service update --image` step to roll out. Today's symptom: monolith ran old image for ~35 min after merge despite image being in GHCR. Fix options (pick one before cutover): (a) CI deploy-job that SSHes from a self-hosted runner / OIDC and runs `docker service update`; (b) Watchtower-style image-pull service on rishi-4 that polls GHCR for the `:main` tag; (c) GHCR push webhook into a small endpoint on rishi-4. Hard prerequisite for 21.x — gradual rollout cannot work if every deploy needs a human SSH. | ⏳ Pending | 1 | — |
 | 21.1 | Final ETL sync (delta since last migration) | ⏳ Pending — superseded by continuous ETL (Task B, #207) | 1 | — |
 | 21.1c | Continuous incremental ETL from chat-ai (background, every 5 min, gated on CHAT_AI_DATABASE_URL env) | ✅ Done | — | #207 |
 | 21.1v | Hourly data-integrity verifier (row count + sample conversations + FK integrity) | ✅ Done | — | #208 |
@@ -275,7 +278,7 @@
 | 21.5 | Monitor Sentry at each rollout step | ⏳ Pending | — | — |
 | 21.6 | Chat-ai standby 90+ days | ⏳ Pending | — | — |
 | 21.7 | Decommission chat-ai (Rishi explicit approval) | ⏳ Pending | 1 | — |
-| **Phase 21 total** | | **Not started** | **8 days** | |
+| **Phase 21 total** | | **Not started** | **9 days** | |
 
 ## MOBILE CLIENT WORK (across phases)
 | # | Feature | Depends on | Status | Est. days |
@@ -303,6 +306,45 @@
 | 22.3 | Profile section 3 — Top 5 video ideas, refreshed daily by AI based on bot's archetype + recent conversations + trending topics; each idea has a "Create" button that opens video creation flow pre-filled with the idea | ⏳ Pending | 3 | — |
 | 22.4 | Mobile UI for all three sections in AI Influencer profile | ⏳ Pending | 3 | — |
 | **Phase 22 total** | | **Not started** | **10 days** | |
+
+## PHASE 25: MULTI-PROVIDER LLM ARCHITECTURE (NEW — 2026-05-30)
+
+**Driver:** Rishi 2026-05-30 (post-incident): "I want to become LLM independent in the near future, I feel like Gemini is too expensive... we need to have a system where we can swap to LLM... we have Gemini that we currently use or can also use any other LLM (with OpenAI API Specifications) for one or other processes... we can decide which LLM we want to use for what process. Saikat is in the process of setting up a self hosted LLM for us."
+
+**Goal:** Decouple v2 from Gemini lock-in. Every call site (each background loop, each user-facing path) can be routed to Gemini OR any OpenAI-spec-compatible provider (OpenRouter, OpenAI, Together, vLLM, Saikat's self-hosted) via admin config — no redeploy.
+
+**Strategic value:** This is the single biggest cost-control lever beyond Phase 19/24 ceilings. Cheap models (self-hosted Qwen/Llama) for quality_scorer + memory_extraction + nudges; reserve Gemini Pro for user-facing chat where quality matters most. The $400 incident becomes structurally impossible — different processes cap on different providers.
+
+**Builds on:**
+- Phase 2.2 (LLM client abstraction with typed LlmResponse) — already shipped; this phase completes it
+- Phase 12.2 (different LLM models per archetype) — subsumed
+- Phase 20 (self-hosted LLM specific deployment) — Phase 25 is the prerequisite; Phase 20 becomes "Saikat's self-hosted LLM as ONE of many providers wired through Phase 25"
+
+**Architecture:**
+- Two client implementations: `app/services/llm_clients/gemini.py` (existing, refactored) + `app/services/llm_clients/openai_compatible.py` (new — works against any /v1/chat/completions endpoint)
+- Provider registry: `app/services/llm_registry.py` — single source of truth mapping `process_name` → `{provider, model, base_url, api_key_secret}`
+- Admin endpoint: `PATCH /admin/llm-registry` — hot-edit which process uses which provider/model, no redeploy
+- Process names map 1:1 with the per-loop budgets from Phase 19.6: `quality_scorer`, `memory_extraction`, `proactive_generation`, `user_chat_main`, `nudge_generation`, `soul_file_coach`, `character_generator`, `wizard`, `image_generation` (uses Replicate today)
+
+| # | Sub-phase | Status | Est. days | PR |
+|---|-----------|--------|-----------|-----|
+| 25.1 | `app/services/llm_clients/openai_compatible.py` — HTTPX client against /v1/chat/completions with streaming + error handling + token usage extraction; works against OpenAI, OpenRouter, Together, vLLM, Saikat self-hosted, Ollama | ⏳ Pending | 1 | — |
+| 25.2 | `app/services/llm_registry.py` — provider registry + per-process routing logic; default config in code, hot-overrides in `llm_process_config` table | ⏳ Pending | 1 | — |
+| 25.3 | Wire all 9 background loops + user-facing chat to use registry instead of direct Gemini import; all call sites become `llm.call(process="quality_scorer", messages=...)` | ⏳ Pending | 1 | — |
+| 25.4 | `PATCH /admin/llm-registry` — hot-edit which process uses which provider/model (JWT-gated); 19.6 dashboard tile shows current routing | ⏳ Pending | 0.5 | — |
+| 25.5 | Extend Phase 19/24 cost tracking with `provider` and `model` columns on `llm_costs` table; per-provider daily spend rollup on dashboard | ⏳ Pending | 0.5 | — |
+| 25.6 | Per-provider eval harness — extend Phase 9 to run the 50-gold-prompt eval against (provider, model) tuples; comparison report so we can SEE that switching memory_extraction to Qwen-14B doesn't regress quality before flipping the switch | ⏳ Pending | 1 | — |
+| 25.7 | Saikat self-hosted LLM integration test — point one process at his endpoint, verify call + cost-track + dashboard surface | ⏳ Pending | 0.5 (depends on Saikat) | — |
+| 25.8 | Docs + GLOSSARY entry explaining "process name → provider/model" mental model for Rishi | ⏳ Pending | 0.5 | — |
+| 25.9 | **LLM Routing dashboard page** (Admin web UI on Phase 19.6 dashboard) — single page showing every process + current provider + model + 7-day $/day cost + Edit button. Two-click change. Save triggers live reload, no redeploy. The ADHD-friendly config interface — Rishi's hard requirement 2026-05-31: "it should be easily configurable because I have ADHD, if this config is buried somewhere then it will be very difficult for me to change." | ⏳ Pending | 1 | — |
+| **Phase 25 total** | | **Not started** | **7 days** | |
+
+**When this slots in:** AFTER cutover (Phase 21) but BEFORE Phase 23 Skills Framework. Reasoning: cutover is end-of-next-week priority; Phase 23 benefits from already being multi-provider (different skill coaches likely want different models). So order: Phase 21 → Phase 25 → Phase 22/23 in parallel.
+
+**Cross-cutting impact on tomorrow's cost-defense PR (Layers 1+2+3):**
+- Table name: `llm_costs` NOT `gemini_costs` — provider column from day one
+- Concurrency semaphore: per-provider, not global (Saikat's self-hosted has different limits than Gemini)
+- Hard daily $ ceiling: cross-provider total (this is what we care about for total spend); per-process budgets in Layer 5 of cost-defense plan map naturally onto Phase 25's process registry
 
 ## PHASE 24: SECURITY & SAFETY DRILLS (NEW — 2026-05-30)
 
@@ -401,9 +443,10 @@
 | 22 | AI Influencer Profile Sections | 4 | 0 | 4 | 10 |
 | 23 | Skills Framework (post-cutover, dogfood) | 7 | 0 | 7 | 4.5 |
 | 24 | Security & Safety Drills | 5 | 0 | 5 | 5.5 |
+| 25 | Multi-Provider LLM Architecture | 9 | 0 | 9 | 7 |
 | — | Mobile Client | 11 | 0 | 11 | 21 |
 | — | Infrastructure | 15 | 6 | 9 | — |
-| **TOTAL** | | **186** | **55** | **131** | **~75-90 days** |
+| **TOTAL** | | **195** | **55** | **140** | **~80-96 days** |
 
 ---
 
