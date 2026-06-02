@@ -216,6 +216,44 @@ async def _rate_limit_tile(pool) -> dict:
         }
 
 
+async def _llm_routing_tile(pool) -> dict:
+    """Phase 25.4 — show every process's current (provider, model) routing,
+    plus a count of how many are overridden vs default. The full hot-swap
+    UI lives at /admin/llm-routing; this tile is the at-a-glance summary."""
+    try:
+        from services import llm_registry
+
+        process_names = llm_registry.PROCESS_NAMES
+        # Count overrides actually in effect (DB or env)
+        overridden = 0
+        for p in process_names:
+            cfg = llm_registry.current_config(p)
+            default = llm_registry.LLM_DEFAULTS[p]
+            if (
+                cfg["provider"] != default["provider"]
+                or cfg["model"] != default["model"]
+            ):
+                overridden += 1
+        providers_in_use = sorted(
+            {llm_registry.current_config(p)["provider"] for p in process_names}
+        )
+        return {
+            "title": "LLM routing (Phase 25.4)",
+            "status": "ok",
+            "primary": f"{len(process_names)} processes, {overridden} overridden",
+            "details": f"Providers in use: {', '.join(providers_in_use)}",
+            "link": "/admin/llm-routing",
+        }
+    except Exception as e:
+        return {
+            "title": "LLM routing (Phase 25.4)",
+            "status": "fail",
+            "primary": "registry error",
+            "details": str(e)[:200],
+            "link": "/admin/llm-routing",
+        }
+
+
 async def _email_digest_tile(pool) -> dict:
     """Last digest run summary — tells Rishi at a glance whether
     today's 02:30 UTC cron fired AND whether SMTP delivered."""
@@ -343,6 +381,7 @@ async def admin_dashboard(request: Request):
     tiles = [
         await _etl_tile(pool),
         await _integrity_tile(pool),
+        await _llm_routing_tile(pool),
         await _email_digest_tile(pool),
         await _rate_limit_tile(pool),
         # Placeholder tiles — each later PR replaces its placeholder with

@@ -24,6 +24,7 @@ from routes.creator_takeover import router as creator_takeover_router
 from routes.wizard import router as wizard_router
 from routes.earnings import router as earnings_router
 from routes.admin_dashboard import router as admin_dashboard_router
+from routes.llm_routing_admin import router as llm_routing_admin_router
 from routes.health import router as health_router
 from routes.human_chat import router as human_chat_router
 from routes.influencers import router as influencers_router
@@ -50,6 +51,18 @@ async def lifespan(app: FastAPI):
         logger.info("Database pool initialized successfully")
     except Exception as e:
         logger.error(f"Failed to initialize database pool at startup: {e}")
+
+    # 25.4: load DB-backed llm_registry overrides into memory. Safe if
+    # migration 026 hasn't been applied yet — reload_config_from_db
+    # logs a warning and leaves the cache empty (registry falls back
+    # to env + LLM_DEFAULTS).
+    try:
+        from services import llm_registry
+
+        pool = await database.get_pool()
+        await llm_registry.reload_config_from_db(pool)
+    except Exception as e:
+        logger.warning(f"llm_registry hot-override reload skipped at startup: {e}")
 
     trending_refresher_task = asyncio.create_task(_trending_stats_refresher())
     redis_sub_task = asyncio.create_task(websocket_manager.start_redis_subscriber())
@@ -397,6 +410,7 @@ async def debug_whoami(request: Request):
 
 app.include_router(health_router)
 app.include_router(admin_dashboard_router)
+app.include_router(llm_routing_admin_router)
 app.include_router(influencers_router)
 app.include_router(chat_router)
 app.include_router(chat_v2_router)
