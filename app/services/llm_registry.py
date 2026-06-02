@@ -1,0 +1,291 @@
+"""Phase 25.2 — per-process LLM routing + per-provider concurrency cap.
+
+Single source of truth for `process_name → (provider, model, base_url,
+api_key_secret_path)`. See docs/PHASE-25-DESIGN.md for the 3 design
+decisions (in-house client, process names, per-provider semaphore) and
+the 5 resolved open questions.
+
+What lives here (Phase 25.2 scope):
+  - PROCESS_NAMES tuple
+  - PROVIDERS dict (concurrency cap, base_url, secret path, cost-basis)
+  - DEFAULT_REGISTRY (process → provider + model + timeout + extras)
+  - call() — main dispatcher
+  - current_config() — read accessor for admin endpoint / dashboard
+  - _semaphore() — per-provider lazy semaphore cache
+  - Env-var override (Q3): LLM_PROCESS__<UPPER_NAME>=<provider>/<model>
+
+What's NOT here yet (deferred to follow-up PRs):
+  - DB-backed overrides + reload_config_from_db (25.2 polish or 25.4)
+  - PATCH /admin/llm-registry endpoint (25.4)
+  - Cost recording to llm_costs table (25.5)
+  - Retry-ladder → Gemini fallback orchestration (25.x — Q5 design)
+  - Wiring existing call sites (proactive, quality_scorer, ...) (25.3)
+"""
+
+import asyncio
+import logging
+import os
+from typing import Any
+
+from services.ai_client import LlmResponse
+
+logger = logging.getLogger(__name__)
+
+
+PROCESS_NAMES: tuple[str, ...] = (
+    "user_chat_main",
+    "audio_transcription",
+    "proactive_generation",
+    "quality_scorer",
+    "memory_extraction",
+    "memory_consolidation",
+    "soul_file_coach",
+    "nudge_generation",
+    "character_generator",
+    "ai_influencer_wizard_simulation",
+    "soul_file_recommendations",
+)
+
+
+# Provider metadata — concurrency caps + endpoint + secret path + cost-basis.
+# All values are ADHD-friendly editable via the future admin dashboard;
+# the dict below is the in-code default that ships with the image.
+#
+# secret_path is the on-container file path. file-first; env-var fallback
+# happens in _resolve_api_key.
+PROVIDERS: dict[str, dict[str, Any]] = {
+    "gemini": {
+        "concurrency_cap": 20,
+        "base_url": None,  # native API, served by ai_client.py — not OpenAI-spec
+        "secret_path": "/run/secrets/GEMINI_API_KEY",
+        "env_fallback": "GEMINI_API_KEY",
+        "cost_basis": "real",
+        "cost_per_1k_input_usd": 0.001,
+        "cost_per_1k_output_usd": 0.003,
+    },
+    "openai": {
+        "concurrency_cap": 10,
+        "base_url": "https://api.openai.com/v1",
+        "secret_path": "/run/secrets/OPENAI_API_KEY",
+        "env_fallback": "OPENAI_API_KEY",
+        "cost_basis": "real",
+        "cost_per_1k_input_usd": 0.005,
+        "cost_per_1k_output_usd": 0.015,
+    },
+    "openrouter": {
+        "concurrency_cap": 10,
+        "base_url": "https://openrouter.ai/api/v1",
+        "secret_path": "/run/secrets/OPENROUTER_API_KEY",
+        "env_fallback": "OPENROUTER_API_KEY",
+        "cost_basis": "real",
+        "cost_per_1k_input_usd": 0.001,
+        "cost_per_1k_output_usd": 0.003,
+    },
+    "internal_vllm": {
+        "concurrency_cap": 5,
+        "base_url": "https://model.ansuman.yral.com/v1",
+        "secret_path": "/run/secrets/INTERNAL_VLLM_API_KEY",
+        "env_fallback": "INTERNAL_VLLM_API_KEY",
+        "cost_basis": "synthetic",
+        # Synthetic per-token cost — compute share, not $ to a vendor.
+        # See "Cost basis" section of design doc for the rationale.
+        "cost_per_1k_input_usd": 0.00005,
+        "cost_per_1k_output_usd": 0.00005,
+        "default_extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+    },
+    "ollama": {
+        "concurrency_cap": 2,
+        "base_url": "http://ollama:11434/v1",
+        "secret_path": "/run/secrets/OLLAMA_API_KEY",
+        "env_fallback": "OLLAMA_API_KEY",
+        "cost_basis": "synthetic",
+        "cost_per_1k_input_usd": 0.00001,
+        "cost_per_1k_output_usd": 0.00001,
+    },
+}
+
+
+# Default routing — each process points at one (provider, model) pair.
+# Production overrides will land via the admin endpoint + llm_process_config
+# table in 25.4. Today, env vars can override per process (see _process_config).
+DEFAULT_REGISTRY: dict[str, dict[str, Any]] = {
+    "user_chat_main": {
+        "provider": "gemini",
+        "model": "gemini-2.0-flash",
+        "timeout_sec": 60.0,
+    },
+    "audio_transcription": {
+        "provider": "gemini",
+        "model": "gemini-2.0-flash",
+        "timeout_sec": 60.0,
+    },
+    "proactive_generation": {
+        "provider": "gemini",
+        "model": "gemini-2.0-flash",
+        "timeout_sec": 120.0,
+    },
+    "quality_scorer": {
+        "provider": "gemini",
+        "model": "gemini-2.0-flash",
+        "timeout_sec": 120.0,
+    },
+    "memory_extraction": {
+        "provider": "gemini",
+        "model": "gemini-2.0-flash",
+        "timeout_sec": 120.0,
+    },
+    "memory_consolidation": {
+        "provider": "gemini",
+        "model": "gemini-2.0-flash",
+        "timeout_sec": 180.0,
+    },
+    "soul_file_coach": {
+        "provider": "gemini",
+        "model": "gemini-2.0-flash",
+        "timeout_sec": 60.0,
+    },
+    "nudge_generation": {
+        "provider": "gemini",
+        "model": "gemini-2.0-flash",
+        "timeout_sec": 120.0,
+    },
+    "character_generator": {
+        "provider": "gemini",
+        "model": "gemini-2.0-flash",
+        "timeout_sec": 180.0,
+    },
+    "ai_influencer_wizard_simulation": {
+        "provider": "gemini",
+        "model": "gemini-2.0-flash",
+        "timeout_sec": 180.0,
+    },
+    "soul_file_recommendations": {
+        "provider": "gemini",
+        "model": "gemini-2.0-flash",
+        "timeout_sec": 120.0,
+    },
+}
+
+
+# Per-provider asyncio.Semaphore. Lazy-init on first use to avoid pinning
+# to a specific event-loop at import time.
+_semaphores: dict[str, asyncio.Semaphore] = {}
+
+
+def _semaphore(provider: str) -> asyncio.Semaphore:
+    if provider not in _semaphores:
+        cap = PROVIDERS.get(provider, {}).get("concurrency_cap", 10)
+        _semaphores[provider] = asyncio.Semaphore(cap)
+    return _semaphores[provider]
+
+
+def _resolve_api_key(provider: str) -> str:
+    """File-first secret resolution: /run/secrets/<NAME> then env var.
+    Matches the pattern in redis_config.get_redis_url."""
+    meta = PROVIDERS.get(provider) or {}
+    path = meta.get("secret_path")
+    if path and os.path.exists(path):
+        try:
+            with open(path) as f:
+                val = f.read().strip()
+            if val:
+                return val
+        except OSError:
+            pass
+    env_name = meta.get("env_fallback")
+    if env_name:
+        val = os.environ.get(env_name)
+        if val:
+            return val
+    raise RuntimeError(f"llm_registry: no API key configured for provider={provider}")
+
+
+def _process_config(process: str) -> dict[str, Any]:
+    """Resolve the effective config for one process. Order:
+      1. Env override (Q3): LLM_PROCESS__<UPPER_NAME>=<provider>/<model>
+      2. DEFAULT_REGISTRY
+    DB-backed overrides land in a follow-up PR (25.4)."""
+    if process not in DEFAULT_REGISTRY:
+        raise KeyError(
+            f"llm_registry: unknown process '{process}'. Known: {sorted(PROCESS_NAMES)}"
+        )
+    cfg = dict(DEFAULT_REGISTRY[process])
+
+    env_key = f"LLM_PROCESS__{process.upper()}"
+    override = os.environ.get(env_key)
+    if override and "/" in override:
+        provider, _, model = override.partition("/")
+        cfg["provider"] = provider.strip()
+        cfg["model"] = model.strip()
+        logger.info("llm_registry: process=%s overridden via %s", process, env_key)
+
+    return cfg
+
+
+def current_config(process: str) -> dict[str, Any]:
+    """Public read accessor for admin endpoint + dashboard.
+
+    Returns the resolved process config merged with provider metadata
+    (cost-basis, concurrency cap). Does NOT include the API key."""
+    cfg = _process_config(process)
+    provider_meta = PROVIDERS.get(cfg["provider"], {})
+    return {
+        "process": process,
+        "provider": cfg["provider"],
+        "model": cfg["model"],
+        "timeout_sec": cfg.get("timeout_sec", 60.0),
+        "base_url": provider_meta.get("base_url"),
+        "cost_basis": provider_meta.get("cost_basis"),
+        "concurrency_cap": provider_meta.get("concurrency_cap"),
+    }
+
+
+async def call(
+    *,
+    process: str,
+    messages: list[dict],
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+) -> LlmResponse:
+    """Main dispatch — process name → provider's client.complete(...).
+
+    Wraps the call in the per-provider concurrency semaphore so we never
+    exceed the provider's rate-limit budget. Cost recording happens in
+    the caller (25.5); this function returns the same LlmResponse shape
+    the existing ai_client.generate_response returns."""
+    cfg = _process_config(process)
+    provider = cfg["provider"]
+    provider_meta = PROVIDERS[provider]
+
+    sem = _semaphore(provider)
+    async with sem:
+        if provider == "gemini":
+            # Gemini's native API isn't OpenAI-spec, and the existing
+            # ai_client.generate_response signature is legacy (system_
+            # instructions, conversation_history, user_message — not a
+            # unified messages list). Extracting a gemini.py client that
+            # accepts the messages-list shape is Phase 25.3 scope. Until
+            # then, callers that need Gemini must keep using ai_client
+            # directly. The registry knows about Gemini for dashboard /
+            # current_config purposes, but won't dispatch to it.
+            raise NotImplementedError(
+                f"llm_registry.call(process={process!r}): provider=gemini routing "
+                f"lands in Phase 25.3 alongside call-site extraction. Until then, "
+                f"use ai_client.generate_response directly OR override this process "
+                f"to a non-gemini provider via LLM_PROCESS__{process.upper()}=..."
+            )
+
+        # All non-gemini providers use the OpenAI-compatible client.
+        from services.llm_clients import openai_compatible
+
+        return await openai_compatible.complete(
+            provider=provider,
+            base_url=provider_meta["base_url"],
+            api_key=_resolve_api_key(provider),
+            model=cfg["model"],
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            extra_body=provider_meta.get("default_extra_body"),
+            timeout=cfg.get("timeout_sec", 60.0),
+        )
