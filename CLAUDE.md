@@ -31,7 +31,7 @@ One service. One database. Code in app/.
 - Feature branches only. Never push to main.
 - One PR per concern. Under 400 lines when possible.
 - Before opening PR: "Would a senior engineer say this is overcomplicated?"
-- Permission deny: ssh to prod, docker service rm, rm -rf, force-push.
+- Permission deny by default: docker service rm, rm -rf, force-push. SSH to prod (rishi-4/5/6) is allowed for the developer session per ~/.claude/settings.json IP allowlist — use it for ops Rishi has authorized in conversation.
 
 ## Deploy process (NEVER bypass)
 1. Open PR with changes.
