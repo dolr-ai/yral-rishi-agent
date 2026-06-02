@@ -2,7 +2,6 @@ import json
 import base64
 import logging
 import time
-from dataclasses import dataclass
 
 import httpx
 from openai import AsyncOpenAI
@@ -10,38 +9,22 @@ from openai import AsyncOpenAI
 import config
 from services import langfuse_tracing
 
+# Phase 25.3b: types moved to llm_types.py to break the ai_client →
+# registry → gemini → ai_client circular import. Re-exported here so
+# existing chat.py imports (`ai_client.ERROR_MESSAGES`,
+# `ai_client.LlmResponse`, etc.) keep working unchanged.
+from services.llm_types import (
+    ERROR_MESSAGES,
+    LlmBlockedError,
+    LlmResponse,
+    RETRYABLE_CODES,
+)
+
+__all__ = ["ERROR_MESSAGES", "LlmBlockedError", "LlmResponse", "RETRYABLE_CODES"]
+
 logger = logging.getLogger(__name__)
 
 GEMINI_NATIVE_URL = "https://generativelanguage.googleapis.com/v1beta"
-
-# Phase 3.8: tailored fallback text by failure class. Mobile reads
-# LlmResponse.error_code to pick icon/color/retry button.
-ERROR_MESSAGES = {
-    "BLOCKED_CONTENT": "I can't reply to that — try asking me something else.",
-    "TRANSIENT": "I'm having trouble connecting right now. Try again in a moment.",
-    "NO_PROVIDER": "Chat is temporarily unavailable. Please try again later.",
-}
-RETRYABLE_CODES = {"TRANSIENT"}
-
-
-class LlmBlockedError(Exception):
-    """Gemini/OpenRouter refused to generate due to safety/policy."""
-
-    def __init__(self, reason: str):
-        super().__init__(reason)
-        self.reason = reason
-
-
-@dataclass(frozen=True)
-class LlmResponse:
-    content: str
-    provider: str
-    model: str
-    input_tokens: int
-    output_tokens: int
-    latency_ms: float
-    is_fallback: bool = False
-    error_code: str | None = None  # one of ERROR_MESSAGES keys, or None on success
 
 
 _openrouter_client: AsyncOpenAI | None = None
@@ -375,9 +358,10 @@ async def generate_response_stream(
     require a separate code path). The route falls back to the non-streaming
     endpoint for is_nsfw=True conversations.
     """
-    if is_nsfw or not config.GEMINI_API_KEY:
-        # Caller will fall back to non-streaming path. Yielding an error here
-        # lets the route surface a typed error rather than hanging.
+    # NSFW streaming intentionally not supported — yield NO_PROVIDER so
+    # the route falls back to non-streaming generate_response (which
+    # handles NSFW via user_chat_main_nsfw / OpenRouter).
+    if is_nsfw:
         yield (
             "error",
             LlmResponse(
@@ -393,40 +377,58 @@ async def generate_response_stream(
         )
         return
 
-    t0 = time.monotonic()
-    system_instruction, contents = await _build_gemini_contents(
-        system_instructions, conversation_history, user_message, media_urls
-    )
-
-    # Phase 12: per-archetype LLM tuning. Lookup is non-fatal — unknown
-    # archetypes fall back to config defaults (current behavior).
+    from services import llm_registry
     from services.soul_file import tuning_for
 
-    tuning = tuning_for(archetype)
-    temperature = (tuning or {}).get("temperature", config.GEMINI_TEMPERATURE)
-    max_tokens = (tuning or {}).get("max_tokens", config.GEMINI_MAX_TOKENS)
+    tuning = tuning_for(archetype) or {}
+    temperature = tuning.get("temperature", config.GEMINI_TEMPERATURE)
+    max_tokens = tuning.get("max_tokens", config.GEMINI_MAX_TOKENS)
 
+    # Look up the resolved provider/model from the registry so Langfuse
+    # tracing reflects what actually served the request (not just the
+    # default). If LLM_PROCESS__USER_CHAT_MAIN is overridden, the trace
+    # follows the override.
+    routed = llm_registry.current_config("user_chat_main")
+    final_provider = routed["provider"]
+    final_model = routed["model"]
+
+    t0 = time.monotonic()
     total_text = ""
     token_count = 0
+
     try:
-        async for kind, value in _stream_gemini(
-            contents=contents,
-            system_instruction=system_instruction,
+        messages = await _build_chat_messages(
+            system_instructions, conversation_history, user_message, media_urls
+        )
+        async for kind, value in llm_registry.call_stream(
+            process="user_chat_main",
+            messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
         ):
-            if kind == "text":
+            if kind == "delta":
                 total_text += value
                 yield ("text", value)
-            elif kind == "done":
-                token_count = value.get("token_count", 0)
-                total_text = value.get("text", total_text)
+            elif kind == "usage":
+                import json as _json
+
+                try:
+                    usage = _json.loads(value)
+                    token_count = int(
+                        usage.get("candidatesTokenCount")
+                        or usage.get("completion_tokens")
+                        or 0
+                    )
+                except (ValueError, TypeError):
+                    pass
+            # 'done' marks end-of-stream; we emit our own ('done', LlmResponse) below
+
         latency_ms = (time.monotonic() - t0) * 1000
         langfuse_tracing.trace_generation(
             trace_name="chat-response-stream",
             user_id=user_id,
-            model=config.GEMINI_MODEL,
-            provider="gemini",
+            model=final_model,
+            provider=final_provider,
             input_text=user_message,
             output_text=total_text,
             input_tokens=0,
@@ -438,21 +440,21 @@ async def generate_response_stream(
             "done",
             LlmResponse(
                 content=total_text,
-                provider="gemini",
-                model=config.GEMINI_MODEL,
+                provider=final_provider,
+                model=final_model,
                 input_tokens=0,
                 output_tokens=token_count,
                 latency_ms=latency_ms,
             ),
         )
     except LlmBlockedError as e:
-        logger.warning(f"Gemini stream blocked: {e.reason}")
+        logger.warning(f"LLM stream blocked: {e.reason}")
         yield (
             "error",
             LlmResponse(
                 content=ERROR_MESSAGES["BLOCKED_CONTENT"],
-                provider="gemini",
-                model=config.GEMINI_MODEL,
+                provider=final_provider,
+                model=final_model,
                 input_tokens=0,
                 output_tokens=0,
                 latency_ms=(time.monotonic() - t0) * 1000,
@@ -460,14 +462,29 @@ async def generate_response_stream(
                 error_code="BLOCKED_CONTENT",
             ),
         )
+    except RuntimeError as e:
+        logger.error(f"LLM stream provider unavailable: {e}")
+        yield (
+            "error",
+            LlmResponse(
+                content=ERROR_MESSAGES["NO_PROVIDER"],
+                provider="none",
+                model="none",
+                input_tokens=0,
+                output_tokens=0,
+                latency_ms=(time.monotonic() - t0) * 1000,
+                is_fallback=True,
+                error_code="NO_PROVIDER",
+            ),
+        )
     except Exception as e:
-        logger.error(f"Gemini stream failed: {e}")
+        logger.error(f"LLM stream failed: {e}")
         yield (
             "error",
             LlmResponse(
                 content=ERROR_MESSAGES["TRANSIENT"],
-                provider="gemini",
-                model=config.GEMINI_MODEL,
+                provider=final_provider,
+                model=final_model,
                 input_tokens=0,
                 output_tokens=0,
                 latency_ms=(time.monotonic() - t0) * 1000,
@@ -475,6 +492,40 @@ async def generate_response_stream(
                 error_code="TRANSIENT",
             ),
         )
+
+
+async def _build_chat_messages(
+    system_instructions: str,
+    conversation_history: list[dict],
+    user_message: str,
+    media_urls: list[str] | None,
+) -> list[dict]:
+    """Build OpenAI messages-list from chat orchestration inputs.
+    Multimodal content (image attachments) emits OpenAI content arrays;
+    gemini._messages_to_gemini_contents knows how to translate them."""
+    messages: list[dict] = [{"role": "system", "content": system_instructions or ""}]
+    for msg in conversation_history:
+        role = msg.get("role", "user")
+        content = msg.get("content") or ""
+        if role == "user":
+            msg_media = msg.get("media_urls")
+            if isinstance(msg_media, str):
+                try:
+                    msg_media = json.loads(msg_media)
+                except (json.JSONDecodeError, TypeError):
+                    msg_media = None
+            messages.append(
+                {
+                    "role": "user",
+                    "content": await _build_user_content(content, msg_media),
+                }
+            )
+        else:
+            messages.append({"role": "assistant", "content": content})
+    messages.append(
+        {"role": "user", "content": await _build_user_content(user_message, media_urls)}
+    )
+    return messages
 
 
 async def generate_response(
@@ -487,160 +538,50 @@ async def generate_response(
     conversation_id: str | None = None,
     archetype: str | None = None,
 ) -> LlmResponse:
-    # Phase 12: per-archetype LLM tuning. Lookup is non-fatal — unknown
-    # archetypes fall back to config defaults.
+    """Chat orchestration shim — builds messages, routes through registry.
+
+    25.3b: the bulk of the legacy 237-line implementation moved into
+    llm_registry.call() + gemini.py / openai_compatible.py. This function
+    is now an orchestrator that handles archetype tuning, NSFW routing,
+    Langfuse tracing, and error mapping — leaving dispatch + retries +
+    concurrency capping to the registry.
+    """
+    from services import llm_registry
     from services.soul_file import tuning_for
 
-    _tuning = tuning_for(archetype)
-    _temperature = (_tuning or {}).get("temperature", config.GEMINI_TEMPERATURE)
-    _max_tokens = (_tuning or {}).get("max_tokens", config.GEMINI_MAX_TOKENS)
-    if is_nsfw:
-        client = get_openrouter_client()
-        if client:
-            try:
-                t0 = time.monotonic()
-                messages = [{"role": "system", "content": system_instructions}]
-                for msg in conversation_history:
-                    role = msg.get("role", "user")
-                    content = msg.get("content", "")
-                    if role == "user":
-                        msg_media = msg.get("media_urls")
-                        if isinstance(msg_media, str):
-                            try:
-                                msg_media = json.loads(msg_media)
-                            except (json.JSONDecodeError, TypeError):
-                                msg_media = None
-                        messages.append(
-                            {
-                                "role": "user",
-                                "content": await _build_user_content(
-                                    content, msg_media
-                                ),
-                            }
-                        )
-                    else:
-                        messages.append({"role": "assistant", "content": content or ""})
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": await _build_user_content(user_message, media_urls),
-                    }
-                )
+    _tuning = tuning_for(archetype) or {}
+    _temperature = _tuning.get("temperature", config.GEMINI_TEMPERATURE)
+    _max_tokens = _tuning.get("max_tokens", config.GEMINI_MAX_TOKENS)
 
-                # Phase 12: archetype tuning also applies to the OpenRouter
-                # (NSFW) path so per-archetype caps work for NSFW companions etc.
-                _or_temp = (
-                    (_tuning or {}).get("temperature")
-                    if _tuning is not None
-                    else config.OPENROUTER_TEMPERATURE
-                )
-                _or_max = (
-                    (_tuning or {}).get("max_tokens")
-                    if _tuning is not None
-                    else config.OPENROUTER_MAX_TOKENS
-                )
-                response = await client.chat.completions.create(
-                    model=config.OPENROUTER_MODEL,
-                    messages=messages,
-                    max_tokens=_or_max,
-                    temperature=_or_temp,
-                )
-                latency_ms = (time.monotonic() - t0) * 1000
-
-                choices = response.choices or []
-                if not choices:
-                    raise RuntimeError(
-                        f"OpenRouter returned no choices (model={config.OPENROUTER_MODEL})"
-                    )
-                message = choices[0].message
-                response_text = (message.content if message else None) or ""
-                response_text = response_text.strip()
-
-                input_tokens = 0
-                token_count = 0
-                if response.usage:
-                    input_tokens = response.usage.prompt_tokens or 0
-                    token_count = response.usage.completion_tokens or 0
-                if not token_count and response_text:
-                    token_count = int(len(response_text) / 4)
-
-                langfuse_tracing.trace_generation(
-                    trace_name="chat-response",
-                    user_id=user_id,
-                    model=config.OPENROUTER_MODEL,
-                    provider="openrouter",
-                    input_text=user_message,
-                    output_text=response_text,
-                    input_tokens=input_tokens,
-                    output_tokens=token_count,
-                    latency_ms=latency_ms,
-                    conversation_id=conversation_id,
-                )
-
-                return LlmResponse(
-                    content=response_text,
-                    provider="openrouter",
-                    model=config.OPENROUTER_MODEL,
-                    input_tokens=input_tokens,
-                    output_tokens=token_count,
-                    latency_ms=latency_ms,
-                )
-            except Exception as e:
-                logger.error(f"OpenRouter generation failed: {e}")
-
-    if not config.GEMINI_API_KEY:
-        logger.error("No AI client available (GEMINI_API_KEY not set)")
-        return LlmResponse(
-            content=ERROR_MESSAGES["NO_PROVIDER"],
-            provider="none",
-            model="none",
-            input_tokens=0,
-            output_tokens=0,
-            latency_ms=0,
-            is_fallback=True,
-            error_code="NO_PROVIDER",
-        )
+    process = "user_chat_main_nsfw" if is_nsfw else "user_chat_main"
+    t0 = time.monotonic()
 
     try:
-        t0 = time.monotonic()
-        system_instruction, contents = await _build_gemini_contents(
-            system_instructions,
-            conversation_history,
-            user_message,
-            media_urls,
+        messages = await _build_chat_messages(
+            system_instructions, conversation_history, user_message, media_urls
         )
-        response_text, token_count = await _call_gemini(
-            contents=contents,
-            system_instruction=system_instruction,
+        result = await llm_registry.call(
+            process=process,
+            messages=messages,
             temperature=_temperature,
             max_tokens=_max_tokens,
         )
-        latency_ms = (time.monotonic() - t0) * 1000
-
         langfuse_tracing.trace_generation(
             trace_name="chat-response",
             user_id=user_id,
-            model=config.GEMINI_MODEL,
-            provider="gemini",
+            model=result.model,
+            provider=result.provider,
             input_text=user_message,
-            output_text=response_text,
-            input_tokens=0,
-            output_tokens=token_count,
-            latency_ms=latency_ms,
+            output_text=result.content,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            latency_ms=result.latency_ms,
             conversation_id=conversation_id,
         )
-
-        return LlmResponse(
-            content=response_text,
-            provider="gemini",
-            model=config.GEMINI_MODEL,
-            input_tokens=0,
-            output_tokens=token_count,
-            latency_ms=latency_ms,
-        )
+        return result
     except LlmBlockedError as e:
-        logger.warning(f"Gemini blocked the response: {e.reason}")
-        elapsed = (time.monotonic() - t0) * 1000 if "t0" in locals() else 0
+        logger.warning(f"LLM blocked the response: {e.reason}")
+        elapsed = (time.monotonic() - t0) * 1000
         langfuse_tracing.trace_generation(
             trace_name="chat-response",
             user_id=user_id,
@@ -662,9 +603,23 @@ async def generate_response(
             is_fallback=True,
             error_code="BLOCKED_CONTENT",
         )
+    except RuntimeError as e:
+        # Provider misconfiguration (no API key, unsupported capability).
+        # Surface as NO_PROVIDER so mobile shows the right error UX.
+        logger.error(f"LLM provider unavailable for {process}: {e}")
+        return LlmResponse(
+            content=ERROR_MESSAGES["NO_PROVIDER"],
+            provider="none",
+            model="none",
+            input_tokens=0,
+            output_tokens=0,
+            latency_ms=(time.monotonic() - t0) * 1000,
+            is_fallback=True,
+            error_code="NO_PROVIDER",
+        )
     except Exception as e:
-        logger.error(f"Gemini generation failed: {e}")
-        elapsed = (time.monotonic() - t0) * 1000 if "t0" in locals() else 0
+        logger.error(f"LLM generation failed for {process}: {e}")
+        elapsed = (time.monotonic() - t0) * 1000
         langfuse_tracing.trace_generation(
             trace_name="chat-response",
             user_id=user_id,
@@ -826,52 +781,22 @@ def _is_safe_url(url: str) -> bool:
 
 
 async def transcribe_audio(audio_url: str) -> str | None:
-    if not config.GEMINI_API_KEY:
-        return None
+    """Thin shim around llm_registry.call_transcribe(process="audio_transcription").
+
+    25.3b: the wire-level Gemini audio call moved to gemini.transcribe;
+    routing + concurrency capping + provider selection move to the
+    registry. This function just preserves the existing call-site
+    contract (audio_url → text or None on failure)."""
     if not _is_safe_url(audio_url):
         logger.error(f"Audio URL blocked (SSRF protection): {audio_url[:50]}")
         return None
+    from services import llm_registry
 
     try:
-        async with httpx.AsyncClient(timeout=60) as http:
-            download_response = await http.get(audio_url, timeout=15)
-            download_response.raise_for_status()
-            audio_bytes = download_response.content
-            content_type = download_response.headers.get("content-type", "audio/mpeg")
-            audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
-
-            url = f"{GEMINI_NATIVE_URL}/models/{config.GEMINI_MODEL}:generateContent"
-            payload = {
-                "contents": [
-                    {
-                        "parts": [
-                            {
-                                "text": "Please transcribe this audio file accurately. Only return the transcription text without any additional commentary."
-                            },
-                            {
-                                "inlineData": {
-                                    "mimeType": content_type,
-                                    "data": audio_b64,
-                                }
-                            },
-                        ],
-                    }
-                ],
-                "generationConfig": {"temperature": 0.1, "maxOutputTokens": 4096},
-            }
-            response = await http.post(
-                url, json=payload, params={"key": config.GEMINI_API_KEY}, timeout=60
-            )
-            response.raise_for_status()
-
-            data = response.json()
-            candidates = data.get("candidates", [])
-            if candidates:
-                parts = candidates[0].get("content", {}).get("parts", [])
-                for part in parts:
-                    if "text" in part:
-                        return part["text"].strip()
-            return None
+        result = await llm_registry.call_transcribe(
+            process="audio_transcription", audio_url=audio_url
+        )
+        return result.content.strip() if result.content else None
     except Exception as e:
         logger.error(f"Audio transcription failed: {e}")
         return None

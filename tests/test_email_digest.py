@@ -23,7 +23,10 @@ def test_digest_target_email_is_rishi():
     """Default recipient is Rishi's address. SMTP config can override
     DIGEST_TO_EMAIL via env, but the default stays."""
     src = _read("app/services/email_digest.py")
-    assert 'DIGEST_TO_EMAIL = os.environ.get("DIGEST_TO_EMAIL", "rishi@gobazzinga.io")' in src
+    assert (
+        'DIGEST_TO_EMAIL = os.environ.get("DIGEST_TO_EMAIL", "rishi@gobazzinga.io")'
+        in src
+    )
 
 
 def test_digest_renders_both_plain_and_html():

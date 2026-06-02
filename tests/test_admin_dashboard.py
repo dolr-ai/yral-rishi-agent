@@ -85,7 +85,10 @@ def test_main_py_wires_dashboard_router():
     """If the import/include line is missing, the route 404s and the
     whole dashboard is invisible. Pin both lines so a refactor catches it."""
     main_src = _read("app/main.py")
-    assert "from routes.admin_dashboard import router as admin_dashboard_router" in main_src
+    assert (
+        "from routes.admin_dashboard import router as admin_dashboard_router"
+        in main_src
+    )
     assert "app.include_router(admin_dashboard_router)" in main_src
 
 

@@ -30,13 +30,17 @@ import logging
 import os
 from typing import Any
 
-from services.ai_client import LlmResponse
+from services.llm_types import LlmResponse
 
 logger = logging.getLogger(__name__)
 
 
 PROCESS_NAMES: tuple[str, ...] = (
     "user_chat_main",
+    # 25.3b: NSFW user chat routes through OpenRouter today (different
+    # safety policy than Gemini). Separate process so the admin
+    # dashboard can route NSFW independently of mainline chat.
+    "user_chat_main_nsfw",
     "audio_transcription",
     "proactive_generation",
     "quality_scorer",
@@ -59,12 +63,19 @@ PROCESS_NAMES: tuple[str, ...] = (
 PROVIDERS: dict[str, dict[str, Any]] = {
     "gemini": {
         "concurrency_cap": 20,
-        "base_url": None,  # native API, served by ai_client.py — not OpenAI-spec
+        "base_url": None,  # native API — gemini.py handles the wire format
         "secret_path": "/run/secrets/GEMINI_API_KEY",
         "env_fallback": "GEMINI_API_KEY",
         "cost_basis": "real",
         "cost_per_1k_input_usd": 0.001,
         "cost_per_1k_output_usd": 0.003,
+        # 25.3b: capability flags surface in current_config() so the
+        # admin dashboard can show "this provider supports
+        # chat/streaming/transcribe." Today only Gemini supports audio
+        # transcribe; OpenAI-spec providers do not (different endpoint).
+        "supports_chat": True,
+        "supports_stream": True,
+        "supports_transcribe": True,
     },
     "openai": {
         "concurrency_cap": 10,
@@ -74,6 +85,9 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "cost_basis": "real",
         "cost_per_1k_input_usd": 0.005,
         "cost_per_1k_output_usd": 0.015,
+        "supports_chat": True,
+        "supports_stream": True,
+        "supports_transcribe": False,
     },
     "openrouter": {
         "concurrency_cap": 10,
@@ -83,6 +97,9 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "cost_basis": "real",
         "cost_per_1k_input_usd": 0.001,
         "cost_per_1k_output_usd": 0.003,
+        "supports_chat": True,
+        "supports_stream": True,
+        "supports_transcribe": False,
     },
     "internal_vllm": {
         "concurrency_cap": 5,
@@ -95,6 +112,9 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "cost_per_1k_input_usd": 0.00005,
         "cost_per_1k_output_usd": 0.00005,
         "default_extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+        "supports_chat": True,
+        "supports_stream": True,
+        "supports_transcribe": False,
     },
     "ollama": {
         "concurrency_cap": 2,
@@ -104,6 +124,9 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "cost_basis": "synthetic",
         "cost_per_1k_input_usd": 0.00001,
         "cost_per_1k_output_usd": 0.00001,
+        "supports_chat": True,
+        "supports_stream": True,
+        "supports_transcribe": False,
     },
 }
 
@@ -115,6 +138,13 @@ LLM_DEFAULTS: dict[str, dict[str, Any]] = {
     "user_chat_main": {
         "provider": "gemini",
         "model": "gemini-2.5-flash",
+        "timeout_sec": 60.0,
+    },
+    "user_chat_main_nsfw": {
+        # NSFW path routes through OpenRouter today (Gemini's content
+        # policy is stricter than what we want for NSFW companions).
+        "provider": "openrouter",
+        "model": "google/gemini-2.5-flash",
         "timeout_sec": 60.0,
     },
     "audio_transcription": {
@@ -297,4 +327,93 @@ async def call(
             max_tokens=max_tokens,
             extra_body=merged_extra or None,
             timeout=cfg.get("timeout_sec", 60.0),
+        )
+
+
+async def call_stream(
+    *,
+    process: str,
+    messages: list[dict],
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    extra_body: dict | None = None,
+):
+    """Streaming counterpart to call(). Yields (kind, value) tuples per
+    the client.complete_stream contract — kind in {"delta", "usage", "done"}.
+
+    Per-provider semaphore is acquired for the LIFETIME of the stream
+    (until the consumer fully drains it) — that's stricter than call()
+    but matches how SSE streams hold a slot in real terms."""
+    cfg = _process_config(process)
+    provider = cfg["provider"]
+    provider_meta = PROVIDERS[provider]
+
+    if not provider_meta.get("supports_stream", False):
+        raise RuntimeError(
+            f"llm_registry.call_stream: provider={provider!r} does not support streaming"
+        )
+
+    merged_extra = dict(provider_meta.get("default_extra_body") or {})
+    if extra_body:
+        merged_extra.update(extra_body)
+
+    sem = _semaphore(provider)
+    async with sem:
+        if provider == "gemini":
+            from services.llm_clients import gemini as gemini_client
+
+            client_module = gemini_client
+        else:
+            from services.llm_clients import openai_compatible
+
+            client_module = openai_compatible
+
+        async for chunk in client_module.complete_stream(
+            provider=provider,
+            base_url=provider_meta.get("base_url"),
+            api_key=_resolve_api_key(provider),
+            model=cfg["model"],
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            extra_body=merged_extra or None,
+            timeout=cfg.get("timeout_sec", 60.0),
+        ):
+            yield chunk
+
+
+async def call_transcribe(
+    *,
+    process: str,
+    audio_url: str,
+) -> LlmResponse:
+    """Audio modality dispatcher. Today only Gemini supports transcription
+    (different endpoint shape from /chat/completions). The registry
+    `supports_transcribe` capability flag gates this — non-Gemini
+    providers raise RuntimeError instead of silently no-op'ing."""
+    cfg = _process_config(process)
+    provider = cfg["provider"]
+    provider_meta = PROVIDERS[provider]
+
+    if not provider_meta.get("supports_transcribe", False):
+        raise RuntimeError(
+            f"llm_registry.call_transcribe: provider={provider!r} does not support audio transcription"
+        )
+
+    sem = _semaphore(provider)
+    async with sem:
+        if provider == "gemini":
+            from services.llm_clients import gemini as gemini_client
+
+            return await gemini_client.transcribe(
+                provider=provider,
+                base_url=provider_meta.get("base_url"),
+                api_key=_resolve_api_key(provider),
+                model=cfg["model"],
+                audio_url=audio_url,
+                timeout=cfg.get("timeout_sec", 60.0),
+            )
+        # Future: OpenAI Whisper-via-/v1/audio/transcriptions lands here.
+        raise NotImplementedError(
+            f"call_transcribe for provider={provider!r} not implemented"
         )
