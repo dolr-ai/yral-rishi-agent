@@ -1,3 +1,9 @@
+# ===========================================================================
+# DECOMMISSIONED 2026-06-01 — service removed from production swarm.
+# DO NOT DEPLOY. Kept only for historical reference / data-recovery context.
+# Original swarm stack: yral-rishi-agent-conversation-turn-orchestrator
+# Replaced by: monolith service yral-rishi-agent (rishi-4/5).
+# ===========================================================================
 # ---------------------------------------------------------------------------
 # docker-compose.swarm.yml — the production Swarm-stack variant.
 #
@@ -67,24 +73,29 @@ services:
     environment:
       # `staging` matches reality: rishi-4/5/6 is the v2 DEV cluster, NOT
       # production — A6 cutover hasn't happened. Label flows into Sentry
-      # + Langfuse event tagging across all Session-4 services AND the
-      # orchestrator's per-request run_turn gate at `app/run_turn.py:417`
-      # in conversation-turn-orchestrator (which 503s every chat request
-      # when its own `environment` reads `production`). A6 typed-YES is
-      # the only path to flip these labels to production; keeping all 3
-      # services in lockstep avoids split Sentry/Langfuse tagging.
+      # + Langfuse event tagging AND the per-request run_turn gate at
+      # `app/run_turn.py:417` (which 503s every chat request when this
+      # label is `production`). A6 typed-YES is the only path to flip to
+      # production; mis-labeling the dev cluster as production short-
+      # circuits the gate's defense-in-depth intent (gate fires every
+      # request → no actual exercise of run_turn until corrected).
       ENVIRONMENT: ${ENVIRONMENT:-staging}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Day-7 deploy: flip to the C11-compliant Sentinel path. The
+      # production C11 fail-closed gate in app/idempotency.py refuses
+      # to start when environment=production AND redis_sentinel_enabled
+      # is False. Sentinel hosts + master name come from
+      # shared-config.yaml's `redis:` section (bundled by Dockerfile).
+      REDIS_SENTINEL_ENABLED: "true"
 
     # Entrypoint wrapper — Day-7 secret-file → env-var bridge per D8
     # (Session-3 public-api pattern from PR #108). Swarm mounts each
     # secret as a file at /run/secrets/<name>; pydantic-settings reads
-    # from os.environ — without this bridge soul-file-library crashes
-    # at startup with "POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY is
-    # empty" even though the secret file IS present (128 bytes,
-    # verified via debug swarm-service). Wrapper exports each
-    # `/run/secrets/*` file's content as an env var of the same name,
-    # then exec's uvicorn.
+    # from os.environ — so without this bridge, the secret files are
+    # mounted but the app sees empty env vars (e.g. soul-file-library
+    # crash-loops with "POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY is
+    # empty"). Wrapper exports each `/run/secrets/*` file's content as
+    # an env var of the same name, then exec's uvicorn.
     command:
       - sh
       - -c
@@ -153,9 +164,11 @@ services:
     # rolling-update logic kicks in. We hit /health/ready (per F9), which
     # returns 503 when any downstream dep is unreachable.
     # Healthcheck — uses python's stdlib urllib instead of wget because
-    # the slim image doesn't ship wget. start_period bumped 20s→40s so
-    # app boot + asyncpg pool init don't race the first healthcheck on
-    # cold cluster startup (Session-3 deploy lesson + PR-#108 pattern).
+    # the slim image doesn't ship wget. `--spider` (HEAD-only) intent
+    # is preserved via urllib's "open + check status + close" pattern.
+    # start_period bumped 20s→40s so app boot + Redis lifespan init
+    # don't race the first healthcheck on cold cluster startup
+    # (Session-3 deploy lesson + PR-#108 inheritance).
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:8000/health/ready', timeout=2).status == 200 else sys.exit(1)"]
       interval: 10s
@@ -177,16 +190,32 @@ services:
     # `docker secret create <name> <file>` (or via Session 1's
     # cluster-bootstrap automation). The app reads them as files from
     # /run/secrets/<name>.
-    # Secrets aligned verbatim with secrets.yaml (D8 manifest = source
-    # of truth). Per Session-3 PR-#108 in-deploy fix: explicit
+    # Secrets aligned verbatim with secrets.yaml (the D8 manifest is
+    # source of truth). Per Session-3 PR-#108 in-deploy fix: explicit
     # uid/gid 1001 per mount so the non-root user the Dockerfile
-    # creates can read the secret files. REDIS_SENTINEL_PASSWORD
-    # trimmed at Day-7 deploy time — soul-file-library has NO Redis
-    # consumer in app/ (no redis.* imports); re-adds when the Day-5+
-    # Redis cache layer ships.
+    # creates can actually read the secret files (default mode 0444
+    # is owner-readable; without explicit uid/gid mount fails on the
+    # secret file when accessed by uid 1001).
+    #
+    # DATABASE_URL is intentionally NOT mounted — orchestrator is a
+    # thin HTTP service (RPC to soul-file-library + Gemini SDK; no
+    # direct asyncpg consumer). Same trim Session 3 did for
+    # public-api in PR #108. Re-adds the day a future RPC turns into
+    # an in-process DB read.
     secrets:
-      - source: POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY
-        target: POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY
+      - source: REDIS_URL
+        target: REDIS_URL
+        uid: "1001"
+        gid: "1001"
+        mode: 0400
+      # REDIS_PASSWORD — AUTH credential the Sentinel-discovered Redis
+      # primary demands on first command (--requirepass enabled per
+      # H3). Without this mount, the orchestrator's idempotency dedup
+      # layer fails at boot with AuthenticationError. Top-level
+      # `secrets:` declaration below maps source-name to the versioned
+      # Swarm secret.
+      - source: REDIS_PASSWORD
+        target: REDIS_PASSWORD
         uid: "1001"
         gid: "1001"
         mode: 0400
@@ -202,6 +231,11 @@ services:
         mode: 0400
       - source: LANGFUSE_SECRET_KEY
         target: LANGFUSE_SECRET_KEY
+        uid: "1001"
+        gid: "1001"
+        mode: 0400
+      - source: GEMINI_API_KEY
+        target: GEMINI_API_KEY
         uid: "1001"
         gid: "1001"
         mode: 0400
@@ -238,13 +272,22 @@ networks:
 # `secrets.yaml` (per CONSTRAINTS D8, added in PR 3). new-service.sh
 # generates the `secrets:` block above from secrets.yaml automatically.
 secrets:
-  POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY:
+  REDIS_URL:
     external: true
+  # REDIS_PASSWORD maps the logical name (consumed by Settings +
+  # app/idempotency.py) to the versioned Swarm secret created via
+  # the 2026-05-22 rotation pattern. Rotation = bump the `name:`
+  # below to the next versioned secret + roll the service.
+  REDIS_PASSWORD:
+    external:
+      name: yral_v2_redis_primary_password_ceeb8b19
   SENTRY_DSN:
     external: true
   LANGFUSE_PUBLIC_KEY:
     external: true
   LANGFUSE_SECRET_KEY:
+    external: true
+  GEMINI_API_KEY:
     external: true
 
 

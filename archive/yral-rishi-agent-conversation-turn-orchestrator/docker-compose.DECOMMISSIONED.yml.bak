@@ -1,3 +1,9 @@
+# ===========================================================================
+# DECOMMISSIONED 2026-06-01 — service removed from production swarm.
+# DO NOT DEPLOY. Kept only for historical reference / data-recovery context.
+# Original service: yral-rishi-agent-conversation-turn-orchestrator
+# Replaced by: monolith service yral-rishi-agent (rishi-4/5).
+# ===========================================================================
 # ---------------------------------------------------------------------------
 # docker-compose.yml — local development stack.
 #
@@ -57,9 +63,9 @@ services:
       dockerfile: Dockerfile
 
     # A predictable container name makes `docker logs service` work without
-    # the auto-generated "yral-rishi-agent-influencer-and-profile-directory-service-1"
+    # the auto-generated "yral-rishi-agent-conversation-turn-orchestrator-service-1"
     # mouthful. Spawned services overwrite this via new-service.sh.
-    container_name: yral-rishi-agent-influencer-and-profile-directory
+    container_name: yral-rishi-agent-conversation-turn-orchestrator
 
     # Map host port 8000 to container port 8000 so the dev can hit
     # http://localhost:8000 from a browser. Production never publishes
@@ -72,13 +78,10 @@ services:
     # Compose's built-in DNS resolves "pgbouncer" + "redis" inside the
     # private network.
     #
-    # POSTGRES_CONNECTION_STRING_INFLUENCER_AND_PROFILE_DIRECTORY —
-    # asyncpg-compatible URL. The env var name matches the secrets.yaml
-    # declaration verbatim per D8 (consumed_by app/database.py +
-    # app/migrations/env.py). Port 6432 (pgBouncer), not 5432 (raw
-    # Postgres) — all traffic goes through the bouncer so the same
-    # connection-multiplexing behavior is tested locally that we'll
-    # get in prod.
+    # DATABASE_URL — asyncpg-compatible URL. Note port 6432 (pgBouncer),
+    # not 5432 (raw Postgres). All traffic goes through the bouncer so
+    # the same connection-multiplexing behavior is tested locally that
+    # we'll get in prod.
     #
     # REDIS_URL — plain redis:// since local has no Sentinel. In prod the
     # service uses redis.sentinel.Sentinel to discover the current
@@ -91,7 +94,7 @@ services:
     #
     # LANGFUSE_TRACING_ENABLED=false — see file header rationale.
     environment:
-      POSTGRES_CONNECTION_STRING_INFLUENCER_AND_PROFILE_DIRECTORY: postgresql://service:service-local-password@pgbouncer:6432/service_local_database
+      DATABASE_URL: postgresql://service:service-local-password@pgbouncer:6432/service_local_database
       REDIS_URL: redis://redis:6379/0
       SENTRY_DSN: ""
       LANGFUSE_TRACING_ENABLED: "false"
@@ -131,7 +134,7 @@ services:
     # behavior on a dev's machine.
     image: postgres:17-alpine
 
-    container_name: yral-rishi-agent-influencer-and-profile-directory-postgres
+    container_name: yral-rishi-agent-conversation-turn-orchestrator-postgres
 
     # Map host port 5432 so a dev can `psql -h localhost` from outside
     # the compose network. Prod never exposes this; the cluster's
@@ -140,9 +143,7 @@ services:
       - "5432:5432"
 
     # Postgres reads these envs at first-init time to bootstrap the
-    # superuser + the first database. Values match the user / password /
-    # database in the
-    # POSTGRES_CONNECTION_STRING_INFLUENCER_AND_PROFILE_DIRECTORY above.
+    # superuser + the first database. Match the DATABASE_URL above.
     environment:
       POSTGRES_USER: service
       POSTGRES_PASSWORD: service-local-password
@@ -189,7 +190,7 @@ services:
     # and survives any future deprecation rename by the publisher.
     image: edoburu/pgbouncer@sha256:85d1e38593617af1b5f7f285e97d407e56c29939683cc7cfe4c8f6dc19f1268b
 
-    container_name: yral-rishi-agent-influencer-and-profile-directory-pgbouncer
+    container_name: yral-rishi-agent-conversation-turn-orchestrator-pgbouncer
 
     # Map host port 6432 so a dev can `psql -h localhost -p 6432`
     # against the bouncer (rather than reach the raw postgres on 5432).
@@ -207,10 +208,9 @@ services:
       DB_NAME: service_local_database
 
       # Listen on 6432 inside the container so the service can hit
-      # `pgbouncer:6432` (matches the host:port in the service's
-      # POSTGRES_CONNECTION_STRING_INFLUENCER_AND_PROFILE_DIRECTORY).
-      # edoburu's default listen port is 5432; we override to 6432 to
-      # stay consistent with the production convention.
+      # `pgbouncer:6432` (matches its DATABASE_URL). edoburu's default
+      # listen port is 5432; we override to 6432 to stay consistent
+      # with the production convention.
       LISTEN_PORT: 6432
 
       # AUTH_TYPE controls how clients authenticate TO the bouncer.
@@ -233,7 +233,7 @@ services:
     # 7-alpine = Redis 7 (current major) on Alpine. Tiny image.
     image: redis:7-alpine
 
-    container_name: yral-rishi-agent-influencer-and-profile-directory-redis
+    container_name: yral-rishi-agent-conversation-turn-orchestrator-redis
 
     # Map host port 6379 for dev convenience (`redis-cli` from outside).
     ports:

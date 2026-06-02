@@ -1,3 +1,9 @@
+# ===========================================================================
+# DECOMMISSIONED 2026-06-01 — service removed from production swarm.
+# DO NOT DEPLOY. Kept only for historical reference / data-recovery context.
+# Original swarm stack: yral-rishi-agent-soul-file-library
+# Replaced by: monolith service yral-rishi-agent (rishi-4/5).
+# ===========================================================================
 # ---------------------------------------------------------------------------
 # docker-compose.swarm.yml — the production Swarm-stack variant.
 #
@@ -79,12 +85,12 @@ services:
     # Entrypoint wrapper — Day-7 secret-file → env-var bridge per D8
     # (Session-3 public-api pattern from PR #108). Swarm mounts each
     # secret as a file at /run/secrets/<name>; pydantic-settings reads
-    # from os.environ — without this bridge Sentry + Langfuse SDKs see
-    # empty strings even though the secret files ARE present. SDKs
-    # no-op silently on empty config so the service still runs, but
-    # observability is dark. Wrapper exports each `/run/secrets/*`
-    # file's content as an env var of the same name, then exec's
-    # uvicorn so the FastAPI process inherits them via os.environ.
+    # from os.environ — without this bridge soul-file-library crashes
+    # at startup with "POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY is
+    # empty" even though the secret file IS present (128 bytes,
+    # verified via debug swarm-service). Wrapper exports each
+    # `/run/secrets/*` file's content as an env var of the same name,
+    # then exec's uvicorn.
     command:
       - sh
       - -c
@@ -152,10 +158,10 @@ services:
     # If 3 in a row fail, Swarm marks the replica unhealthy and the
     # rolling-update logic kicks in. We hit /health/ready (per F9), which
     # returns 503 when any downstream dep is unreachable.
-    # Healthcheck — uses python's stdlib urllib instead of wget (not in
-    # slim image). start_period 20s→40s gives app + Sentry + Langfuse
-    # init breathing room on cold cluster startup. Session-3 PR-#108
-    # pattern.
+    # Healthcheck — uses python's stdlib urllib instead of wget because
+    # the slim image doesn't ship wget. start_period bumped 20s→40s so
+    # app boot + asyncpg pool init don't race the first healthcheck on
+    # cold cluster startup (Session-3 deploy lesson + PR-#108 pattern).
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:8000/health/ready', timeout=2).status == 200 else sys.exit(1)"]
       interval: 10s
@@ -177,26 +183,16 @@ services:
     # `docker secret create <name> <file>` (or via Session 1's
     # cluster-bootstrap automation). The app reads them as files from
     # /run/secrets/<name>.
-    # Day-7 deploy alignment: at Day-7 deploy time this service had no
-    # Postgres + no Redis consumers in app/, so both secret mounts
-    # were trimmed (Swarm validates every declared secret exists in
-    # the cluster store, so mounting unused secrets blocks deploys).
-    # PR #148 Chunk A ships the Postgres consumer (app/database.py +
-    # Alembic migrations); the Postgres mount is re-added below.
-    # Redis still has no consumer in app/ today; its mount re-adds
-    # the day the cache layer ships (Day-8+ per the API contract's
-    # `GET /api/v1/influencers` Cache-Control 300s note).
-    #
-    # Explicit uid/gid 1001 per mount per Session-3 PR-#108 fix so the
-    # non-root user the Dockerfile creates can read the secret files.
+    # Secrets aligned verbatim with secrets.yaml (D8 manifest = source
+    # of truth). Per Session-3 PR-#108 in-deploy fix: explicit
+    # uid/gid 1001 per mount so the non-root user the Dockerfile
+    # creates can read the secret files. REDIS_SENTINEL_PASSWORD
+    # trimmed at Day-7 deploy time — soul-file-library has NO Redis
+    # consumer in app/ (no redis.* imports); re-adds when the Day-5+
+    # Redis cache layer ships.
     secrets:
-      # Postgres connection string for the influencer-and-profile-
-      # directory schema on the shared `yral_v2` Patroni cluster per
-      # F3. Consumed by app/database.py at startup (asyncpg pool) +
-      # by Alembic's env.py during `alembic upgrade head` (one-shot
-      # migration job, separate from the service container).
-      - source: POSTGRES_CONNECTION_STRING_INFLUENCER_AND_PROFILE_DIRECTORY
-        target: POSTGRES_CONNECTION_STRING_INFLUENCER_AND_PROFILE_DIRECTORY
+      - source: POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY
+        target: POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY
         uid: "1001"
         gid: "1001"
         mode: 0400
@@ -248,7 +244,7 @@ networks:
 # `secrets.yaml` (per CONSTRAINTS D8, added in PR 3). new-service.sh
 # generates the `secrets:` block above from secrets.yaml automatically.
 secrets:
-  POSTGRES_CONNECTION_STRING_INFLUENCER_AND_PROFILE_DIRECTORY:
+  POSTGRES_CONNECTION_STRING_SOUL_FILE_LIBRARY:
     external: true
   SENTRY_DSN:
     external: true

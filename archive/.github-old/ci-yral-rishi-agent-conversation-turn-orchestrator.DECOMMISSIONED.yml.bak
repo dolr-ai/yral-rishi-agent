@@ -1,3 +1,9 @@
+# ===========================================================================
+# DECOMMISSIONED 2026-06-01 — service removed from production swarm.
+# DO NOT DEPLOY / DO NOT MOVE TO .github/workflows/.
+# Original service: yral-rishi-agent-conversation-turn-orchestrator
+# Replaced by: monolith service yral-rishi-agent (rishi-4/5).
+# ===========================================================================
 # ---------------------------------------------------------------------------
 # per-service-ci.yml — the per-service CI workflow TEMPLATE.
 #
@@ -10,7 +16,7 @@
 # Per F16 (monorepo) + the role spec: every spawned service gets its OWN
 # CI workflow at `.github/workflows/<service-name>-ci.yml` (at repo
 # root). `scripts/new-service.sh` (PR 3 of Day 3) takes THIS file as
-# input, sed-substitutes `yral-rishi-agent-soul-file-library` with
+# input, sed-substitutes `yral-rishi-agent-conversation-turn-orchestrator` with
 # the spawned service's name everywhere, and outputs the result to the
 # right path at root for GitHub Actions to pick up.
 #
@@ -24,7 +30,7 @@
 # WHAT THIS WORKFLOW DOES (once installed at root):
 #   - lint: byte-compiles every .py under `app/` to catch syntax errors.
 #   - docker-build: runs the multi-stage `docker build` from
-#     `yral-rishi-agent-soul-file-library/Dockerfile` to verify the
+#     `yral-rishi-agent-conversation-turn-orchestrator/Dockerfile` to verify the
 #     image builds cleanly. No GHCR push yet (deploy workflow is later).
 #
 # JOBS NOT INCLUDED YET (added in subsequent Day-3 PRs):
@@ -34,7 +40,7 @@
 # RELATED FILES (footer at end).
 # ---------------------------------------------------------------------------
 
-name: ci-yral-rishi-agent-soul-file-library
+name: ci-yral-rishi-agent-conversation-turn-orchestrator
 
 # Trigger on PRs that touch this service's folder + on pushes to main
 # that touch it. Path-scoping per F16 means changes to OTHER services
@@ -47,17 +53,17 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
-      - 'yral-rishi-agent-soul-file-library/**'
+      - 'yral-rishi-agent-conversation-turn-orchestrator/**'
   push:
     branches: [main]
     paths:
-      - 'yral-rishi-agent-soul-file-library/**'
+      - 'yral-rishi-agent-conversation-turn-orchestrator/**'
 
 # All jobs run from inside the service folder. new-service.sh
-# rewrites `yral-rishi-agent-soul-file-library` here too.
+# rewrites `yral-rishi-agent-conversation-turn-orchestrator` here too.
 defaults:
   run:
-    working-directory: yral-rishi-agent-soul-file-library
+    working-directory: yral-rishi-agent-conversation-turn-orchestrator
 
 jobs:
 
@@ -102,9 +108,9 @@ jobs:
       - name: Build the service image (no push)
         uses: docker/build-push-action@v6
         with:
-          context: yral-rishi-agent-soul-file-library
+          context: yral-rishi-agent-conversation-turn-orchestrator
           push: false
-          tags: yral-rishi-agent-soul-file-library:ci-${{ github.sha }}
+          tags: yral-rishi-agent-conversation-turn-orchestrator:ci-${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -129,7 +135,7 @@ jobs:
         run: bash scripts/tests/test_gen_env_example.sh
   # -------------------------------------------------------------------------
   # docker-push-to-ghcr — on pushes to main only, builds + pushes the
-  # service image to ghcr.io/dolr-ai/yral-rishi-agent-soul-file-library. Per F13 — the deploy
+  # service image to ghcr.io/dolr-ai/yral-rishi-agent-conversation-turn-orchestrator. Per F13 — the deploy
   # workflow + `docker stack deploy` on rishi-4/5/6 pull from this
   # registry path. Does NOT run on pull_request events; PR-time builds
   # stay in the `docker-build` job above without pushing.
@@ -164,11 +170,11 @@ jobs:
       - name: Build the service image and push to ghcr.io
         uses: docker/build-push-action@v6
         with:
-          context: yral-rishi-agent-soul-file-library
+          context: yral-rishi-agent-conversation-turn-orchestrator
           push: true
           tags: |
-            ghcr.io/dolr-ai/yral-rishi-agent-soul-file-library:${{ github.sha }}
-            ghcr.io/dolr-ai/yral-rishi-agent-soul-file-library:latest
+            ghcr.io/dolr-ai/yral-rishi-agent-conversation-turn-orchestrator:${{ github.sha }}
+            ghcr.io/dolr-ai/yral-rishi-agent-conversation-turn-orchestrator:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

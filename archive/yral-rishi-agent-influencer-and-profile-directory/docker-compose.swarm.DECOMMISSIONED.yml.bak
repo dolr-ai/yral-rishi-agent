@@ -1,3 +1,9 @@
+# ===========================================================================
+# DECOMMISSIONED 2026-06-01 — service removed from production swarm.
+# DO NOT DEPLOY. Kept only for historical reference / data-recovery context.
+# Original swarm stack: yral-rishi-agent-influencer-and-profile-directory
+# Replaced by: monolith service yral-rishi-agent (rishi-4/5).
+# ===========================================================================
 # ---------------------------------------------------------------------------
 # docker-compose.swarm.yml — the production Swarm-stack variant.
 #
@@ -65,35 +71,36 @@ services:
     # Day 2). This keeps secrets out of `docker inspect` output and out
     # of process env vars (which can leak via /proc/<pid>/environ).
     environment:
-      # Default `staging` (NOT `production`): the v2 cluster on rishi-4/5/6
-      # currently runs as a staging mirror of chat-ai while we drive Phase-1
-      # feature parity. Stamping `staging` here keeps Sentry events + Langfuse
-      # traces + structured logs out of the `environment=production` bucket
-      # until v2 actually takes real production traffic. The CI deploy
-      # pipeline overrides this with an explicit `ENVIRONMENT=production`
-      # injection when promoting a build to the production cluster — the
-      # default fires only when no value is set, so production deploys are
-      # unaffected. Session 4 is shipping the same flip across orchestrator
-      # + soul-file + influencer in their parallel PR.
+      # `staging` matches reality: rishi-4/5/6 is the v2 DEV cluster, NOT
+      # production — A6 cutover hasn't happened. Label flows into Sentry
+      # + Langfuse event tagging across all Session-4 services AND the
+      # orchestrator's per-request run_turn gate at `app/run_turn.py:417`
+      # in conversation-turn-orchestrator (which 503s every chat request
+      # when its own `environment` reads `production`). A6 typed-YES is
+      # the only path to flip these labels to production; keeping all 3
+      # services in lockstep avoids split Sentry/Langfuse tagging.
       ENVIRONMENT: ${ENVIRONMENT:-staging}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      # ENFORCE_PASSWORDLESS_REDIS_URL — Codex PR #137 round-9
-      # BLOCKER 3 + round-11 feature-flag pattern + round-15 CONCERN
-      # rollout-path closure. Defaults `false` so the round-11
-      # `_reject_password_in_redis_url` validator no-ops on the
-      # currently-deployed credential-bearing REDIS_URL secret
-      # (still in the pre-round-8 `redis://:<password>@host:6379/0`
-      # shape). After Session 1's separate cluster-manifest PR
-      # (PR #150) lands + Session 1 rotates the Swarm/GitHub Secret
-      # REDIS_URL to the passwordless shape, a Session 3 follow-up
-      # PR flips this line's `:-false` literal to `:-true` (or sets
-      # the var explicitly in the CI deploy injection). That
-      # activation PR is the load-bearing closure of round-15's
-      # CONCERN: without this env-var wired here, there'd be no
-      # rollout path that doesn't require Session 1 to edit
-      # public-api files (an I9 violation — Session 1 doesn't
-      # own this compose).
-      ENFORCE_PASSWORDLESS_REDIS_URL: ${ENFORCE_PASSWORDLESS_REDIS_URL:-false}
+
+    # Entrypoint wrapper — Day-7 secret-file → env-var bridge per D8
+    # (Session-3 public-api pattern from PR #108). Swarm mounts each
+    # secret as a file at /run/secrets/<name>; pydantic-settings reads
+    # from os.environ — without this bridge Sentry + Langfuse SDKs see
+    # empty strings even though the secret files ARE present. SDKs
+    # no-op silently on empty config so the service still runs, but
+    # observability is dark. Wrapper exports each `/run/secrets/*`
+    # file's content as an env var of the same name, then exec's
+    # uvicorn so the FastAPI process inherits them via os.environ.
+    command:
+      - sh
+      - -c
+      - |
+        for s in /run/secrets/*; do
+          if [ -f "$$s" ]; then
+            export "$$(basename "$$s")=$$(cat "$$s")"
+          fi
+        done
+        exec uvicorn app.main:app --host 0.0.0.0 --port 8000
 
     # Per-replica resource caps. The defaults below are conservative
     # starting points; tune per service after the first week of prod
@@ -151,12 +158,16 @@ services:
     # If 3 in a row fail, Swarm marks the replica unhealthy and the
     # rolling-update logic kicks in. We hit /health/ready (per F9), which
     # returns 503 when any downstream dep is unreachable.
+    # Healthcheck — uses python's stdlib urllib instead of wget (not in
+    # slim image). start_period 20s→40s gives app + Sentry + Langfuse
+    # init breathing room on cold cluster startup. Session-3 PR-#108
+    # pattern.
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8000/health/ready"]
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:8000/health/ready', timeout=2).status == 200 else sys.exit(1)"]
       interval: 10s
       timeout: 3s
       retries: 3
-      start_period: 20s
+      start_period: 40s
 
     # Three Swarm overlay networks (per CONSTRAINTS C3):
     #   - yral-v2-public-web   front-facing traffic from edge Caddy
@@ -172,31 +183,43 @@ services:
     # `docker secret create <name> <file>` (or via Session 1's
     # cluster-bootstrap automation). The app reads them as files from
     # /run/secrets/<name>.
+    # Day-7 deploy alignment: at Day-7 deploy time this service had no
+    # Postgres + no Redis consumers in app/, so both secret mounts
+    # were trimmed (Swarm validates every declared secret exists in
+    # the cluster store, so mounting unused secrets blocks deploys).
+    # PR #148 Chunk A ships the Postgres consumer (app/database.py +
+    # Alembic migrations); the Postgres mount is re-added below.
+    # Redis still has no consumer in app/ today; its mount re-adds
+    # the day the cache layer ships (Day-8+ per the API contract's
+    # `GET /api/v1/influencers` Cache-Control 300s note).
     #
-    # Names UPPER_SNAKE_CASE matching `secrets.yaml` verbatim per D8
-    # (manifest is source of truth; 2026-05-20 Day-5 alignment).
+    # Explicit uid/gid 1001 per mount per Session-3 PR-#108 fix so the
+    # non-root user the Dockerfile creates can read the secret files.
     secrets:
-      - source: REDIS_URL
-        target: REDIS_URL
-        mode: 0400
-      # REDIS_PASSWORD — AUTH credential the Sentinel-discovered Redis
-      # primary demands on first command (--requirepass enabled per
-      # H3). Without this mount, both Redis paths in this service
-      # (from_url singleton in app/redis_client.py AND the Sentinel
-      # probe in app/api/health_routes.py) raise
-      # `redis.exceptions.AuthenticationError`. Top-level `secrets:`
-      # below maps the logical name to the versioned Swarm secret.
-      - source: REDIS_PASSWORD
-        target: REDIS_PASSWORD
+      # Postgres connection string for the influencer-and-profile-
+      # directory schema on the shared `yral_v2` Patroni cluster per
+      # F3. Consumed by app/database.py at startup (asyncpg pool) +
+      # by Alembic's env.py during `alembic upgrade head` (one-shot
+      # migration job, separate from the service container).
+      - source: POSTGRES_CONNECTION_STRING_INFLUENCER_AND_PROFILE_DIRECTORY
+        target: POSTGRES_CONNECTION_STRING_INFLUENCER_AND_PROFILE_DIRECTORY
+        uid: "1001"
+        gid: "1001"
         mode: 0400
       - source: SENTRY_DSN
         target: SENTRY_DSN
+        uid: "1001"
+        gid: "1001"
         mode: 0400
       - source: LANGFUSE_PUBLIC_KEY
         target: LANGFUSE_PUBLIC_KEY
+        uid: "1001"
+        gid: "1001"
         mode: 0400
       - source: LANGFUSE_SECRET_KEY
         target: LANGFUSE_SECRET_KEY
+        uid: "1001"
+        gid: "1001"
         mode: 0400
 
 
@@ -231,16 +254,8 @@ networks:
 # `secrets.yaml` (per CONSTRAINTS D8, added in PR 3). new-service.sh
 # generates the `secrets:` block above from secrets.yaml automatically.
 secrets:
-  REDIS_URL:
+  POSTGRES_CONNECTION_STRING_INFLUENCER_AND_PROFILE_DIRECTORY:
     external: true
-  # REDIS_PASSWORD maps the logical name (consumed by Settings +
-  # app/redis_client.py + app/api/health_routes.py) to the versioned
-  # Swarm secret created via the 2026-05-22 rotation pattern. Rotation
-  # = bump the `name:` below to the next versioned secret + roll the
-  # service.
-  REDIS_PASSWORD:
-    external:
-      name: yral_v2_redis_primary_password_ceeb8b19
   SENTRY_DSN:
     external: true
   LANGFUSE_PUBLIC_KEY:
