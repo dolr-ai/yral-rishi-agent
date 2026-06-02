@@ -142,9 +142,16 @@ async def list_by_user(
                    i.suggested_messages as inf_suggested_messages,
                    i.is_nsfw as inf_is_nsfw,
                    COUNT(m.id) as message_count,
+                   -- AI: count unread bot replies. H2H: count unread peer
+                   -- messages (sender_id != viewer; both peers send role='user'
+                   -- so role-based filter would always return 0 for H2H — that
+                   -- was the bug the v2 inbox hit on PR #228's trailing edge,
+                   -- recipient's badge never appearing despite real unread).
                    (SELECT COUNT(*) FROM messages m2
                     WHERE m2.conversation_id = c.id
-                    AND m2.is_read = FALSE AND m2.role = 'assistant') as unread_count
+                      AND m2.is_read = FALSE
+                      AND ((c.conversation_type = 'ai_chat' AND m2.role = 'assistant')
+                           OR (c.conversation_type = 'human_chat' AND m2.sender_id != $1))) as unread_count
             FROM conversations c
             LEFT JOIN ai_influencers i ON c.influencer_id = i.id
             LEFT JOIN messages m ON c.id = m.conversation_id

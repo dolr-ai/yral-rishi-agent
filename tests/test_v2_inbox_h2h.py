@@ -143,3 +143,37 @@ def test_can_access_conversation_helper_still_used_by_messages_endpoint():
     assert "_can_access_conversation" in src
     # The helper must be awaited at the /messages route (line ~278)
     assert "await _can_access_conversation(" in src
+
+
+# ─── unread_count subquery: H2H recipient bug fix (2026-06-02) ────────────
+#
+# Second PR #228 trailing-edge bug. The list_by_user unread_count subquery
+# filtered m2.role = 'assistant'. H2H messages all have role='user' from
+# both peers → count always 0 for H2H rows → recipient's pink badge never
+# appeared despite real unread messages. The fix branches on
+# conversation_type — AI keeps role='assistant', H2H uses sender_id != $1
+# (the viewer principal already bound to $1 for the outer WHERE clause).
+
+
+def test_list_by_user_unread_count_branches_on_conversation_type():
+    """The subquery must handle both AI (role='assistant') and H2H
+    (sender_id != viewer) — picking the right unread criterion per
+    conversation_type. Without this branch, the H2H recipient's badge
+    stays at 0 regardless of actual unread state."""
+    src = _read("app/repositories/conversation_repo.py")
+    # Both branches present in the same subquery
+    assert "c.conversation_type = 'ai_chat'" in src
+    assert "c.conversation_type = 'human_chat'" in src
+    # H2H branch keys off sender_id != viewer (the viewer principal is $1)
+    assert "m2.sender_id != $1" in src
+    # AI branch keeps the original role-based filter
+    assert "m2.role = 'assistant'" in src
+
+
+def test_list_by_user_unread_count_does_not_count_own_sends_for_h2h():
+    """A self-sent H2H message must never count toward the sender's own
+    unread badge. The sender_id != $1 clause is what enforces this — pin
+    that the inequality (not equality) ships."""
+    src = _read("app/repositories/conversation_repo.py")
+    # Inequality form must ship (not "= $1")
+    assert "m2.sender_id != $1" in src
