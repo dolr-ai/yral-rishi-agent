@@ -233,26 +233,131 @@ def _resolve_api_key(provider: str) -> str:
     raise RuntimeError(f"llm_registry: no API key configured for provider={provider}")
 
 
+# 25.4: in-memory cache of DB-backed overrides. Populated by
+# reload_config_from_db() on startup + after every admin PATCH. None
+# means "not yet loaded" — treat as empty; the lookup will fall through
+# to env override + LLM_DEFAULTS.
+_db_overrides: dict[str, dict[str, Any]] | None = None
+
+
 def _process_config(process: str) -> dict[str, Any]:
     """Resolve the effective config for one process. Order:
-      1. Env override (Q3): LLM_PROCESS__<UPPER_NAME>=<provider>/<model>
-      2. LLM_DEFAULTS
-    DB-backed overrides land in a follow-up PR (25.4)."""
+    1. DB override (25.4: llm_process_config table, hot-edited via
+       PATCH /admin/llm-routing).
+    2. Env override (Q3): LLM_PROCESS__<UPPER_NAME>=<provider>/<model>.
+    3. LLM_DEFAULTS.
+    """
     if process not in LLM_DEFAULTS:
         raise KeyError(
             f"llm_registry: unknown process '{process}'. Known: {sorted(PROCESS_NAMES)}"
         )
     cfg = dict(LLM_DEFAULTS[process])
 
+    # 1. DB override (highest priority — admin-pinned)
+    if _db_overrides and process in _db_overrides:
+        cfg.update(_db_overrides[process])
+
+    # 2. Env override (lower priority than DB so admin can pin past env)
     env_key = f"LLM_PROCESS__{process.upper()}"
     override = os.environ.get(env_key)
     if override and "/" in override:
-        provider, _, model = override.partition("/")
-        cfg["provider"] = provider.strip()
-        cfg["model"] = model.strip()
-        logger.info("llm_registry: process=%s overridden via %s", process, env_key)
+        # Only honor env if no DB pin exists — DB wins.
+        if not (_db_overrides and process in _db_overrides):
+            provider, _, model = override.partition("/")
+            cfg["provider"] = provider.strip()
+            cfg["model"] = model.strip()
+            logger.info("llm_registry: process=%s overridden via %s", process, env_key)
 
     return cfg
+
+
+async def reload_config_from_db(pool) -> int:
+    """Pull overrides from llm_process_config table into the in-memory
+    cache. Returns the number of overrides loaded. Called from app
+    startup + after every PATCH /admin/llm-routing.
+
+    Safe if the table doesn't exist — logs a warning and leaves the
+    cache empty (registry falls back to env + LLM_DEFAULTS). This lets
+    25.4 code deploy before the migration is applied per Rule 9
+    (Rishi pg_dumps + applies migration manually)."""
+    global _db_overrides
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT process, provider, model, timeout_sec FROM llm_process_config"
+            )
+    except Exception as e:
+        logger.warning(
+            "llm_registry: reload_config_from_db skipped (%s); using env + defaults", e
+        )
+        _db_overrides = {}
+        return 0
+
+    overrides: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        process = row["process"]
+        if process not in LLM_DEFAULTS:
+            logger.warning(
+                "llm_registry: DB row for unknown process %r — ignored", process
+            )
+            continue
+        cfg: dict[str, Any] = {"provider": row["provider"], "model": row["model"]}
+        if row["timeout_sec"] is not None:
+            cfg["timeout_sec"] = float(row["timeout_sec"])
+        overrides[process] = cfg
+
+    _db_overrides = overrides
+    logger.info("llm_registry: loaded %d DB overrides", len(overrides))
+    return len(overrides)
+
+
+async def upsert_override(
+    pool,
+    *,
+    process: str,
+    provider: str,
+    model: str,
+    timeout_sec: float | None,
+    updated_by: str,
+) -> None:
+    """Write an override row + refresh the in-memory cache. Caller is
+    the admin PATCH endpoint; auth has already been checked there."""
+    if process not in LLM_DEFAULTS:
+        raise KeyError(f"llm_registry.upsert_override: unknown process '{process}'")
+    if provider not in PROVIDERS:
+        raise KeyError(f"llm_registry.upsert_override: unknown provider '{provider}'")
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO llm_process_config (process, provider, model, timeout_sec, updated_at, updated_by)
+            VALUES ($1, $2, $3, $4, NOW(), $5)
+            ON CONFLICT (process) DO UPDATE
+              SET provider = EXCLUDED.provider,
+                  model = EXCLUDED.model,
+                  timeout_sec = EXCLUDED.timeout_sec,
+                  updated_at = NOW(),
+                  updated_by = EXCLUDED.updated_by
+            """,
+            process,
+            provider,
+            model,
+            timeout_sec,
+            updated_by,
+        )
+    await reload_config_from_db(pool)
+
+
+async def delete_override(pool, *, process: str, updated_by: str) -> bool:
+    """Remove an override — process falls back to env + LLM_DEFAULTS.
+    Returns True if a row was deleted."""
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM llm_process_config WHERE process = $1", process
+        )
+    await reload_config_from_db(pool)
+    # asyncpg returns "DELETE N" — parse the count
+    deleted = result.split(" ")[-1] if isinstance(result, str) else "0"
+    return deleted != "0"
 
 
 def current_config(process: str) -> dict[str, Any]:
