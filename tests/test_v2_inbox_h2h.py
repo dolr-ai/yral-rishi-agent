@@ -177,3 +177,59 @@ def test_list_by_user_unread_count_does_not_count_own_sends_for_h2h():
     src = _read("app/repositories/conversation_repo.py")
     # Inequality form must ship (not "= $1")
     assert "m2.sender_id != $1" in src
+
+
+# ─── count_unread + mark_as_read: H2H Part B grep-sweep finding (2026-06-02) ──
+#
+# Third PR #228 trailing-edge bug surfaced by the Part B grep sweep.
+# message_repo.count_unread + mark_as_read filtered role='assistant'.
+# H2H peers both send role='user', so for H2H:
+#  - count_unread always returned 0 (POST /read response, H2H send WS broadcast)
+#  - mark_as_read no-op'd (POST /conversations/{id}/read for H2H recipient)
+#
+# Fix: unified semantic "unread = messages not sent by the viewer."
+# Both functions take a viewer_principal parameter and filter
+# sender_id != $viewer. Works for both AI (bot's sender_id != user_id)
+# and H2H (peer's sender_id != viewer). No conversation_type branch
+# needed — the sender_id comparison handles both cases naturally.
+
+
+def test_count_unread_uses_sender_id_filter_not_role():
+    """The old role='assistant' filter must NOT be present anymore in
+    count_unread — that's exactly what made H2H always return 0."""
+    src = _read("app/repositories/message_repo.py")
+    # Find the count_unread function body and check the filter shape
+    # (we can't easily extract just one function body in a source-pin
+    # test, so we assert at the file level — sender_id != $2 must be
+    # present at least twice, once in count_unread and once in
+    # mark_as_read).
+    assert src.count("sender_id != $2") >= 2
+
+
+def test_count_unread_signature_takes_viewer_principal():
+    """The new viewer_principal parameter is what scopes the filter
+    correctly per caller. Without it, all callers would pass nothing
+    and the function would error out — that's the desired regression
+    catch."""
+    src = _read("app/repositories/message_repo.py")
+    assert "async def count_unread(pool, conversation_id: str, viewer_principal: str)" in src
+    assert "async def mark_as_read(pool, conversation_id: str, viewer_principal: str)" in src
+
+
+def test_callers_pass_correct_viewer_to_unread_helpers():
+    """All 5 known callers must pass the right viewer principal. If a
+    future refactor drops the second arg, this test catches it."""
+    chat_src = _read("app/routes/chat.py")
+    human_src = _read("app/routes/human_chat.py")
+    takeover_src = _read("app/routes/creator_takeover.py")
+    proactive_src = _read("app/services/proactive.py")
+
+    # POST /read: viewer is the caller (user_id)
+    assert "message_repo.mark_as_read(pool, conversation_id, user_id)" in chat_src
+    assert "message_repo.count_unread(pool, conversation_id, user_id)" in chat_src
+    # H2H send: viewer is the recipient (the other peer)
+    assert "message_repo.count_unread(pool, conversation_id, recipient_id)" in human_src
+    # Creator takeover: viewer is the user (conv["user_id"])
+    assert 'message_repo.count_unread(pool, conversation_id, conv["user_id"])' in takeover_src
+    # Proactive AI nudge: viewer is the user (recipient of AI message)
+    assert "message_repo.count_unread(pool, conversation_id, user_id)" in proactive_src

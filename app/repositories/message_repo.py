@@ -265,24 +265,34 @@ async def count_by_conversation(pool, conversation_id: str) -> int:
     )
 
 
-async def count_unread(pool, conversation_id: str) -> int:
+async def count_unread(pool, conversation_id: str, viewer_principal: str) -> int:
+    # "Unread" = messages the viewer didn't send. Works for both AI (bot's
+    # sender_id != user_id) and H2H (peer's sender_id != viewer). The old
+    # role='assistant' filter silently returned 0 for H2H since both peers
+    # send role='user'. PR #228 trailing-edge bug; see memory file
+    # feedback_list_vs_detail_endpoint_gap.md.
     return await pool.fetchval(
         """
         SELECT COUNT(*) FROM messages
-        WHERE conversation_id = $1 AND is_read = FALSE AND role = 'assistant'
+        WHERE conversation_id = $1 AND is_read = FALSE AND sender_id != $2
         """,
         conversation_id,
+        viewer_principal,
     )
 
 
-async def mark_as_read(pool, conversation_id: str):
+async def mark_as_read(pool, conversation_id: str, viewer_principal: str):
+    # Symmetric to count_unread above — mark "messages I didn't send" as read.
+    # The old role='assistant' filter no-op'd for H2H, so recipients calling
+    # POST /conversations/{id}/read never cleared their unread badge.
     await pool.execute(
         """
         UPDATE messages
         SET is_read = TRUE, status = 'read'
-        WHERE conversation_id = $1 AND is_read = FALSE AND role = 'assistant'
+        WHERE conversation_id = $1 AND is_read = FALSE AND sender_id != $2
         """,
         conversation_id,
+        viewer_principal,
     )
 
 

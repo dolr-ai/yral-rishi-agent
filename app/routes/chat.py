@@ -315,8 +315,8 @@ async def mark_as_read(conversation_id: str, request: Request):
     if not await _can_access_conversation(pool, user_id, conv):
         raise HTTPException(status_code=403, detail="Access denied")
 
-    await message_repo.mark_as_read(pool, conversation_id)
-    unread = await message_repo.count_unread(pool, conversation_id)
+    await message_repo.mark_as_read(pool, conversation_id, user_id)
+    unread = await message_repo.count_unread(pool, conversation_id, user_id)
     return {"unread_count": unread}
 
 
@@ -620,7 +620,7 @@ async def send_message(
         )
     )
 
-    unread_count = await message_repo.count_unread(pool, conversation_id)
+    unread_count = await message_repo.count_unread(pool, conversation_id, user_id)
     asyncio.create_task(
         websocket_manager.broadcast_new_message(
             user_id=user_id,
