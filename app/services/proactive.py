@@ -199,7 +199,7 @@ async def send_proactive_message(
     inf = await influencer_repo.get_by_id(pool, influencer_id)
     display_name = inf.get("display_name", "AI") if inf else "AI"
 
-    unread_count = await message_repo.count_unread(pool, conversation_id)
+    unread_count = await message_repo.count_unread(pool, conversation_id, user_id)
     asyncio.create_task(
         websocket_manager.broadcast_new_message(
             user_id=user_id,

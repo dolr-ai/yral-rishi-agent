@@ -180,7 +180,7 @@ async def takeover_send_message(conversation_id: str, body: dict, request: Reque
     formatted = format_msg_for_response(msg)
     formatted["content"] = content  # ensure content is the latest
 
-    unread_count = await message_repo.count_unread(pool, conversation_id)
+    unread_count = await message_repo.count_unread(pool, conversation_id, conv["user_id"])
     await websocket_manager.broadcast_new_message(
         user_id=conv["user_id"],
         conversation_id=conversation_id,
