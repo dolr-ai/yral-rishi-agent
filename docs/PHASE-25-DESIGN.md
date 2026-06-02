@@ -98,6 +98,25 @@ Anshuman shipped the self-hosted endpoint 2026-06-02. Saikat owns the GPU/hostin
 
 **Implementation note for 25.1:** the `openai_compatible` client needs to thread `extra_body` through to the underlying HTTP request body. Per OpenAI spec, fields outside the standard set are silently accepted by every implementation we've tested (OpenAI ignores unknown keys, OpenRouter passes them through, vLLM consumes `chat_template_kwargs`). One per-provider config knob in the registry handles this without conditional logic in the client.
 
+**Wire-format quirks from Anshuman's reference gist** (folded in 2026-06-02):
+
+1. **Streaming + usage in one call.** Pass `stream=True, stream_options={"include_usage": True}`. The `usage` object (prompt_tokens, completion_tokens) arrives in the **last chunk** alongside `chunk.choices=[]`. The 25.1 streaming client must tolerate "chunk has usage but no content" and "chunk has content but no usage." We currently extract usage from a single non-streaming response; the streaming path needs a different extraction point at end-of-stream.
+
+2. **Per-process timeout, not a global default.** Anshuman uses `timeout=300.0` for long story-writing. Our workload is mixed:
+   - `user_chat_main`: 30–60s (fail-fast — user is waiting)
+   - `quality_scorer` / `memory_extraction` / `memory_consolidation`: 120–180s (background, tolerates slowness)
+   - `wizard_simulation` / `character_generator`: 180–300s (long generation, no user blocking)
+
+   Registry config schema gains a `timeout_sec` field per process. Default 60s if unset.
+
+3. **Thinking-mode disable** — already captured in the table above. Confirmed against the gist.
+
+4. **Re-benchmark in 25.7.** Anshuman's 92.57 tok/s + 0 rate-limit at 90 concurrent was on **synthetic story-writing prompts (~1000 tokens each)**. Our real chat workload is shorter (200–400 token replies) so:
+   - Throughput should be similar (decode-bound)
+   - TTFT (time-to-first-token) likely **lower** for us (smaller prompts → less prefill)
+
+   Phase 25.7 integration test re-benchmarks against our actual prompt shape before raising the concurrency cap from 5 to 10–20.
+
 **API-key handoff plan:** Rishi will paste `INTERNAL_VLLM_API_KEY` to me SSH-side when Phase 25.7 (integration test) is ready to run, NOT before. Today's PR only encodes the secret name; no key material in the design doc, the registry, or any committed file.
 
 **Implementation sketch:**
