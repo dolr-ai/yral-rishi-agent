@@ -187,11 +187,24 @@ def test_skill_state_repo_list_due_uses_partial_index_predicate():
 # ─── llm_registry process ─────────────────────────────────────────────────
 
 
-def test_registry_has_nutrition_coach_chat_process():
+def test_registry_has_shared_skill_chat_process():
+    """One generic process serves the entire SKILLS catalog. Adding a
+    new skill must NOT require touching the registry — only a one-line
+    dict entry in services/skills.py. This test guards that promise."""
     src = _read("app/services/llm_registry.py")
-    assert '"nutrition_coach_chat"' in src
-    # Default to gemini per Rishi's call (user-facing latency)
-    nc_pos = src.find('"nutrition_coach_chat":')
+    assert '"skill_chat"' in src
+    nc_pos = src.find('"skill_chat":')
     assert nc_pos > 0
     nc_body = src[nc_pos : nc_pos + 500]
+    # Default to gemini for the user-facing skill chat (TTFT matters).
     assert '"provider": "gemini"' in nc_body
+
+
+def test_registry_has_no_per_skill_process_names():
+    """Symmetry. If a future contributor adds `english_coach_chat` or
+    `daily_briefing_chat` as a separate PROCESS_NAMES entry, the
+    one-dict-entry-per-skill promise breaks. Pin the absence."""
+    src = _read("app/services/llm_registry.py")
+    assert "nutrition_coach_chat" not in src
+    assert "english_coach_chat" not in src
+    assert "travel_advisor_chat" not in src

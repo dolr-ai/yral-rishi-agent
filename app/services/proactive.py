@@ -344,11 +344,12 @@ async def generate_skill_checkin(
     )
 
     # Phase 23.6 — V1 routes through ai_client.generate_response which
-    # hardcodes process=user_chat_main. The nutrition_coach_chat process
-    # exists in the registry (PR #263) for future dashboard accounting;
-    # promoting check-ins onto it needs a small generate_response
-    # kwarg, which we'll add after Rishi's Motorola test of the V1
-    # rhythm. Cost still tracks per-call; just under the chat bucket.
+    # hardcodes process=user_chat_main. The shared skill_chat process
+    # exists in the registry for future dashboard accounting across
+    # ALL skills (one bucket, not per-skill); promoting check-ins onto
+    # it needs a small generate_response kwarg, which we'll add after
+    # Rishi's Motorola test of the V1 rhythm. Cost still tracks
+    # per-call; just under the user_chat_main bucket for now.
     llm_result = await ai_client.generate_response(
         system_instructions=system_instructions,
         conversation_history=[],
