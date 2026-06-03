@@ -320,11 +320,15 @@ async def transcribe(
     """
     started = time.monotonic()
 
-    # Fetch + base64-encode audio. Reuse ai_client's image fetcher path
-    # at the byte level — same SSRF + size-limit defenses apply.
-    from services.ai_client import _fetch_image_bytes_and_mime
+    # Fetch + base64-encode audio. Uses the audio-shaped fetcher (forked
+    # from the image one) so the default MIME is audio/mp4 and the size
+    # cap is config.MAX_AUDIO_SIZE_BYTES (20 MB) instead of the image
+    # 5 MB. Pre-fix: this called _fetch_image_bytes_and_mime which
+    # defaulted to image/jpeg → Gemini rejected audio-as-image → returned
+    # no candidates → mobile saw "transcription unavailable."
+    from services.ai_client import _fetch_audio_bytes_and_mime
 
-    mime, audio_bytes = await _fetch_image_bytes_and_mime(audio_url)
+    mime, audio_bytes = await _fetch_audio_bytes_and_mime(audio_url)
     if not mime or not isinstance(audio_bytes, bytes):
         raise RuntimeError(f"gemini.transcribe: failed to fetch audio at {audio_url}")
 
