@@ -80,6 +80,64 @@ async def _fetch_image_bytes_and_mime(url: str) -> tuple[str, bytes] | tuple[Non
     return (mime, data)
 
 
+# Audio download timeout — longer than image since voice notes are ~MB
+# while images are typically ~100KB. Caller (gemini.transcribe) has its
+# own per-process timeout via the registry; this is just the HTTP fetch.
+_AUDIO_DOWNLOAD_TIMEOUT = 30.0
+
+
+async def _fetch_audio_bytes_and_mime(
+    url: str,
+) -> tuple[str, bytes] | tuple[None, str]:
+    """Audio-shaped counterpart to _fetch_image_bytes_and_mime.
+
+    Lifted from the image helper but with audio-appropriate defaults:
+      - default MIME 'audio/mp4' (matches what mobile MediaRecorder /
+        AVAudioRecorder writes, and what the upload route stores in S3)
+      - max bytes from config.MAX_AUDIO_SIZE_BYTES (20 MB) — NOT the
+        image cap (5 MB) which would silently fail voice notes > 5 MB
+      - mime-prefix sanity check is 'audio/' not 'image/'
+
+    Phase 25.3b extraction reused _fetch_image_bytes_and_mime for audio
+    by accident — the image defaults caused Gemini to receive audio
+    bytes labeled image/jpeg → empty candidates → LlmBlockedError → mobile
+    "[Audio message - transcription unavailable]". Forked per Rishi's
+    Option B for CLAUDE.md rule 1 symmetry — two parallel helpers, each
+    self-documenting at the call site. No risk of accidental cross-use.
+    """
+    if not (url.startswith("http://") or url.startswith("https://")):
+        from services import storage as _storage
+
+        presigned = _storage.generate_presigned_url(url)
+        if not presigned:
+            return (None, "missing")
+        url = presigned
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=_AUDIO_DOWNLOAD_TIMEOUT, follow_redirects=True
+        ) as http:
+            resp = await http.get(url)
+            resp.raise_for_status()
+    except Exception as e:
+        logger.warning(f"Audio fetch failed for {url[:80]}: {e}")
+        return (None, "failed to load")
+
+    data = resp.content
+    if len(data) > config.MAX_AUDIO_SIZE_BYTES:
+        return (None, "too large")
+    if not data:
+        return (None, "empty")
+
+    mime = (resp.headers.get("content-type") or "audio/mp4").split(";")[0].strip()
+    if not mime.startswith("audio/"):
+        # Storj sometimes returns application/octet-stream for m4a. Force
+        # to audio/mp4 — what mobile MediaRecorder produces today.
+        mime = "audio/mp4"
+
+    return (mime, data)
+
+
 async def _fetch_and_encode_image(url: str) -> dict:
     mime, data = await _fetch_image_bytes_and_mime(url)
     if mime is None:
