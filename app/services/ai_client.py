@@ -786,9 +786,22 @@ async def transcribe_audio(audio_url: str) -> str | None:
     25.3b: the wire-level Gemini audio call moved to gemini.transcribe;
     routing + concurrency capping + provider selection move to the
     registry. This function just preserves the existing call-site
-    contract (audio_url → text or None on failure)."""
-    if not _is_safe_url(audio_url):
-        logger.error(f"Audio URL blocked (SSRF protection): {audio_url[:50]}")
+    contract (audio_url → text or None on failure).
+
+    Bugfix 2026-06-03: mobile sends raw S3 storage_keys (e.g.
+    "chat-audio/abc.mp3") for the new mic-recording feature. The SSRF
+    safety check was firing first and rejecting non-http URLs — so
+    every audio message landed at transcribe → None → mobile shows
+    "transcription unavailable". Mirror the resolution pattern from
+    chat._format_message:48-50: presign storage_key → HTTPS URL FIRST,
+    then run the SSRF check on the resolved URL.
+    """
+    if audio_url and not audio_url.startswith("http"):
+        from services import storage
+
+        audio_url = storage.generate_presigned_url(audio_url)
+    if not audio_url or not _is_safe_url(audio_url):
+        logger.error(f"Audio URL blocked (SSRF protection): {(audio_url or '')[:50]}")
         return None
     from services import llm_registry
 
