@@ -343,13 +343,14 @@ async def generate_skill_checkin(
         "End with one question."
     )
 
-    # Phase 23.6 — V1 routes through ai_client.generate_response which
-    # hardcodes process=user_chat_main. The shared skill_chat process
-    # exists in the registry for future dashboard accounting across
-    # ALL skills (one bucket, not per-skill); promoting check-ins onto
-    # it needs a small generate_response kwarg, which we'll add after
-    # Rishi's Motorola test of the V1 rhythm. Cost still tracks
-    # per-call; just under the user_chat_main bucket for now.
+    # Phase 23.6 — skill check-ins route through ai_client.generate_response
+    # (process=user_chat_main) deliberately. Skills are pure Soul File
+    # composition — the skill identity lives in the prompt layers, NOT
+    # in routing. The legacy generate_proactive_message uses the same
+    # path. If per-skill cost tracking is ever needed, the right move
+    # is a `skill_slug` tag column on `llm_costs` (one query for cost
+    # per skill), not a separate process per skill (would multiply the
+    # routing surface every time a new vertical ships).
     llm_result = await ai_client.generate_response(
         system_instructions=system_instructions,
         conversation_history=[],

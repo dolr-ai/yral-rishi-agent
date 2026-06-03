@@ -187,24 +187,36 @@ def test_skill_state_repo_list_due_uses_partial_index_predicate():
 # ─── llm_registry process ─────────────────────────────────────────────────
 
 
-def test_registry_has_shared_skill_chat_process():
-    """One generic process serves the entire SKILLS catalog. Adding a
-    new skill must NOT require touching the registry — only a one-line
-    dict entry in services/skills.py. This test guards that promise."""
+def test_registry_has_no_skill_specific_processes():
+    """Skills are pure Soul File composition — the skill identity lives
+    in the prompt layers, NOT in routing. Adding a new skill must
+    require zero registry changes. Pin the absence of any skill-named
+    process so a future "let me just add nutrition_coach_chat for
+    cleaner accounting" PR runs into this test instead of growing
+    the registry surface."""
     src = _read("app/services/llm_registry.py")
-    assert '"skill_chat"' in src
-    nc_pos = src.find('"skill_chat":')
-    assert nc_pos > 0
-    nc_body = src[nc_pos : nc_pos + 500]
-    # Default to gemini for the user-facing skill chat (TTFT matters).
-    assert '"provider": "gemini"' in nc_body
+    forbidden = (
+        "skill_chat",
+        "nutrition_coach_chat",
+        "english_coach_chat",
+        "daily_briefing_chat",
+        "travel_advisor_chat",
+        "real_estate_advisor_chat",
+    )
+    for name in forbidden:
+        assert name not in src, (
+            f"{name!r} found in llm_registry.py — skills route through "
+            "user_chat_main; per-skill cost tracking goes on llm_costs "
+            "as a skill_slug tag, not as a new process."
+        )
 
 
-def test_registry_has_no_per_skill_process_names():
-    """Symmetry. If a future contributor adds `english_coach_chat` or
-    `daily_briefing_chat` as a separate PROCESS_NAMES entry, the
-    one-dict-entry-per-skill promise breaks. Pin the absence."""
+def test_registry_explicitly_documents_skill_routing_decision():
+    """The reasoning for why skills don't get their own process must
+    be visible in the registry source (the place a future contributor
+    will look when tempted to add one). Don't bury this in a doc."""
     src = _read("app/services/llm_registry.py")
-    assert "nutrition_coach_chat" not in src
-    assert "english_coach_chat" not in src
-    assert "travel_advisor_chat" not in src
+    # Phrasing-tolerant pin: both 'user_chat_main' and a skill mention
+    # appear in the explanatory comment block we just added.
+    assert "skilled influencers" in src.lower() or "skill content" in src.lower()
+    assert "user_chat_main" in src
