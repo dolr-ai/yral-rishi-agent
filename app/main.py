@@ -294,8 +294,27 @@ async def _engagement_loop():
                     except Exception:
                         logger.debug(f"Proactive send failed for conv {conv['id']}")
 
+            # Phase 23.6 — skill-driven scheduled check-ins. Independent
+            # gate from `proactive` (legacy 24h idle path) so ops can
+            # stop just the skill loop without disturbing legacy
+            # behavior. Symmetric with the proactive block above.
+            skill_due: list[dict] = []
+            if _ks("skill_proactive"):
+                try:
+                    skill_due = await proactive.find_due_skill_events(pool, limit=50)
+                    for row in skill_due:
+                        try:
+                            await proactive.send_skill_checkin(pool, state_row=row)
+                        except Exception:
+                            logger.debug(
+                                f"Skill checkin failed for user={row.get('user_id')} "
+                                f"influencer={row.get('influencer_id')}"
+                            )
+                except Exception:
+                    logger.exception("skill_proactive scan failed")
+
             # Nudges for recently idle conversations — gated separately
-            # so ops can disable just one of the two engagement systems.
+            # so ops can disable just one of the engagement systems.
             if not _ks("nudge"):
                 await asyncio.sleep(INTERVAL_SEC)
                 continue
@@ -332,7 +351,9 @@ async def _engagement_loop():
                     logger.debug(f"Nudge failed for conv {conv['id']}")
 
             logger.info(
-                f"Engagement loop: {len(inactive)} proactive, {len(recent_convs)} nudge candidates"
+                f"Engagement loop: {len(inactive)} proactive, "
+                f"{len(skill_due)} skill check-ins, "
+                f"{len(recent_convs)} nudge candidates"
             )
         except asyncio.CancelledError:
             return
