@@ -103,11 +103,20 @@ def compose(
     system_instructions: str,
     category: str | None = None,
     memories: dict | None = None,
+    skill_slug: str | None = None,
+    user_skill_state: dict | None = None,
 ) -> str:
-    """Compose a 4-layer Soul File prompt.
+    """Compose a Soul File prompt.
 
-    Returns a single string with all layers concatenated, suitable for passing
-    as the system prompt to Gemini or OpenRouter.
+    Layer order: GLOBAL → ARCHETYPE → SKILL → PER_INFLUENCER → USER_STATE → MEMORIES.
+    Skill (Phase 23) sits AFTER archetype so its overrides win on
+    conflict — LLMs weight later instructions more heavily. user_skill_state
+    sits after per-influencer so the user-specific plan grounds the bot's
+    response without polluting the archetype/skill identity. Memories
+    stay last so they remain "background facts" not "current task."
+
+    Returns a single string with all layers concatenated, suitable for
+    passing as the system prompt to Gemini or OpenRouter.
     """
     layers = [GLOBAL_RULES]
 
@@ -115,8 +124,40 @@ def compose(
     if archetype in ARCHETYPE_PROMPTS:
         layers.append(ARCHETYPE_PROMPTS[archetype])
 
+    # Phase 23: skill prompt block. Sits between archetype and the
+    # influencer's own system_instructions. NEVER edit GLOBAL_RULES to
+    # accommodate a skill — put carve-outs inside this block so other
+    # non-skilled influencers stay unaffected.
+    if skill_slug:
+        from services import skills as _skills
+
+        skill = _skills.get(skill_slug)
+        if skill and skill.get("system_prompt_block"):
+            layers.append(skill["system_prompt_block"])
+
     if system_instructions:
         layers.append(system_instructions)
+
+    # Phase 23: per-user plan layer. The structured state the skill
+    # captured during onboarding (setup) + the system mutated as the
+    # user engaged (runtime). Skill-aware bots reference this to ground
+    # advice in the user's actual goal + adherence notes.
+    if user_skill_state and isinstance(user_skill_state, dict):
+        plan_lines: list[str] = []
+        for half_key in ("setup", "runtime"):
+            half = user_skill_state.get(half_key) or {}
+            if not isinstance(half, dict):
+                continue
+            for k, v in half.items():
+                if v not in (None, "", [], {}):
+                    plan_lines.append(f"- {k}: {v}")
+        if plan_lines:
+            layers.append(
+                "**Your current plan for this user:**\n"
+                + "\n".join(plan_lines)
+                + "\n\n"
+                "Reference these naturally — don't recite the whole plan back."
+            )
 
     if memories:
         memory_lines = [f"- {k}: {v}" for k, v in memories.items() if v]
