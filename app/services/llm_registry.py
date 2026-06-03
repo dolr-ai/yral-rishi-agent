@@ -378,6 +378,61 @@ def current_config(process: str) -> dict[str, Any]:
     }
 
 
+async def _record_cost(
+    process: str,
+    result: LlmResponse,
+    *,
+    user_id: str | None = None,
+    conversation_id: str | None = None,
+    request_id: str | None = None,
+) -> None:
+    """Phase 25.5 — write one row to llm_costs per successful call.
+
+    Cost math: (input_tokens / 1000) * input_rate + (output_tokens / 1000)
+    * output_rate. Rates come from PROVIDERS at write time so historical
+    rows stay correct even if rates change later. cost_basis ('real' /
+    'synthetic') is read from the same provider entry.
+
+    Best-effort: if the table doesn't exist yet (Rule 9 — operator hasn't
+    applied migration 027) or any other DB error, log + continue. The
+    actual LLM dispatch already succeeded; failing to record cost MUST
+    NOT break the request."""
+    try:
+        from database import get_pool
+
+        provider_meta = PROVIDERS.get(result.provider) or {}
+        in_rate = float(provider_meta.get("cost_per_1k_input_usd") or 0)
+        out_rate = float(provider_meta.get("cost_per_1k_output_usd") or 0)
+        cost_basis = provider_meta.get("cost_basis") or "real"
+        cost_usd = (result.input_tokens / 1000.0) * in_rate + (
+            result.output_tokens / 1000.0
+        ) * out_rate
+
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO llm_costs (process, provider, model,
+                    input_tokens, output_tokens, cost_usd, cost_basis,
+                    user_id, conversation_id, request_id, latency_ms)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                """,
+                process,
+                result.provider,
+                result.model,
+                int(result.input_tokens),
+                int(result.output_tokens),
+                cost_usd,
+                cost_basis,
+                user_id,
+                conversation_id,
+                request_id,
+                float(result.latency_ms),
+            )
+    except Exception as e:
+        logger.warning("llm_registry: _record_cost skipped (%s)", e)
+
+
 async def call(
     *,
     process: str,
@@ -385,6 +440,9 @@ async def call(
     temperature: float | None = None,
     max_tokens: int | None = None,
     extra_body: dict | None = None,
+    user_id: str | None = None,
+    conversation_id: str | None = None,
+    request_id: str | None = None,
 ) -> LlmResponse:
     """Main dispatch — process name → provider's client.complete(...).
 
@@ -422,7 +480,7 @@ async def call(
 
             client_module = openai_compatible
 
-        return await client_module.complete(
+        result = await client_module.complete(
             provider=provider,
             base_url=provider_meta.get("base_url"),
             api_key=_resolve_api_key(provider),
@@ -433,6 +491,16 @@ async def call(
             extra_body=merged_extra or None,
             timeout=cfg.get("timeout_sec", 60.0),
         )
+        # Phase 25.5: best-effort cost record. _record_cost catches its
+        # own errors so a DB-write failure can't break the actual call.
+        await _record_cost(
+            process,
+            result,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            request_id=request_id,
+        )
+        return result
 
 
 async def call_stream(
@@ -442,13 +510,23 @@ async def call_stream(
     temperature: float | None = None,
     max_tokens: int | None = None,
     extra_body: dict | None = None,
+    user_id: str | None = None,
+    conversation_id: str | None = None,
+    request_id: str | None = None,
 ):
     """Streaming counterpart to call(). Yields (kind, value) tuples per
     the client.complete_stream contract — kind in {"delta", "usage", "done"}.
 
     Per-provider semaphore is acquired for the LIFETIME of the stream
     (until the consumer fully drains it) — that's stricter than call()
-    but matches how SSE streams hold a slot in real terms."""
+    but matches how SSE streams hold a slot in real terms.
+
+    Phase 25.5: tallies tokens from the 'usage' yield (Anshuman gist
+    quirk — usage arrives in the LAST chunk), then writes a cost row
+    after the stream completes. Best-effort, never breaks the stream."""
+    import json
+    import time
+
     cfg = _process_config(process)
     provider = cfg["provider"]
     provider_meta = PROVIDERS[provider]
@@ -461,6 +539,11 @@ async def call_stream(
     merged_extra = dict(provider_meta.get("default_extra_body") or {})
     if extra_body:
         merged_extra.update(extra_body)
+
+    started = time.monotonic()
+    input_tokens = 0
+    output_tokens = 0
+    text_buffer = ""
 
     sem = _semaphore(provider)
     async with sem:
@@ -484,13 +567,49 @@ async def call_stream(
             extra_body=merged_extra or None,
             timeout=cfg.get("timeout_sec", 60.0),
         ):
+            kind, value = chunk
+            if kind == "delta":
+                text_buffer += value
+            elif kind == "usage":
+                try:
+                    usage = json.loads(value)
+                    input_tokens = int(
+                        usage.get("prompt_tokens") or usage.get("promptTokenCount") or 0
+                    )
+                    output_tokens = int(
+                        usage.get("completion_tokens")
+                        or usage.get("candidatesTokenCount")
+                        or 0
+                    )
+                except (ValueError, TypeError):
+                    pass
             yield chunk
+
+        # Stream finished — record cost. Synthesize a minimal LlmResponse
+        # for _record_cost (it only reads provider/model/tokens/latency).
+        await _record_cost(
+            process,
+            LlmResponse(
+                content=text_buffer,
+                provider=provider,
+                model=cfg["model"],
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                latency_ms=(time.monotonic() - started) * 1000.0,
+            ),
+            user_id=user_id,
+            conversation_id=conversation_id,
+            request_id=request_id,
+        )
 
 
 async def call_transcribe(
     *,
     process: str,
     audio_url: str,
+    user_id: str | None = None,
+    conversation_id: str | None = None,
+    request_id: str | None = None,
 ) -> LlmResponse:
     """Audio modality dispatcher. Today only Gemini supports transcription
     (different endpoint shape from /chat/completions). The registry
@@ -510,7 +629,7 @@ async def call_transcribe(
         if provider == "gemini":
             from services.llm_clients import gemini as gemini_client
 
-            return await gemini_client.transcribe(
+            result = await gemini_client.transcribe(
                 provider=provider,
                 base_url=provider_meta.get("base_url"),
                 api_key=_resolve_api_key(provider),
@@ -518,6 +637,14 @@ async def call_transcribe(
                 audio_url=audio_url,
                 timeout=cfg.get("timeout_sec", 60.0),
             )
+            await _record_cost(
+                process,
+                result,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                request_id=request_id,
+            )
+            return result
         # Future: OpenAI Whisper-via-/v1/audio/transcriptions lands here.
         raise NotImplementedError(
             f"call_transcribe for provider={provider!r} not implemented"
