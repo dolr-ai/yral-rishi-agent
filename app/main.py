@@ -269,6 +269,13 @@ async def _engagement_loop():
             # send_proactive_message when either gate is off.
             from kill_switch import is_enabled as _ks
 
+            # Initialize so the summary log at the end of the iteration
+            # always has a defined `inactive`. Pre-fix: when proactive
+            # was OFF but nudge was ON (Tranche-A state during the
+            # 2026-06-03 internal_vllm rollout), `inactive` was undefined
+            # at the summary line → UnboundLocalError → engagement loop
+            # crashed on every tick before any LLM call.
+            inactive: list[dict] = []
             if _ks("proactive"):
                 # Proactive messages for 24h-idle conversations
                 inactive = await proactive.find_inactive_conversations(
