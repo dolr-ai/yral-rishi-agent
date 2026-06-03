@@ -22,8 +22,20 @@ import asyncio
 import logging
 import random
 
-from repositories import message_repo, influencer_repo
-from services import ai_client, push_notifications, websocket_manager, memory
+from repositories import (
+    conversation_repo,
+    influencer_repo,
+    message_repo,
+    skill_state_repo,
+)
+from services import (
+    ai_client,
+    memory,
+    push_notifications,
+    skills as skills_catalog,
+    soul_file,
+    websocket_manager,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -274,3 +286,215 @@ async def find_inactive_conversations(pool, hours: int = 24, limit: int = 100):
         limit,
     )
     return [dict(r) for r in rows]
+
+
+# ----- Phase 23.6 — skill-driven scheduled check-ins ---------------------
+# Symmetric with the legacy (conversation_idle) check-in path above:
+#   find_due_skill_events  → mirror of find_inactive_conversations
+#   generate_skill_checkin → mirror of generate_proactive_message
+#   send_skill_checkin     → mirror of send_proactive_message
+# The big differences:
+#   - Trigger source: user_skill_state.next_event_at (a clock), not the
+#     conversation table's updated_at age.
+#   - Prompt assembly uses the Soul File composer + skill_state's setup
+#     so the bot references primary_goal + preferred_times naturally.
+#   - We update next_event_at after delivery so the loop self-schedules
+#     the next fire.
+
+
+async def find_due_skill_events(pool, limit: int = 50) -> list[dict]:
+    """Return user_skill_state rows whose next_event_at has passed.
+    Thin pass-through to skill_state_repo so the engagement loop talks
+    to a single 'find_due_*' surface."""
+    return await skill_state_repo.list_due(pool, limit=limit)
+
+
+async def generate_skill_checkin(
+    pool,
+    *,
+    user_id: str,
+    influencer_id: str,
+    skill_def: dict,
+    state_row: dict,
+) -> str | None:
+    """Generate the check-in text for one due skill event.
+
+    Uses the same compose() + ai_client.generate_response surface as
+    chat.py so the persona, archetype, skill block, and user_skill_state
+    plan layer all show up in the system prompt — the bot speaks AS the
+    influencer, not as a generic check-in template. The user_message
+    is the skill's checkin_prompt (terse, one-line instruction)."""
+    inf = await influencer_repo.get_by_id(pool, influencer_id)
+    if not inf or inf.get("is_active") == "discontinued":
+        return None
+
+    memories = await memory.get_memories_for_prompt(pool, user_id, influencer_id)
+
+    system_instructions = soul_file.compose(
+        system_instructions=inf.get("system_instructions", "") or "",
+        category=inf.get("category"),
+        memories=memories,
+        skill_slug=inf.get("skill_slug"),
+        user_skill_state=state_row.get("state") or {},
+    )
+
+    checkin_prompt = skill_def.get("checkin_prompt") or (
+        "Send a short, time-appropriate check-in. Keep it under 25 words. "
+        "End with one question."
+    )
+
+    # Phase 23.6 — V1 routes through ai_client.generate_response which
+    # hardcodes process=user_chat_main. The nutrition_coach_chat process
+    # exists in the registry (PR #263) for future dashboard accounting;
+    # promoting check-ins onto it needs a small generate_response
+    # kwarg, which we'll add after Rishi's Motorola test of the V1
+    # rhythm. Cost still tracks per-call; just under the chat bucket.
+    llm_result = await ai_client.generate_response(
+        system_instructions=system_instructions,
+        conversation_history=[],
+        user_message=checkin_prompt,
+        is_nsfw=inf.get("is_nsfw", False),
+        user_id=user_id,
+        conversation_id=None,
+        archetype=inf.get("category"),
+    )
+
+    if llm_result.is_fallback or llm_result.error_code:
+        logger.info(
+            "skill checkin: LLM fallback/error (user=%s influencer=%s code=%s)",
+            user_id,
+            influencer_id,
+            llm_result.error_code,
+        )
+        return None
+
+    return llm_result.content
+
+
+async def send_skill_checkin(pool, *, state_row: dict) -> dict | None:
+    """End-to-end delivery for one due skill_state row.
+
+    1. Resolve skill_def + (re)open the (user, influencer) conversation.
+    2. Generate the check-in via the composer.
+    3. Persist as an assistant message + WS broadcast + push.
+    4. Advance next_event_at so the loop self-schedules.
+
+    Returns the persisted message dict on success, None when the row
+    was skipped (skill missing, conversation create failed, LLM
+    fallback, etc.). All failures are swallowed to logging — the loop
+    moves on to the next due row."""
+    user_id = state_row["user_id"]
+    influencer_id = state_row["influencer_id"]
+    skill_slug = state_row["skill_slug"]
+
+    skill_def = skills_catalog.get(skill_slug)
+    if not skill_def:
+        logger.warning(
+            "skill checkin: unknown skill_slug=%s on state row (user=%s influencer=%s) — skipping",
+            skill_slug,
+            user_id,
+            influencer_id,
+        )
+        return None
+
+    # The user_skill_state row is per-(user, influencer), not per-
+    # conversation. Pick up the existing AI-chat conversation if any
+    # — we never create one here so we don't surprise the user with
+    # a new thread they didn't open.
+    conv = await conversation_repo.get_existing(pool, user_id, influencer_id)
+    if not conv:
+        logger.info(
+            "skill checkin: no conversation yet for user=%s influencer=%s — skipping",
+            user_id,
+            influencer_id,
+        )
+        # Still advance the schedule so we don't hot-loop on this row.
+        from datetime import datetime as _dt
+        from datetime import timedelta as _td
+        from datetime import timezone as _tz
+
+        cadence = int(skill_def.get("default_cadence_hours") or 6)
+        await skill_state_repo.mark_event_fired(
+            pool,
+            user_id=user_id,
+            influencer_id=influencer_id,
+            next_event_at=_dt.now(_tz.utc) + _td(hours=cadence),
+        )
+        return None
+
+    content = await generate_skill_checkin(
+        pool,
+        user_id=user_id,
+        influencer_id=influencer_id,
+        skill_def=skill_def,
+        state_row=state_row,
+    )
+    if not content:
+        return None
+
+    msg = await message_repo.create(
+        pool,
+        conversation_id=conv["id"],
+        role="assistant",
+        content=content,
+        message_type="text",
+        sender_id=influencer_id,
+        is_proactive=True,
+    )
+
+    inf = await influencer_repo.get_by_id(pool, influencer_id)
+    display_name = inf.get("display_name", "AI") if inf else "AI"
+    unread_count = await message_repo.count_unread(pool, conv["id"], user_id)
+
+    asyncio.create_task(
+        websocket_manager.broadcast_new_message(
+            user_id=user_id,
+            conversation_id=conv["id"],
+            message={
+                "id": msg["id"],
+                "conversation_id": conv["id"],
+                "role": "assistant",
+                "content": content,
+                "message_type": "text",
+                "created_at": msg["created_at"].isoformat()
+                if hasattr(msg["created_at"], "isoformat")
+                else str(msg["created_at"]),
+            },
+            influencer={
+                "id": influencer_id,
+                "display_name": display_name,
+                "avatar_url": inf.get("avatar_url") if inf else None,
+                "is_online": True,
+            },
+            unread_count=unread_count,
+        )
+    )
+
+    # Push pipeline currently routes by message type only (chat_message);
+    # adding a skill-specific trigger_type is a follow-up once mobile
+    # has the bucket UI to differentiate.
+    asyncio.create_task(
+        push_notifications.send_new_message_notification(
+            user_id=user_id,
+            influencer_name=display_name,
+            message_content=content,
+            conversation_id=conv["id"],
+            influencer_id=influencer_id,
+        )
+    )
+
+    # Advance the schedule. V1: NOW() + default_cadence_hours.
+    # Refinement (using preferred_times to clock-align the next fire)
+    # lands when the V1 rhythm is validated by Rishi's Motorola test.
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
+    from datetime import timezone as _tz
+
+    cadence = int(skill_def.get("default_cadence_hours") or 6)
+    await skill_state_repo.mark_event_fired(
+        pool,
+        user_id=user_id,
+        influencer_id=influencer_id,
+        next_event_at=_dt.now(_tz.utc) + _td(hours=cadence),
+    )
+    return msg

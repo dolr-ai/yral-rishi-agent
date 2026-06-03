@@ -45,6 +45,11 @@ _PER_LOOP_KEYS = {
     "integrity": "ENABLE_INTEGRITY_LOOP",
     "email_digest": "ENABLE_EMAIL_DIGEST",
     "etl": "ENABLE_ETL_LOOP",
+    # Phase 23.6 — scheduled check-in loop for skilled influencers
+    # (nutrition_coach etc.). Symmetric with the proactive/nudge gates
+    # so ops can stop just the skill side without disturbing legacy
+    # 24h proactive or 5-min nudges.
+    "skill_proactive": "ENABLE_SKILL_PROACTIVE_LOOP",
 }
 
 
