@@ -51,6 +51,11 @@ PROCESS_NAMES: tuple[str, ...] = (
     "character_generator",
     "ai_influencer_wizard_simulation",
     "soul_file_recommendations",
+    # Phase 23: skill-aware chat path. Defaults to gemini (Rishi's call
+    # — TTFT matters for the user-facing coach experience). Can be
+    # flipped to internal_vllm via the 25.9 dashboard once latency
+    # under concurrent load improves.
+    "nutrition_coach_chat",
 )
 
 
@@ -196,6 +201,15 @@ LLM_DEFAULTS: dict[str, dict[str, Any]] = {
         "provider": "gemini",
         "model": "gemini-2.5-flash",
         "timeout_sec": 120.0,
+    },
+    "nutrition_coach_chat": {
+        # Phase 23: defaults to gemini for the user-facing nutrition_coach
+        # path (chat hot path latency matters). Rishi can flip to
+        # internal_vllm via /admin/llm-routing once internal_vllm's
+        # under-load TTFT improves.
+        "provider": "gemini",
+        "model": "gemini-2.5-flash",
+        "timeout_sec": 60.0,
     },
 }
 
