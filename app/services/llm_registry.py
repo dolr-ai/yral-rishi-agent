@@ -51,11 +51,14 @@ PROCESS_NAMES: tuple[str, ...] = (
     "character_generator",
     "ai_influencer_wizard_simulation",
     "soul_file_recommendations",
-    # Phase 23: skill-aware chat path. Defaults to gemini (Rishi's call
-    # — TTFT matters for the user-facing coach experience). Can be
-    # flipped to internal_vllm via the 25.9 dashboard once latency
-    # under concurrent load improves.
-    "nutrition_coach_chat",
+    # Phase 23: shared chat path for ALL skilled influencers. One process
+    # name for the entire skills catalog (nutrition_coach, english_coach,
+    # daily_briefing, travel_advisor, real_estate_advisor, …) — adding a
+    # new skill is a one-line dict entry in services/skills.py, NOT a
+    # new process + new routing knob. Per-skill specialization (different
+    # provider per skill) can come later via PATCH /admin/llm-routing if
+    # cost or latency profiles diverge enough to justify it.
+    "skill_chat",
 )
 
 
@@ -202,11 +205,14 @@ LLM_DEFAULTS: dict[str, dict[str, Any]] = {
         "model": "gemini-2.5-flash",
         "timeout_sec": 120.0,
     },
-    "nutrition_coach_chat": {
-        # Phase 23: defaults to gemini for the user-facing nutrition_coach
-        # path (chat hot path latency matters). Rishi can flip to
-        # internal_vllm via /admin/llm-routing once internal_vllm's
-        # under-load TTFT improves.
+    "skill_chat": {
+        # Phase 23: shared default for every skilled-influencer chat
+        # (and proactive check-in) regardless of which skill —
+        # nutrition_coach, english_coach, daily_briefing, etc. all
+        # land here. Defaults to gemini (creator + user-facing, TTFT
+        # matters — same reasoning as soul_file_coach). Flip to
+        # internal_vllm or split per-skill via /admin/llm-routing if
+        # one skill's cost/latency profile demands it.
         "provider": "gemini",
         "model": "gemini-2.5-flash",
         "timeout_sec": 60.0,
