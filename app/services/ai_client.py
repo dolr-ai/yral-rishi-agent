@@ -4,7 +4,6 @@ import logging
 import time
 
 import httpx
-from openai import AsyncOpenAI
 
 import config
 from services import langfuse_tracing
@@ -27,25 +26,17 @@ logger = logging.getLogger(__name__)
 GEMINI_NATIVE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
 
-_openrouter_client: AsyncOpenAI | None = None
 _MAX_IMAGE_BYTES = 5 * 1024 * 1024
 _IMAGE_DOWNLOAD_TIMEOUT = 5.0
 
 
-def get_openrouter_client() -> AsyncOpenAI | None:
-    global _openrouter_client
-    if _openrouter_client is None:
-        if not config.OPENROUTER_API_KEY:
-            return None
-        _openrouter_client = AsyncOpenAI(
-            api_key=config.OPENROUTER_API_KEY,
-            base_url=config.OPENROUTER_BASE_URL,
-            default_headers={
-                "HTTP-Referer": "https://yral.com",
-                "X-Title": "Yral AI Chat",
-            },
-        )
-    return _openrouter_client
+# Phase 25.10 (2026-06-03): removed orphan helpers — get_openrouter_client,
+# _call_gemini, _stream_gemini, _build_gemini_contents, extract_memories,
+# MEMORY_EXTRACTION_PROMPT. All 0-caller after Phase 25.3b extraction.
+# NSFW path now flows through llm_registry.call(process="user_chat_main_nsfw")
+# → openai_compatible client. Memory extraction via memory.py:extract_and_store
+# → llm_registry.call(process="memory_extraction") with full cost + outcome
+# tracking. See feedback_list_vs_detail_endpoint_gap.md.
 
 
 async def _fetch_image_bytes_and_mime(url: str) -> tuple[str, bytes] | tuple[None, str]:
@@ -153,232 +144,6 @@ async def _fetch_and_encode_image_openai(url: str) -> dict:
         return {"type": "text", "text": f"[image attachment — {data}]"}
     b64 = base64.b64encode(data).decode("ascii")
     return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
-
-
-async def _build_gemini_contents(
-    system_instructions: str,
-    conversation_history: list[dict],
-    user_message: str,
-    media_urls: list[str] | None = None,
-) -> tuple[dict, list]:
-    import asyncio
-
-    system_instruction = {"parts": [{"text": system_instructions}]}
-
-    history_len = len(conversation_history)
-    window = config.IMAGE_HISTORY_WINDOW
-    recent_start = max(0, history_len - window)
-
-    contents = []
-    image_tasks = []
-
-    for i, msg in enumerate(conversation_history):
-        role = msg.get("role", "user")
-        content = msg.get("content", "")
-        gemini_role = "model" if role == "assistant" else "user"
-
-        parts = []
-        if content:
-            parts.append({"text": content})
-
-        if role == "user":
-            msg_media = msg.get("media_urls")
-            if isinstance(msg_media, str):
-                try:
-                    msg_media = json.loads(msg_media)
-                except (json.JSONDecodeError, TypeError):
-                    msg_media = None
-
-            if msg_media:
-                if i >= recent_start:
-                    for url in msg_media[:5]:
-                        placeholder_idx = len(parts)
-                        parts.append(None)
-                        image_tasks.append(
-                            (
-                                len(contents),
-                                placeholder_idx,
-                                _fetch_and_encode_image(url),
-                            )
-                        )
-                else:
-                    parts.append(
-                        {
-                            "text": f"[User sent {len(msg_media)} image(s) — see AI's earlier response for description]"
-                        }
-                    )
-
-        if parts:
-            contents.append({"role": gemini_role, "parts": parts})
-
-    user_parts = []
-    if user_message:
-        user_parts.append({"text": user_message})
-    if media_urls:
-        for url in media_urls[:5]:
-            placeholder_idx = len(user_parts)
-            user_parts.append(None)
-            image_tasks.append(
-                (len(contents), placeholder_idx, _fetch_and_encode_image(url))
-            )
-    if user_parts:
-        contents.append({"role": "user", "parts": user_parts})
-
-    if image_tasks:
-        coroutines = [task[2] for task in image_tasks]
-        results = await asyncio.gather(*coroutines, return_exceptions=True)
-
-        for (content_idx, part_idx, _), result in zip(image_tasks, results):
-            if isinstance(result, Exception):
-                contents[content_idx]["parts"][part_idx] = {
-                    "text": "[image — failed to load]"
-                }
-            else:
-                contents[content_idx]["parts"][part_idx] = result
-
-        for entry in contents:
-            entry["parts"] = [p for p in entry["parts"] if p is not None]
-
-    return system_instruction, contents
-
-
-async def _call_gemini(
-    contents: list,
-    system_instruction: dict | None = None,
-    temperature: float = 0.7,
-    max_tokens: int = 2048,
-    safety_settings: list[dict] | None = None,
-) -> tuple[str, int]:
-    url = f"{GEMINI_NATIVE_URL}/models/{config.GEMINI_MODEL}:generateContent"
-
-    payload = {
-        "contents": contents,
-        "generationConfig": {
-            "temperature": temperature,
-            "maxOutputTokens": max_tokens,
-        },
-    }
-    if system_instruction:
-        payload["systemInstruction"] = system_instruction
-    if safety_settings:
-        payload["safetySettings"] = safety_settings
-
-    async with httpx.AsyncClient(timeout=config.GEMINI_TIMEOUT) as http:
-        response = await http.post(
-            url,
-            json=payload,
-            params={"key": config.GEMINI_API_KEY},
-            timeout=config.GEMINI_TIMEOUT,
-        )
-        response.raise_for_status()
-
-    data = response.json()
-
-    candidates = data.get("candidates", [])
-    if not candidates:
-        feedback = data.get("promptFeedback") or {}
-        block_reason = feedback.get("blockReason", "UNKNOWN")
-        # Phase 3.8: explicit block classification so mobile shows "rephrase" UX.
-        raise LlmBlockedError(f"blockReason={block_reason}")
-
-    parts = candidates[0].get("content", {}).get("parts", [])
-    response_text = ""
-    for part in parts:
-        if "text" in part:
-            response_text += part["text"]
-    response_text = response_text.strip()
-
-    if not response_text:
-        finish_reason = candidates[0].get("finishReason", "UNKNOWN")
-        # SAFETY / RECITATION / PROHIBITED_CONTENT all mean "we filtered this."
-        # MAX_TOKENS / OTHER are also empty but not policy blocks; treat them as
-        # transient since retry-with-shorter-context could plausibly work.
-        if finish_reason in {"SAFETY", "RECITATION", "PROHIBITED_CONTENT", "BLOCKLIST"}:
-            raise LlmBlockedError(f"finishReason={finish_reason}")
-        raise ValueError(
-            f"Gemini returned candidate with no text (finishReason={finish_reason})"
-        )
-
-    usage = data.get("usageMetadata", {})
-    token_count = usage.get("candidatesTokenCount", 0)
-    if not token_count and response_text:
-        token_count = int(len(response_text) / 4)
-
-    return response_text, token_count
-
-
-async def _stream_gemini(
-    contents: list,
-    system_instruction: dict | None = None,
-    temperature: float = 0.7,
-    max_tokens: int = 2048,
-):
-    """Phase 2.7 (SSE) — yields text chunks as they arrive from Gemini.
-
-    Uses Gemini's :streamGenerateContent endpoint with alt=sse, which emits
-    `data: {json}\\n\\n` lines per chunk. We parse each line and yield the
-    text fragment. Final yield is a tuple ('__DONE__', token_count). On a
-    safety/policy block, raises LlmBlockedError exactly like _call_gemini
-    so the route's error handling shape stays consistent.
-    """
-    url = f"{GEMINI_NATIVE_URL}/models/{config.GEMINI_MODEL}:streamGenerateContent"
-    payload = {
-        "contents": contents,
-        "generationConfig": {
-            "temperature": temperature,
-            "maxOutputTokens": max_tokens,
-        },
-    }
-    if system_instruction:
-        payload["systemInstruction"] = system_instruction
-
-    total_text = ""
-    token_count = 0
-    finish_reason: str | None = None
-    async with httpx.AsyncClient(timeout=config.GEMINI_TIMEOUT) as http:
-        async with http.stream(
-            "POST",
-            url,
-            json=payload,
-            params={"key": config.GEMINI_API_KEY, "alt": "sse"},
-            timeout=config.GEMINI_TIMEOUT,
-        ) as response:
-            response.raise_for_status()
-            async for raw_line in response.aiter_lines():
-                if not raw_line or not raw_line.startswith("data:"):
-                    continue
-                data_str = raw_line[len("data:") :].strip()
-                if not data_str:
-                    continue
-                try:
-                    obj = json.loads(data_str)
-                except json.JSONDecodeError:
-                    continue
-                # Capture block reasons surfaced in promptFeedback
-                feedback = obj.get("promptFeedback") or {}
-                if feedback.get("blockReason"):
-                    raise LlmBlockedError(f"blockReason={feedback['blockReason']}")
-                for candidate in obj.get("candidates", []) or []:
-                    finish_reason = candidate.get("finishReason") or finish_reason
-                    for part in candidate.get("content", {}).get("parts", []) or []:
-                        chunk = part.get("text")
-                        if chunk:
-                            total_text += chunk
-                            yield ("text", chunk)
-                usage = obj.get("usageMetadata") or {}
-                if usage.get("candidatesTokenCount"):
-                    token_count = usage["candidatesTokenCount"]
-
-    if not total_text.strip():
-        if finish_reason in {"SAFETY", "RECITATION", "PROHIBITED_CONTENT", "BLOCKLIST"}:
-            raise LlmBlockedError(f"finishReason={finish_reason}")
-        raise ValueError(
-            f"Gemini stream returned no text (finishReason={finish_reason})"
-        )
-
-    if not token_count and total_text:
-        token_count = int(len(total_text) / 4)
-    yield ("done", {"text": total_text, "token_count": token_count})
 
 
 async def _build_user_content(
@@ -699,101 +464,6 @@ async def generate_response(
             is_fallback=True,
             error_code="TRANSIENT",
         )
-
-
-MEMORY_EXTRACTION_PROMPT = """Extract factual information about the user from this conversation exchange.
-
-CATEGORIES (use these as key prefixes):
-- identity: name, age, gender, location, occupation, language
-- preferences: favorite_food, hobbies, interests, music_taste, style
-- goals: fitness_goal, career_goal, learning_goal, relationship_goal
-- context: relationship_status, family, pets, living_situation
-- emotional: current_mood, stress_level, recent_events
-
-Recent exchange:
-User: {user_message}
-Assistant: {assistant_response}
-
-Current memories:
-{memories_text}
-
-Rules:
-- Return ONLY a JSON object with key-value pairs
-- Use lowercase keys with underscores
-- Only extract EXPLICIT facts the user stated, not inferences
-- If the user corrects a previous fact, use the new value
-- If no new information, return empty object {{}}
-- Keep values concise (under 50 chars each)
-Format: {{"identity_name": "Rahul", "goals_fitness": "lose 10kg by August"}}"""
-
-
-async def extract_memories(
-    user_message: str,
-    assistant_response: str,
-    existing_memories: dict,
-    is_nsfw: bool = False,
-) -> dict:
-    if existing_memories:
-        memories_text = "\n".join(f"- {k}: {v}" for k, v in existing_memories.items())
-    else:
-        memories_text = "(none yet)"
-
-    prompt = MEMORY_EXTRACTION_PROMPT.format(
-        user_message=user_message,
-        assistant_response=assistant_response,
-        memories_text=memories_text,
-    )
-
-    try:
-        if is_nsfw:
-            client = get_openrouter_client()
-            if client:
-                response = await client.chat.completions.create(
-                    model=config.OPENROUTER_MODEL,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "You are a helpful assistant that returns valid JSON.",
-                        },
-                        {"role": "user", "content": prompt},
-                    ],
-                    max_tokens=1024,
-                    temperature=0.1,
-                )
-                response_text = response.choices[0].message.content or ""
-                start = response_text.find("{")
-                end = response_text.rfind("}") + 1
-                if start >= 0 and end > start:
-                    new_memories = json.loads(response_text[start:end])
-                    if isinstance(new_memories, dict):
-                        return {**existing_memories, **new_memories}
-                return existing_memories
-
-        if not config.GEMINI_API_KEY:
-            return existing_memories
-
-        contents = [{"role": "user", "parts": [{"text": prompt}]}]
-        system_instruction = {
-            "parts": [{"text": "You are a helpful assistant that returns valid JSON."}]
-        }
-
-        response_text, _ = await _call_gemini(
-            contents=contents,
-            system_instruction=system_instruction,
-            temperature=0.1,
-            max_tokens=1024,
-        )
-
-        start = response_text.find("{")
-        end = response_text.rfind("}") + 1
-        if start >= 0 and end > start:
-            new_memories = json.loads(response_text[start:end])
-            if isinstance(new_memories, dict):
-                return {**existing_memories, **new_memories}
-        return existing_memories
-    except Exception as e:
-        logger.warning(f"Memory extraction failed (non-fatal): {e}")
-        return existing_memories
 
 
 def _is_safe_url(url: str) -> bool:

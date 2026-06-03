@@ -12,9 +12,9 @@ classifications, generationConfig sub-object). Adapting at the client
 level is cleaner than at the registry level — registry stays
 provider-agnostic.
 
-The legacy `ai_client._call_gemini` keeps its existing surface (Gemini
-native `contents` input) until 25.3b finishes the chat-orchestration
-migration. Direct callers migrate to llm_registry.call() in this PR.
+Phase 25.10 (2026-06-03): the legacy `ai_client._call_gemini`,
+`_stream_gemini`, and `_build_gemini_contents` were 0-caller post-25.3b
+and have been removed. All Gemini traffic now flows through this module.
 """
 
 import logging
