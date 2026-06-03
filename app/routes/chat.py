@@ -7,7 +7,12 @@ from fastapi import APIRouter, HTTPException, Request, Query
 
 from database import get_pool
 from auth import get_current_user
-from repositories import influencer_repo, conversation_repo, message_repo
+from repositories import (
+    influencer_repo,
+    conversation_repo,
+    message_repo,
+    skill_state_repo,
+)
 import httpx
 
 from services import (
@@ -17,6 +22,8 @@ from services import (
     memory,
     push_notifications,
     session_memory,
+    skill_parser,
+    skills as skills_catalog,
     soul_file,
     websocket_manager,
     storage,
@@ -27,6 +34,119 @@ from models import SendMessageResponse, ChatMessage, AssistantError
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/chat", tags=["Chat v1 — AI"])
+
+
+# Phase 23.5 — skill onboarding hook. Skill plumbing wraps the existing
+# compose+LLM flow. Failures here never bubble up: skill_slug becomes None
+# and the request falls through to the normal non-skilled flow.
+async def _prepare_skill_layer(
+    pool, inf: dict, user_id: str, influencer_id: str
+) -> dict:
+    """Return everything chat.py needs to wire the skill into compose()
+    + decide whether to fire the onboarding prompt this turn.
+
+    Keys returned:
+      - skill_slug:           None if influencer has no skill (most influencers)
+      - skill_def:            the SKILLS catalog dict for this slug, or None
+      - user_skill_state_row: existing user_skill_state row, or None
+      - onboarding_mode:      True when state row is missing (first turn)
+      - instructions_addendum: onboarding_prompt text to append to the
+                               influencer's system_instructions during
+                               onboarding mode; "" otherwise
+    """
+    result = {
+        "skill_slug": None,
+        "skill_def": None,
+        "user_skill_state_row": None,
+        "onboarding_mode": False,
+        "instructions_addendum": "",
+    }
+    slug = inf.get("skill_slug")
+    if not slug:
+        return result
+    try:
+        skill_def = skills_catalog.get(slug)
+        if not skill_def:
+            return result
+        row = await skill_state_repo.get(pool, user_id, influencer_id)
+        result["skill_slug"] = slug
+        result["skill_def"] = skill_def
+        result["user_skill_state_row"] = row
+        if row is None:
+            result["onboarding_mode"] = True
+            onboarding_prompt = skill_def.get("onboarding_prompt") or ""
+            if onboarding_prompt:
+                result["instructions_addendum"] = "\n\n" + onboarding_prompt
+    except Exception:
+        logger.exception(
+            "skill layer prep failed for influencer %s — falling back to non-skilled flow",
+            influencer_id,
+        )
+        return {
+            "skill_slug": None,
+            "skill_def": None,
+            "user_skill_state_row": None,
+            "onboarding_mode": False,
+            "instructions_addendum": "",
+        }
+    return result
+
+
+async def _persist_parsed_skill_state(
+    pool,
+    *,
+    user_id: str,
+    influencer_id: str,
+    skill_slug: str,
+    skill_def: dict,
+    parsed_state: dict,
+) -> None:
+    """Write the user_skill_state row after a successful onboarding parse.
+
+    Schedules next_event_at at NOW() + skill's default_cadence_hours so
+    the proactive loop (Phase 23.6) picks it up. If the setup half is
+    missing keys the skill marked as required, status falls to
+    'onboarding_partial' and the row is saved WITHOUT a next_event_at
+    — the next conversational turn picks up the missing pieces."""
+    try:
+        from datetime import datetime as _dt
+        from datetime import timedelta as _td
+        from datetime import timezone as _tz
+
+        setup_schema = (skill_def.get("state_schema") or {}).get("setup") or {}
+        required = setup_schema.get("required") or []
+        setup = parsed_state.get("setup") or {}
+        missing = [k for k in required if not setup.get(k)]
+
+        if missing:
+            status = "onboarding_partial"
+            next_at = None
+            logger.info(
+                "skill onboarding partial (missing=%s) for user=%s influencer=%s",
+                missing,
+                user_id,
+                influencer_id,
+            )
+        else:
+            status = "active"
+            cadence = int(skill_def.get("default_cadence_hours") or 6)
+            next_at = _dt.now(_tz.utc) + _td(hours=cadence)
+
+        await skill_state_repo.upsert(
+            pool,
+            user_id=user_id,
+            influencer_id=influencer_id,
+            skill_slug=skill_slug,
+            state=parsed_state,
+            next_event_at=next_at,
+            status=status,
+        )
+    except Exception:
+        logger.exception(
+            "skill state persist failed for user=%s influencer=%s",
+            user_id,
+            influencer_id,
+        )
 
 
 def _format_message(msg: dict) -> dict:
@@ -546,10 +666,22 @@ async def send_message(
             chosen_variant_label = "b"
             chosen_instructions = _variant_b["system_instructions"]
 
+    # Phase 23.5 — skill layer prep. If this influencer has a skill_slug
+    # AND there's no user_skill_state row yet, this turn fires onboarding:
+    # the skill's onboarding_prompt is appended so the LLM emits a
+    # <skill_state>{...}</skill_state> hidden block at the end of its reply.
+    skill_ctx = await _prepare_skill_layer(pool, inf, user_id, influencer_id)
+
     system_instructions = soul_file.compose(
-        system_instructions=chosen_instructions,
+        system_instructions=chosen_instructions + skill_ctx["instructions_addendum"],
         category=inf.get("category"),
         memories=memories,
+        skill_slug=skill_ctx["skill_slug"],
+        user_skill_state=(
+            (skill_ctx["user_skill_state_row"] or {}).get("state")
+            if skill_ctx["user_skill_state_row"]
+            else None
+        ),
     )
 
     # Typing indicator START
@@ -594,6 +726,28 @@ async def send_message(
                 retryable=llm_result.error_code in ai_client.RETRYABLE_CODES,
             ),
         )
+
+    # Phase 23.5 — onboarding-mode response post-processing. Always strip
+    # the <skill_state> block from the persisted/returned text (even when
+    # parsing failed) so mobile never sees the literal tag. Persist the
+    # row when parse succeeded.
+    if skill_ctx["skill_slug"] and llm_result.content:
+        if "<skill_state>" in llm_result.content:
+            from dataclasses import replace as _dc_replace
+
+            parsed_state, cleaned = skill_parser.parse_skill_state_block(
+                llm_result.content
+            )
+            llm_result = _dc_replace(llm_result, content=cleaned)
+            if parsed_state and skill_ctx["onboarding_mode"]:
+                await _persist_parsed_skill_state(
+                    pool,
+                    user_id=user_id,
+                    influencer_id=influencer_id,
+                    skill_slug=skill_ctx["skill_slug"],
+                    skill_def=skill_ctx["skill_def"],
+                    parsed_state=parsed_state,
+                )
 
     # Save AI response
     assistant_msg = await message_repo.create(
@@ -751,10 +905,26 @@ async def send_message_stream(
             memories = await memory.get_memories_for_prompt(
                 pool, user_id, influencer_id, conversation_id=conversation_id
             )
+
+            # Phase 23.5 — skill layer for the streaming path.
+            skill_ctx = await _prepare_skill_layer(pool, inf, user_id, influencer_id)
+            stream_filter = (
+                skill_parser.SkillStateStreamFilter()
+                if skill_ctx["skill_slug"]
+                else None
+            )
+
             system_instructions = soul_file.compose(
-                system_instructions=inf.get("system_instructions", ""),
+                system_instructions=inf.get("system_instructions", "")
+                + skill_ctx["instructions_addendum"],
                 category=inf.get("category"),
                 memories=memories,
+                skill_slug=skill_ctx["skill_slug"],
+                user_skill_state=(
+                    (skill_ctx["user_skill_state_row"] or {}).get("state")
+                    if skill_ctx["user_skill_state_row"]
+                    else None
+                ),
             )
 
             full_text = ""
@@ -771,7 +941,15 @@ async def send_message_stream(
             ):
                 if kind == "text":
                     full_text += value
-                    yield _sse_event("token", {"text": value})
+                    if stream_filter is not None:
+                        # Suppress the <skill_state> block + any tail bytes
+                        # that could be its start. Mobile must never see
+                        # the literal tag.
+                        emit = stream_filter.feed(value)
+                        if emit:
+                            yield _sse_event("token", {"text": emit})
+                    else:
+                        yield _sse_event("token", {"text": value})
                 elif kind == "done":
                     llm_result_obj = value
                 elif kind == "error":
@@ -785,6 +963,25 @@ async def send_message_stream(
                         },
                     )
                     return
+
+            # Phase 23.5 — drain the filter's held-back tail. Also strip
+            # the block from the persisted text and write skill state
+            # when this turn was onboarding.
+            if stream_filter is not None:
+                tail = stream_filter.flush()
+                if tail:
+                    yield _sse_event("token", {"text": tail})
+                parsed_state, persisted_text = stream_filter.parse()
+                full_text = persisted_text
+                if parsed_state and skill_ctx["onboarding_mode"]:
+                    await _persist_parsed_skill_state(
+                        pool,
+                        user_id=user_id,
+                        influencer_id=influencer_id,
+                        skill_slug=skill_ctx["skill_slug"],
+                        skill_def=skill_ctx["skill_def"],
+                        parsed_state=parsed_state,
+                    )
 
             if not llm_result_obj or not full_text.strip():
                 yield _sse_event(

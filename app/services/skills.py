@@ -77,24 +77,28 @@ SKILLS: dict[str, dict] = {
             "emit what you got — partial setup is OK. Do NOT mention the "
             "hidden block to the user; mobile strips it before render."
         ),
-        # state_schema is DOCUMENTATION — JSONB stays flexible. Lists
-        # the canonical keys the onboarding parser populates (setup) and
-        # the keys the proactive/chat loops mutate (runtime). Following
-        # the split keeps the JSONB from becoming a junk drawer across
-        # the broader skill catalog.
+        # state_schema is DOCUMENTATION — JSONB stays flexible. The
+        # setup half has required + optional sub-lists so the onboarding
+        # persist path can decide between status='active' (all required
+        # keys parsed) vs 'onboarding_partial' (some missing — ask for
+        # them on the next turn). runtime keys are only-optional by
+        # convention (the system mutates them as engagement happens).
         "state_schema": {
-            "setup": [
-                "primary_goal",
-                "diet_type",
-                "target_weight",
-                "current_weight",
-                "preferred_times",
-            ],
-            "runtime": [
-                "last_missed_checkin_at",
-                "last_weekly_summary_at",
-                "current_adherence_notes",
-            ],
+            "setup": {
+                # If any required key is missing from the parsed
+                # <skill_state>, the row writes as 'onboarding_partial'
+                # and next_event_at stays NULL. The next turn picks up
+                # the gap conversationally.
+                "required": ["primary_goal", "preferred_times"],
+                "optional": ["diet_type", "target_weight", "current_weight"],
+            },
+            "runtime": {
+                "optional": [
+                    "last_missed_checkin_at",
+                    "last_weekly_summary_at",
+                    "current_adherence_notes",
+                ],
+            },
         },
         # Soft compatibility hint — UI uses this to filter the
         # archetype dropdown when a creator assigns a skill. Runtime
