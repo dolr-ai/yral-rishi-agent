@@ -72,11 +72,12 @@ def test_record_cost_helper_exists():
 def test_record_cost_reads_rates_from_PROVIDERS():
     """Per-1k-token rates live in PROVIDERS dict, NOT hardcoded in the
     insert. That keeps internal_vllm's synthetic $0.00005/1k tunable
-    without a code change."""
+    without a code change. (25.5b: cost math moved into _record_outcome;
+    _record_cost is now a thin shim that delegates.)"""
     src = _read("app/services/llm_registry.py")
-    rec_fn_start = src.find("async def _record_cost(")
-    rec_fn_body = src[rec_fn_start : rec_fn_start + 2500]
-    assert "PROVIDERS.get(result.provider)" in rec_fn_body
+    rec_fn_start = src.find("async def _record_outcome(")
+    rec_fn_body = src[rec_fn_start : rec_fn_start + 3500]
+    assert "PROVIDERS.get(provider)" in rec_fn_body
     assert "cost_per_1k_input_usd" in rec_fn_body
     assert "cost_per_1k_output_usd" in rec_fn_body
 
@@ -86,8 +87,8 @@ def test_record_cost_splits_real_vs_synthetic_via_cost_basis_column():
     compute share" split. Pin that the helper reads cost_basis from
     PROVIDERS and writes it as a column."""
     src = _read("app/services/llm_registry.py")
-    rec_fn_start = src.find("async def _record_cost(")
-    rec_fn_body = src[rec_fn_start : rec_fn_start + 2500]
+    rec_fn_start = src.find("async def _record_outcome(")
+    rec_fn_body = src[rec_fn_start : rec_fn_start + 3500]
     assert "cost_basis" in rec_fn_body
 
 
@@ -96,8 +97,8 @@ def test_record_cost_is_best_effort_swallows_db_errors():
     cost recording MUST NOT break the LLM call. Pin the try/except
     pattern + the warning log."""
     src = _read("app/services/llm_registry.py")
-    rec_fn_start = src.find("async def _record_cost(")
-    rec_fn_body = src[rec_fn_start : rec_fn_start + 2500]
+    rec_fn_start = src.find("async def _record_outcome(")
+    rec_fn_body = src[rec_fn_start : rec_fn_start + 3500]
     assert "try:" in rec_fn_body
     assert "except Exception" in rec_fn_body
     assert "logger.warning" in rec_fn_body

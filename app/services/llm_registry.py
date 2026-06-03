@@ -378,6 +378,108 @@ def current_config(process: str) -> dict[str, Any]:
     }
 
 
+def _classify_outcome(exception: BaseException) -> str:
+    """Phase 25.5b — map an exception to an outcome enum value for
+    llm_costs.outcome. The set is the dashboard rejection-rate axis:
+    rate_limit / server_error / timeout / parse_error / blocked / other.
+    Tighten as new failure modes show up."""
+    import asyncio
+    import json
+
+    import httpx
+
+    from services.llm_types import LlmBlockedError
+
+    if isinstance(exception, LlmBlockedError):
+        return "blocked"
+    if isinstance(exception, asyncio.TimeoutError) or isinstance(
+        exception, httpx.TimeoutException
+    ):
+        return "timeout"
+    if isinstance(exception, httpx.HTTPStatusError):
+        status = getattr(getattr(exception, "response", None), "status_code", 0)
+        if status == 429:
+            return "rate_limit"
+        if status and status >= 500:
+            return "server_error"
+        return "other"
+    if isinstance(exception, (ValueError, json.JSONDecodeError)):
+        return "parse_error"
+    if isinstance(exception, httpx.RequestError):
+        return "server_error"
+    return "other"
+
+
+async def _record_outcome(
+    process: str,
+    *,
+    provider: str,
+    model: str,
+    outcome: str,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    latency_ms: float | None = None,
+    error_message: str | None = None,
+    user_id: str | None = None,
+    conversation_id: str | None = None,
+    request_id: str | None = None,
+) -> None:
+    """Phase 25.5 + 25.5b — write one row to llm_costs for every
+    call attempt: success rows carry cost_usd; failure rows carry
+    cost_usd=0 + error_message + outcome.
+
+    Cost math: (input_tokens / 1000) * input_rate + (output_tokens / 1000)
+    * output_rate. Rates come from PROVIDERS at write time so historical
+    rows stay correct even if rates change later. cost_basis ('real' /
+    'synthetic') is read from the same provider entry.
+
+    Best-effort: if the table doesn't exist or any other DB error, log +
+    continue. The actual LLM dispatch already returned (success or raised
+    to the caller); failing to record cost MUST NOT break the request
+    path."""
+    try:
+        from database import get_pool
+
+        provider_meta = PROVIDERS.get(provider) or {}
+        in_rate = float(provider_meta.get("cost_per_1k_input_usd") or 0)
+        out_rate = float(provider_meta.get("cost_per_1k_output_usd") or 0)
+        cost_basis = provider_meta.get("cost_basis") or "real"
+        # Only successful calls have non-zero token counts on a vendor
+        # call we paid for. Failure rows pass tokens=0 → cost=0.
+        cost_usd = (input_tokens / 1000.0) * in_rate + (
+            output_tokens / 1000.0
+        ) * out_rate
+        # Truncate error_message at 500 chars per Rishi's spec
+        err = (error_message or None) and str(error_message)[:500]
+
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO llm_costs (process, provider, model,
+                    input_tokens, output_tokens, cost_usd, cost_basis,
+                    user_id, conversation_id, request_id, latency_ms,
+                    outcome, error_message)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                """,
+                process,
+                provider,
+                model,
+                int(input_tokens),
+                int(output_tokens),
+                cost_usd,
+                cost_basis,
+                user_id,
+                conversation_id,
+                request_id,
+                float(latency_ms) if latency_ms is not None else None,
+                outcome,
+                err,
+            )
+    except Exception as e:
+        logger.warning("llm_registry: _record_outcome skipped (%s)", e)
+
+
 async def _record_cost(
     process: str,
     result: LlmResponse,
@@ -386,51 +488,20 @@ async def _record_cost(
     conversation_id: str | None = None,
     request_id: str | None = None,
 ) -> None:
-    """Phase 25.5 — write one row to llm_costs per successful call.
-
-    Cost math: (input_tokens / 1000) * input_rate + (output_tokens / 1000)
-    * output_rate. Rates come from PROVIDERS at write time so historical
-    rows stay correct even if rates change later. cost_basis ('real' /
-    'synthetic') is read from the same provider entry.
-
-    Best-effort: if the table doesn't exist yet (Rule 9 — operator hasn't
-    applied migration 027) or any other DB error, log + continue. The
-    actual LLM dispatch already succeeded; failing to record cost MUST
-    NOT break the request."""
-    try:
-        from database import get_pool
-
-        provider_meta = PROVIDERS.get(result.provider) or {}
-        in_rate = float(provider_meta.get("cost_per_1k_input_usd") or 0)
-        out_rate = float(provider_meta.get("cost_per_1k_output_usd") or 0)
-        cost_basis = provider_meta.get("cost_basis") or "real"
-        cost_usd = (result.input_tokens / 1000.0) * in_rate + (
-            result.output_tokens / 1000.0
-        ) * out_rate
-
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO llm_costs (process, provider, model,
-                    input_tokens, output_tokens, cost_usd, cost_basis,
-                    user_id, conversation_id, request_id, latency_ms)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-                """,
-                process,
-                result.provider,
-                result.model,
-                int(result.input_tokens),
-                int(result.output_tokens),
-                cost_usd,
-                cost_basis,
-                user_id,
-                conversation_id,
-                request_id,
-                float(result.latency_ms),
-            )
-    except Exception as e:
-        logger.warning("llm_registry: _record_cost skipped (%s)", e)
+    """Back-compat thin wrapper around _record_outcome for the
+    success path. Existing call sites keep using this name."""
+    await _record_outcome(
+        process,
+        provider=result.provider,
+        model=result.model,
+        outcome="success",
+        input_tokens=int(result.input_tokens),
+        output_tokens=int(result.output_tokens),
+        latency_ms=float(result.latency_ms),
+        user_id=user_id,
+        conversation_id=conversation_id,
+        request_id=request_id,
+    )
 
 
 async def call(
@@ -480,19 +551,38 @@ async def call(
 
             client_module = openai_compatible
 
-        result = await client_module.complete(
-            provider=provider,
-            base_url=provider_meta.get("base_url"),
-            api_key=_resolve_api_key(provider),
-            model=cfg["model"],
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            extra_body=merged_extra or None,
-            timeout=cfg.get("timeout_sec", 60.0),
-        )
-        # Phase 25.5: best-effort cost record. _record_cost catches its
-        # own errors so a DB-write failure can't break the actual call.
+        # Phase 25.5b: wrap the dispatch so failures get a row in llm_costs
+        # too (outcome != 'success', cost_usd=0, error_message populated).
+        # The exception still propagates to the caller — recording is in
+        # addition, not in place of, the existing error path.
+        import time as _time
+
+        _started = _time.monotonic()
+        try:
+            result = await client_module.complete(
+                provider=provider,
+                base_url=provider_meta.get("base_url"),
+                api_key=_resolve_api_key(provider),
+                model=cfg["model"],
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                extra_body=merged_extra or None,
+                timeout=cfg.get("timeout_sec", 60.0),
+            )
+        except Exception as exc:
+            await _record_outcome(
+                process,
+                provider=provider,
+                model=cfg["model"],
+                outcome=_classify_outcome(exc),
+                latency_ms=(_time.monotonic() - _started) * 1000.0,
+                error_message=str(exc),
+                user_id=user_id,
+                conversation_id=conversation_id,
+                request_id=request_id,
+            )
+            raise
         await _record_cost(
             process,
             result,
@@ -556,34 +646,52 @@ async def call_stream(
 
             client_module = openai_compatible
 
-        async for chunk in client_module.complete_stream(
-            provider=provider,
-            base_url=provider_meta.get("base_url"),
-            api_key=_resolve_api_key(provider),
-            model=cfg["model"],
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            extra_body=merged_extra or None,
-            timeout=cfg.get("timeout_sec", 60.0),
-        ):
-            kind, value = chunk
-            if kind == "delta":
-                text_buffer += value
-            elif kind == "usage":
-                try:
-                    usage = json.loads(value)
-                    input_tokens = int(
-                        usage.get("prompt_tokens") or usage.get("promptTokenCount") or 0
-                    )
-                    output_tokens = int(
-                        usage.get("completion_tokens")
-                        or usage.get("candidatesTokenCount")
-                        or 0
-                    )
-                except (ValueError, TypeError):
-                    pass
-            yield chunk
+        try:
+            async for chunk in client_module.complete_stream(
+                provider=provider,
+                base_url=provider_meta.get("base_url"),
+                api_key=_resolve_api_key(provider),
+                model=cfg["model"],
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                extra_body=merged_extra or None,
+                timeout=cfg.get("timeout_sec", 60.0),
+            ):
+                kind, value = chunk
+                if kind == "delta":
+                    text_buffer += value
+                elif kind == "usage":
+                    try:
+                        usage = json.loads(value)
+                        input_tokens = int(
+                            usage.get("prompt_tokens")
+                            or usage.get("promptTokenCount")
+                            or 0
+                        )
+                        output_tokens = int(
+                            usage.get("completion_tokens")
+                            or usage.get("candidatesTokenCount")
+                            or 0
+                        )
+                    except (ValueError, TypeError):
+                        pass
+                yield chunk
+        except Exception as exc:
+            await _record_outcome(
+                process,
+                provider=provider,
+                model=cfg["model"],
+                outcome=_classify_outcome(exc),
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                latency_ms=(time.monotonic() - started) * 1000.0,
+                error_message=str(exc),
+                user_id=user_id,
+                conversation_id=conversation_id,
+                request_id=request_id,
+            )
+            raise
 
         # Stream finished — record cost. Synthesize a minimal LlmResponse
         # for _record_cost (it only reads provider/model/tokens/latency).
@@ -625,18 +733,35 @@ async def call_transcribe(
         )
 
     sem = _semaphore(provider)
+    import time as _time
+
+    _started = _time.monotonic()
     async with sem:
         if provider == "gemini":
             from services.llm_clients import gemini as gemini_client
 
-            result = await gemini_client.transcribe(
-                provider=provider,
-                base_url=provider_meta.get("base_url"),
-                api_key=_resolve_api_key(provider),
-                model=cfg["model"],
-                audio_url=audio_url,
-                timeout=cfg.get("timeout_sec", 60.0),
-            )
+            try:
+                result = await gemini_client.transcribe(
+                    provider=provider,
+                    base_url=provider_meta.get("base_url"),
+                    api_key=_resolve_api_key(provider),
+                    model=cfg["model"],
+                    audio_url=audio_url,
+                    timeout=cfg.get("timeout_sec", 60.0),
+                )
+            except Exception as exc:
+                await _record_outcome(
+                    process,
+                    provider=provider,
+                    model=cfg["model"],
+                    outcome=_classify_outcome(exc),
+                    latency_ms=(_time.monotonic() - _started) * 1000.0,
+                    error_message=str(exc),
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    request_id=request_id,
+                )
+                raise
             await _record_cost(
                 process,
                 result,
