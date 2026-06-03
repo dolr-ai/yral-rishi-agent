@@ -89,7 +89,33 @@ async def _messages_to_gemini_contents(
                 elif t == "image_url":
                     url_obj = item.get("image_url") or {}
                     url = url_obj.get("url") if isinstance(url_obj, dict) else url_obj
-                    if url:
+                    if not url:
+                        continue
+                    # ai_client._fetch_and_encode_image_openai already fetches +
+                    # base64-encodes mobile-sent storage_keys into a "data:..."
+                    # URL for the OpenAI wire format. Detect that shape and
+                    # parse it directly into Gemini's inlineData — re-fetching
+                    # the data URL was the 2026-06-03 bug (fetch tried to
+                    # presign "data:image/jpeg;base64,..." as a storage key
+                    # → 404 → image silently became "[image attachment —
+                    # failed to load]" and the assistant replied "I can't
+                    # see it.").
+                    if url.startswith("data:"):
+                        try:
+                            header, b64 = url.split(",", 1)
+                            mime = header[len("data:") :].split(";")[0] or "image/jpeg"
+                            parts.append(
+                                {"inlineData": {"mimeType": mime, "data": b64}}
+                            )
+                        except (ValueError, IndexError):
+                            parts.append(
+                                {"text": "[image attachment — malformed data URL]"}
+                            )
+                    else:
+                        # Raw HTTPS URL or storage_key — fetch via helper which
+                        # handles presigning + size cap. Kept for forward
+                        # compatibility if _build_user_content ever stops
+                        # pre-encoding.
                         placeholder_idx = len(parts)
                         parts.append(None)
                         image_tasks.append(
