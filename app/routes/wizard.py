@@ -91,7 +91,7 @@ async def start_wizard(body: dict, request: Request):
             },
             {
                 "key": "voice",
-                "question": "Conversation style — formal, casual, Hinglish? Should the bot match the user's language?",
+                "question": "Conversation style — formal, casual, code-switched (e.g., Hinglish, Spanglish), or a regional dialect? Should the bot match the user's language?",
                 "rationale": "Language match drives engagement",
             },
             {

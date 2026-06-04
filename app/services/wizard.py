@@ -29,7 +29,7 @@ INTAKE_PROMPT = """You are an expert AI personality coach helping a creator buil
 Generate 3-5 intake questions tailored to THIS concept. Each question should pull out a SPECIFIC piece of personality, backstory, voice, or do/don't that will make the bot distinctive. Cover at least:
 - Personality archetype (companion / advisor / entertainer / educator / creator)
 - 1-2 unique backstory hooks that distinguish this bot from generic ones
-- Conversation style (formal / casual / Hinglish / language mix)
+- Conversation style (formal / casual / code-switched / single-language / regional dialect — whatever fits this character)
 - One concrete thing the bot WOULD say
 - One thing the bot WOULDN'T say
 - The opening message users see on first chat
