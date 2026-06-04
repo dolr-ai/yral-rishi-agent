@@ -1,0 +1,103 @@
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  caddyfile.agent.txt                                                        ║
+# ║                                                                              ║
+# ║  Source-of-truth Caddyfile for the v2-edge-caddy stack (the Caddy on        ║
+# ║  rishi-4/5 that fronts agent.rishi.yral.com + langfuse-agent...).           ║
+# ║                                                                              ║
+# ║  HISTORY:                                                                   ║
+# ║    Phase 0 bootstrap created the original Caddyfile as a swarm config       ║
+# ║    object directly on rishi-4 without committing the source to this repo.   ║
+# ║    On 2026-06-04 it was recovered (`docker config inspect ... .Spec.Data`   ║
+# ║    decoded from the Go byte-array representation) and dropped here as the   ║
+# ║    new source of truth so future edits go through PRs instead of            ║
+# ║    handcrafted `docker config create` on a manager node.                    ║
+# ║                                                                              ║
+# ║  DEPLOY (the SHA-rotation pattern matches caddyfile.placeholder):           ║
+# ║    SHA=$(sha256sum bootstrap/scripts/caddyfile.agent.txt | cut -c1-8)       ║
+# ║    docker config create yral_v2_edge_caddyfile_$SHA \                       ║
+# ║                          bootstrap/scripts/caddyfile.agent.txt              ║
+# ║    docker service update \                                                  ║
+# ║        --config-rm <current-name> \                                         ║
+# ║        --config-add source=yral_v2_edge_caddyfile_$SHA,target=/etc/caddy/Caddyfile \ ║
+# ║        yral-v2-edge-caddy_caddy-edge-ingress                                ║
+# ║                                                                              ║
+# ║  CURRENT LIVE VERSION (2026-06-04):                                         ║
+# ║    yral_v2_edge_caddyfile_0390047f — first version with                    ║
+# ║    `unhealthy_latency 3s` removed (it was triggering 503s on the LLM       ║
+# ║    chat hot path; see project_v2_chat_send_503_under_concurrency.md).      ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+{
+    admin 127.0.0.1:2019
+}
+
+placeholder.rishi.local {
+    tls internal
+    respond "v2 cluster edge — yral-rishi-agent monolith deployed" 200
+}
+
+agent.rishi.yral.com {
+    tls internal
+    encode gzip zstd
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "geolocation=(), microphone=(), camera=()"
+        -Server
+    }
+
+    reverse_proxy yral-rishi-agent:8000 {
+        lb_policy first
+        lb_try_duration 5s
+        lb_try_interval 250ms
+
+        health_uri /health
+        health_interval 2s
+        health_timeout 1s
+
+        # Passive health-check thresholds. The active probe above
+        # (health_uri + health_interval) is the primary signal; these
+        # passive triggers add a safety net for genuine upstream failures.
+        #
+        # IMPORTANT: do NOT add `unhealthy_latency` here. The chat hot
+        # path is LLM-bound at ~2.5-3s p50 and ~4-5s p95 — that's the
+        # Gemini round-trip, not an upstream problem. A latency-based
+        # unhealthy threshold would mark the upstream down whenever the
+        # LLM is its normal slow self, and Caddy would return empty-body
+        # 503 to subsequent traffic for `fail_duration` (10s) at a time.
+        # Production impact: 64% chat-send failure rate at concurrency=3
+        # — proven via Phase 1.17 latency comparison 2026-06-04. Fix was
+        # removing the line entirely; `unhealthy_status 5xx` still
+        # catches genuine upstream failures.
+        fail_duration 10s
+        max_fails 2
+        unhealthy_status 5xx
+
+        transport http {
+            dial_timeout 1s
+        }
+
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+}
+
+langfuse-agent.rishi.yral.com {
+    tls internal
+    encode gzip zstd
+    reverse_proxy langfuse-web:3000 {
+        health_uri /api/public/health
+        health_interval 10s
+        health_timeout 2s
+        transport http {
+            dial_timeout 2s
+        }
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+}
