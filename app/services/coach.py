@@ -22,6 +22,45 @@ from services import llm_registry
 logger = logging.getLogger(__name__)
 
 
+OPENING_PROMPT = """You are an expert AI personality coach about to start a session with a creator who wants to make their AI bot better. This is your FIRST message in the session — the creator has just opened the coach chat.
+
+The bot being coached:
+- Display name: {bot_name}
+- Archetype: {bot_archetype}
+- Current Soul File (system_instructions):
+\"\"\"
+{current_instructions}
+\"\"\"
+
+Recent anonymized conversations the bot had with users:
+{recent_convs}
+
+Current quality score (latest nightly scoring pass):
+{quality_score_block}
+
+Your job for THIS opening turn:
+1. Greet the creator warmly by referring to their bot by NAME.
+2. Briefly orient them — what you'll do together (1-2 sentences, no jargon).
+3. Offer THREE short, tappable suggestion chips. Each must be a complete creator-perspective utterance (e.g. "Make Tara funnier", "Tighten her bio", "Improve her voice") — NOT a question to the creator, NOT a meta description.
+
+Output a single JSON object on its own line with EXACTLY this shape (no markdown fences, no commentary outside):
+{{"greeting": "...", "suggestions": ["...", "...", "..."]}}
+
+- greeting: 2-4 sentences, warm + concrete (mention the bot by name).
+- suggestions: exactly 3 strings, each <= 40 chars, each a phrase the creator might tap to start.
+
+Reply now."""
+
+
+# 2026-06-04 — Coach UX overhaul. The creator tapped Save → we want the
+# coach to commit to the JSON proposal block this turn instead of asking
+# another clarifying question. Appended to META_PROMPT when the request
+# body includes "request_proposal": true.
+FORCE_PROPOSAL_INSTRUCTION = """
+
+The creator has just tapped "Save" — they want a proposal NOW. You MUST output the structured JSON block (per Rule 4) this turn, consolidating everything discussed so far in the session. Do NOT ask another clarifying question; if the session is thin on signal, propose the best change you can justify from the bot's current Soul File + the recent conversations, and explain your reasoning in the `reasoning` field."""
+
+
 META_PROMPT = """You are an expert AI personality coach. A creator chats with you to improve their AI bot's "Soul File" (system_instructions). Your job is to listen, suggest targeted edits, and explain why each edit makes the bot better.
 
 The bot you're coaching:
@@ -138,13 +177,18 @@ async def coach_reply(
     session_history: list[dict],
     latest_message: str,
     quality_score: dict | None = None,
+    force_proposal: bool = False,
 ) -> tuple[str, str | None, str | None]:
     """Run the coach turn. Returns (display_content, proposed_changes, reasoning).
 
     If the coach proposed structured changes, display_content is the human-
     friendly summary and proposed_changes/reasoning are populated. Otherwise
     display_content is the plain reply and the other two are None.
-    """
+
+    `force_proposal=True` (Coach UX overhaul 2026-06-04) — the creator
+    tapped Save; append FORCE_PROPOSAL_INSTRUCTION so the LLM commits
+    to the JSON proposal block this turn instead of asking another
+    clarifying question."""
     prompt = META_PROMPT.format(
         bot_name=bot_name or "this bot",
         bot_archetype=bot_archetype or "general",
@@ -154,6 +198,8 @@ async def coach_reply(
         session_history=_format_session_history(session_history),
         latest_message=latest_message,
     )
+    if force_proposal:
+        prompt = prompt + FORCE_PROPOSAL_INSTRUCTION
 
     response = await llm_registry.call(
         process="soul_file_coach",
@@ -181,3 +227,84 @@ async def coach_reply(
             proposal.get("reasoning"),
         )
     return (response_text.strip(), None, None)
+
+
+async def coach_opening(
+    bot_name: str,
+    bot_archetype: str,
+    current_instructions: str,
+    recent_conv_rows: list[dict],
+    quality_score: dict | None = None,
+) -> tuple[str, list[str]]:
+    """Coach UX overhaul (2026-06-04) — the coach speaks FIRST.
+
+    Generates the opening greeting + 3 suggestion chips for a new
+    session. Same grounding as coach_reply (recent convs + quality
+    score), but no `session_history` (this is the first turn) and no
+    `latest_message` (no creator turn yet).
+
+    Returns (greeting_text, suggestions_list). If the LLM fails to
+    emit the expected JSON, falls back to a generic greeting + 3
+    safe defaults so the session is never blocked at create-time.
+    """
+    prompt = OPENING_PROMPT.format(
+        bot_name=bot_name or "this bot",
+        bot_archetype=bot_archetype or "general",
+        current_instructions=current_instructions or "(empty)",
+        recent_convs=_format_conv_excerpt(recent_conv_rows),
+        quality_score_block=_format_quality_score(quality_score),
+    )
+
+    response = await llm_registry.call(
+        process="soul_file_coach",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are a specialist AI personality coach. Output a "
+                    "single JSON object with greeting + 3 suggestion chips."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.6,
+        max_tokens=1024,
+    )
+    text = response.content or ""
+
+    # Reuse the same tolerant {...} extractor as proposals.
+    start = text.find("{")
+    end = text.rfind("}") + 1
+    if start >= 0 and end > start:
+        try:
+            obj = json.loads(text[start:end])
+            greeting = obj.get("greeting")
+            suggestions = obj.get("suggestions")
+            if (
+                isinstance(greeting, str)
+                and greeting.strip()
+                and isinstance(suggestions, list)
+                and len(suggestions) >= 3
+                and all(isinstance(s, str) and s.strip() for s in suggestions[:3])
+            ):
+                return greeting.strip(), [s.strip() for s in suggestions[:3]]
+        except json.JSONDecodeError:
+            pass
+
+    # Fallback — generic but never empty. Logged so we can see how often
+    # the LLM misses the JSON shape and tune the prompt later.
+    logger.warning(
+        "coach_opening: LLM returned non-conforming output, using fallback "
+        "(first 200 chars: %r)",
+        text[:200],
+    )
+    safe_name = bot_name or "your bot"
+    return (
+        f"Hey! Let's make {safe_name} better together. Tell me what feels off, "
+        f"or tap one of the suggestions below to start.",
+        [
+            f"Improve {safe_name}'s voice",
+            f"Tighten {safe_name}'s bio",
+            f"Make {safe_name} more engaging",
+        ],
+    )

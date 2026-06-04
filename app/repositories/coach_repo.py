@@ -42,6 +42,28 @@ async def get_session(pool, coach_conversation_id: str) -> dict | None:
     return _row(row)
 
 
+async def latest_session_for_bot(
+    pool, creator_user_id: str, bot_id: str
+) -> dict | None:
+    """Coach UX overhaul (2026-06-04) — the most recent coach session for
+    this (creator, bot) pair. POST /conversations/{bot_id} uses this to
+    decide between resume (return the existing session id with
+    resumed=true) and fresh (body {"fresh": true} → ignore, create new).
+    Owning-creator check is implicit via creator_user_id."""
+    row = await pool.fetchrow(
+        """
+        SELECT id, creator_user_id, bot_id, created_at, updated_at
+        FROM coach_conversations
+        WHERE creator_user_id = $1 AND bot_id = $2
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        creator_user_id,
+        bot_id,
+    )
+    return _row(row)
+
+
 async def touch_session(pool, coach_conversation_id: str):
     await pool.execute(
         "UPDATE coach_conversations SET updated_at = NOW() WHERE id = $1::uuid",
@@ -59,21 +81,31 @@ async def add_message(
     content: str,
     proposed_changes: str | None = None,
     reasoning: str | None = None,
+    suggestions: list[str] | None = None,
 ) -> dict:
+    """Insert a coach_messages row.
+
+    `suggestions` (Coach UX overhaul, migration 031) is a JSONB list of
+    3 short tappable strings rendered as chips below the opening coach
+    message. NULL for creator turns and non-opening coach turns."""
+    import json as _json
+
     row = await pool.fetchrow(
         """
         INSERT INTO coach_messages (
-            coach_conversation_id, role, content, proposed_changes, reasoning
+            coach_conversation_id, role, content,
+            proposed_changes, reasoning, suggestions
         )
-        VALUES ($1::uuid, $2, $3, $4, $5)
+        VALUES ($1::uuid, $2, $3, $4, $5, $6::jsonb)
         RETURNING id, coach_conversation_id, role, content,
-                  proposed_changes, reasoning, created_at
+                  proposed_changes, reasoning, suggestions, created_at
         """,
         coach_conversation_id,
         role,
         content,
         proposed_changes,
         reasoning,
+        _json.dumps(suggestions) if suggestions else None,
     )
     return dict(row)
 
@@ -82,7 +114,7 @@ async def list_messages(pool, coach_conversation_id: str) -> list[dict]:
     rows = await pool.fetch(
         """
         SELECT id, coach_conversation_id, role, content,
-               proposed_changes, reasoning, created_at
+               proposed_changes, reasoning, suggestions, created_at
         FROM coach_messages
         WHERE coach_conversation_id = $1::uuid
         ORDER BY created_at ASC
@@ -98,7 +130,7 @@ async def latest_proposal(pool, coach_conversation_id: str) -> dict | None:
     row = await pool.fetchrow(
         """
         SELECT id, coach_conversation_id, role, content,
-               proposed_changes, reasoning, created_at
+               proposed_changes, reasoning, suggestions, created_at
         FROM coach_messages
         WHERE coach_conversation_id = $1::uuid
           AND role = 'coach'
