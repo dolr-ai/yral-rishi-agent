@@ -85,29 +85,58 @@ def _format_recent_messages(rows: list[dict]) -> str:
 
 
 def _extract_idea_array(text: str) -> list[dict] | None:
-    """Tolerant JSON-array extractor — same pattern as
-    services/wizard.py:_extract_json. Strips wrapping prose / markdown
-    fences before parsing."""
+    """Tolerant JSON-array extractor.
+
+    Three strategies, tried in order:
+      1. Strict: find [..] and json.loads it. Same pattern as
+         services/wizard.py:_extract_json. Works when the LLM returns
+         a clean array, no wrapping prose.
+      2. Truncation-tolerant: if strict parse fails, try chopping off
+         everything after the LAST complete `}` and re-closing the
+         array. Recovers usable ideas from a max_tokens-truncated
+         response (the 2026-06-04 cold-start bug — `max_tokens=1024`
+         truncated mid-string on Devanagari output, costing a usable
+         batch). Belt-and-suspenders even after the cap bump.
+      3. Fail: return None so the caller logs + falls back.
+    """
     import json
 
     start, end = text.find("["), text.rfind("]") + 1
-    if start < 0 or end <= start:
+
+    def _validate(parsed) -> list[dict] | None:
+        if not isinstance(parsed, list):
+            return None
+        cleaned: list[dict] = []
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            hook = (item.get("hook") or "").strip()
+            idea = (item.get("idea_text") or "").strip()
+            if hook and idea:
+                cleaned.append({"hook": hook, "idea_text": idea})
+        return cleaned if cleaned else None
+
+    # Strategy 1: strict
+    if start >= 0 and end > start:
+        try:
+            return _validate(json.loads(text[start:end]))
+        except json.JSONDecodeError:
+            pass
+
+    # Strategy 2: truncation-tolerant. Find the last complete `}`
+    # AFTER the array opening `[`, then synthesize the array close.
+    # Handles "...idea N-1}, {idea N partial>>truncated" by dropping
+    # the partial and keeping ideas 1..N-1.
+    if start < 0:
         return None
+    last_close = text.rfind("}")
+    if last_close <= start:
+        return None
+    repaired = text[start : last_close + 1] + "]"
     try:
-        parsed = json.loads(text[start:end])
+        return _validate(json.loads(repaired))
     except json.JSONDecodeError:
         return None
-    if not isinstance(parsed, list):
-        return None
-    cleaned: list[dict] = []
-    for item in parsed:
-        if not isinstance(item, dict):
-            continue
-        hook = (item.get("hook") or "").strip()
-        idea = (item.get("idea_text") or "").strip()
-        if hook and idea:
-            cleaned.append({"hook": hook, "idea_text": idea})
-    return cleaned if cleaned else None
 
 
 async def generate_for_one_bot(pool, bot: dict) -> list[dict]:
@@ -156,7 +185,12 @@ async def generate_for_one_bot(pool, bot: dict) -> list[dict]:
                 {"role": "user", "content": prompt},
             ],
             temperature=0.8,
-            max_tokens=1024,
+            # Devanagari (and other multi-byte scripts) consume ~3x tokens
+            # vs Latin per visible character. The first cold-start in prod
+            # (2026-06-04, Rishi's principal) truncated mid-JSON-string at
+            # 1024 tokens because the 5-idea response was Hindi text. 4096
+            # gives ample headroom for any reasonable batch + script combo.
+            max_tokens=4096,
         )
     except Exception as e:
         logger.warning("video_ideas: LLM call failed for bot %s: %s", bot_id, e)
