@@ -513,7 +513,11 @@ async def _record_cost(
     request_id: str | None = None,
 ) -> None:
     """Back-compat thin wrapper around _record_outcome for the
-    success path. Existing call sites keep using this name."""
+    success path. Existing call sites keep using this name.
+
+    Phase 19.2 — also increments the per-user-day Redis counter so the
+    pre-call breaker check sees today's spend. Best-effort; never
+    blocks the success path."""
     await _record_outcome(
         process,
         provider=result.provider,
@@ -526,6 +530,23 @@ async def _record_cost(
         conversation_id=conversation_id,
         request_id=request_id,
     )
+
+    # Phase 19.2 — feed the per-user-day Redis counter so the next
+    # call's check_or_reject sees this spend. cost_usd is computed
+    # the same way _record_outcome derives it (provider rates × tokens).
+    try:
+        provider_meta = PROVIDERS.get(result.provider) or {}
+        in_rate = float(provider_meta.get("cost_per_1k_input_usd") or 0)
+        out_rate = float(provider_meta.get("cost_per_1k_output_usd") or 0)
+        cost_usd = (int(result.input_tokens) / 1000.0) * in_rate + (
+            int(result.output_tokens) / 1000.0
+        ) * out_rate
+        if cost_usd > 0:
+            from services import llm_cost_breaker
+
+            await llm_cost_breaker.increment(user_id, cost_usd)
+    except Exception as e:
+        logger.debug("llm_cost_breaker.increment failed (non-fatal): %s", e)
 
 
 async def call(
@@ -565,6 +586,15 @@ async def call(
             f"llm_registry.call: provider={provider!r} does not support chat "
             f"(process={process!r})"
         )
+
+    # Phase 19.2 — per-user daily cost ceiling. Last-defense breaker
+    # against a single user (or attacker) running up unbounded LLM
+    # spend. Fails OPEN on Redis-unreachable; never blocks background
+    # processes (user_id is None). CostCeilingExceeded surfaces to the
+    # caller — chat.py catches and returns a structured 402 to mobile.
+    from services import llm_cost_breaker
+
+    await llm_cost_breaker.check_or_reject(user_id)
 
     # Merge: provider default → caller extras (caller wins on collision).
     merged_extra = dict(provider_meta.get("default_extra_body") or {})
