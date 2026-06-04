@@ -2,14 +2,24 @@
 
 **PR:** [dolr-ai/yral-mobile#1184](https://github.com/dolr-ai/yral-mobile/pull/1184)
 **PR title:** feat(profile): Phase 22.3c — Video Ideas tab + list UI + data layer (+ 22.3d Create handler)
-**Branch:** `rishi/video-ideas-tab` (HEAD `c9d0825b` feat(profile): Phase 22.3d — Video Idea Create handler + Option C toast)
+**Branch:** `rishi/video-ideas-tab` (HEAD `249fab27` feat(profile): gate Video Ideas tab on VideoIdeasEnabled flag; on top of `c9d0825b` 22.3d Create handler + `b09e2a2c` 22.3c tab + data layer)
 **Snapshot date:** 2026-06-04 (BEFORE adding Sarvesh as reviewer)
 
 ## Why this snapshot
 
 Per `mobile-docs-archive/README.md` process: archive all at-risk mobile docs before adding Sarvesh as reviewer. Sarvesh strips non-source docs on merge.
 
-PR #1184 ships **two sub-phases bundled** at Rishi's explicit decision: 22.3c (third "Ideas" profile tab + 5-idea list UI + data layer mirroring CoachRemoteDataSource pattern) and 22.3d (one-tap Create handler firing the existing headless video-gen pipeline + Option C "stay-on-Ideas + tappable View-in-Drafts toast"). All 5 Rishi-tested cases for each sub-phase passed on Motorola 2026-06-04 (10 tests total — 5 in 22.3c, 5 in 22.3d).
+PR #1184 ships **three commits bundled** at Rishi's explicit decision: 22.3c (third "Ideas" profile tab + 5-idea list UI + data layer mirroring CoachRemoteDataSource pattern), 22.3d (one-tap Create handler firing the existing headless video-gen pipeline + Option C "stay-on-Ideas + tappable View-in-Drafts toast"), and a follow-up flag-gate commit added after the same-day Sarvesh-add gap was caught.
+
+All 5 Rishi-tested cases for each sub-phase passed on Motorola 2026-06-04 (10 tests total — 5 in 22.3c, 5 in 22.3d). The flag-gate commit added a 6-test retest (2 flag-ON cases + 3 flag-OFF cases + 1 implicit no-network-call check) — all 6 passed before this MANIFEST was finalised.
+
+## Discipline gap caught + future rule
+
+The original Phase 22.3 design doc explicitly said "no feature flag for this PR." That was wrong — Phase 22.3's data layer hits `GET/POST /api/v1/influencers/{id}/video-ideas` on `agent.rishi.yral.com`, endpoints that do not exist on the production `chat-ai` backend. Without a flag gate, pre-cutover users tapping the Ideas tab would 404.
+
+Session 6 is saving a discipline rule going forward: "All mobile features that touch agent.rishi.yral.com endpoints (i.e., depend on the v2 backend) MUST be feature-flag-gated with defaultValue=false until cutover. Design docs that say 'no flag needed' should be challenged against this rule." Future PRs will not have this gap.
+
+The flag-gate commit (`249fab27`) added `ChatFeatureFlags.Chat.VideoIdeasEnabled` next to `H2hChatEnabled`, plumbs it through ProfileViewModel state, and gates the third tab visibility on `isOwnProfile && isAiInfluencer && isVideoIdeasEnabled`. When the flag is off (origin / production until cutover), the bot profile shows the legacy 2-tab UX (Published + Drafts) — no lightbulb tab, no calls to the missing endpoints.
 
 Backend dependency for 22.3c data layer: agent.rishi.yral.com PRs #274 (coach_messages.suggestions, ground for VideoIdea/Coach data-pattern parallel) + #279 (Video Ideas migration + nightly loop + 2 endpoints) + #280 (kill-switch + dashboard knob). Backend `video_idea_generation` LLM process was flipped from `internal_vllm` to `gemini`/`gemini-2.5-flash` during 22.3c testing after the cold-start path silently failed on internal_vllm; dev session also shipped PR #284 raising `max_tokens=1024→4096` to handle Devanagari (3-byte UTF-8) response sizes that were truncating mid-string. Both fixes deployed before 22.3d testing.
 
