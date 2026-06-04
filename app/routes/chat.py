@@ -283,10 +283,14 @@ async def create_conversation(body: dict, request: Request):
     if not inf:
         raise HTTPException(status_code=404, detail="Influencer not found")
 
+    import config
+
     existing = await conversation_repo.get_existing(pool, user_id, influencer_id)
     if existing:
         msg_count = await message_repo.count_by_conversation(pool, existing["id"])
-        recent = await message_repo.get_recent_for_context(pool, existing["id"], 10)
+        recent = await message_repo.get_recent_for_context(
+            pool, existing["id"], config.CHAT_HISTORY_WINDOW
+        )
         formatted_recent = [_format_message(m) for m in recent] if recent else None
         return _format_conversation(
             existing,
@@ -309,7 +313,9 @@ async def create_conversation(body: dict, request: Request):
 
     conv = await conversation_repo.get_by_id(pool, conv["id"])
     msg_count = await message_repo.count_by_conversation(pool, conv["id"])
-    recent = await message_repo.get_recent_for_context(pool, conv["id"], 10)
+    recent = await message_repo.get_recent_for_context(
+        pool, conv["id"], config.CHAT_HISTORY_WINDOW
+    )
     formatted_recent = [_format_message(m) for m in recent] if recent else None
 
     return _format_conversation(
@@ -612,9 +618,15 @@ async def send_message(
     # to the slowest single step. Short messages skip the embedding entirely
     # since semantic search on 1-2 word inputs (e.g. "ok") isn't meaningful.
     async def _fetch_history():
-        h = await message_repo.get_recent_for_context(pool, conversation_id, 11)
+        import config
+
+        # Over-fetch by 1 so we can filter out the just-inserted user message
+        # without ever shrinking the actual context window below CHAT_HISTORY_WINDOW.
+        h = await message_repo.get_recent_for_context(
+            pool, conversation_id, config.CHAT_HISTORY_WINDOW + 1
+        )
         h = [m for m in h if m["id"] != user_msg["id"]]
-        return h[-10:]
+        return h[-config.CHAT_HISTORY_WINDOW :]
 
     async def _maybe_embed():
         text = (content or "").strip()
@@ -898,10 +910,14 @@ async def send_message_stream(
                 )
                 return
 
+            import config
+
             history = await message_repo.get_recent_for_context(
-                pool, conversation_id, 11
+                pool, conversation_id, config.CHAT_HISTORY_WINDOW + 1
             )
-            history = [m for m in history if m["id"] != user_msg["id"]][-10:]
+            history = [m for m in history if m["id"] != user_msg["id"]][
+                -config.CHAT_HISTORY_WINDOW :
+            ]
             memories = await memory.get_memories_for_prompt(
                 pool, user_id, influencer_id, conversation_id=conversation_id
             )

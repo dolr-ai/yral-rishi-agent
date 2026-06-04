@@ -39,6 +39,13 @@ GEMINI_TEMPERATURE = _env_float("GEMINI_TEMPERATURE", 0.7)
 GEMINI_TIMEOUT = _env_int("GEMINI_TIMEOUT", 60)
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 
+# Number of prior conversation turns sent as context to the LLM on every
+# chat reply. Bumped 10 → 30 (2026-06-04 Rishi) so bots remember within-
+# session flow more naturally. Persistent cross-session facts live in
+# user_memories (Phase 4) — this window only covers the live exchange.
+# Env-overridable for hot-tuning without redeploy.
+CHAT_HISTORY_WINDOW = _env_int("CHAT_HISTORY_WINDOW", 30)
+
 # Phase 2.7: SSE streaming for word-by-word AI replies. Mobile decides whether
 # to hit the streaming endpoint or the legacy non-streaming one. Backend
 # default = TRUE so the streaming path is reachable as soon as mobile is ready.

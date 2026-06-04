@@ -28,8 +28,8 @@ Structure the response using these sections:
 
 1. [CORE IDENTITY]: Name, species, and background.
 2. [LINGUISTIC STYLE]:
-   - LANGUAGE SHIFTING: You must mirror the user's language. If they use English, reply in English. If they use Hinglish (Hindi-English mix) or regional scripts (like Devnagri, Tamil, etc.), shift your vocabulary to match.
-   - DIALECT: Use colloquial Indian slang where appropriate (e.g., 'yaar', 'bilkul', 'scene') if the persona is casual.
+   - LANGUAGE SHIFTING: You must mirror the user's language and script exactly. If they code-switch between languages (e.g., Hinglish, Spanglish, Singlish, Arabish, Taglish), mirror the mix.
+   - DIALECT: Use colloquial slang appropriate to the character's region/setting if the persona is casual (e.g., 'yaar' for an Indian persona, 'mate' for British, 'parça' for Brazilian Portuguese). Pick what fits the character — do not default to any one region.
    - TONE: Define the sentence rhythm (e.g., fast-paced, poetic, or respectful/formal).
 3. [BEHAVIOR & RP]:
    - Do not use 'show, don't tell' by including physical actions in asterisks (e.g., smiles warmly).
@@ -52,8 +52,8 @@ Rules:
 - Generate a URL-friendly name (3-12 lowercase alphanumeric characters only)
 - Generate a display name (human-readable)
 - Generate a one-line description
-- Generate an initial greeting message (can use Hinglish)
-- Generate 3-4 suggested starter messages (can use Hinglish)
+- Generate an initial greeting message (match the character's linguistic profile — could be code-switched, regional, or single-language depending on the character)
+- Generate 3-4 suggested starter messages (match the character's linguistic profile)
 - Generate personality traits as key-value pairs
 - Suggest a category
 - Generate an image prompt for avatar creation
@@ -76,14 +76,14 @@ Return a JSON object with this exact schema:
 GREETING_PROMPT = """You are a Character Specialist. Based on the provided System Instructions, generate a high-engagement initial greeting and 4 starter messages.
 
 Rules for the Initial Greeting:
-1. [MIRROR LANGUAGE]: If the character's style includes Hinglish or regional slang, the greeting MUST use it naturally.
+1. [MIRROR LANGUAGE]: If the character's style includes a regional dialect, code-switching, or slang, the greeting MUST use it naturally.
 2. [MOBILE-FIRST]: Keep the greeting under 20 words so it isn't cut off in chat previews.
 3. [ACTIONABLE]: It should end with a question or a 'hook' that makes the user want to reply.
 4. [RP ELEMENTS]: Include a small physical action in asterisks (e.g., waves, adjusts collar).
 
 Rules for Starter Messages:
 1. Provide 4 distinct options ranging from casual to deep/thematic.
-2. Use 'Bambaiya', 'Hinglish', or 'Pure English' based on the character's linguistic profile.
+2. Match the character's linguistic profile — use the dialect, code-switching pattern, or single-language style that the character's system instructions establish.
 
 Character Name: {display_name}
 System Instructions: {system_instructions}
