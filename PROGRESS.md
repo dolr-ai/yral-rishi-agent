@@ -1,8 +1,9 @@
 # Master Feature Tracker — yral-rishi-agent v2 (1000x Vision)
 
-**Last updated:** 2026-05-30 evening
-**Codebase:** ~6,500 lines Python (post Chat as Human + graceful error UX)
-**Total phases:** 25 (Phase 0–25) | **Est. total days remaining:** ~80-95 days
+**Last updated:** 2026-06-03 evening
+**Codebase:** ~7,000 lines Python (post Phase 25 full rollout + Phase 23 V1 backend)
+**Total phases:** 25 (Phase 0–25) | **Est. total days remaining:** ~50-65 days
+**Cutover target:** few days from now (per Rishi 2026-06-03)
 
 ---
 
@@ -28,17 +29,19 @@
 | 1.5 | Send message + AI reply (THE HEART — 1 endpoint) | ✅ Done | — | #158 |
 | 1.6 | Influencer CREATE flow: generate-prompt + validate + create + edit + video-prompt + delete + ban + unban (8 endpoints) | ✅ Done | — | #158 |
 | 1.7 | Media upload — image (1 endpoint, mobile UI live) | ✅ Done | — | #158 |
-| 1.7b | Audio upload — backend live, mobile UI pending | ✅ Done (backend) / ⏳ Pending (mobile UI) | 1 | #158 (backend) |
+| 1.7b | Audio upload — backend live + 3 bug fixes (PR #254 storage_key, PR #255 audio MIME defaults, PR #257 image multimodal). Mobile PR #1179 sent to Sarvesh 2026-06-03 (dormant by default behind AudioRecordingEnabled flag) | ✅ Done (backend) / 🔄 Mobile with Sarvesh | — | #158 + #254 + #255 + #257 (backend) + yral-mobile #1179 (mobile, with Sarvesh) |
 | 1.8 | Image generation in chat (1 endpoint) | ✅ Done | — | #158 |
 | 1.9 | Human-to-Human chat: create + list + send (3 endpoints) | ✅ Done | — | #158 |
-| 1.9a | H2H polish: sender_id in message API responses (unblocks mobile bubble alignment) | ✅ Done | — | TBD |
-| 1.9b | H2H polish: v2 inbox surfaces H2H rows (LEFT JOIN + participant_b OR-clause + metadata-bulk peer enrichment) | ✅ Done | — | TBD |
+| 1.9a | H2H polish: sender_id in message API responses (unblocks mobile bubble alignment) | ✅ Done | — | #220 |
+| 1.9b | H2H polish: v2 inbox surfaces H2H rows (LEFT JOIN + participant_b OR-clause + metadata-bulk peer enrichment) | ✅ Done | — | #228 |
+| 1.9c | H2H access fix: recipient access on /messages + /read + SSE + image endpoints (PR #241), unread badge tick on inbox (PR #245, #247) | ✅ Done | — | #241 + #245 + #247 |
+| 1.9d | H2H mobile UI (5-step bidirectional verified on Motorola) — PR #1178 sent to Sarvesh 2026-06-03 (dormant by default behind H2hChatEnabled flag) | 🔄 Mobile with Sarvesh | — | yral-mobile #1178 |
 | 1.10 | Chat as Human (creator takeover mode) — backend ✅ shipped & retested. Mobile UI ✅ shipped via yral-mobile PR #1172 (merged 2026-05-29). Feature-flag-gated, default OFF. Awaiting agent v2 cutover before flag flip. | ✅ Done | — | #170 (backend, merged 2026-05-28) + yral-mobile #1172 (mobile, merged 2026-05-29) |
 | 1.11 | Unified inbox v3 (1 endpoint) | ✅ Done | — | #158 |
 | 1.12 | Billing paywall (calls billing.yral.com) | ✅ Done | — | #158 |
 | 1.13 | WebSocket inbox + WS docs (1 WS + 1 endpoint) | ✅ Done | — | #158 |
 | 1.14 | ETL data migration (3.3M messages) | ✅ Done | — | — |
-| 1.14a | Continuous ETL chat-ai → V2 (S3-mediated pivot, Phases 1-4) | 🔄 In Progress — Phases 1-3 shipped (#211, #212, #213, #214), Phase 4 deployed but apply blocked on `idx_unique_user_influencer` schema mismatch; Option A fix scheduled for 2026-05-30 morning | 0.5 | #211, #212, #213, #214 |
+| 1.14a | Continuous ETL chat-ai → V2 (S3-mediated, every ~5 min) — Phases 1-4 shipped + Option A skip-duplicate-conv applied. Currently OFF (ENABLE_ETL_LOOP=false since 2026-05-30 emergency) — needs verification + re-enablement. | 🔄 Off post-emergency, code complete | 0.5 left (re-enable + verify) | #211, #212, #213, #214 |
 | 1.15 | Swarm deploy (2 replicas on rishi-4/5) | ✅ Done | — | — |
 | 1.16 | Full Motorola test of all 30 endpoints | ⏳ Tomorrow | 0.5 | — |
 | 1.17 | Latency comparison vs chat-ai — DEFERRED to pre-cutover per Rishi 2026-05-30. Run only after all backend features complete + ~2 days before Phase 21 cutover. Automated p50/p95/p99 script vs CLAUDE.md 50%-faster target. | ⏳ Deferred — pre-cutover | 0.5 | — |
@@ -118,7 +121,7 @@
 | 7.2 | Per-influencer analytics (messages, conversations) | ✅ Done | — | #166 |
 | 7.3 | Conversation logs for creators | ✅ Done | — | #166 |
 | 7.4 | Soul File viewer | ✅ Done | — | #166 |
-| 7.5 | Soul File Coach (AI helps improve personality via chat) | ✅ Done (backend) / ⏳ Pending (mobile UI) | — | #191 |
+| 7.5 | Soul File Coach (AI helps improve personality via chat) — backend live (#191). Mobile UI in build 2026-06-03 by mobile expert — 3 known issues (bot isolation reset, CTA visibility, slowness). Slowness fixed via dashboard (soul_file_coach back to Gemini). | ✅ Done (backend) / 🔄 Mobile UI in build | 1 | #191 (backend) + mobile pending |
 | 7.6 | A/B testing (two soul file versions, compare quality) | ✅ Done | — | #204 |
 | 7.7 | Bot quality scorer (automatic conversation rating) | ✅ Done | — | #201 |
 | 7.8 | Creator recommendations (AI suggests changes) | ✅ Done | — | #203 |
@@ -283,11 +286,13 @@
 ## MOBILE CLIENT WORK (across phases)
 | # | Feature | Depends on | Status | Est. days |
 |---|---------|-----------|--------|-----------|
-| M1 | H2H chat UI (new screens) — TOMORROW priority | Phase 1 API ✅ | ⏳ Pending — tomorrow's top priority | 3 |
+| M1 | H2H chat UI — yral-mobile #1178 sent to Sarvesh 2026-06-03 (feature-flag-gated default OFF, mic-hide G6 deferred to Task #64 post-merge commit) | Phase 1 API ✅ | 🔄 With Sarvesh | 0 |
 | M2 | Chat as Human toggle UI — yral-mobile #1172 merged 2026-05-29 (feature-flag-gated default OFF) | Phase 1 API ✅ | ✅ Done | 0 |
 | M3 | SSE streaming parser — yral-mobile #1173 merged 2026-06-02 (feature-flag-gated default OFF) | Phase 10 backend | ✅ Done | 0 |
-| M4 | Soul File Coach UI — TOMORROW priority — "Make your bot better" entry from bot profile, opens coach chat pre-loaded with bot context, save-on-end summarizes changes applied | Phase 7.5 API ✅ | ⏳ Pending — tomorrow's top priority | 3 |
-| M5 | Audio upload UI — TOMORROW priority — mirror image-upload UX (mic button on input bar, hold-to-record OR file-picker, preview before send) | Phase 1.7 backend ✅ | ⏳ Pending — tomorrow's top priority | 2 |
+| M4 | Soul File Coach UI — in build 2026-06-03 by mobile expert. 3 known issues found by Rishi: (1) Create AI Influencer CTA vanishing on human profile [logs pending], (2) coach slow [fixed today via dashboard flip to Gemini], (3) bots sharing messages [openForBot reset fix pending] | Phase 7.5 API ✅ | 🔄 In build | 2 |
+| M5 | Audio upload UI — yral-mobile #1179 sent to Sarvesh 2026-06-03 (mic-recording-only, feature-flag-gated default OFF; file-picker + waveform deferred to follow-up PRs; iOS NSMicrophoneUsageDescription action item flagged in PR) | Phase 1.7 backend ✅ | 🔄 With Sarvesh | 0 |
+| M-Task-63 | Chat-as-Human "read-only" banner fix — BotAccountReadOnly state respects ChatAsHumanCreatorEnabled flag (mirror BotAccountPrompt logic). ~10-line fix-PR off main. Queued after Soul File Coach UI ships. | Phase 1.10 backend ✅ | ⏳ Pending (post-Coach UI) | 0.5 |
+| M-Task-64 | G6 mic-hide on H2H chats — 5-line `&& !viewState.isHumanChat` gate. Added as follow-up commit on whichever of #1178 or #1179 rebases second after merge. | Phase 1.7b + 1.9 mobile | ⏳ Pending (post-Sarvesh-merges) | 0 |
 | M6 | Creator Studio UI (full dashboard) | Phase 7 API ✅ | ⏳ Pending | 3 |
 | M7 | Earnings dashboard UI | Phase 8 API ✅ | ⏳ Pending | 2 |
 | M8 | Typing indicator animation | Phase 16 backend | ⏳ Pending | 1 |
@@ -303,7 +308,12 @@
 |---|-----------|--------|-----------|-----|
 | 22.1 | Profile section 1 — videos created/uploaded on platform (backend: query by ai_influencer_id from video service; mobile: grid view in profile tab) | ⏳ Pending | 2 | — |
 | 22.2 | Profile section 2 — drafts (saved-but-unpublished content); backend storage + mobile rendering | ⏳ Pending | 2 | — |
-| 22.3 | Profile section 3 — Top 5 video ideas, refreshed daily by AI based on bot's archetype + recent conversations + trending topics; each idea has a "Create" button that opens video creation flow pre-filled with the idea | ⏳ Pending | 3 | — |
+| 22.3 | Daily 5 video ideas per bot — expanded per Feature Strategy session 2026-06-04 (design doc: `docs/VIDEO-IDEAS-FEATURE-DESIGN.md`). Decisions locked: third profile tab UX (next to Published + Drafts), headless Create wired into existing `POST offchain.yral.com/api/v2/videogen/generate`, one-at-a-time global lock via `VideoGenerationTracker`, no trending topics in v1 (ideas from archetype + Soul File + recent convs only), active bots only (≥1 message last 7 days) + cold-start on-demand, user-profile version deferred (gate on Create-tap metrics). | 🔄 Backend starting 2026-06-04 per Rishi (pre-cutover parallel); mobile waits for Coach UX overhaul | 5 | (see 22.3a-22.3e below) |
+| 22.3a | Migration 032 `video_ideas` table (pg_dump first per Rule 9) — UUID PK, influencer_id FK + ON DELETE CASCADE, batch_date, rank 1-5, hook, idea_text, status fresh/used, UNIQUE(influencer_id, batch_date, rank) | Developer session | ⏳ Pending | 0.5 |
+| 22.3b | Backend feature PR — `app/services/video_ideas.py` clone of quality_scorer pattern (generate_for_one_bot, generate_all_once, video_ideas_loop), kill_switch entry "ENABLE_VIDEO_IDEAS_LOOP", `video_idea_generation` registry process (cheap internal_vllm default, surfaces on 25.9 dashboard), `app/repositories/video_idea_repo.py`, two endpoints on `app/routes/influencers.py` (`GET /video-ideas` owner-only + `POST /video-ideas/{idea_id}/used` Create-tap metric for future user-profile version gating). ~350 LOC — sign-off via design doc. | Developer session | ⏳ Pending | 1.5 |
+| 22.3c | Mobile: third "Ideas" profile tab + 5-idea list UI + data source — `ProfileTab.Ideas` enum, third `ProfileTabItem` with lightbulb icon, visibility gated on `isOwnProfile && isAiInfluencer`, `IdeasListContent` with header + 5 rows (rank + hook + idea_text + Create button), data layer mirrors `CoachRemoteDataSource` | Mobile expert (after Coach UX overhaul ships) | ⏳ Queued | 2 |
+| 22.3d | Mobile: one-tap Create headless generation — guard `!VideoGenerationTracker.state.isGenerating` → `GenerateVideoUseCase(prompt=idea.ideaText, uploadHandling=ServerDraft)` → `videoDraftPollingManager.onGenerationSubmitted` + `markIdeaUsed` + toast "Creating video — check Drafts" + row flips to ✓. Failure (429/credits) clears tracker. **Verify on device BEFORE building: whose Drafts does the video land in when fired from bot profile?** | Mobile expert | ⏳ Queued (post-22.3c) | 1 |
+| 22.3e | Motorola end-to-end verification — bot profile shows 3rd tab + 5 ideas, tap Create → toast → Drafts shows progress tile → all other Create buttons greyed → draft lands → buttons re-enable + idea shows ✓; second Create during flight → blocked; human own profile still shows 2 tabs; next day → 5 new ideas | Rishi + mobile expert | ⏳ Queued (post-22.3d) | 0.5 |
 | 22.4 | Mobile UI for all three sections in AI Influencer profile | ⏳ Pending | 3 | — |
 | **Phase 22 total** | | **Not started** | **10 days** | |
 
@@ -330,14 +340,17 @@
 |---|-----------|--------|-----------|-----|
 | 25.1 | `app/services/llm_clients/openai_compatible.py` — HTTPX client against /v1/chat/completions with streaming + error handling + token usage extraction; works against OpenAI, OpenRouter, Together, vLLM, Saikat self-hosted, Ollama | ✅ Done | — | #250 |
 | 25.2 | `app/services/llm_registry.py` — provider registry + per-process routing logic; default config in code, hot-overrides in `llm_process_config` table | ✅ Done (table-backed overrides land in 25.4) | — | #250 |
-| 25.3 | Wire all 9 background loops + user-facing chat to use registry instead of direct Gemini import; all call sites become `llm.call(process="quality_scorer", messages=...)` | 🔄 In Progress — 7 processes migrated (memory_extraction, soul_file_coach, nudge_generation, soul_file_recommendations, ai_influencer_wizard_simulation×2, character_generator×4, quality_scorer); user_chat_main + audio_transcription + proactive_generation + wizard preview deferred to 25.3b (depend on ai_client.generate_response chat-orchestration refactor — NSFW fallback + multimodal + archetype tuning) | 0.5 left | — |
-| 25.4 | `PATCH /admin/llm-registry` — hot-edit which process uses which provider/model (JWT-gated); 19.6 dashboard tile shows current routing | ⏳ Pending | 0.5 | — |
-| 25.5 | Extend Phase 19/24 cost tracking with `provider` and `model` columns on `llm_costs` table; per-provider daily spend rollup on dashboard | ⏳ Pending | 0.5 | — |
-| 25.6 | Per-provider eval harness — extend Phase 9 to run the 50-gold-prompt eval against (provider, model) tuples; comparison report so we can SEE that switching memory_extraction to Qwen-14B doesn't regress quality before flipping the switch | ⏳ Pending | 1 | — |
-| 25.7 | Saikat self-hosted LLM integration test — point one process at his endpoint, verify call + cost-track + dashboard surface | ⏳ Pending | 0.5 (depends on Saikat) | — |
+| 25.3 | Wire all processes to registry — 7 background processes migrated via #251 | ✅ Done | — | #251 |
+| 25.3b | Chat orchestration through registry — user_chat_main + audio_transcription + proactive_generation + wizard preview, symmetry restored across all 12 processes | ✅ Done | — | #252 |
+| 25.4 | `PATCH /admin/llm-routing` — hot-edit endpoint + DB-backed overrides + migration 026 applied + verified end-to-end via psql | ✅ Done | — | #253 + migration 026 |
+| 25.5 | `llm_costs` table + cost recording wired into all 3 dispatch paths; real + synthetic basis writes verified ($0.0000110 Gemini, $0.0000011 internal_vllm) | ✅ Done | — | #256 |
+| 25.6 | Per-provider eval harness — extend Phase 9 to run the 50-gold-prompt eval against (provider, model) tuples; comparison report so we can SEE that switching processes doesn't regress quality | ⏳ Pending | 1 | — |
+| 25.7 | Anshuman/Saikat self-hosted LLM integration test — internal_vllm endpoint verified end-to-end (wire, auth, dispatch, semaphore, OpenAI-spec request, response parsing, streaming, usage extraction, hot-swap mechanism). Latency observation: TTFT 4-5s on internal_vllm — fine for background loops, disqualifies user_chat_main without prefill optimization. | ✅ Done — GREEN | — | (no PR — verification via PATCH cycle) |
 | 25.8 | Docs + GLOSSARY entry explaining "process name → provider/model" mental model for Rishi | ⏳ Pending | 0.5 | — |
-| 25.9 | **LLM Routing dashboard page** (Admin web UI on Phase 19.6 dashboard) — single page showing every process + current provider + model + 7-day $/day cost + Edit button. Two-click change. Save triggers live reload, no redeploy. The ADHD-friendly config interface — Rishi's hard requirement 2026-05-31: "it should be easily configurable because I have ADHD, if this config is buried somewhere then it will be very difficult for me to change." | ⏳ Pending | 1 | — |
-| **Phase 25 total** | | **Not started** | **7 days** | |
+| 25.9 | **LLM Routing dashboard page** — shipped 2026-06-03. Live at `https://agent.rishi.yral.com/admin/llm-routing?token=<jwt>`. Per-process table with provider/model/timeout dropdowns + Save + Reset. Real $/24h vs synthetic split. Traffic-light rejection % (green/amber/red). Used today to flip soul_file_coach + soul_file_recommendations + character_generator + ai_influencer_wizard_simulation back to Gemini for TTFT. | ✅ Done | — | #261 |
+| 25.10 | (NEW 2026-06-03) Phase 25.3b extraction trail audits — 3 confirmed instances (PR #254 audio storage_key, PR #255 audio MIME defaults, PR #257 image multimodal). Systematic audit of every multimodal/special-case path in legacy `ai_client.generate_response` vs new `llm_registry.call` for gaps. Candidates: NSFW OpenRouter routing, audio in non-transcription paths, safety_settings per-archetype, per-archetype temperature/max_tokens. | ⏳ Pending — queued post-current bugs | 1 | — |
+| 25.11 | (NEW 2026-06-03) Full rollout to internal_vllm — 9 background processes migrated via DB overrides, 8 background loops re-enabled in 4 tranches with 15-min watches between. 1-hour validation: 329 calls / 0 failures / spend dropped to ~$0.80/day projected vs $400/24h May 30 incident. Memory entry `project_phase_25_full_rollout_2026_06_03.md`. | ✅ Done — GREEN | — | #258 (outcome tracking) + migrations 027/028 + #259 (engagement loop fix) |
+| **Phase 25 total** | | **~95% done — 25.6 (eval, deferred) / 25.8 (docs) remain. 25.9 dashboard shipped (#261). 25.10 audit in flight overnight.** | **0.5-1 day** | |
 
 **When this slots in:** AFTER cutover (Phase 21) but BEFORE Phase 23 Skills Framework. Reasoning: cutover is end-of-next-week priority; Phase 23 benefits from already being multi-provider (different skill coaches likely want different models). So order: Phase 21 → Phase 25 → Phase 22/23 in parallel.
 
@@ -382,13 +395,14 @@
 
 | # | Sub-phase | Status | Est. days | PR |
 |---|-----------|--------|-----------|-----|
-| 23.1 | Migrations: `user_skill_state` table + `ai_influencers.skill_slug` column | ⏳ Pending | 0.5 | — |
-| 23.2 | `app/services/skills.py` — SKILLS Python dict with `nutrition_coach` entry | ⏳ Pending | 0.5 | — |
-| 23.3 | `app/services/soul_file.py` — add skill + user_skill_state layers (order: GLOBAL → ARCHETYPE → SKILL → PER_INFLUENCER → USER_STATE → MEMORIES) | ⏳ Pending | 0.5 | — |
-| 23.4 | `app/repositories/skill_state_repo.py` — get / upsert / list_due | ⏳ Pending | 0.5 | — |
-| 23.5 | `app/routes/skills.py` — 3 endpoints (POST state, GET state, PATCH preferences) + first-turn onboarding hook in chat.py | ⏳ Pending | 1 | — |
-| 23.6 | `app/services/proactive.py` — `find_due_skill_events` + `generate_skill_message` (reuses existing 15-min engagement loop) | ⏳ Pending | 1 | — |
-| 23.7 | Assign Kareena `skill_slug=nutrition_coach`; Rishi dogfoods on Motorola end-to-end for 1 week | ⏳ Pending | 0.5 | — |
+| 23.1 | Migrations 029 (user_skill_state table) + 030 (ai_influencers.skill_slug column) — pg_dump snapshot per Rule 9 | ✅ Done | — | #263 |
+| 23.2 | `app/services/skills.py` — SKILLS Python dict with `nutrition_coach` entry. Pure-data catalog. | ✅ Done | — | #263 |
+| 23.3 | `app/services/soul_file.py` — skill + user_skill_state layers added (order: GLOBAL → ARCHETYPE → SKILL → PER_INFLUENCER → USER_STATE → MEMORIES) | ✅ Done | — | #263 |
+| 23.4 | `app/repositories/skill_state_repo.py` — get / upsert / mark_event_fired / list_due (all skill-agnostic) | ✅ Done | — | #263 |
+| 23.5 | `app/routes/skills.py` — 3 endpoints + first-turn onboarding hook in chat.py + `app/services/skill_parser.py` (streaming-safe <skill_state> filter, mobile never sees the tag mid-stream) | ✅ Done | — | #264 |
+| 23.6 | `app/services/proactive.py` — `find_due_skill_events` + `generate_skill_checkin` + `send_skill_checkin` wired into existing 15-min engagement loop (3rd gated block with ENABLE_SKILL_PROACTIVE_LOOP switch) | ✅ Done | — | #265 |
+| 23.6c | Architecture cleanup — removed dead `skill_chat` LLM process (PR #267); skills use existing `user_chat_main` + `proactive_generation` processes. Pure-data scaling promise literally true: english_coach / daily_briefing / travel_advisor / real_estate_advisor = ONE SKILLS dict entry, zero code changes. | ✅ Done | — | #266 (rename) + #267 (remove) |
+| 23.7 | Assign Kareena `skill_slug=nutrition_coach` + dogfood on Motorola — Rishi creates Kareena from his Motorola tomorrow 2026-06-04 morning then runs the UPDATE SQL + sends first message | ⏳ Tomorrow morning | 0.5 | — |
 | **Phase 23 total** | | **Not started** | **4.5 days** | |
 
 **Phase 24+ (deferred — expansion):** Once V1 is proven via Rishi's dogfooding, each new skill is one `SKILLS` dict entry + maybe a check-in prompt template. No new tables, no new services. Candidates: `daily_briefing` (India News, Stock Market), `travel_advisor`, `real_estate_advisor`, `running_coach`, `hyrox_coach`, `language_coach`, `study_coach`, `creator_growth_coach`. ~1 day per skill.
