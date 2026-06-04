@@ -50,6 +50,11 @@ _PER_LOOP_KEYS = {
     # so ops can stop just the skill side without disturbing legacy
     # 24h proactive or 5-min nudges.
     "skill_proactive": "ENABLE_SKILL_PROACTIVE_LOOP",
+    # Phase 22.3 — nightly video-idea generation per active AI
+    # influencer (~5 ideas/bot/day via internal_vllm). Cheap, but
+    # symmetric env-flag so ops can stop the loop if it misbehaves
+    # without touching the rest of the background fleet.
+    "video_ideas": "ENABLE_VIDEO_IDEAS_LOOP",
 }
 
 

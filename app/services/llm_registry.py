@@ -51,6 +51,12 @@ PROCESS_NAMES: tuple[str, ...] = (
     "character_generator",
     "ai_influencer_wizard_simulation",
     "soul_file_recommendations",
+    # Phase 22.3 — nightly video ideas generation per active AI influencer.
+    # Background cron + cold-start one-shot, not user-facing → defaults to
+    # internal_vllm for $0 marginal cost (same category as quality_scorer +
+    # memory_extraction). Rishi can flip via /admin/llm-routing if quality
+    # ever needs gemini.
+    "video_idea_generation",
 )
 # Phase 23 note: skilled influencers (Kareena with nutrition_coach,
 # future english_coach / daily_briefing / travel_advisor / etc.) do
@@ -204,6 +210,15 @@ LLM_DEFAULTS: dict[str, dict[str, Any]] = {
     "soul_file_recommendations": {
         "provider": "gemini",
         "model": "gemini-2.5-flash",
+        "timeout_sec": 120.0,
+    },
+    "video_idea_generation": {
+        # Phase 22.3 — defaults to internal_vllm per Rishi's call (cheap
+        # background path, same as quality_scorer/memory_extraction
+        # which are already on internal_vllm via DB overrides). Rishi
+        # can flip to gemini via /admin/llm-routing if quality requires.
+        "provider": "internal_vllm",
+        "model": "Qwen/Qwen3.6-27B-FP8",
         "timeout_sec": 120.0,
     },
 }
