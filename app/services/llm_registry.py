@@ -539,6 +539,18 @@ async def call(
     provider = cfg["provider"]
     provider_meta = PROVIDERS[provider]
 
+    # Phase 25.10 follow-up — defensive capability gate. Mirrors the
+    # `supports_stream` gate in call_stream() and `supports_transcribe`
+    # in call_transcribe(). Today every PROVIDER has supports_chat=True
+    # so this is latent; the gate stops a future contributor from
+    # adding a transcribe-only or embeddings-only provider and having
+    # call() silently dispatch a chat request to it.
+    if provider_meta.get("supports_chat") is False:
+        raise RuntimeError(
+            f"llm_registry.call: provider={provider!r} does not support chat "
+            f"(process={process!r})"
+        )
+
     # Merge: provider default → caller extras (caller wins on collision).
     merged_extra = dict(provider_meta.get("default_extra_body") or {})
     if extra_body:

@@ -125,6 +125,22 @@ async def _messages_to_gemini_contents(
                                 _fetch_and_encode_image(url),
                             )
                         )
+                else:
+                    # Phase 25.10 follow-up — surface dropped content
+                    # types (e.g. OpenAI `input_audio` or future
+                    # `tool_use` items the gemini client doesn't know
+                    # how to translate). Previously silent, which
+                    # masked the "user sent audio-in-messages and
+                    # Gemini saw nothing" failure mode. Latent today
+                    # because the chat hot path doesn't emit anything
+                    # other than text/image_url, but the next feature
+                    # that does will get a Sentry breadcrumb instead
+                    # of a silent drop.
+                    logger.warning(
+                        "gemini: dropping unknown content item type=%r (keys=%s)",
+                        t,
+                        list(item.keys()),
+                    )
 
         if parts:
             contents.append({"role": gemini_role, "parts": parts})
