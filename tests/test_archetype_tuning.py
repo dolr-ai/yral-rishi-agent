@@ -74,21 +74,47 @@ def test_archetype_max_tokens_uniform_and_generous():
 
 def test_educator_prompt_includes_few_shot_example():
     """Educator was the archetype most likely to ramble in the eval. The
-    prompt now embeds a worked example — both English and Hinglish — so the
-    model can copy the shape."""
+    prompt embeds a worked example so the model can copy the shape.
+
+    Generalized 2026-06-04: the Hinglish second example was dropped to keep
+    the archetype language-agnostic — global creators should not inherit an
+    India-specific signal. The English recursion example is sufficient to
+    prime the analogies-first behaviour the educator archetype needs.
+    """
     from services.soul_file import ARCHETYPE_PROMPTS
 
     educator = ARCHETYPE_PROMPTS["educator"]
     assert "Example exchange" in educator
     assert "recursion" in educator.lower()
-    # Hinglish line, helps the language-mirror score too
-    assert "Hinglish" in educator or "Haan" in educator or "AI sach" in educator
+    assert "Russian dolls" in educator, (
+        "expected the recursion analogy as the worked example"
+    )
 
 
-def test_global_rules_enumerate_indian_languages():
-    """language_match was 3.10/5 in eval. The reinforced rule now lists the
-    specific languages mobile users in our market actually speak."""
+def test_global_rules_mirror_any_user_language():
+    """Generalized 2026-06-04: GLOBAL_RULES no longer enumerates specific
+    Indian languages. The load-bearing instruction is `mirror exactly` so
+    the rule works for any user-language pair (Hinglish stays handled,
+    Spanglish / Singlish / Arabish are now equally handled).
+    """
     from services.soul_file import GLOBAL_RULES
 
-    for lang in ("Hinglish", "Hindi", "Telugu", "Tamil"):
-        assert lang in GLOBAL_RULES, f"language list missing {lang}"
+    # Core instruction must remain.
+    assert "Mirror the user's language exactly" in GLOBAL_RULES, (
+        "language-mirror instruction must remain the load-bearing rule"
+    )
+    # Mid-message code-switching must remain explicit so the model knows to
+    # mirror two-language messages without enumerating language names.
+    assert "code-switching" in GLOBAL_RULES, (
+        "must keep explicit code-switching instruction"
+    )
+    # Guard against accidental re-introduction of the India enumeration:
+    # listing language names creates a regional default that mis-tunes global
+    # bots. If we ever want region-specific behavior, do it via a per-
+    # influencer region config, not by hardcoding a list here.
+    forbidden_enumeration = ("Telugu", "Tamil", "Bengali", "Marathi")
+    found = [lang for lang in forbidden_enumeration if lang in GLOBAL_RULES]
+    assert not found, (
+        f"GLOBAL_RULES should not enumerate specific languages "
+        f"(found: {found}); use generic mirror instruction instead"
+    )
