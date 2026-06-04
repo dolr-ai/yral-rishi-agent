@@ -93,6 +93,13 @@ async def lifespan(app: FastAPI):
 
     digest_task = asyncio.create_task(digest_loop())
 
+    # Phase 22.3 — nightly video ideas generation per active influencer.
+    # Same shape as scoring_loop / streak_loop. Gated by kill_switch
+    # "video_ideas" → ENABLE_VIDEO_IDEAS_LOOP.
+    from services.video_ideas import video_ideas_loop
+
+    video_ideas_task = asyncio.create_task(video_ideas_loop())
+
     # Hydrate rate-limit config from DB into Redis so the middleware
     # reads the operator-tuned values, not just the defaults. Idempotent.
     try:
@@ -113,6 +120,7 @@ async def lifespan(app: FastAPI):
     etl_task.cancel()
     integrity_task.cancel()
     digest_task.cancel()
+    video_ideas_task.cancel()
     try:
         await trending_refresher_task
     except asyncio.CancelledError:
@@ -151,6 +159,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await digest_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await video_ideas_task
     except asyncio.CancelledError:
         pass
     langfuse_tracing.flush()

@@ -9,8 +9,13 @@ from fastapi.responses import JSONResponse
 import config
 from database import get_pool
 from auth import get_current_user
-from repositories import influencer_repo
-from services import moderation, character_generator, google_chat
+from repositories import influencer_repo, video_idea_repo
+from services import (
+    moderation,
+    character_generator,
+    google_chat,
+    video_ideas as video_ideas_service,
+)
 from services.character_generator import GeminiSafetyBlocked
 from models import (
     CreateInfluencerRequest,
@@ -409,3 +414,103 @@ async def admin_unban(
     except Exception as e:
         await google_chat.notify_influencer_unban_failed(inf["id"], str(e))
         raise HTTPException(status_code=500, detail=f"Unban failed: {e}")
+
+
+# ───────────────── Phase 22.3 — video ideas (owner-only) ──────────────────
+
+
+def _format_video_idea(row: dict) -> dict:
+    """Mobile renders chips from this shape. batch_date is ISO so mobile
+    can group ideas by day; used_at is ISO-or-null."""
+    return {
+        "id": str(row["id"]),
+        "influencer_id": row["influencer_id"],
+        "batch_date": (
+            row["batch_date"].isoformat()
+            if hasattr(row["batch_date"], "isoformat")
+            else str(row["batch_date"])
+        ),
+        "rank": row["rank"],
+        "hook": row["hook"],
+        "idea_text": row["idea_text"],
+        "status": row["status"],
+        "used_at": (
+            row["used_at"].isoformat()
+            if row.get("used_at") and isinstance(row["used_at"], datetime)
+            else None
+        ),
+        "created_at": (
+            row["created_at"].isoformat()
+            if isinstance(row["created_at"], datetime)
+            else row["created_at"]
+        ),
+    }
+
+
+@router.get("/influencers/{influencer_id}/video-ideas")
+async def list_video_ideas(influencer_id: str, request: Request):
+    """Latest batch of ~5 video idea chips for an owned influencer.
+
+    Cold-start path: if no batch has ever been written for this bot,
+    we generate one ON DEMAND so the creator's first session isn't
+    blank. ~3-5s LLM latency is acceptable here because mobile already
+    shows a loading state on this screen. Subsequent calls hit the
+    nightly cron's batch and return immediately."""
+    user_id = get_current_user(request)
+    pool = await get_pool()
+
+    inf = await influencer_repo.get_by_id(pool, influencer_id)
+    if not inf:
+        raise HTTPException(status_code=404, detail="Influencer not found")
+    if inf.get("parent_principal_id") != user_id:
+        raise HTTPException(
+            status_code=403, detail="Only the creator can see this influencer's ideas"
+        )
+
+    ideas = await video_idea_repo.latest_batch_for_bot(pool, influencer_id)
+    if not ideas:
+        # Cold-start — generate one batch synchronously. Any failure
+        # falls through to an empty list; mobile renders "no ideas yet,
+        # check back tomorrow." Subsequent cron passes will populate.
+        try:
+            await video_ideas_service.generate_for_one_bot(pool, dict(inf))
+        except Exception:
+            logger.exception(
+                "video_ideas: cold-start gen failed for influencer %s",
+                influencer_id,
+            )
+        ideas = await video_idea_repo.latest_batch_for_bot(pool, influencer_id)
+
+    return {
+        "influencer_id": influencer_id,
+        "ideas": [_format_video_idea(r) for r in ideas],
+        "total": len(ideas),
+    }
+
+
+@router.post("/influencers/{influencer_id}/video-ideas/{idea_id}/used")
+async def mark_video_idea_used(influencer_id: str, idea_id: str, request: Request):
+    """Mobile calls this when the creator taps Create on an idea chip.
+    Flips status from 'fresh' to 'used' and stamps used_at. Idempotent:
+    re-calling after status='used' returns the existing row unchanged."""
+    user_id = get_current_user(request)
+    pool = await get_pool()
+
+    inf = await influencer_repo.get_by_id(pool, influencer_id)
+    if not inf:
+        raise HTTPException(status_code=404, detail="Influencer not found")
+    if inf.get("parent_principal_id") != user_id:
+        raise HTTPException(
+            status_code=403, detail="Only the creator can mark ideas used"
+        )
+
+    row = await video_idea_repo.mark_used(pool, idea_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Idea not found")
+    # Belt-and-suspenders: confirm the idea belongs to the claimed
+    # influencer. Should always hold (URL bot_id matches the row), but
+    # protects against a creator passing someone else's idea_id.
+    if row["influencer_id"] != influencer_id:
+        raise HTTPException(status_code=404, detail="Idea not found")
+
+    return {"idea": _format_video_idea(row)}
