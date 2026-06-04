@@ -139,6 +139,66 @@ def test_active_bots_filter_recent_traffic():
     assert "is_active = 'active'" in body
 
 
+def test_max_tokens_sized_for_multi_byte_scripts():
+    """Devanagari / Han / Tamil etc. consume ~3x tokens per visible
+    character vs Latin. 1024 was too small (2026-06-04 cold-start bug:
+    Rishi's principal got a truncated mid-string Hindi response).
+    Pin 4096+ so the regression can't sneak back."""
+    src = _read("app/services/video_ideas.py")
+    pos = src.find('process="video_idea_generation"')
+    body = src[pos : pos + 1500]
+    # Pin max_tokens=4096 (or anything >=4096); reject smaller values.
+    import re
+
+    m = re.search(r"max_tokens=(\d+)", body)
+    assert m is not None, "max_tokens kwarg missing"
+    assert int(m.group(1)) >= 4096, (
+        f"max_tokens={m.group(1)} too small for multi-byte scripts; "
+        f"need ≥4096 (2026-06-04 cold-start truncation bug)"
+    )
+
+
+def test_extract_idea_array_recovers_truncated_response():
+    """Belt-and-suspenders: even with max_tokens=4096, a pathological
+    response could still truncate. The parser should recover whatever
+    complete ideas precede the truncation by closing the array at
+    the last complete `}`."""
+    from app.services.video_ideas import _extract_idea_array
+
+    # Three complete ideas, then truncation mid-string on the fourth.
+    truncated = (
+        "[\n"
+        '  {"hook": "Hook one.", "idea_text": "Idea one body."},\n'
+        '  {"hook": "Hook two.", "idea_text": "Idea two body."},\n'
+        '  {"hook": "Hook three.", "idea_text": "Idea three body."},\n'
+        '  {"hook": "Hook four.", "idea_text": "Body four was getting'
+    )
+    result = _extract_idea_array(truncated)
+    assert result is not None
+    assert len(result) == 3
+    assert result[0] == {"hook": "Hook one.", "idea_text": "Idea one body."}
+    assert result[2]["hook"] == "Hook three."
+
+
+def test_extract_idea_array_strict_path_still_works():
+    """The strict (non-truncated) path must keep working — regression
+    guard for the new truncation-tolerant branch."""
+    from app.services.video_ideas import _extract_idea_array
+
+    clean = '[{"hook": "h1", "idea_text": "i1"}, {"hook": "h2", "idea_text": "i2"}]'
+    result = _extract_idea_array(clean)
+    assert result is not None
+    assert len(result) == 2
+
+
+def test_extract_idea_array_returns_none_on_garbage():
+    """No `[` at all → None (not [])."""
+    from app.services.video_ideas import _extract_idea_array
+
+    assert _extract_idea_array("totally not json") is None
+    assert _extract_idea_array("") is None
+
+
 def test_generation_prompt_constrains_json_shape():
     """The LLM is told to emit a bare JSON array with the expected
     object shape. Pin so a future contributor doesn't loosen it."""
