@@ -1,24 +1,37 @@
 # WAL-G recovery runbook
 
-**Status (2026-06-04):** WAL-G **not yet wired** — pending real Hetzner credentials. This document is the procedure for both:
+**Status (2026-06-04 07:35 UTC):** ✅ **WAL-G is LIVE** — streaming to `s3://rishi-yral/yral-rishi-agent-walg/`. First base backup (1.27 GB) + 5+ WAL segments archived, `failed_count=0`.
 
-1. **Enabling WAL-G** the first time (Phase 0 didn't include it; this is the catch-up)
-2. **Restoring from WAL-G** once it's running (PITR or full cluster reinit)
+This runbook covers both:
+
+1. **What was done to enable WAL-G** (the catch-up after Phase 0 shipped without it)
+2. **How to restore from WAL-G** (PITR or full cluster reinit) — for use during a real incident
 
 ---
 
-## Why this is here instead of executed
+## What was actually done (2026-06-04)
 
-Bootstrap state inspected 2026-06-04:
+The original Phase 0 bootstrap created `/run/secrets/hetzner-s3-access-key-id` containing the literal 25-byte placeholder `walg-disabled-placeholder` (per `bootstrap/scripts/patroni-install.sh:508-510` when `YRAL_PATRONI_WAL_G_ENABLED=false`). `archive_command` was `/bin/true`. No WAL segments were being archived.
 
-```bash
-$ docker exec patroni-rishi-4 cat /run/secrets/hetzner-s3-access-key-id
-walg-disabled-placeholder
-```
+The actual enablement was done via direct `docker service update` on the running patroni stack (no bootstrap re-run needed):
 
-The swarm secrets `hetzner-s3-access-key-id` + `hetzner-s3-secret-access-key` currently contain the literal 25-byte string `walg-disabled-placeholder`. This is what `bootstrap/scripts/patroni-install.sh:508-510` writes when `YRAL_PATRONI_WAL_G_ENABLED` is false (its default). The `archive_command` in postgres.yml is currently `/bin/true` — every WAL segment is silently discarded.
+1. **Rotated 2 new docker secrets** containing the real Hetzner Object Storage credentials — read from the existing `chat_ai_s3_credentials` secret (which has the same Hetzner access key), piped through stdin to `docker secret create` so the values never landed in shell history:
+   - `yral_v2_hetzner_s3_access_key_id_walg_20260604`
+   - `yral_v2_hetzner_s3_secret_access_key_walg_20260604`
 
-To turn WAL-G on you need to (1) rotate those secrets to contain **real** Hetzner Object Storage credentials and (2) re-run the bootstrap with the WAL-G env vars set, which re-deploys the patroni stack. Neither step is reversible-cheap if the credentials are wrong, so this is the operator's call.
+2. **Rolling restart of all 3 patroni services** with the new secrets + WAL-G env vars (`USE_WALG_BACKUP=true`, `WALG_S3_PREFIX=s3://rishi-yral/yral-rishi-agent-walg`, `AWS_REGION=hel1`, `AWS_ENDPOINT=https://hel1.your-objectstorage.com`, `AWS_S3_FORCE_PATH_STYLE=true`, `USE_WALE_S3_BACKUP=true`). Order: sync-standby (rishi-4) → async replica (rishi-5) → leader (rishi-6, last). Leader failover happened cleanly during rishi-6's restart; cluster reconverged on TL=25.
+
+3. **First failure caught:** WAL-G returned `NoCredentialProviders: no valid providers in chain.` Spilo's `configure_spilo.py` writes `/run/etc/wal-e.d/env/AWS_ACCESS_KEY_ID` from **env vars at container startup**, not from `/run/secrets/` files. The secrets were mounted but never consumed.
+
+4. **Fix:** parallel `docker service update --env-add AWS_ACCESS_KEY_ID=... --env-add AWS_SECRET_ACCESS_KEY=...` on all 3 nodes. Credentials piped through ssh stdin from a running patroni container — never exposed to shell history. Triggered a second rolling restart sequence; cluster reconverged on TL=26 (leader is now rishi-5).
+
+5. **Verified streaming:** Spilo's `postgres_backup.sh` auto-fired the first base backup on startup. By 07:35 UTC:
+   - `archived_count=8 failed_count=0`
+   - `s3 ls --recursive`: 16 objects, 1.2 GiB (base backup + 5 WAL segments + history file + backup label)
+
+### Security tradeoff
+
+`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` are now in the service env (visible via `docker service inspect`). Same blast radius as `cat /run/secrets/...` on the manager node, but slightly worse than the file-only path. Long-term improvement: change `bootstrap/scripts/patroni-stack.yml` to mount the secrets with `target=/run/etc/wal-e.d/env/AWS_ACCESS_KEY_ID` directly (envdir style). Tracked as follow-up; not blocking.
 
 ---
 
