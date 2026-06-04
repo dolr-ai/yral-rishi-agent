@@ -268,20 +268,60 @@
 | 20.6 | Gradual rollout — flip processes one at a time via Phase 25.4 admin endpoint (no redeploy needed) | ⏳ Pending | 2 | — |
 | **Phase 20 total** | | **Not started** | **12 days** | |
 
-## PHASE 21: PRODUCTION CUTOVER (at Rishi's discretion)
+## PHASE 21α: ALPHA CUTOVER (yral-mobile main = internal YRAL team dogfood)
+**Model established 2026-06-04 by Rishi:** Alpha = yral-mobile `main` branch, visible to whole YRAL team but NOT external users. Cutover means Firebase Remote Config flips `CHAT_BASE_URL` from chat-ai → agent.rishi.yral.com AND all 6 v2-only feature flags flip ON simultaneously (not day-by-day). 1-week internal soak before Phase 21β (production).
+
+See memory: `project_cutover_phases_alpha_and_production.md` for full reference.
+
 | # | Sub-phase | Status | Est. days | PR |
 |---|-----------|--------|-----------|-----|
-| 21.0 | **Auto-deploy from CI build to swarm service.** Surfaced 2026-06-02: PR #241 merged + image built by CI but swarm spec never updated → required a manual `docker service update --image` step to roll out. Today's symptom: monolith ran old image for ~35 min after merge despite image being in GHCR. Fix options (pick one before cutover): (a) CI deploy-job that SSHes from a self-hosted runner / OIDC and runs `docker service update`; (b) Watchtower-style image-pull service on rishi-4 that polls GHCR for the `:main` tag; (c) GHCR push webhook into a small endpoint on rishi-4. Hard prerequisite for 21.x — gradual rollout cannot work if every deploy needs a human SSH. | ⏳ Pending | 1 | — |
-| 21.1 | Final ETL sync (delta since last migration) | ⏳ Pending — superseded by continuous ETL (Task B, #207) | 1 | — |
-| 21.1c | Continuous incremental ETL from chat-ai (background, every 5 min, gated on CHAT_AI_DATABASE_URL env) | ✅ Done | — | #207 |
-| 21.1v | Hourly data-integrity verifier (row count + sample conversations + FK integrity) | ✅ Done | — | #208 |
-| 21.2 | 10% rollout via mobile feature flag | ⏳ Pending | 1 | — |
-| 21.3 | Dual-write period (both DBs in sync) | ⏳ Pending | 2 | — |
-| 21.4 | 25% → 50% → 100% gradual rollout | ⏳ Pending | 3 | — |
-| 21.5 | Monitor Sentry at each rollout step | ⏳ Pending | — | — |
-| 21.6 | Chat-ai standby 90+ days | ⏳ Pending | — | — |
-| 21.7 | Decommission chat-ai (Rishi explicit approval) | ⏳ Pending | 1 | — |
-| **Phase 21 total** | | **Not started** | **9 days** | |
+| 21α.0 | **Auto-deploy from CI build to swarm service.** Surfaced 2026-06-02: PR #241 merged + image built by CI but swarm spec never updated → required a manual `docker service update --image` step to roll out. Hard prerequisite for alpha — hotfix during alpha cannot require manual SSH. Options: (a) CI deploy-job that SSHes from self-hosted runner / OIDC and runs `docker service update`; (b) Watchtower-style image-pull service on rishi-4 polling GHCR `:main` tag; (c) GHCR push webhook into rishi-4 endpoint. | ⏳ Pending | 1 | — |
+| 21α.A1 | Mobile gate: all 6 v2 feature flags exist in `ChatFeatureFlags.kt` with `defaultValue=false` (`H2hChatEnabled`, `AudioRecordingEnabled`, `SoulFileCoachEnabled`, `SseStreamingEnabled`, `ChatAsHumanCreatorEnabled`, `VideoIdeasEnabled`) | 🔄 5/6 (VideoIdeasEnabled pending PR #1184 fix) | — | yral-mobile |
+| 21α.A2 | Mobile gate: all open PRs (#1178, #1179, #1180, #1181, #1182, #1183, #1184) Sarvesh-reviewed + merged to mobile main | 🔄 In flight | 1-3 | yral-mobile |
+| 21α.A3 | Mobile gate: Firebase Remote Config "alpha-override" config staged (CHAT_BASE_URL + 6 flags), pushed at T-0 | ⏳ Pending | 0.25 | — |
+| 21α.B1 | Backend gate: Full Motorola test of all 30 chat-ai-parity endpoint shapes on V2 (Phase 1.16 promoted) | ⏳ Pending | 0.5 | — |
+| 21α.B2 | Backend gate: Latency comparison V2 vs chat-ai; 50%-faster target met per CLAUDE.md rule 6 (Phase 1.17 promoted) | ⏳ Pending — abort gate | 0.5 | — |
+| 21α.B3 | Backend gate: Continuous ETL loop re-enabled + first delta-sync verified clean (Phase 1.14a promoted) | 🔄 Off post-emergency | 0.5 | — |
+| 21α.B4 | Backend gate: Phase 2.V1 Langfuse traces verified arriving | ⏳ Pending | 0.5 | — |
+| 21α.B5 | Backend gate: Phase 2.V2 Redis WS pub/sub verified (not local fallback) | ⏳ Pending | 0.5 | — |
+| 21α.B6 | Backend gate: Phase 19.2 cost circuit breaker landed (still have $400-incident memory) | ⏳ Pending | 1 | — |
+| 21α.B7 | Backend gate: Phase 1.14 ETL completeness re-verified (re-bootstrap PR #227 closed gap 2026-06-04) | ✅ Done | — | #227 + sidecar pg16 manual op |
+| 21α.C1 | Risk audit gate: Push notifications (chat-ai's `services/push_notifications.py`) ported + fire-tested on V2 — high-risk silent-inbox failure if missing | ⏳ Pending — VERIFY | 0.5 | — |
+| 21α.C2 | Risk audit gate: Image generation via Replicate Flux fired end-to-end on V2 against a real bot | ⏳ Pending — VERIFY | 0.25 | — |
+| 21α.C3 | Risk audit gate: Ansuman's `recsys-influencer-feed.ansuman.yral.com` confirmed reading from V2's `ai_influencers` table (not chat-ai's) — coordinate with Ansuman | ⏳ Pending — VERIFY | 0.25 | — |
+| 21α.C4 | Risk audit gate: Billing paywall (25-50 msg limit, calls billing.yral.com) tested empirically on V2 | ⏳ Pending — VERIFY | 0.25 | — |
+| 21α.C5 | Risk audit gate: Google Chat admin webhooks (`services/google_chat.py` 81 lines) port verified — silent admin blind-spot risk | ⏳ Pending — VERIFY | 0.25 | — |
+| 21α.S1 | Security gate: `gitleaks` full-history scan run; any real leaks remediated (Phase 24.1 promoted-light) | ⏳ Pending | 0.5 | — |
+| 21α.S2 | Security gate: DATABASE_URL secret rotated (I13 follow-up — leaked into 2026-06-02 audit transcript) | ⏳ Pending — DEDICATED SESSION | 0.5 | — |
+| 21α.S3 | Security gate: JWT extraction empirically matches chat-ai (same issuer check, same fields, same error paths) | ⏳ Pending | 0.25 | — |
+| 21α.S4 | Security gate: CORS + Sentry/Langfuse log redaction spot-checked (no JWTs/API keys in logs) | ⏳ Pending | 0.25 | — |
+| 21α.S5 | Security gate: `pip-audit` quick run; no P0 dep vulns (Phase 24.3 promoted-light) | ⏳ Pending | 0.25 | — |
+| 21α.D1 | Snapshot 1: pre-alpha-cutover pg_dump V2 + chat-ai → `pre-alpha-cutover-YYYY-MM-DD/`, md5'd | ⏳ Pending | 0.25 | — |
+| 21α.E1 | Smoke test: Mobile expert builds "alpha-preview" APK with CHAT_BASE_URL=agent + all 6 flags ON | ⏳ Pending | 0.25 | — |
+| 21α.E2 | Smoke test: Rishi runs 15-test matrix on Motorola (see memory `project_cutover_phases_alpha_and_production.md`) — every test must pass | ⏳ Pending — ABORT GATE | 0.5 | — |
+| 21α.F1 | T-0: Firebase Remote Config push (CHAT_BASE_URL + 6 flags ON) | ⏳ Pending | — | — |
+| 21α.F2 | T+1h watch: Sentry error rate stable; kill-switch any spiking process | ⏳ Pending | — | — |
+| 21α.F3 | T+24h: Clear → 7-day alpha soak begins | ⏳ Pending | 7 | — |
+| **Phase 21α total** | | **Not started — 7+ gates pending, 1-3 day prep + 7 day soak** | **~3 day prep + 7 day soak** | |
+
+## PHASE 21β: PRODUCTION CUTOVER (Play Store + App Store submission)
+**Triggered after Phase 21α 1-week alpha soak clean.** Same codebase, just submitted to app stores. External users get v2.
+
+| # | Sub-phase | Status | Est. days | PR |
+|---|-----------|--------|-----------|-----|
+| 21β.G1 | Gate: ≥7 days alpha with **zero Sentry P0s** | ⏳ Pending | — | — |
+| 21β.G2 | Gate: All YRAL team report no regressions in alpha | ⏳ Pending | — | — |
+| 21β.G3 | Gate: Phase 24 full security drill (24.1-24.4) clean | ⏳ Pending | 5 | — |
+| 21β.G4 | Gate: I11 offsite backup verified + I10 weekly restore drill running | ⏳ Pending | 1 | — |
+| 21β.G5 | Gate: Latency stable + meets 50%-faster under real alpha load | ⏳ Pending | — | — |
+| 21β.G6 | Gate: ETL loop running continuously, no backlog | ⏳ Pending | — | — |
+| 21β.D2 | Snapshot 2: pre-prod-cutover pg_dump V2 + chat-ai → `pre-prod-cutover-YYYY-MM-DD/`, md5'd | ⏳ Pending | 0.25 | — |
+| 21β.F1 | Mobile expert submits alpha codebase to Play Store + App Store | ⏳ Pending | 0.5 | — |
+| 21β.F2 | Wait for store approval (Play ~24h, App Store ~2-7 days) | ⏳ Pending | 2-7 | — |
+| 21β.F3 | Live to general users → 24h tight monitor window | ⏳ Pending | 1 | — |
+| 21.6 | Chat-ai standby 90+ days (no shutdown) | ⏳ Pending | — | — |
+| 21.7 | Decommission chat-ai (Rishi explicit approval only) | ⏳ Pending | 1 | — |
+| **Phase 21β total** | | **Not started — depends on 21α clean** | **~5-10 days (incl. store review)** | |
 
 ## MOBILE CLIENT WORK (across phases)
 | # | Feature | Depends on | Status | Est. days |
@@ -454,7 +494,8 @@
 | 18 | Meta-AI Advisor | 4 | 0 | 4 | 5 |
 | 19 | Rate Limiting + Observability | 6 | 0 | 6 | 6 |
 | 20 | Self-hosted LLM | 6 | 0 | 6 | 12 |
-| 21 | Production Cutover | 7 | 0 | 7 | 8 |
+| 21α | Alpha Cutover (yral-mobile main + YRAL team dogfood) | 26 | 1 | 25 | ~3 prep + 7 soak |
+| 21β | Production Cutover (Play Store + App Store) | 12 | 0 | 12 | ~5-10 |
 | 22 | AI Influencer Profile Sections | 4 | 0 | 4 | 10 |
 | 23 | Skills Framework (post-cutover, dogfood) | 7 | 0 | 7 | 4.5 |
 | 24 | Security & Safety Drills | 5 | 0 | 5 | 5.5 |
