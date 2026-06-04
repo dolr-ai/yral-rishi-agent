@@ -53,3 +53,39 @@ def test_streak_block_warmly_acknowledges_7_plus():
 
     block30 = _streak_block(30)
     assert "30 days in a row" in block30
+
+
+# ─── 2026-06-04 — empty-exception logging hygiene ───────────────────────
+
+
+def _read_streak_source():
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[1]
+    return (repo / "app/services/streak_tracker.py").read_text()
+
+
+def test_streak_loop_logs_exception_type_and_repr():
+    """Some asyncpg / Redis errors stringify to "". Previous
+    `f"...: {e}"` made the log line entirely blank — operator had
+    nothing to triage. Pin the type-name + repr so the level line
+    always carries signal."""
+    src = _read_streak_source()
+    assert "logger.exception(" in src, (
+        "streak_loop must use logger.exception for traceback"
+    )
+    assert "type(e).__name__" in src
+    assert "%r" in src or "{e!r}" in src, (
+        "repr must appear so empty-str exceptions still log"
+    )
+
+
+def test_asyncpg_result_parse_failure_is_logged():
+    """When pool.execute returns something we can't parse as 'UPDATE N',
+    don't silently fall through to -1 — log the raw result so we can
+    see what asyncpg actually sent."""
+    src = _read_streak_source()
+    # Both parse sites (updated + reset) must warn.
+    assert src.count("could not parse asyncpg result") >= 2, (
+        "both result/result2 parse fallbacks must log the raw value"
+    )

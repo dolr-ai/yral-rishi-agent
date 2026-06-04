@@ -75,6 +75,7 @@ async def update_all_streaks_once(pool) -> dict:
     try:
         updated = int(result.split()[-1])
     except (ValueError, IndexError):
+        logger.warning("streak_tracker: could not parse asyncpg result %r", result)
         updated = -1
 
     # Reset streaks for conversations whose user hasn't sent in > 1 day —
@@ -92,6 +93,7 @@ async def update_all_streaks_once(pool) -> dict:
     try:
         reset = int(result2.split()[-1])
     except (ValueError, IndexError):
+        logger.warning("streak_tracker: could not parse asyncpg result %r", result2)
         reset = -1
 
     return {"updated": updated, "reset_to_zero": reset}
@@ -122,5 +124,14 @@ async def streak_loop():
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.warning(f"streak_tracker pass failed (non-fatal): {e}")
+            # Use logger.exception + repr — some asyncpg errors stringify
+            # empty ("") which previously produced `… pass failed: ` with no
+            # signal at all. exception() captures the traceback; the
+            # `[{type(e).__name__}] {e!r}` prefix guarantees the level line
+            # itself is searchable even when the traceback is collapsed.
+            logger.exception(
+                "streak_tracker pass failed (non-fatal) [%s]: %r",
+                type(e).__name__,
+                e,
+            )
         await asyncio.sleep(STREAK_UPDATE_INTERVAL_SEC)
