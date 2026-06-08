@@ -10,7 +10,7 @@ Rishi: read this first. Each row links to the audit's TL;DR + recommendation.
 
 2. **DEV-3 — Billing paywall is intentionally client-side.** Architecture matches chat-ai (commit `7881e2e` from 2026-05-26). Acceptable for α (internal cohort). **NOT acceptable for β** — motivated user can bypass mobile gate by hitting v2 API directly. Track as a 21β blocker.
 
-3. **DEV-1 — Push notifications port has 1 yellow item.** `data.type` field is `"chat_message"` in v2 vs `"new_message"` in chat-ai. Mobile expert should confirm what Android routes on; 1-line backend fix either way.
+3. **DEV-1 — Push notifications port: 🟢 GREEN, no backend change needed.** Mobile expert's K answer (2026-06-08) recommended standardizing on v2's current `data.type = "chat_message"` value — chat-ai's `"new_message"` is the legacy direction we're moving away from. The H branch was pre-written for the wrong direction and has been deleted. Current v2 behavior preserved.
 
 ## Pre-drafted: PR #289 review
 
@@ -20,7 +20,7 @@ Rishi: read this first. Each row links to the audit's TL;DR + recommendation.
 
 | ID | Audit | Verdict | File |
 |---|---|:---:|---|
-| DEV-1 | 21α.C1 push notifications port audit | 🟡 | [DEV-1-push-notifications-port.md](DEV-1-push-notifications-port.md) |
+| DEV-1 | 21α.C1 push notifications port audit | 🟢 | [DEV-1-push-notifications-port.md](DEV-1-push-notifications-port.md) (resolved 2026-06-08 — mobile chose to standardize on v2's `chat_message`) |
 | DEV-3 | 21α.C4 billing paywall verification | 🟡 | [DEV-3-billing-paywall.md](DEV-3-billing-paywall.md) |
 | DEV-5 | 21α.B4 Langfuse traces verification | 🟢 | [DEV-5-langfuse-traces.md](DEV-5-langfuse-traces.md) |
 | DEV-11 | 21α.B2 latency comparison N=100 | 🔴 | [DEV-11-latency-comparison.md](DEV-11-latency-comparison.md) |
@@ -55,12 +55,12 @@ Rishi: read this first. Each row links to the audit's TL;DR + recommendation.
 | ID | Audit | Verdict | File |
 |---|---|:---:|---|
 | G | ETL backlog measurement (chat-ai vs v2 row counts) | 🟡 | [G-etl-backlog-measurement.md](G-etl-backlog-measurement.md) |
-| H | push-notif `data.type` fix — local commit, NOT pushed | held | branch `fix/push-notif-data-type-parity-with-chat-ai` (1 commit, awaits mobile confirm) |
+| H | push-notif `data.type` fix — discarded 2026-06-08 | discarded | Mobile K answer recommended standardizing on v2's `chat_message`; branch deleted, no backend change |
 
 ## Verdict summary
 
-- 🟢 GREEN: DEV-2, DEV-4, DEV-5, DEV-6, DEV-7, DEV-8, DEV-9, DEV-12 (8)
-- 🟡 YELLOW: DEV-1, DEV-3, DEV-10 (3)
+- 🟢 GREEN: DEV-1 (resolved 2026-06-08), DEV-2, DEV-4, DEV-5, DEV-6, DEV-7, DEV-8, DEV-9, DEV-12 (9)
+- 🟡 YELLOW: DEV-3, DEV-10 (2)
 - 🔴 RED: DEV-11 (1, with DEV-11b root-cause + cheap fix queued)
 
 **Net:** 8 green / 3 yellow / 1 red across 12 audits. The single red has its root cause diagnosed (stale stats) + a clear cheap fix (ANALYZE).
