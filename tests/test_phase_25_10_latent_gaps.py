@@ -17,12 +17,17 @@ def test_registry_call_gates_on_supports_chat():
     """call() must reject providers that explicitly set supports_chat=False.
     All current providers default True, so this is latent until someone
     adds a transcribe-only / embeddings-only provider — at which point
-    the silent-misdispatch failure mode would resurface."""
+    the silent-misdispatch failure mode would resurface.
+
+    2026-06-08 refactor: the supports_chat gate moved into the
+    _do_complete() helper that backs both primary and fallback dispatches
+    in call(). Behaviour preserved; assertion updated to look at the
+    helper's body."""
     src = _read("app/services/llm_registry.py")
-    # Find the call() function body.
-    call_pos = src.find("async def call(")
-    next_def = src.find("\nasync def ", call_pos + 1)
-    body = src[call_pos:next_def]
+    # Find the _do_complete() function body — the gate now lives here.
+    do_pos = src.find("async def _do_complete(")
+    next_def = src.find("\nasync def ", do_pos + 1)
+    body = src[do_pos:next_def]
     assert "supports_chat" in body
     assert "is False" in body, "use 'is False' to preserve default-True backward compat"
     assert "does not support chat" in body

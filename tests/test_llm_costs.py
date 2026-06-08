@@ -109,14 +109,19 @@ def test_record_cost_is_best_effort_swallows_db_errors():
 
 def test_call_records_cost_after_success():
     """The non-streaming dispatch must call _record_cost on the LlmResponse
-    BEFORE returning to the caller."""
+    BEFORE returning to the caller.
+
+    2026-06-08 refactor: the dispatch + cost recording was moved out of
+    call() into the _do_complete() helper so the same code path is shared
+    between primary and fallback attempts (per the Saikat-primary /
+    Anshuman-fallback routing policy). The behavior under test still
+    exists; we just look for it in _do_complete() now."""
     src = _read("app/services/llm_registry.py")
-    # In call(), the result variable + _record_cost call must appear before return
+    do_start = src.find("async def _do_complete(")
     call_start = src.find("async def call(\n    *,")
-    call_stream_start = src.find("async def call_stream(")
-    call_body = src[call_start:call_stream_start]
-    assert "await client_module.complete(" in call_body
-    assert "await _record_cost(" in call_body
+    do_body = src[do_start:call_start]
+    assert "await client_module.complete(" in do_body
+    assert "await _record_cost(" in do_body
 
 
 def test_call_stream_records_cost_after_stream_completes():

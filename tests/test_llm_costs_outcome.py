@@ -112,15 +112,26 @@ def test_record_cost_now_delegates_to_record_outcome():
 
 def test_call_records_failure_on_exception():
     """call() must record outcome != success when the underlying client
-    raises. Pre-25.5b, exceptions just propagated — no cost row written."""
+    raises. Pre-25.5b, exceptions just propagated — no cost row written.
+
+    2026-06-08 refactor: dispatch + outcome-recording lives in
+    _do_complete() now (the fallback layer in call() runs _do_complete
+    twice — once for primary, once for fallback). The failure-recording
+    behaviour is asserted in _do_complete's body; call() must still
+    re-raise when no fallback path saves the request."""
     src = _read("app/services/llm_registry.py")
+    do_start = src.find("async def _do_complete(")
     call_start = src.find("async def call(\n    *,")
+    do_body = src[do_start:call_start]
+    assert "except Exception as exc:" in do_body
+    assert "_record_outcome(" in do_body
+    assert "_classify_outcome(exc)" in do_body
+    assert "raise" in do_body  # exception still propagates out of _do_complete
+
+    # call() must still propagate when no fallback exists.
     call_stream_start = src.find("async def call_stream(")
     call_body = src[call_start:call_stream_start]
-    assert "except Exception as exc:" in call_body
-    assert "_record_outcome(" in call_body
-    assert "_classify_outcome(exc)" in call_body
-    assert "raise" in call_body  # exception still propagates
+    assert "raise" in call_body, "call() must re-raise when no fallback applies"
 
 
 def test_call_stream_records_failure_on_exception():
