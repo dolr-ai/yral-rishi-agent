@@ -1,0 +1,39 @@
+# Phase 21αβ.I-Sec2 — pip-audit ignore-list.
+#
+# Each CVE/PYSEC ID here is a known finding we've explicitly triaged
+# and accepted. Adding a new ID requires a one-line justification in
+# a comment above the entry. Real fixes (dep bumps) happen in separate
+# PRs; this file holds the accepted-for-now baseline.
+#
+# DEV-10 baseline established 2026-06-05. Full triage at
+# docs/cutover-audits/DEV-10-pip-audit.md.
+
+# --- pyjwt 2.10.1 (7 advisories) ---
+# Bump path: 2.10.1 → 2.13.0 in a follow-up PR (trivial).
+# Exposure rationale: v2 disables JWT signature verification per
+# CONSTRAINTS E9; we only PARSE unsigned claims. Most pyjwt CVEs are
+# signature-verification bypass / key-confusion — non-applicable.
+PYSEC-2026-120
+PYSEC-2025-183
+PYSEC-2026-179
+PYSEC-2026-175
+PYSEC-2026-177
+PYSEC-2026-178
+PYSEC-2026-176
+
+# --- python-multipart 0.0.20 (3 CVEs) ---
+# Bump path: 0.0.20 → 0.0.27 in a follow-up PR (trivial).
+# Exposure rationale: Caddy `request_body_max_size` bounds the input
+# at the edge, mitigating the DoS attack surface these CVEs describe.
+CVE-2026-24486
+CVE-2026-40347
+CVE-2026-42561
+
+# --- starlette 0.46.2 (4 advisories) ---
+# Bump path: defer to a FastAPI bump that pulls starlette ≥0.49 as
+# a transitive — bumping starlette alone risks FastAPI compat issues.
+# Exposure rationale: FastAPI sits on top + adds its own input validation
+# layer; the CVEs primarily affect rarely-used edge paths.
+PYSEC-2026-161
+CVE-2025-54121
+CVE-2025-62727

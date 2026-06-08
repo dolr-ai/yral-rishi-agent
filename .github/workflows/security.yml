@@ -1,18 +1,18 @@
 name: Security
 
 # Phase 21αβ.I-Sec1 — gitleaks secret scan on every PR + push to main.
-# Plus the matching weekly drill (per `feedback_adhd_observability_and_security_baseline`)
-# stays as a follow-up; tonight ships the PR-blocking gate that catches
-# secrets BEFORE they merge.
+# Phase 21αβ.I-Sec2 — pip-audit dependency vuln scan, same triggers.
 #
-# Findings policy: any NEW finding fails CI. The 4 known false-positive
-# matches (test idempotency UUIDs in archived orchestrator code per
-# `docs/security/secret-scan-baseline-2026-06-05.md`) are allowlisted via
-# .gitleaks.toml. Future false positives extend that file in their own PR.
+# Findings policy:
+#   gitleaks  — any NEW finding fails CI. 4 baseline FPs allowlisted in
+#               `.gitleaks.toml`. Future FPs extend that file in PRs.
+#   pip-audit — strict mode, fails on any finding not in ignore-list.
+#               The DEV-10 (2026-06-05) baseline of 14 known vulns is
+#               in `pip-audit-ignore.txt` with a justification per CVE.
 #
 # We invoke the gitleaks BINARY directly (not gitleaks/gitleaks-action@v2
 # which requires a paid license for organizations). Same scan coverage,
-# zero $ cost. The action is just a thin wrapper around this CLI anyway.
+# zero $ cost. pip-audit is the official PyPA tool, free.
 
 on:
   push:
@@ -61,4 +61,49 @@ jobs:
         with:
           name: gitleaks-report
           path: gitleaks-report.json
+          retention-days: 30
+
+  pip-audit:
+    # Phase 21αβ.I-Sec2 — pip-audit on every PR + push to main.
+    # Fails CI in strict mode on any finding not in the ignore-list.
+    # DEV-10 (2026-06-05) established the baseline at 14 vulns across
+    # pyjwt, python-multipart, starlette — all accepted-for-now and
+    # listed in `pip-audit-ignore.txt` with a justification per CVE.
+    name: pip-audit vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pip-audit
+        run: pip install pip-audit
+      - name: Run pip-audit
+        # `--strict` fails on any finding NOT in the ignore-list.
+        # We build the `--ignore-vuln` arguments from
+        # `pip-audit-ignore.txt` (one ID per line, # for comments).
+        # `--vulnerability-service osv` is the default; explicit so
+        # the source is auditable.
+        run: |
+          IGNORE_ARGS=""
+          while IFS= read -r line; do
+            line="${line%%#*}"        # strip trailing # comments
+            line="${line//[[:space:]]/}"  # strip whitespace
+            [ -z "$line" ] && continue
+            IGNORE_ARGS="$IGNORE_ARGS --ignore-vuln $line"
+          done < pip-audit-ignore.txt
+          echo "ignoring: $IGNORE_ARGS"
+          pip-audit \
+            -r requirements.txt \
+            --vulnerability-service osv \
+            --strict \
+            --format json \
+            --output pip-audit-report.json \
+            $IGNORE_ARGS
+      - name: Upload pip-audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-audit-report
+          path: pip-audit-report.json
           retention-days: 30
