@@ -50,6 +50,13 @@ Rishi: read this first. Each row links to the audit's TL;DR + recommendation.
 | DEV-11b | latency root cause (EXPLAIN ANALYZE + pg_stat_user_tables) | 🔴→🟢 with ANALYZE | [DEV-11b-latency-root-cause.md](DEV-11b-latency-root-cause.md) |
 | DEV-12-prep | pre-drafted answers to PR #289's 4 questions | n/a | [DEV-12-PR-289-prep.md](DEV-12-PR-289-prep.md) |
 
+## Morning-of pack (2026-06-08)
+
+| ID | Audit | Verdict | File |
+|---|---|:---:|---|
+| G | ETL backlog measurement (chat-ai vs v2 row counts) | 🟡 | [G-etl-backlog-measurement.md](G-etl-backlog-measurement.md) |
+| H | push-notif `data.type` fix — local commit, NOT pushed | held | branch `fix/push-notif-data-type-parity-with-chat-ai` (1 commit, awaits mobile confirm) |
+
 ## Verdict summary
 
 - 🟢 GREEN: DEV-2, DEV-4, DEV-5, DEV-6, DEV-7, DEV-8, DEV-9, DEV-12 (8)
@@ -78,6 +85,6 @@ Zero kill-switch flips, zero `docker service update` of the running stack, zero 
 
 1. Run `ANALYZE conversations; ANALYZE messages; ANALYZE ai_influencers; ANALYZE bot_quality_scores; ANALYZE coach_conversations; ANALYZE coach_messages; ANALYZE user_memories; ANALYZE user_skill_state;` on rishi-5 (V2 leader). ≤2 min wall, ACCESS SHARE lock only.
 2. Re-run `python3 scripts/latency_comparison_phase_1_17.py --n 100 --concurrency 1` and confirm inbox-list back near or under chat-ai parity. ~3-4 min.
-3. Mobile expert confirms `data.type` value for Android push routing → decide on the DEV-1 1-line fix.
+3. Mobile expert confirms `data.type` value for Android push routing → decide on the DEV-1 1-line fix. **H branch `fix/push-notif-data-type-parity-with-chat-ai` is pre-committed locally** (one commit, not pushed); if answer is "new_message" → `git push -u origin fix/push-notif-data-type-parity-with-chat-ai && gh pr create`. If answer is "no change" → `git branch -D` and move on.
 4. Review PR #289 with DEV-12-prep notes in hand. ~10 min including answering the 4 questions.
 5. Go/no-go on 21α with updated latency data + the 3 yellows acknowledged + DEV-3 tracked as β blocker.
