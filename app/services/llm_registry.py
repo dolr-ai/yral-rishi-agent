@@ -131,6 +131,29 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "supports_stream": True,
         "supports_transcribe": False,
     },
+    "runpod_vllm": {
+        # Saikat's runpod-hosted vLLM, in addition to internal_vllm (Anshuman's
+        # endpoint). Serves Qwen3.6-35B-A3B-FP8 — larger active-parameter model
+        # than internal_vllm's 27B. Added 2026-06-08 to let video_idea_generation
+        # route here while internal_vllm stays load-bearing for the rest of the
+        # background-loop tier.
+        "concurrency_cap": 5,
+        "base_url": "https://tthcp4vkghjzgl-8000.proxy.runpod.net/v1",
+        "secret_path": "/run/secrets/RUNPOD_VLLM_API_KEY",
+        "env_fallback": "RUNPOD_VLLM_API_KEY",
+        "cost_basis": "synthetic",
+        # Synthetic per-token cost — Saikat's pod is a fixed runpod rental;
+        # same accounting shape as internal_vllm.
+        "cost_per_1k_input_usd": 0.00005,
+        "cost_per_1k_output_usd": 0.00005,
+        # Match internal_vllm's chat_template_kwargs since this is also a
+        # Qwen-family model on vLLM — "thinking" mode produces verbose
+        # internal reasoning we don't want to pay tokens for.
+        "default_extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+        "supports_chat": True,
+        "supports_stream": True,
+        "supports_transcribe": False,
+    },
     "ollama": {
         "concurrency_cap": 2,
         "base_url": "http://ollama:11434/v1",
@@ -213,12 +236,14 @@ LLM_DEFAULTS: dict[str, dict[str, Any]] = {
         "timeout_sec": 120.0,
     },
     "video_idea_generation": {
-        # Phase 22.3 — defaults to internal_vllm per Rishi's call (cheap
-        # background path, same as quality_scorer/memory_extraction
-        # which are already on internal_vllm via DB overrides). Rishi
-        # can flip to gemini via /admin/llm-routing if quality requires.
-        "provider": "internal_vllm",
-        "model": "Qwen/Qwen3.6-27B-FP8",
+        # 2026-06-08: routed to runpod_vllm (Saikat's pod, Qwen3.6-35B-A3B-FP8)
+        # per Rishi. The 35B-A3B model has more headroom than internal_vllm's
+        # 27B for the 5-idea Devanagari batch we saw truncate on 2026-06-04.
+        # Background-loop tier; cold-start path is still synchronous so quality
+        # matters here even though we're not on gemini. Rishi can hot-flip via
+        # /admin/llm-routing dashboard if the new pod proves flaky.
+        "provider": "runpod_vllm",
+        "model": "Qwen/Qwen3.6-35B-A3B-FP8",
         "timeout_sec": 120.0,
     },
 }
