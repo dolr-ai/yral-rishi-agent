@@ -12,22 +12,42 @@ When you merge a PR to `main`, three things happen:
 
 Without step 3, the new code sits in storage but isn't actually running. The website keeps serving the old code.
 
-## How to deploy (the button)
+## How deploys work today (auto-on-merge — Path 1, 2026-06-08)
 
-The deploy workflow is at `.github/workflows/deploy.yml`. From your perspective, it's a button in the GitHub Actions tab.
+**You don't have to do anything to deploy.** When you merge a PR to `main`:
 
-### Step-by-step
+1. CI builds the new image automatically (~90 seconds)
+2. The Deploy workflow automatically fires
+3. The swarm rolls to the new image
+4. `/health` is polled for 2 minutes after the swap
+5. If `/health` returns 200 → deploy is green, you're done
+6. If `/health` doesn't return 200 → **auto-rollback** kicks in automatically. The Rollback workflow runs without you doing anything. Service self-heals to the previous image.
 
-1. Open the repo on GitHub: https://github.com/dolr-ai/yral-rishi-agent
-2. Click the **Actions** tab at the top
-3. In the left sidebar, find and click **Deploy to production**
-4. Click the gray **Run workflow** dropdown button (top-right)
-5. Leave the SHA field blank (this deploys the latest main) OR paste a specific commit SHA if you want a specific version
-6. Click the green **Run workflow** button at the bottom
-7. **GitHub asks you to approve the deploy** — click **Review deployments** → check the "production" box → click **Approve and deploy**
-8. Watch the live log. It should turn green within ~2 minutes. If green = deploy succeeded; if red = something went wrong, check the log.
+You'll see the result in the GitHub Actions tab — green if all good, red if the auto-rollback fired. Either way, the service stays available.
 
-That's it. No SSH, no commands, no typing.
+### What does NOT trigger an auto-deploy
+
+Docs-only PRs (anything that only touches `**.md`, `docs/**`, `mobile-docs-archive/**`, or `yral-rishi-agent-plan-and-discussions/**`) skip the deploy. No point rolling the servers when the runtime behavior is identical.
+
+### What if two PRs merge close together?
+
+A concurrency lock makes sure deploys run one at a time. If a second PR merges while the first deploy is running, the second one queues up and runs as soon as the first finishes. No overlapping deploys (which could confuse the swarm).
+
+## The manual button (still works — emergencies only)
+
+You can still trigger a deploy manually if you ever need to:
+- Re-deploy a specific older SHA (revert a bad change without writing a new PR)
+- Re-trigger a deploy after fixing an infra issue (e.g. a manager was down during the auto-deploy)
+
+### Step-by-step (rarely needed)
+
+1. https://github.com/dolr-ai/yral-rishi-agent/actions
+2. Sidebar: **Deploy to production**
+3. Top-right: **Run workflow** dropdown
+4. SHA field: leave blank for latest main, OR paste a specific commit SHA
+5. Click green **Run workflow**
+
+The auto-rollback safety net applies to manual deploys too.
 
 ## How to roll back (the other button)
 
@@ -57,36 +77,23 @@ The workflow has built-in safety:
 - It uses `--update-failure-action pause` — if any replica fails to come up, the update pauses. You'll see this in the log. **Take it as a signal that something is wrong; do NOT click Run workflow again. Investigate first.**
 - After the update, it polls `/health` every 10 seconds for 2 minutes. If `/health` doesn't return 200, the workflow turns red as a signal — but the rolling restart may still be in progress. Check manually if unsure.
 
-## One-time setup (already done for you in this PR)
+## One-time setup (already done for you)
 
-The workflow needs two things to be set up in GitHub. These are one-time — you do them once and forget about them:
+The workflow needs the SSH key to be set up as a GitHub repository secret. This is one-time — done already on 2026-06-08:
 
-### Setup 1 — Upload the SSH key as a GitHub secret
+- Settings → Secrets and variables → Actions → `DEPLOY_SSH_KEY` (contents of `~/.ssh/rishi-hetzner-ci-key`)
 
-The workflow needs to log into the servers via SSH. To do that, it needs the private SSH key the developer session has been using.
+### What about the "production" environment with required reviewer?
 
-1. Open `~/.ssh/rishi-hetzner-ci-key` in a text editor. (On the Mac terminal: `cat ~/.ssh/rishi-hetzner-ci-key | pbcopy` copies it to clipboard.)
-2. Open the repo on GitHub
-3. Settings → Secrets and variables → Actions → **New repository secret**
-4. Name: `DEPLOY_SSH_KEY`
-5. Secret: paste the contents (the entire `-----BEGIN OPENSSH PRIVATE KEY-----` block through `-----END OPENSSH PRIVATE KEY-----`)
-6. Click **Add secret**
+The `production` environment we set up earlier today gated the deploy behind a manual "Approve and deploy" click. **That's now incompatible with auto-deploy** — auto-deploys would pause indefinitely waiting for approval.
 
-The secret is encrypted by GitHub and only readable by workflow runs. You won't be able to view it again after saving — that's normal.
+**To make auto-deploy work, the workflow no longer references the `production` environment** (Path 1, 2026-06-08). The safety guards moved up to the PR stage:
 
-### Setup 2 — Configure the "production" environment
+1. **Branch protection on main** — CI must pass + Codex review must approve before any merge
+2. **Auto-rollback on health failure** — service self-heals if a deploy breaks `/health`
+3. **Manual rollback button** — you can always revert manually via the Rollback workflow
 
-This is the approval gate. Every deploy (and rollback) will pause until you approve it in the GitHub UI. Without this step, the workflow would skip the approval and run immediately.
-
-1. Settings → **Environments** → **New environment**
-2. Name: `production`
-3. Click **Configure environment**
-4. Check **Required reviewers** → add yourself
-5. (Optional) **Wait timer**: 0 minutes (no forced delay)
-6. (Optional) **Deployment branches**: select "Selected branches" → add `main` only (so deploys can only run from main, not from feature branches)
-7. **Save protection rules**
-
-After this, the first deploy you trigger will show "Waiting for approval" — go to the workflow run page, click **Review deployments**, approve.
+You can leave the `production` environment configuration in GitHub — it just isn't referenced by the workflow anymore. Or delete it for cleanliness. Either is fine.
 
 ## What if the workflow itself is broken?
 

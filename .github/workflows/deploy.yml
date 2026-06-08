@@ -1,20 +1,25 @@
 name: Deploy to production
 
-# Click "Run workflow" in the Actions tab to ship the latest main (or a
-# specific commit) to the swarm. See docs/DEPLOY.md for the plain-English
-# walkthrough.
+# Auto-deploys on every push to main (= every PR merge) per Rishi's
+# 2026-06-08 decision to match chat-ai's deploy pattern. Manual button
+# (workflow_dispatch) is kept for emergencies — re-deploy a specific
+# SHA, redeploy after a manual fix, etc.
 #
-# Why button-triggered (workflow_dispatch) and NOT auto-on-merge:
-# - Auto-on-merge means a bad PR that passes CI lands on prod 5 minutes
-#   later with no human gate. Rishi wants a confirmation step before any
-#   change reaches users.
-# - The "production" environment line below ADDS a second gate — even
-#   after clicking Run, GitHub asks Rishi to approve the run before the
-#   SSH actually executes. Two clicks = two safety checks.
+# Path-filter ignores docs-only changes: PROGRESS.md, *.md, docs/* etc.
+# A docs-only PR merge does NOT trigger a deploy — the image bytes
+# would change (new git SHA in the tag) but the runtime behavior is
+# identical, so rolling-restarting the swarm would be wasted work.
 #
-# Closes PROGRESS.md 21α.0 / 21αβ.H3 ("Auto-deploy from CI build to
-# swarm service") — replaces the manual SSH step Session 6 had been
-# doing on every PR merge.
+# Safety nets when auto-deploy is on:
+#   1. CI tests must pass before merge (branch protection enforces this)
+#   2. Codex review must pass before merge
+#   3. /health is polled for 2 min after deploy
+#   4. If /health does NOT return 200 after 2 min → THIS workflow
+#      auto-triggers the Rollback workflow. Service self-heals to the
+#      previous image without a human in the loop.
+#   5. Concurrency lock — only ONE deploy runs at a time; the next
+#      merge queues behind it. Matches chat-ai's pattern; prevents
+#      two overlapping rolling-restarts from confusing the swarm.
 
 on:
   workflow_dispatch:
@@ -23,11 +28,28 @@ on:
         description: 'Commit SHA to deploy. Leave blank to deploy the latest main HEAD.'
         required: false
         default: ''
+  push:
+    branches:
+      - main
+    # Skip when ONLY docs/markdown files changed — no runtime impact.
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'mobile-docs-archive/**'
+      - 'yral-rishi-agent-plan-and-discussions/**'
+
+concurrency:
+  # Only ONE deploy at a time. If a merge lands while a deploy is
+  # in flight, the new one QUEUES (doesn't cancel the running one).
+  # Matches chat-ai's deploy-baremetal.yml pattern.
+  group: deploy-agent-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   IMAGE: ghcr.io/dolr-ai/yral-rishi-agent
   SERVICE: yral-rishi-agent
   HEALTH_URL: https://agent.rishi.yral.com/health
+  ROLLBACK_WORKFLOW: rollback.yml
   # Three swarm managers. The workflow tries each in order — any one
   # accepts the deploy command and the swarm raft consensus routes it
   # to whichever is currently leader. So leader-change tomorrow does
@@ -40,15 +62,10 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    # The "production" environment gates this job behind a GitHub
-    # approval prompt. One-time setup: GitHub → repo Settings →
-    # Environments → New environment "production" → add Rishi as a
-    # Required reviewer. After that, every deploy run pauses here until
-    # Rishi approves in the GitHub UI. See docs/DEPLOY.md.
-    environment: production
     permissions:
       contents: read
       packages: read
+      actions: write   # required to gh workflow run rollback.yml on health failure
 
     steps:
       - name: Checkout repo (for git rev-parse only)
@@ -134,6 +151,7 @@ jobs:
           echo "deployed_via=$DEPLOYED_VIA" >> "$GITHUB_OUTPUT"
 
       - name: Wait for /health to return 200
+        id: health_check
         run: |
           echo "Polling ${{ env.HEALTH_URL }} for up to 2 minutes..."
           for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
@@ -141,22 +159,48 @@ jobs:
             echo "attempt $i: /health → $STATUS"
             if [ "$STATUS" = "200" ]; then
               echo "✓ Service healthy after deploy"
+              echo "healthy=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             sleep 10
           done
-          echo "WARN: /health did not return 200 within 2 minutes."
-          echo "The swarm may still be rolling. Check service status manually OR run the Rollback workflow."
+          echo "ERROR: /health did not return 200 within 2 minutes."
+          echo "healthy=false" >> "$GITHUB_OUTPUT"
           exit 1
+
+      # SAFETY NET — if the health check fails, automatically trigger the
+      # Rollback workflow. The next step (and only this next step) runs
+      # ONLY when the previous step failed. The deploy job itself still
+      # ends red so a human can see the failure in the runs list, but the
+      # service self-heals to the previous image without waiting for
+      # someone to be awake + at a computer.
+      - name: Auto-rollback if /health failed
+        if: failure() && steps.health_check.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "── Triggering auto-rollback ──"
+          REASON="Auto-rollback: /health did not return 200 within 2 min after deploy of ${{ steps.resolve_sha.outputs.sha }} (triggered by ${{ github.actor }} via ${{ github.event_name }})"
+          gh workflow run ${{ env.ROLLBACK_WORKFLOW }} -f reason="$REASON" --ref main
+          echo "✓ Rollback workflow dispatched. Watch it complete at:"
+          echo "  https://github.com/${{ github.repository }}/actions/workflows/${{ env.ROLLBACK_WORKFLOW }}"
 
       - name: Deploy summary
         if: always()
         run: |
           echo "─── Deploy summary ───"
-          echo "Commit SHA:   ${{ steps.resolve_sha.outputs.sha }}"
-          echo "Image:        ${{ steps.resolve_sha.outputs.image_ref }}"
-          echo "Manager used: ${{ steps.deploy.outputs.deployed_via }}"
-          echo "Triggered by: ${{ github.actor }}"
-          echo "Health URL:   ${{ env.HEALTH_URL }}"
+          echo "Commit SHA:    ${{ steps.resolve_sha.outputs.sha }}"
+          echo "Image:         ${{ steps.resolve_sha.outputs.image_ref }}"
+          echo "Manager used:  ${{ steps.deploy.outputs.deployed_via }}"
+          echo "Triggered by:  ${{ github.actor }}"
+          echo "Trigger event: ${{ github.event_name }}"
+          echo "Health URL:    ${{ env.HEALTH_URL }}"
+          echo "Health check:  ${{ steps.health_check.outcome }}"
           echo ""
-          echo "If something went wrong, run the 'Rollback production' workflow to revert to the previous image."
+          if [ "${{ steps.health_check.outcome }}" = "failure" ]; then
+            echo "⚠️  /health failed → auto-rollback workflow was triggered."
+            echo "    Investigate the failure in this run's logs + check Sentry."
+            echo "    Once the underlying bug is fixed, ship a new PR — the next merge auto-deploys."
+          else
+            echo "✅ Deploy succeeded."
+          fi
