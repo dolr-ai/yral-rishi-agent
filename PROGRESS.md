@@ -312,7 +312,7 @@ See memory: `project_cutover_model_clarified_2026_06_08.md`.
 
 | # | Sub-phase | Status | Est. days | PR |
 |---|-----------|--------|-----------|-----|
-| 21αβ.H1 | **5-MIN LAG REQUIREMENT** — Continuous ETL loop re-enabled + 5-min lag monitoring + alert on >5min on Phase 19.6 dashboard. Currently OFF since 2026-05-30 emergency (PROGRESS.md 21α.B3 = 1.14a). Rebootstrap-style port at prod cutover is NOT acceptable — lag too high. | ⏳ Pending — PROD BLOCKER | 1.5 | — |
+| 21αβ.H1 | **Option A — hard cutover + mini re-bootstrap** (Rishi 2026-06-08, after dev session's G measurement showed ~20.5k message gap since the 2026-06-04 re-bootstrap). Continuous ETL stays OFF — skip the 1.5-day re-enable work + avoid reviving the orphan-bug code path that produced 8,932 orphans on 2026-06-04. Instead: schedule cutover at a low-traffic moment (Sunday 3am IST or similar), hard-switch via Caddy returning "service moved, restart app" on chat-ai → forces all clients to refresh Firebase + pick up new URL immediately. Then mini re-bootstrap captures the frozen chat-ai state. ~30 min wall, ~2 min DB apply, proven mechanism (mirror of 2026-06-04 re-bootstrap). Brief user-visible "restart app" at cutover is the accepted trade-off vs the original "≤5 min lag" framing. **Action items:** (1) write the Caddy hard-cutover snippet, (2) write the mini re-bootstrap runbook (~80% copy of 2026-06-04 runbook), (3) confirm cutover-day window with team. | ⏳ Pending — PROD BLOCKER | 0.5 (planning + runbook; execution = 30-min cutover-day window) | — |
 | 21αβ.H2 | DEV-3 follow-through: server-side billing paywall enforcement on V2 (~150 LOC, leverages DEV-12's Redis substrate). Was β-only; now PROD BLOCKER per Rishi 2026-06-08 — motivated user on prod bypasses mobile gate → unbounded Gemini cost. | ⏳ Pending — PROD BLOCKER | 2 | — |
 | 21αβ.H3 | Auto-deploy mechanism (21α.0 promoted) — GitHub Actions Deploy + Rollback buttons (#294) → Path 1 auto-deploy on merge with workflow_run + auto-rollback on `/health` failure + concurrency lock (#297, #298). Matches chat-ai's deploy-baremetal.yml pattern PLUS auto-rollback chat-ai doesn't have. First end-to-end auto-deploy 2026-06-08 (#298 merge). | ✅ Done | — | #294 + #297 + #298 |
 | 21αβ.H4 | Patroni failover drill — live test of leader promotion under simulated load. Required per "robust + failover-ready" mandate. | ⏳ Pending | 0.5 | — |
@@ -357,7 +357,7 @@ See memory: `project_cutover_model_clarified_2026_06_08.md`.
 | 21β.G3 | Gate: Phase 24 full security drill (24.1-24.4) clean | ⏳ Pending | 5 | — |
 | 21β.G4 | Gate: I11 offsite backup verified + I10 weekly restore drill running | ⏳ Pending | 1 | — |
 | 21β.G5 | Gate: Latency stable + meets 50%-faster under real alpha load | ⏳ Pending | — | — |
-| 21β.G6 | Gate: ETL loop running continuously, no backlog | ⏳ Pending | — | — |
+| 21β.G6 | Gate: mini re-bootstrap runbook + Caddy hard-cutover snippet ready (per 21αβ.H1 Option A — continuous ETL is intentionally NOT running). Cutover-day execution = 30-min window. | ⏳ Pending | — | — |
 | 21β.D2 | Snapshot 2: pre-prod-cutover pg_dump V2 + chat-ai → `pre-prod-cutover-YYYY-MM-DD/`, md5'd | ⏳ Pending | 0.25 | — |
 | 21β.F1 | Mobile expert submits alpha codebase to Play Store + App Store | ⏳ Pending | 0.5 | — |
 | 21β.F2 | Wait for store approval (Play ~24h, App Store ~2-7 days) | ⏳ Pending | 2-7 | — |
