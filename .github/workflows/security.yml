@@ -9,6 +9,10 @@ name: Security
 # matches (test idempotency UUIDs in archived orchestrator code per
 # `docs/security/secret-scan-baseline-2026-06-05.md`) are allowlisted via
 # .gitleaks.toml. Future false positives extend that file in their own PR.
+#
+# We invoke the gitleaks BINARY directly (not gitleaks/gitleaks-action@v2
+# which requires a paid license for organizations). Same scan coverage,
+# zero $ cost. The action is just a thin wrapper around this CLI anyway.
 
 on:
   push:
@@ -30,11 +34,31 @@ jobs:
           # just the PR's diff. Matches the manual `gitleaks detect
           # --log-opts="--all"` invocation from the DEV-7 audit baseline.
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # GITLEAKS_LICENSE is required for org repos; falls back to free
-          # tier if unset, which is fine for our scale.
-          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
-          # Use the repo's `.gitleaks.toml` for the allowlist. The action
-          # picks it up automatically when present.
+      - name: Install gitleaks
+        run: |
+          VERSION="8.30.1"
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" -o gitleaks.tar.gz
+          tar -xzf gitleaks.tar.gz
+          sudo mv gitleaks /usr/local/bin/
+          gitleaks version
+      - name: gitleaks detect (all history)
+        # `--config .gitleaks.toml` picks up the allowlist baseline.
+        # `--log-opts="--all"` scans every commit, not just HEAD.
+        # `--exit-code 1` on findings (default), `0` on clean.
+        # `--no-banner` keeps the CI log readable.
+        run: |
+          gitleaks detect \
+            --source . \
+            --config .gitleaks.toml \
+            --log-opts="--all" \
+            --redact \
+            --no-banner \
+            --report-format json \
+            --report-path gitleaks-report.json
+      - name: Upload gitleaks report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-report
+          path: gitleaks-report.json
+          retention-days: 30

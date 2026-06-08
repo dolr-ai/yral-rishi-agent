@@ -10,11 +10,13 @@ REPO = Path(__file__).resolve().parents[1]
 
 
 def test_security_workflow_exists():
-    """A `gitleaks` job must exist in a workflow that runs on PR."""
+    """A `gitleaks` job must exist in a workflow that runs on PR.
+    Uses the CLI directly (free) instead of gitleaks/gitleaks-action@v2
+    which requires a paid license for organizations."""
     wf = REPO / ".github" / "workflows" / "security.yml"
     assert wf.exists(), "security.yml workflow missing"
     body = wf.read_text()
-    assert "gitleaks-action" in body
+    assert "gitleaks detect" in body
     assert "pull_request:" in body
 
 
