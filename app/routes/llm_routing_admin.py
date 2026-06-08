@@ -191,11 +191,14 @@ def _render_html_page(
 </tr>""")
 
     summary_html = f"""
-<div style="display:flex;gap:24px;margin:16px 0;padding:16px;background:#f5f5f5;border-radius:6px;">
+<div style="display:flex;gap:24px;margin:16px 0;padding:16px;background:#f5f5f5;border-radius:6px;align-items:center;">
   <div><b>Real $/24h:</b> <span style="color:#c62828;font-size:1.3em;">${summary["real_24h_usd"]:.4f}</span></div>
   <div><b>Synthetic compute/24h:</b> <span style="color:#2e7d32;font-size:1.3em;">${summary["synthetic_24h_usd"]:.6f}</span></div>
   <div><b>Calls/24h:</b> {summary["calls_24h"]}</div>
   <div><b>Failures/24h:</b> {summary["failures_24h"]} ({summary["rejection_pct"]}%)</div>
+  <div style="margin-left:auto;">
+    <a href="/admin/llm-routing/db-overrides{token_q}" style="background:#fff;border:1px solid #1976d2;color:#1976d2;padding:6px 12px;border-radius:3px;text-decoration:none;font-size:13px;">View raw DB overrides →</a>
+  </div>
 </div>"""
 
     return f"""<!DOCTYPE html>
@@ -246,6 +249,104 @@ async def llm_routing_json(request: Request):
     """Phase 25.4 — JSON shape for machine/API consumers. JWT-gated."""
     _check_admin_auth(request)
     return _routing_payload()
+
+
+async def _read_raw_db_overrides(pool) -> list[dict]:
+    """Read raw rows from `llm_process_config`. Returns empty list if the
+    table is empty or doesn't exist (e.g. migration 026 not yet applied).
+    Used by the View-DB-overrides page so Rishi can verify what's pinned at
+    the DB level vs what's just a code default."""
+    try:
+        rows = await pool.fetch(
+            "SELECT process, provider, model, timeout_sec, updated_at, updated_by "
+            "FROM llm_process_config ORDER BY process"
+        )
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
+def _render_db_overrides_page(*, rows: list[dict], token: str | None) -> str:
+    """Plain table view of raw `llm_process_config` rows. Linked from the
+    main routing dashboard. Adds visibility for the non-programmer
+    operator: "is this routing decision a DB pin or a code default?"
+
+    Rows in this table take precedence over the LLM_DEFAULTS in
+    llm_registry.py. If a process is NOT in this table, it falls through
+    to env override (LLM_PROCESS__<NAME>) then to LLM_DEFAULTS.
+    """
+    token_q = f"?token={_urlquote(token)}" if token else ""
+
+    if not rows:
+        body = """
+<div style="margin:32px 0;padding:24px;background:#e8f5e9;border:1px solid #66bb6a;border-radius:6px;">
+  <h2 style="margin-top:0;color:#2e7d32;">No DB overrides — table is empty</h2>
+  <p>Every process is using the code default from <code>app/services/llm_registry.py:LLM_DEFAULTS</code>. This is the cleanest state — no hidden pinning to remember about later.</p>
+  <p>To pin a process to a specific (provider, model): go back to the routing dashboard, change the dropdown, and click <b>Save</b>.</p>
+</div>"""
+    else:
+        # Build the table.
+        row_html: list[str] = []
+        for r in rows:
+            timeout = r.get("timeout_sec")
+            timeout_str = f"{float(timeout):.1f}s" if timeout is not None else "—"
+            updated_at = r.get("updated_at")
+            updated_str = (
+                updated_at.strftime("%Y-%m-%d %H:%M UTC") if updated_at else "—"
+            )
+            updated_by = _html.escape(str(r.get("updated_by") or "?"))
+            row_html.append(f"""
+<tr>
+  <td><code>{_html.escape(r["process"])}</code></td>
+  <td><code>{_html.escape(r["provider"])}</code></td>
+  <td><code>{_html.escape(r.get("model") or "")}</code></td>
+  <td style="text-align:right;">{timeout_str}</td>
+  <td>{updated_str}</td>
+  <td><code>{updated_by}</code></td>
+</tr>""")
+        body = f"""
+<p class="note">Each row is a hot-pin in the <code>llm_process_config</code> table. These take precedence over the code defaults in <code>llm_registry.LLM_DEFAULTS</code>. Use the <b>Reset</b> button on the main routing dashboard to delete a row from this table.</p>
+<table>
+<thead>
+<tr><th>Process</th><th>Provider</th><th>Model</th><th>Timeout</th><th>Updated at</th><th>Updated by</th></tr>
+</thead>
+<tbody>{"".join(row_html)}</tbody>
+</table>
+<p class="note">Total overrides: {len(rows)}. Any process not listed here uses its code default from <code>LLM_DEFAULTS</code> — see <code>app/services/llm_registry.py</code>.</p>"""
+
+    return f"""<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8"><title>DB overrides — yral-rishi-agent</title>
+<style>
+  body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 20px; max-width: 1400px; }}
+  h1 {{ font-size: 1.4em; }}
+  table {{ border-collapse: collapse; width: 100%; font-size: 13px; }}
+  th, td {{ padding: 8px 6px; text-align: left; border-bottom: 1px solid #e0e0e0; }}
+  th {{ background: #fafafa; font-weight: 600; }}
+  code {{ font-family: 'SF Mono', Menlo, monospace; font-size: 12px; }}
+  .note {{ color: #666; font-size: 12px; margin: 12px 0; }}
+  a.back {{ color: #1976d2; text-decoration: none; font-size: 13px; }}
+  a.back:hover {{ text-decoration: underline; }}
+</style>
+</head><body>
+<p><a class="back" href="/admin/llm-routing{token_q}">← Back to routing dashboard</a></p>
+<h1>Raw DB overrides — <code>llm_process_config</code> table</h1>
+{body}
+</body></html>"""
+
+
+@router.get("/admin/llm-routing/db-overrides", response_class=HTMLResponse)
+async def llm_routing_db_overrides(request: Request):
+    """View raw rows of `llm_process_config` — what's actually pinned in
+    the DB. JWT-gated. Read-only — no edit/delete buttons here; for that
+    use the main routing dashboard. The point of this page is verification
+    transparency for the non-programmer operator: 'is X a code default or
+    a DB pin?'"""
+    _check_admin_auth(request)
+    pool = await get_pool()
+    rows = await _read_raw_db_overrides(pool)
+    token = request.query_params.get("token")
+    return HTMLResponse(content=_render_db_overrides_page(rows=rows, token=token))
 
 
 @router.patch("/admin/llm-routing/{process}")
