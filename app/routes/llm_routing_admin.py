@@ -230,9 +230,20 @@ def _render_html_page(
 
 @router.get("/admin/llm-routing", response_class=HTMLResponse)
 async def llm_routing_page(request: Request):
-    """Phase 25.9 — browser-bookmarkable HTML dashboard. JWT-gated."""
+    """Phase 25.9 — browser-bookmarkable HTML dashboard. JWT-gated.
+
+    Reloads the routing-config cache from the DB BEFORE rendering. This
+    fixes the multi-replica drift bug (2026-06-08): without the reload,
+    a refresh that lands on a stale replica would show the pre-Save
+    state, making the operator think the Save didn't persist when the DB
+    actually has it. ~5ms overhead per dashboard load, completely
+    negligible at operator-action volume."""
     _check_admin_auth(request)
     pool = await get_pool()
+    try:
+        await llm_registry.reload_config_from_db(pool)
+    except Exception as e:
+        logger.warning("llm_routing_page: reload skipped: %s", e)
     routing = _routing_payload()
     costs = await _cost_stats_per_process(pool)
     summary = await _summary_stats(pool)
@@ -246,8 +257,16 @@ async def llm_routing_page(request: Request):
 
 @router.get("/admin/llm-routing.json")
 async def llm_routing_json(request: Request):
-    """Phase 25.4 — JSON shape for machine/API consumers. JWT-gated."""
+    """Phase 25.4 — JSON shape for machine/API consumers. JWT-gated.
+    Reloads cache from DB before serving — same rationale as the HTML
+    page above. Machine consumers (e.g. ops scripts) need accuracy even
+    more than humans."""
     _check_admin_auth(request)
+    pool = await get_pool()
+    try:
+        await llm_registry.reload_config_from_db(pool)
+    except Exception as e:
+        logger.warning("llm_routing_json: reload skipped: %s", e)
     return _routing_payload()
 
 

@@ -403,6 +403,21 @@ async def reload_config_from_db(pool) -> int:
     return len(overrides)
 
 
+async def _broadcast_invalidate(reason: str) -> None:
+    """After a DB write, ask the Redis pub/sub layer to broadcast a
+    cache-invalidation to ALL replicas. Failure here is non-fatal: the
+    local replica's cache was already refreshed via
+    `reload_config_from_db()` above; only OTHER replicas miss the
+    invalidation, which is the bug we accept-as-degraded when Redis
+    is unreachable. Log + move on."""
+    try:
+        from services import llm_routing_pubsub
+
+        await llm_routing_pubsub.publish_invalidate(reason=reason)
+    except Exception as e:
+        logger.warning("llm_registry: broadcast invalidate failed: %s", e)
+
+
 async def upsert_override(
     pool,
     *,
@@ -412,8 +427,9 @@ async def upsert_override(
     timeout_sec: float | None,
     updated_by: str,
 ) -> None:
-    """Write an override row + refresh the in-memory cache. Caller is
-    the admin PATCH endpoint; auth has already been checked there."""
+    """Write an override row + refresh the in-memory cache + broadcast
+    the change to other replicas. Caller is the admin PATCH endpoint;
+    auth has already been checked there."""
     if process not in LLM_DEFAULTS:
         raise KeyError(f"llm_registry.upsert_override: unknown process '{process}'")
     if provider not in PROVIDERS:
@@ -437,11 +453,13 @@ async def upsert_override(
             updated_by,
         )
     await reload_config_from_db(pool)
+    await _broadcast_invalidate(reason=f"upsert:{process}")
 
 
 async def delete_override(pool, *, process: str, updated_by: str) -> bool:
     """Remove an override — process falls back to env + LLM_DEFAULTS.
-    Returns True if a row was deleted."""
+    Returns True if a row was deleted. Broadcasts invalidation to all
+    replicas after the local cache is refreshed."""
     async with pool.acquire() as conn:
         result = await conn.execute(
             "DELETE FROM llm_process_config WHERE process = $1", process
@@ -449,6 +467,8 @@ async def delete_override(pool, *, process: str, updated_by: str) -> bool:
     await reload_config_from_db(pool)
     # asyncpg returns "DELETE N" — parse the count
     deleted = result.split(" ")[-1] if isinstance(result, str) else "0"
+    if deleted != "0":
+        await _broadcast_invalidate(reason=f"delete:{process}")
     return deleted != "0"
 
 
