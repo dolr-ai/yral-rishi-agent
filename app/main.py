@@ -67,6 +67,15 @@ async def lifespan(app: FastAPI):
 
     trending_refresher_task = asyncio.create_task(_trending_stats_refresher())
     redis_sub_task = asyncio.create_task(websocket_manager.start_redis_subscriber())
+
+    # 2026-06-08 — cross-replica LLM routing cache invalidation. Without
+    # this, Save/Reset on the admin dashboard only updates the cache on
+    # the replica that handled the form submit; other replicas drift
+    # until next restart. See services/llm_routing_pubsub.py docstring.
+    from services import llm_routing_pubsub
+
+    llm_routing_pubsub_task = asyncio.create_task(llm_routing_pubsub.start_subscriber())
+
     engagement_task = asyncio.create_task(_engagement_loop())
     takeover_sweep_task = asyncio.create_task(_takeover_timeout_sweep())
     from services.memory_consolidation import consolidation_loop
@@ -121,6 +130,7 @@ async def lifespan(app: FastAPI):
     integrity_task.cancel()
     digest_task.cancel()
     video_ideas_task.cancel()
+    llm_routing_pubsub_task.cancel()
     try:
         await trending_refresher_task
     except asyncio.CancelledError:
@@ -163,6 +173,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await video_ideas_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await llm_routing_pubsub_task
     except asyncio.CancelledError:
         pass
     langfuse_tracing.flush()
