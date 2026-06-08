@@ -1,0 +1,85 @@
+name: Migration Linter (squawk)
+
+# Phase 21αβ.I-Mig2 — lint NEW migrations on every PR with squawk.
+#
+# Rules enforced (per Rishi 2026-06-08):
+#   - ban DROP COLUMN          → squawk's `ban-drop-column`
+#   - ban DROP TABLE           → squawk's `ban-drop-table` (related class)
+#   - ban table renames        → squawk's `renaming-table`
+#   - ban column renames       → squawk's `renaming-column`
+#   - ban ALTER ADD COLUMN NOT NULL without DEFAULT → `adding-required-field`
+#   - ban ALTER SET NOT NULL on existing column     → `adding-not-nullable-field`
+#   - require CONCURRENT index creation on large tables → `require-concurrent-index-creation`
+#
+# Why "new migrations only" instead of "all migrations":
+#   The historical migrations 001-032 were written before this linter
+#   existed. Some are legitimately fine (e.g. an early-stage migration
+#   that does a column rename on a still-empty table); some would need
+#   per-file allowlisting. To avoid that churn, we lint only the
+#   migrations touched in the current PR (`git diff origin/main...HEAD`).
+#   New migrations land with linting; old ones are grandfathered.
+#
+# squawk binary is pinned to a tagged release. `latest` would silently
+# roll us forward and is forbidden everywhere else.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "migrations/**"
+      - ".github/workflows/squawk.yml"
+      - ".squawk.toml"
+
+permissions:
+  contents: read
+
+jobs:
+  squawk-lint:
+    name: squawk lint new migrations
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need history so we can diff against origin/main to find
+          # the migrations changed in THIS PR.
+          fetch-depth: 0
+
+      - name: Install squawk
+        run: |
+          set -euo pipefail
+          VERSION="2.21.0"
+          curl -sSL "https://github.com/sbdchd/squawk/releases/download/v${VERSION}/squawk-linux-x86_64" -o squawk
+          chmod +x squawk
+          sudo mv squawk /usr/local/bin/squawk
+          squawk --version
+
+      - name: List changed migration files
+        id: changed
+        run: |
+          set -euo pipefail
+          # Triple-dot picks files changed between the PR branch and
+          # the merge-base with main — exactly the PR's diff scope.
+          CHANGED=$(git diff --name-only --diff-filter=AM origin/main...HEAD -- 'migrations/*.sql' | grep -v '\.down\.sql$' || true)
+          if [ -z "$CHANGED" ]; then
+            echo "No new migrations in this PR — skipping squawk."
+            echo "files=" >> "$GITHUB_OUTPUT"
+          else
+            echo "Changed migrations:"
+            echo "$CHANGED"
+            # Multiline output via heredoc convention.
+            {
+              echo "files<<EOF"
+              echo "$CHANGED"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run squawk on new migrations
+        # `squawk lint` exits non-zero on any rule violation.
+        # `.squawk.toml` at repo root controls excluded/included rules
+        # so config lives in version control, not the workflow YAML.
+        if: steps.changed.outputs.files != ''
+        run: |
+          set -euo pipefail
+          echo "${{ steps.changed.outputs.files }}" | xargs squawk lint
