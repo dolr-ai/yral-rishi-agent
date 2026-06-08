@@ -280,14 +280,16 @@ LLM_DEFAULTS: dict[str, dict[str, Any]] = {
 # observes the resolved provider == "gemini" for any of these, it logs
 # error + fires Sentry. Used in `call()` post-config-resolve so DB
 # overrides, env overrides, AND code defaults are all covered.
-ASYNC_PROCESSES_NEVER_GEMINI: frozenset[str] = frozenset({
-    "proactive_generation",
-    "quality_scorer",
-    "memory_extraction",
-    "memory_consolidation",
-    "nudge_generation",
-    "video_idea_generation",
-})
+ASYNC_PROCESSES_NEVER_GEMINI: frozenset[str] = frozenset(
+    {
+        "proactive_generation",
+        "quality_scorer",
+        "memory_extraction",
+        "memory_consolidation",
+        "nudge_generation",
+        "video_idea_generation",
+    }
+)
 
 
 # Per-provider asyncio.Semaphore. Lazy-init on first use to avoid pinning
