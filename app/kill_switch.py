@@ -55,6 +55,11 @@ _PER_LOOP_KEYS = {
     # symmetric env-flag so ops can stop the loop if it misbehaves
     # without touching the rest of the background fleet.
     "video_ideas": "ENABLE_VIDEO_IDEAS_LOOP",
+    # Phase 21αβ.H11 — periodic LLM cost alerting (hourly Gemini cost
+    # threshold + async error spike). Best-effort observability, no
+    # provider calls — gated symmetric with the rest so ops can mute
+    # alerting independently of the loops that produce the spend.
+    "cost_alerts": "ENABLE_COST_ALERTS",
 }
 
 

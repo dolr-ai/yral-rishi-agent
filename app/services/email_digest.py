@@ -163,10 +163,18 @@ async def build_digest(pool) -> dict:
       }
     """
     now = datetime.now(timezone.utc)
+    # Phase 21αβ.H11 — yesterday's LLM cost breakdown by (process,
+    # provider). Sibling of the periodic Sentry alerts in
+    # services.cost_alerts. Lives here so the daily skim catches slow
+    # leaks (the $22/4-day quality_scorer pattern) that wouldn't trip
+    # the hourly-threshold alert.
+    from services.cost_alerts import section_llm_costs_yesterday
+
     sections = [
         await _section_etl(pool),
         await _section_integrity(pool),
         await _section_rate_limits(pool),
+        await section_llm_costs_yesterday(pool),
         _section_placeholder("Cost circuit breaker", "PR Phase 19.2"),
         _section_placeholder("Weekly safety drill", "PR Phase 24.2"),
         _section_placeholder("Backup restore drill", "PR I10"),
