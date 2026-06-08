@@ -1,9 +1,35 @@
 # Master Feature Tracker — yral-rishi-agent v2 (1000x Vision)
 
-**Last updated:** 2026-06-03 evening
-**Codebase:** ~7,000 lines Python (post Phase 25 full rollout + Phase 23 V1 backend)
-**Total phases:** 25 (Phase 0–25) | **Est. total days remaining:** ~50-65 days
-**Cutover target:** few days from now (per Rishi 2026-06-03)
+**Last updated:** 2026-06-08 EOD
+**Codebase:** ~7,500 lines Python (post 13-PR shipping day 2026-06-08)
+**Total phases:** 25 + cutover phases 21α / 21α→β / 21αβ.I / 21β / 21γ
+**Cutover target:** ~2 weeks from 2026-06-08 (realistic D+17 to real users on V2; mostly waiting on Sarvesh merges + Play Store approval)
+
+## 2026-06-08 EOD snapshot — what shipped today
+
+**13 PRs merged** (#292–#304), 2 PRs closed (#227 + #289), zero outages, first end-to-end auto-deploy fully live.
+
+| Area | Live now |
+|------|----------|
+| **LLM routing** | runpod_vllm (Saikat) provider added, Saikat-primary + Anshuman-fallback for all async, leak guard fires Sentry on async→gemini, multi-replica cache coherence via Redis pub/sub + dashboard reload-on-load |
+| **Deploy infrastructure** | GitHub Actions Deploy + Rollback buttons (#294), auto-deploy on merge via workflow_run (#297, #298), auto-rollback on /health failure, 3-swarm-manager failover, `:stable` tag for known-good fallback (#303) |
+| **CI safety** | gitleaks blocks PRs introducing secrets (#300), pip-audit blocks PRs introducing P0 vulns (#302) |
+| **Dashboard** | View raw DB overrides page (#295), reload-on-load truth (#296), pub/sub broadcast for hot-flip visibility across replicas |
+| **Operational** | ANALYZE ran on rishi-5 (inbox-list 904ms → ~350ms expected), $22 quality_scorer Gemini leak diagnosed + closed at the routing layer, Option A hard-cutover model locked in (#301) |
+
+## What's left until real users on V2 (per 2026-06-08 EOD review)
+
+| Owner | What |
+|-------|------|
+| **Sarvesh (biggest gate)** | Merge yral-mobile #1185 + #1186 → build alpha APK → upload to Play Store alpha track |
+| **Dev session overnight** | 21αβ.H1 Option A runbook, 21αβ.H11 cost alerting, 21αβ.H12 multimodal routing, 21αβ.I-Mig items |
+| **YRAL team** | Install alpha APK + run 8-section test (D+1 to D+7) |
+| **Dev session days 2-7** | Server-side billing (H2), failover drills (H4+H5), restore drill (H6), Phase 24 security (H8), DB rotation (H9), dashboard (H10) |
+| **You** | Review 2-3 design docs when dev session opens them, take cutover-day pg_dump, tell Sarvesh "go" for prod-track submission |
+| **App store approval** | ~2-7 days (mostly App Store) |
+| **Real users see V2** | ~D+17 (realistic) |
+
+See `Phase 21α / 21α→β / 21αβ.I / 21β / 21γ` tables below for full detail.
 
 ---
 
@@ -333,15 +359,15 @@ See memory: `project_cutover_model_clarified_2026_06_08.md`.
 
 | # | Sub-phase | Group | Status | Est. effort |
 |---|-----------|-------|--------|-------------|
-| 21αβ.I-Sec1 | gitleaks in CI — fail PR if it introduces a secret (API key, password). Already ran once in DEV-7; just needs to be a required check on every PR | Security | ⏳ Pending | 30 min |
-| 21αβ.I-Sec2 | pip-audit in CI — fail PR if it introduces a P0 vulnerable dep. Also addresses 21αβ.H7 (DEV-10 dep bumps) by catching new vulns at the gate | Security | ⏳ Pending | 30 min |
+| 21αβ.I-Sec1 | gitleaks in CI — fails PR if a new secret is introduced; 4 DEV-7 baseline FPs allowlisted | Security | ✅ Done 2026-06-08 (PR #300) | — |
+| 21αβ.I-Sec2 | pip-audit in CI — fails PR on new P0 vulns; 14 DEV-10 baseline ignored | Security | ✅ Done 2026-06-08 (PR #302) | — |
 | 21αβ.I-Mig1 | Automated pre-migration pg_dump — wrap migration runner in a script that always takes a snapshot first. Replaces manual "Rule 9" with automation so we can't forget | Migration safety | ⏳ Pending | 1 hr |
 | 21αβ.I-Mig2 | Migration linter (squawk or similar) — fail PRs that add dangerous patterns (DROP COLUMN, ALTER COLUMN ... NOT NULL without backfill, etc.). Forces backwards-compatible migrations only | Migration safety | ⏳ Pending | 2 hr |
 | 21αβ.I-Mig3 | Migration testing in CI — spin up ephemeral Postgres, run all migrations, verify they succeed. Catches syntax errors before they hit prod | Migration safety | ⏳ Pending | 2 hr |
-| 21αβ.I-Dep1 | Tag `:stable` in GHCR after successful deploy — gives us a known-good marker we can always pin to. Falls out of the existing deploy.yml in ~10 LOC | Deploy safety | ⏳ Pending | 30 min |
+| 21αβ.I-Dep1 | Tag `:stable` in GHCR after every successful deploy — known-good marker we can always pin to | Deploy safety | ✅ Done 2026-06-08 (PR #303) | — |
 | 21αβ.I-Dep2 | Post-deploy smoke test workflow — runs the 24/24 endpoint script automatically after every successful deploy. Catches "service is up but routes are broken" | Deploy safety | ⏳ Pending | 1 hr |
 | 21αβ.I-Dep3 | Read-only SSH user (`rishi-readonly`) on rishi-1/2/3/4/5/6 with `command=` restriction in authorized_keys → can read logs, can't write. Restrict `rishi-deploy` to CI only. Documentation in CLAUDE.md | Deploy safety | ⏳ Pending — needs Rishi review of design | 1 day |
-| **Phase 21αβ.I total** | | | **Not started — established 2026-06-08** | **~2-3 days** |
+| **Phase 21αβ.I total** | | | **3/8 done 2026-06-08 (Sec1 + Sec2 + Dep1). 5 remaining: Mig1+Mig2+Mig3 + Dep2+Dep3.** | **~1.5-2 days remaining** |
 
 ## PHASE 21γ: POST-CUTOVER POLISH (good-to-have, NOT blocking real-user launch)
 **Established 2026-06-08 by Rishi** after his "what would the best developer in the world add to the cutover plan?" question. Session 6 identified 9 items the best developers would recommend; Rishi accepted 2 as PROD BLOCKERs (now 21αβ.H11 cost alerting + 21αβ.H6 promoted restore drill) and notes the rest below as **post-cutover polish — important but not blocking real users on prod**.
@@ -557,7 +583,7 @@ These are listed so they're tracked, not so they're done before real users arriv
 | 20 | Self-hosted LLM | 6 | 0 | 6 | 12 |
 | 21α | Alpha Cutover (Play Store alpha-track, YRAL internal team) | 26 | 12 | 14 | ~1 prep + N team-test |
 | 21α→β | V2 Hardening Window (operational — ETL, failover drills, cost alerting, multimodal LLM) | 12 | 1 | 11 | ~9-11 |
-| 21αβ.I | Production-grade safety (CI guardrails — security, migration, deploy) | 8 | 0 | 8 | ~2-3 |
+| 21αβ.I | Production-grade safety (CI guardrails — security, migration, deploy) | 8 | 3 | 5 | ~1.5-2 |
 | 21β | Production Cutover (Play Store prod-track, real users) | 12 | 0 | 12 | ~5-10 |
 | 21γ | Post-cutover polish (good-to-have, NOT blocking real-user launch) | 7 | 0 | 7 | ~6-7 |
 | 22 | AI Influencer Profile Sections | 4 | 0 | 4 | 10 |
