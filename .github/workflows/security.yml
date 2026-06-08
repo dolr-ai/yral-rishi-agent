@@ -1,0 +1,64 @@
+name: Security
+
+# Phase 21αβ.I-Sec1 — gitleaks secret scan on every PR + push to main.
+# Plus the matching weekly drill (per `feedback_adhd_observability_and_security_baseline`)
+# stays as a follow-up; tonight ships the PR-blocking gate that catches
+# secrets BEFORE they merge.
+#
+# Findings policy: any NEW finding fails CI. The 4 known false-positive
+# matches (test idempotency UUIDs in archived orchestrator code per
+# `docs/security/secret-scan-baseline-2026-06-05.md`) are allowlisted via
+# .gitleaks.toml. Future false positives extend that file in their own PR.
+#
+# We invoke the gitleaks BINARY directly (not gitleaks/gitleaks-action@v2
+# which requires a paid license for organizations). Same scan coverage,
+# zero $ cost. The action is just a thin wrapper around this CLI anyway.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: gitleaks secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so gitleaks can sweep across all commits, not
+          # just the PR's diff. Matches the manual `gitleaks detect
+          # --log-opts="--all"` invocation from the DEV-7 audit baseline.
+          fetch-depth: 0
+      - name: Install gitleaks
+        run: |
+          VERSION="8.30.1"
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" -o gitleaks.tar.gz
+          tar -xzf gitleaks.tar.gz
+          sudo mv gitleaks /usr/local/bin/
+          gitleaks version
+      - name: gitleaks detect (all history)
+        # `--config .gitleaks.toml` picks up the allowlist baseline.
+        # `--log-opts="--all"` scans every commit, not just HEAD.
+        # `--exit-code 1` on findings (default), `0` on clean.
+        # `--no-banner` keeps the CI log readable.
+        run: |
+          gitleaks detect \
+            --source . \
+            --config .gitleaks.toml \
+            --log-opts="--all" \
+            --redact \
+            --no-banner \
+            --report-format json \
+            --report-path gitleaks-report.json
+      - name: Upload gitleaks report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-report
+          path: gitleaks-report.json
+          retention-days: 30
