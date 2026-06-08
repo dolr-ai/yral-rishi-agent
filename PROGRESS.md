@@ -268,17 +268,17 @@
 | 20.6 | Gradual rollout — flip processes one at a time via Phase 25.4 admin endpoint (no redeploy needed) | ⏳ Pending | 2 | — |
 | **Phase 20 total** | | **Not started** | **12 days** | |
 
-## PHASE 21α: ALPHA CUTOVER (yral-mobile main = internal YRAL team dogfood)
-**Model established 2026-06-04 by Rishi:** Alpha = yral-mobile `main` branch, visible to whole YRAL team but NOT external users. Cutover means Firebase Remote Config flips `CHAT_BASE_URL` from chat-ai → agent.rishi.yral.com AND all 6 v2-only feature flags flip ON simultaneously (not day-by-day). 1-week internal soak before Phase 21β (production).
+## PHASE 21α: ALPHA CUTOVER (Play Store alpha-track for internal YRAL team)
+**Model CLARIFIED 2026-06-08 by Rishi:** Alpha = the YRAL Alpha Play Store track (app ID `4975001505184260102`), visible to internal YRAL team only. Real users use the prod-track app (`4974628203228829567`) — that's Phase 21β. Cutover means PR #1186 (CHAT_BASE_URL = agent.rishi.yral.com) + PR #1185 (SoulFileCoachEnabled flag default fix) merge → Sarvesh builds alpha APK → uploads to Play Store alpha track → internal team installs via Play Store update → team runs 8-section test plan → satisfied → Phase 21β. **12-section Motorola smoke test ALREADY PASSED 2026-06-08** with all 6 v2 flags overridden ON against agent.rishi.yral.com — empirical alpha-readiness evidence.
 
-See memory: `project_cutover_phases_alpha_and_production.md` for full reference.
+See memory: `project_cutover_phases_alpha_and_production.md` (original) + `project_cutover_model_clarified_2026_06_08.md` (clarification + 5-min lag requirement at 21β).
 
 | # | Sub-phase | Status | Est. days | PR |
 |---|-----------|--------|-----------|-----|
 | 21α.0 | **Auto-deploy from CI build to swarm service.** Surfaced 2026-06-02: PR #241 merged + image built by CI but swarm spec never updated → required a manual `docker service update --image` step to roll out. Hard prerequisite for alpha — hotfix during alpha cannot require manual SSH. Options: (a) CI deploy-job that SSHes from self-hosted runner / OIDC and runs `docker service update`; (b) Watchtower-style image-pull service on rishi-4 polling GHCR `:main` tag; (c) GHCR push webhook into rishi-4 endpoint. | ⏳ Pending | 1 | — |
-| 21α.A1 | Mobile gate: all 6 v2 feature flags exist in `ChatFeatureFlags.kt` with `defaultValue=false` (`H2hChatEnabled`, `AudioRecordingEnabled`, `SoulFileCoachEnabled`, `SseStreamingEnabled`, `ChatAsHumanCreatorEnabled`, `VideoIdeasEnabled`) | 🔄 5/6 (VideoIdeasEnabled pending PR #1184 fix) | — | yral-mobile |
-| 21α.A2 | Mobile gate: all open PRs (#1178, #1179, #1180, #1181, #1182, #1183, #1184) Sarvesh-reviewed + merged to mobile main | 🔄 In flight | 1-3 | yral-mobile |
-| 21α.A3 | Mobile gate: Firebase Remote Config "alpha-override" config staged (CHAT_BASE_URL + 6 flags), pushed at T-0 | ⏳ Pending | 0.25 | — |
+| 21α.A1 | Mobile gate: all 6 v2 feature flags exist in `ChatFeatureFlags.kt` with `defaultValue=false` (`H2hChatEnabled`, `AudioRecordingEnabled`, `SoulFileCoachEnabled`, `SseStreamingEnabled`, `ChatAsHumanCreatorEnabled`, `VideoIdeasEnabled`) | 🔄 5/6 — SoulFileCoachEnabled regressed to `true` in PR #1180; fix PR #1185 open with Sarvesh. Flips ✅ once #1185 merges | — | yral-mobile #1185 |
+| 21α.A2 | Mobile gate: 6 feature PRs Sarvesh-reviewed + merged to mobile main | ✅ Done 2026-06-08 — #1178 H2H + #1179 Audio + #1180 Coach + #1181 Auth + #1182 Coach entry + #1183 Banner fix + #1184 Video Ideas all merged | — | yral-mobile |
+| 21α.A3 | Mobile gate: PR #1186 (CHAT_BASE_URL = agent.rishi.yral.com) + PR #1185 (Coach flag default fix) merge → Sarvesh builds alpha APK + uploads to Play Store alpha track → Firebase Remote Config audience targeting for the 6 v2 flags = `true` for alpha audience | 🔄 Both PRs open with Sarvesh. PR #1186 is the actual cutover commit (1-line CHAT_BASE_URL change, pre-commit hook bypass legitimate per Rishi authorization). Pre-flight smoke test already passed 2026-06-08 — once Sarvesh merges, the path is mechanical | 0.5 | yral-mobile #1185 + #1186 |
 | 21α.B1 | Backend gate: Full Motorola test of all 30 chat-ai-parity endpoint shapes on V2 (Phase 1.16 promoted) | ⏳ Pending | 0.5 | — |
 | 21α.B2 | Backend gate: Latency comparison V2 vs chat-ai; 50%-faster target met per CLAUDE.md rule 6 (Phase 1.17 promoted) | 🔴 RED — DEV-11: chat-send 9% faster (not 50% — both backends Gemini-bound, structural ceiling); inbox-list **2× SLOWER** (904ms vs 427ms p50). DEV-11b root cause: stale planner stats post-2026-06-04 failover (`pg_stat_user_tables` shows `n_live_tup=2` reality 286k, `last_analyze` NULL). Pending: Rishi-authorized `ANALYZE conversations; ANALYZE messages; ANALYZE ai_influencers; …` (≤2 min, ACCESS SHARE lock) → expected inbox-list p50 904ms → ~300-400ms, flips inbox-list 🟢. **chat-send 50% target structurally unachievable on shared Gemini provider** — recommend rule re-interpretation (measure SSE TTFT or non-LLM-overhead) before α | 0.5 | — |
 | 21α.B3 | Backend gate: Continuous ETL loop re-enabled + first delta-sync verified clean (Phase 1.14a promoted) | 🔄 Off post-emergency | 0.5 | — |
@@ -287,7 +287,7 @@ See memory: `project_cutover_phases_alpha_and_production.md` for full reference.
 | 21α.B6 | Backend gate: Phase 19.2 cost circuit breaker landed (still have $400-incident memory) | 🔄 DRAFT PR #289 — service layer complete + 4 review questions answered via `docs/cutover-audits/DEV-12-PR-289-prep.md`. **α gate added (21α.B6a below):** PR #289 explicitly defers `CostCeilingExceeded → 402` wiring in `chat.py` to follow-up — without it, breaker detects but route does not refuse. Must land before α | 1 | #289 |
 | 21α.B6a | **α gate (added 2026-06-05 from DEV-12 review):** Wire `CostCeilingExceeded → 402` in `app/routes/chat.py` after #289 service layer merges. Without this, the breaker is half-shipped — detects but doesn't enforce at the user-facing endpoint. ~15 LOC + 1 test | ⏳ Pending — depends on #289 merge | 0.25 | — |
 | 21α.B7 | Backend gate: Phase 1.14 ETL completeness re-verified (re-bootstrap PR #227 closed gap 2026-06-04) | ✅ Done | — | #227 + sidecar pg16 manual op |
-| 21α.C1 | Risk audit gate: Push notifications (chat-ai's `services/push_notifications.py`) ported + fire-tested on V2 — high-risk silent-inbox failure if missing | 🟡 YELLOW — DEV-1: Port complete + **broader-coverage than chat-ai** (4 trigger points vs 1). One consistency issue: v2 sends `data.type="chat_message"`, chat-ai sends `"new_message"`. Mobile expert confirming what Android routes on → 1-line backend fix in ~10 min if needed. Flips 🟢 once data.type alignment confirmed | 0.5 | — |
+| 21α.C1 | Risk audit gate: Push notifications (chat-ai's `services/push_notifications.py`) ported + fire-tested on V2 — high-risk silent-inbox failure if missing | 🟢 GREEN — DEV-1 + mobile expert K answer 2026-06-08: Android `NotificationHandler.kt` routes only on `VideoUploadedToDraft` + `RewardEarned`. `data.type` divergence (`"chat_message"` vs `"new_message"`) doesn't affect routing today. Backend keeps `"chat_message"`. Recommend standardizing on it if chat-push-driven inbox refresh is added later | — | — |
 | 21α.C2 | Risk audit gate: Image generation via Replicate Flux fired end-to-end on V2 against a real bot | 🟢 GREEN — DEV-2: 1 live Replicate Flux Dev call fired end-to-end in 9s, image URL returned, ~$0.003 cost | — | — |
 | 21α.C3 | Risk audit gate: Ansuman's `recsys-influencer-feed.ansuman.yral.com` confirmed reading from V2's `ai_influencers` table (not chat-ai's) — coordinate with Ansuman | ⏳ Pending — VERIFY | 0.25 | — |
 | 21α.C4 | Risk audit gate: Billing paywall (25-50 msg limit, calls billing.yral.com) tested empirically on V2 | 🟡 YELLOW (α-acceptable, **β BLOCKER**) — DEV-3: Architecture is **intentionally client-side** per commit `7881e2e` (2026-05-26). Mobile calls billing.yral.com BEFORE chat-send; v2 trusts mobile verified access. Matches chat-ai (neither service has server-side check). v2 has unused `BILLING_URL` config. Acceptable for α (internal cohort). For β: motivated user can bypass mobile gate by hitting API directly → unbounded free chat → unbounded Gemini cost. Server-side enforcement (~150 LOC, leverages DEV-12's Redis substrate) needed before β | 0.25 | — |
@@ -298,15 +298,34 @@ See memory: `project_cutover_phases_alpha_and_production.md` for full reference.
 | 21α.S4 | Security gate: CORS + Sentry/Langfuse log redaction spot-checked (no JWTs/API keys in logs) | 🟢 GREEN — DEV-9: CORS `*` safe (auto-`allow_credentials=False`). Sentry has comprehensive `before_send` + `before_breadcrumb` scrubbers. 9 JWT hits in docker logs are ADMIN-only (overnight audit token). Zero mobile-user JWTs/API-keys in logs | — | — |
 | 21α.S5 | Security gate: `pip-audit` quick run; no P0 dep vulns (Phase 24.3 promoted-light) | 🟡 YELLOW (α-acceptable, β follow-up PRs) — DEV-10: 14 vulns across 3 packages. **pyjwt 2.10.1→2.13.0** (7 PYSEC IDs — low exposure, we don't verify signatures per CONSTRAINTS E9). **python-multipart 0.0.20→0.0.27** (3 DoS CVEs, bounded by Caddy if `request_body_max_size` is set — **flagged unverified**). **starlette 0.46.2→0.49.1** (4 — don't bump alone; needs FastAPI bump). β follow-up PRs (~30 min total) | 0.25 | — |
 | 21α.D1 | Snapshot 1: pre-alpha-cutover pg_dump V2 + chat-ai → `pre-alpha-cutover-YYYY-MM-DD/`, md5'd | ⏳ Pending | 0.25 | — |
-| 21α.E1 | Smoke test: Mobile expert builds "alpha-preview" APK with CHAT_BASE_URL=agent + all 6 flags ON | ⏳ Pending | 0.25 | — |
-| 21α.E2 | Smoke test: Rishi runs 15-test matrix on Motorola (see memory `project_cutover_phases_alpha_and_production.md`) — every test must pass | ⏳ Pending — ABORT GATE | 0.5 | — |
+| 21α.E1 | Smoke test: Mobile expert builds APK with CHAT_BASE_URL=agent + all 6 flags ON | ✅ Done 2026-06-08 | — | — |
+| 21α.E2 | Smoke test: Rishi runs smoke matrix on Motorola — every test must pass | ✅ Done 2026-06-08 — **12/12 sections passed clean** (A AI chat + SSE, B H2H, C audio recording + transcription, D G6 mic-hide, E1 CreatorTakeoverBar, E2 takeover toggle, F Coach button, G Coach end-to-end, H Create CTA stable, I1 Video Ideas tab + 5 ideas, I2 Create handler + toast nav, J human profile = 2 tabs). Rishi noted: Coach still needs polish (tracked as mobile expert (a) follow-up) | — | — |
 | 21α.F1 | T-0: Firebase Remote Config push (CHAT_BASE_URL + 6 flags ON) | ⏳ Pending | — | — |
 | 21α.F2 | T+1h watch: Sentry error rate stable; kill-switch any spiking process | ⏳ Pending | — | — |
 | 21α.F3 | T+24h: Clear → 7-day alpha soak begins | ⏳ Pending | 7 | — |
-| **Phase 21α total** | | **Overnight audits closed 12/12 (per `docs/cutover-audits/INDEX.md`): 8 🟢 / 3 🟡 / 1 🔴 (DEV-11 latency, cheap fix queued via ANALYZE).** Remaining gates: 21α.0 auto-deploy, 21α.A2 Sarvesh queue (6 PRs), 21α.A3 Firebase staged, 21α.B1 30-endpoint Motorola test, 21α.B2 re-run after ANALYZE, 21α.B3 ETL re-enable, 21α.B6+B6a cost breaker, 21α.C3 Ansuman recsys, 21α.D1 snapshot, 21α.E1/E2 smoke, 21α.F1-F3 cutover ops. 🟡-as-α-acceptable: C1 push notif (1-line fix pending mobile), C4 billing client-side, S5 dep audit. | **~2-3 day prep + 7 day soak** | |
+| **Phase 21α total** | | **Mobile gate cleared (12/12 smoke test passed 2026-06-08). 12 overnight audits closed: 9 🟢 / 2 🟡 / 1 🔴 (DEV-11 latency — cheap fix queued).** Remaining α gates: 21α.A1+A3 PR #1185+#1186 Sarvesh merge → alpha APK build → Play Store alpha track upload → team install. The handful of pending backend items (21α.B2 ANALYZE, B3 ETL re-enable, B6+B6a cost breaker, C3 Ansuman recsys, D1 snapshot, F1-F3 cutover ops, plus 21α.0 auto-deploy if hotfix needed) can proceed in parallel with the alpha team test cycle — they don't block the alpha-track upload itself. | **~1 day prep + N day team test** | |
 
-## PHASE 21β: PRODUCTION CUTOVER (Play Store + App Store submission)
-**Triggered after Phase 21α 1-week alpha soak clean.** Same codebase, just submitted to app stores. External users get v2.
+## PHASE 21α→β: V2 HARDENING WINDOW (between alpha-satisfied and prod-submission)
+**Established 2026-06-08 by Rishi:** "We just need to make sure that the API is robust, we have failover mechanisms, nothing can go wrong … say max we should lose just 5 minutes of data from chat-ai when it finally goes onto [prod] before real users start using our V2 version." Items previously tagged as β-only now become **prod-cutover prereqs** — they must land before real users hit V2.
+
+See memory: `project_cutover_model_clarified_2026_06_08.md`.
+
+| # | Sub-phase | Status | Est. days | PR |
+|---|-----------|--------|-----------|-----|
+| 21αβ.H1 | **5-MIN LAG REQUIREMENT** — Continuous ETL loop re-enabled + 5-min lag monitoring + alert on >5min on Phase 19.6 dashboard. Currently OFF since 2026-05-30 emergency (PROGRESS.md 21α.B3 = 1.14a). Rebootstrap-style port at prod cutover is NOT acceptable — lag too high. | ⏳ Pending — PROD BLOCKER | 1.5 | — |
+| 21αβ.H2 | DEV-3 follow-through: server-side billing paywall enforcement on V2 (~150 LOC, leverages DEV-12's Redis substrate). Was β-only; now PROD BLOCKER per Rishi 2026-06-08 — motivated user on prod bypasses mobile gate → unbounded Gemini cost. | ⏳ Pending — PROD BLOCKER | 2 | — |
+| 21αβ.H3 | Auto-deploy mechanism (21α.0 promoted) — pick one of: (a) CI deploy-job via OIDC, (b) Watchtower polling GHCR `:main`, (c) GHCR push webhook. Hotfix-during-prod-cutover cannot require manual SSH. | ⏳ Pending — PROD BLOCKER | 1 | — |
+| 21αβ.H4 | Patroni failover drill — live test of leader promotion under simulated load. Required per "robust + failover-ready" mandate. | ⏳ Pending | 0.5 | — |
+| 21αβ.H5 | Redis Sentinel failover drill — kill primary, verify subscriber reconnect + WS pub/sub recovery. DEV-6 noted as β follow-up; promoted. | ⏳ Pending | 0.5 | — |
+| 21αβ.H6 | WAL-G restore drill — verified end-to-end (PR `project_walg_disabled_in_production` resolved 2026-06-04 with streaming on; drill remains). | ⏳ Pending | 0.5 | — |
+| 21αβ.H7 | DEV-10 dep bumps — pyjwt 2.10.1 → 2.13.0 + python-multipart 0.0.20 → 0.0.27. Verify Caddy `request_body_max_size` is set (DEV-10 flagged as suspect). Defer starlette to FastAPI bump PR. | ⏳ Pending | 0.5 | — |
+| 21αβ.H8 | Phase 24 security drills promoted from β: 24.1 gitleaks CI workflow on every PR (baseline done in DEV-7), 24.2 weekly automated safety drill, 24.3 dep CI (pip-audit + Trivy), 24.4 rotation runbook. | ⏳ Pending | 5 | — |
+| 21αβ.H9 | DATABASE_URL secret rotation (was I13 + 21α.S2, no longer dedicated to its own session since the audit transcript that leaked it is months old, but still real prereq). | ⏳ Pending — DEDICATED SESSION | 0.5 | — |
+| 21αβ.H10 | Phase 19.6 dashboard additions to cover the new prereqs: ETL lag tile + cost-breaker activations tile + last-failover-drill timestamps. ADHD-observability baseline per `feedback_adhd_observability_and_security_baseline.md`. | ⏳ Pending | 1 | — |
+| **Phase 21α→β total** | | **Not started — established 2026-06-08** | **~8-10 days** | |
+
+## PHASE 21β: PRODUCTION CUTOVER (Play Store prod-track for real users)
+**Model CLARIFIED 2026-06-08 by Rishi:** Prod-track Play Store app (`4974628203228829567`). Same codebase as alpha-track. Triggered after alpha team is satisfied + Phase 21α→β hardening window is closed. Sarvesh bumps versionCode → submits to Play Store production → app store approval (~2-7 days) → live to real users. Firebase Remote Config audience condition flips so 6 v2 flags = `true` for prod users. **V2 must be ≤5 min behind chat-ai at this moment.**
 
 | # | Sub-phase | Status | Est. days | PR |
 |---|-----------|--------|-----------|-----|
@@ -495,8 +514,9 @@ See memory: `project_cutover_phases_alpha_and_production.md` for full reference.
 | 18 | Meta-AI Advisor | 4 | 0 | 4 | 5 |
 | 19 | Rate Limiting + Observability | 6 | 0 | 6 | 6 |
 | 20 | Self-hosted LLM | 6 | 0 | 6 | 12 |
-| 21α | Alpha Cutover (yral-mobile main + YRAL team dogfood) | 26 | 1 | 25 | ~3 prep + 7 soak |
-| 21β | Production Cutover (Play Store + App Store) | 12 | 0 | 12 | ~5-10 |
+| 21α | Alpha Cutover (Play Store alpha-track, YRAL internal team) | 26 | 12 | 14 | ~1 prep + N team-test |
+| 21α→β | V2 Hardening Window (between alpha-satisfied + prod-submission) | 10 | 0 | 10 | ~8-10 |
+| 21β | Production Cutover (Play Store prod-track, real users) | 12 | 0 | 12 | ~5-10 |
 | 22 | AI Influencer Profile Sections | 4 | 0 | 4 | 10 |
 | 23 | Skills Framework (post-cutover, dogfood) | 7 | 0 | 7 | 4.5 |
 | 24 | Security & Safety Drills | 5 | 0 | 5 | 5.5 |
