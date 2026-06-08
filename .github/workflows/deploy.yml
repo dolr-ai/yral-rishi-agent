@@ -1,0 +1,162 @@
+name: Deploy to production
+
+# Click "Run workflow" in the Actions tab to ship the latest main (or a
+# specific commit) to the swarm. See docs/DEPLOY.md for the plain-English
+# walkthrough.
+#
+# Why button-triggered (workflow_dispatch) and NOT auto-on-merge:
+# - Auto-on-merge means a bad PR that passes CI lands on prod 5 minutes
+#   later with no human gate. Rishi wants a confirmation step before any
+#   change reaches users.
+# - The "production" environment line below ADDS a second gate — even
+#   after clicking Run, GitHub asks Rishi to approve the run before the
+#   SSH actually executes. Two clicks = two safety checks.
+#
+# Closes PROGRESS.md 21α.0 / 21αβ.H3 ("Auto-deploy from CI build to
+# swarm service") — replaces the manual SSH step Session 6 had been
+# doing on every PR merge.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Commit SHA to deploy. Leave blank to deploy the latest main HEAD.'
+        required: false
+        default: ''
+
+env:
+  IMAGE: ghcr.io/dolr-ai/yral-rishi-agent
+  SERVICE: yral-rishi-agent
+  HEALTH_URL: https://agent.rishi.yral.com/health
+  # Three swarm managers. The workflow tries each in order — any one
+  # accepts the deploy command and the swarm raft consensus routes it
+  # to whichever is currently leader. So leader-change tomorrow does
+  # NOT break deploys.
+  SWARM_MANAGER_1: 138.201.128.108
+  SWARM_MANAGER_2: 88.99.160.251
+  SWARM_MANAGER_3: 162.55.88.112
+  SWARM_USER: rishi-deploy
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # The "production" environment gates this job behind a GitHub
+    # approval prompt. One-time setup: GitHub → repo Settings →
+    # Environments → New environment "production" → add Rishi as a
+    # Required reviewer. After that, every deploy run pauses here until
+    # Rishi approves in the GitHub UI. See docs/DEPLOY.md.
+    environment: production
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Checkout repo (for git rev-parse only)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Resolve commit SHA to deploy
+        id: resolve_sha
+        run: |
+          if [ -n "${{ inputs.sha }}" ]; then
+            SHA="${{ inputs.sha }}"
+            echo "Using SHA from manual input: $SHA"
+          else
+            git fetch origin main --quiet
+            SHA=$(git rev-parse origin/main)
+            echo "Using latest main HEAD: $SHA"
+          fi
+          # Validate the SHA looks like a SHA — guard against typos.
+          if ! echo "$SHA" | grep -qE '^[0-9a-f]{7,40}$'; then
+            echo "ERROR: '$SHA' does not look like a git SHA"
+            exit 1
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "image_ref=${{ env.IMAGE }}:$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Verify image exists in GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          IMAGE_REF="${{ steps.resolve_sha.outputs.image_ref }}"
+          echo "Checking $IMAGE_REF in GHCR..."
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          if docker manifest inspect "$IMAGE_REF" > /dev/null 2>&1; then
+            echo "✓ Image exists in GHCR"
+          else
+            echo "ERROR: image $IMAGE_REF not found in GHCR. Did CI finish building? Check the CI workflow run for that commit."
+            exit 1
+          fi
+
+      - name: Set up SSH key + known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # Trust the host fingerprints of all 3 managers so SSH doesn't
+          # prompt. ssh-keyscan is idempotent + safe to run every job.
+          for host in ${{ env.SWARM_MANAGER_1 }} ${{ env.SWARM_MANAGER_2 }} ${{ env.SWARM_MANAGER_3 }}; do
+            ssh-keyscan -T 10 -H "$host" >> ~/.ssh/known_hosts 2>/dev/null || true
+          done
+
+      - name: Deploy via first responding swarm manager
+        id: deploy
+        env:
+          IMAGE_REF: ${{ steps.resolve_sha.outputs.image_ref }}
+        run: |
+          DEPLOYED_VIA=""
+          for host in ${{ env.SWARM_MANAGER_1 }} ${{ env.SWARM_MANAGER_2 }} ${{ env.SWARM_MANAGER_3 }}; do
+            echo "── Trying swarm manager $host ──"
+            # ConnectTimeout 15s, BatchMode (no interactive prompts).
+            # `set -e` inside the SSH command so a failed docker update
+            # exits the SSH session with non-zero — `if !` then captures
+            # the failure and we fall through to the next host.
+            if ssh -i ~/.ssh/deploy_key \
+                   -o ConnectTimeout=15 \
+                   -o BatchMode=yes \
+                   -o StrictHostKeyChecking=yes \
+                   "${{ env.SWARM_USER }}@$host" \
+                   "set -e; docker service update --image $IMAGE_REF --update-order start-first --update-failure-action pause ${{ env.SERVICE }}"; then
+              echo "✓ Deploy command accepted by $host"
+              DEPLOYED_VIA="$host"
+              break
+            else
+              echo "✗ $host did not respond or rejected; trying next manager..."
+            fi
+          done
+
+          if [ -z "$DEPLOYED_VIA" ]; then
+            echo "ERROR: all 3 swarm managers failed. Check connectivity + SSH key."
+            exit 1
+          fi
+
+          echo "deployed_via=$DEPLOYED_VIA" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for /health to return 200
+        run: |
+          echo "Polling ${{ env.HEALTH_URL }} for up to 2 minutes..."
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            STATUS=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "${{ env.HEALTH_URL }}" || echo "fail")
+            echo "attempt $i: /health → $STATUS"
+            if [ "$STATUS" = "200" ]; then
+              echo "✓ Service healthy after deploy"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "WARN: /health did not return 200 within 2 minutes."
+          echo "The swarm may still be rolling. Check service status manually OR run the Rollback workflow."
+          exit 1
+
+      - name: Deploy summary
+        if: always()
+        run: |
+          echo "─── Deploy summary ───"
+          echo "Commit SHA:   ${{ steps.resolve_sha.outputs.sha }}"
+          echo "Image:        ${{ steps.resolve_sha.outputs.image_ref }}"
+          echo "Manager used: ${{ steps.deploy.outputs.deployed_via }}"
+          echo "Triggered by: ${{ github.actor }}"
+          echo "Health URL:   ${{ env.HEALTH_URL }}"
+          echo ""
+          echo "If something went wrong, run the 'Rollback production' workflow to revert to the previous image."
