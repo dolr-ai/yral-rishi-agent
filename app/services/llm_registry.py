@@ -170,9 +170,26 @@ PROVIDERS: dict[str, dict[str, Any]] = {
 
 
 # Default routing — each process points at one (provider, model) pair.
-# Production overrides will land via the admin endpoint + llm_process_config
-# table in 25.4. Today, env vars can override per process (see _process_config).
+# Optional `fallback_provider` + `fallback_model` fields enable in-call
+# failover (see `call()`) — primary fails → log warning + Sentry → try
+# fallback once → record both outcomes.
+#
+# Routing policy 2026-06-08 (Rishi):
+#   - Sync user-waiting (user_chat_main, audio_transcription, creator
+#     tools where a human is on the screen): gemini, no fallback. TTFT
+#     matters; gemini wins.
+#   - Async background (the 6 in ASYNC_PROCESSES below): runpod_vllm
+#     primary (Saikat's pod, Qwen3.6-35B-A3B-FP8) → internal_vllm
+#     fallback (Anshuman's pod, Qwen3.6-27B-FP8). NEVER gemini — leak
+#     guard in `call()` will alert if it ever happens.
+#
+# Why no gemini fallback for async: a 4-day audit showed the
+# quality_scorer loop quietly burned $22 on gemini due to a DB-override
+# cache that didn't load (the bug that motivated this PR). Removing
+# gemini from the async chain means even if EVERYTHING else regresses,
+# we land on internal_vllm or fail loud — never silent gemini spend.
 LLM_DEFAULTS: dict[str, dict[str, Any]] = {
+    # ─── Sync user-waiting ──────────────────────────────────────────
     "user_chat_main": {
         "provider": "gemini",
         "model": "gemini-2.5-flash",
@@ -190,35 +207,13 @@ LLM_DEFAULTS: dict[str, dict[str, Any]] = {
         "model": "gemini-2.5-flash",
         "timeout_sec": 60.0,
     },
-    "proactive_generation": {
-        "provider": "gemini",
-        "model": "gemini-2.5-flash",
-        "timeout_sec": 120.0,
-    },
-    "quality_scorer": {
-        "provider": "gemini",
-        "model": "gemini-2.5-flash",
-        "timeout_sec": 120.0,
-    },
-    "memory_extraction": {
-        "provider": "gemini",
-        "model": "gemini-2.5-flash",
-        "timeout_sec": 120.0,
-    },
-    "memory_consolidation": {
-        "provider": "gemini",
-        "model": "gemini-2.5-flash",
-        "timeout_sec": 180.0,
-    },
+    # ─── Sync creator-facing (creator is on the screen waiting) ─────
+    # Kept on gemini per `feedback_llm_defaults_sync_paths_use_gemini`
+    # memory. TTFT 4-12s on vLLM made Coach feel broken on 2026-06-03.
     "soul_file_coach": {
         "provider": "gemini",
         "model": "gemini-2.5-flash",
         "timeout_sec": 60.0,
-    },
-    "nudge_generation": {
-        "provider": "gemini",
-        "model": "gemini-2.5-flash",
-        "timeout_sec": 120.0,
     },
     "character_generator": {
         "provider": "gemini",
@@ -235,18 +230,64 @@ LLM_DEFAULTS: dict[str, dict[str, Any]] = {
         "model": "gemini-2.5-flash",
         "timeout_sec": 120.0,
     },
-    "video_idea_generation": {
-        # 2026-06-08: routed to runpod_vllm (Saikat's pod, Qwen3.6-35B-A3B-FP8)
-        # per Rishi. The 35B-A3B model has more headroom than internal_vllm's
-        # 27B for the 5-idea Devanagari batch we saw truncate on 2026-06-04.
-        # Background-loop tier; cold-start path is still synchronous so quality
-        # matters here even though we're not on gemini. Rishi can hot-flip via
-        # /admin/llm-routing dashboard if the new pod proves flaky.
+    # ─── Async background — Saikat primary + Anshuman fallback ──────
+    "proactive_generation": {
         "provider": "runpod_vllm",
         "model": "Qwen/Qwen3.6-35B-A3B-FP8",
+        "fallback_provider": "internal_vllm",
+        "fallback_model": "Qwen/Qwen3.6-27B-FP8",
+        "timeout_sec": 120.0,
+    },
+    "quality_scorer": {
+        "provider": "runpod_vllm",
+        "model": "Qwen/Qwen3.6-35B-A3B-FP8",
+        "fallback_provider": "internal_vllm",
+        "fallback_model": "Qwen/Qwen3.6-27B-FP8",
+        "timeout_sec": 120.0,
+    },
+    "memory_extraction": {
+        "provider": "runpod_vllm",
+        "model": "Qwen/Qwen3.6-35B-A3B-FP8",
+        "fallback_provider": "internal_vllm",
+        "fallback_model": "Qwen/Qwen3.6-27B-FP8",
+        "timeout_sec": 120.0,
+    },
+    "memory_consolidation": {
+        "provider": "runpod_vllm",
+        "model": "Qwen/Qwen3.6-35B-A3B-FP8",
+        "fallback_provider": "internal_vllm",
+        "fallback_model": "Qwen/Qwen3.6-27B-FP8",
+        "timeout_sec": 180.0,
+    },
+    "nudge_generation": {
+        "provider": "runpod_vllm",
+        "model": "Qwen/Qwen3.6-35B-A3B-FP8",
+        "fallback_provider": "internal_vllm",
+        "fallback_model": "Qwen/Qwen3.6-27B-FP8",
+        "timeout_sec": 120.0,
+    },
+    "video_idea_generation": {
+        "provider": "runpod_vllm",
+        "model": "Qwen/Qwen3.6-35B-A3B-FP8",
+        "fallback_provider": "internal_vllm",
+        "fallback_model": "Qwen/Qwen3.6-27B-FP8",
         "timeout_sec": 120.0,
     },
 }
+
+
+# Processes that MUST NEVER hit gemini. If `_check_async_gemini_leak`
+# observes the resolved provider == "gemini" for any of these, it logs
+# error + fires Sentry. Used in `call()` post-config-resolve so DB
+# overrides, env overrides, AND code defaults are all covered.
+ASYNC_PROCESSES_NEVER_GEMINI: frozenset[str] = frozenset({
+    "proactive_generation",
+    "quality_scorer",
+    "memory_extraction",
+    "memory_consolidation",
+    "nudge_generation",
+    "video_idea_generation",
+})
 
 
 # Per-provider asyncio.Semaphore. Lazy-init on first use to avoid pinning
@@ -553,6 +594,114 @@ async def _record_cost(
     )
 
 
+def _check_async_gemini_leak(process: str, provider: str) -> None:
+    """ASYNC PROCESS → GEMINI guard. The 2026-06-08 audit revealed that
+    quality_scorer was silently spending ~$22/4 days on gemini because a
+    DB-override cache failed to load. This function makes the SAME class
+    of failure loud — if any of the async processes resolves to gemini,
+    log at error level + fire a Sentry alert. Does NOT block the call
+    (operator may have intentionally routed there as last resort); the
+    job here is observability, not enforcement."""
+    if process not in ASYNC_PROCESSES_NEVER_GEMINI:
+        return
+    if provider != "gemini":
+        return
+    logger.error(
+        "ASYNC PROCESS HIT GEMINI: process=%s provider=%s — routing leak "
+        "detected. Check llm_process_config DB overrides + LLM_DEFAULTS. "
+        "Allowing call to proceed for now (failing-loud, not failing-closed).",
+        process,
+        provider,
+    )
+    try:
+        import sentry_sdk
+
+        sentry_sdk.capture_message(
+            f"LLM routing leak: async process {process!r} resolved to gemini",
+            level="error",
+        )
+    except Exception:
+        # Never let Sentry-side failures break the call path.
+        pass
+
+
+async def _do_complete(
+    *,
+    process: str,
+    provider: str,
+    model: str,
+    timeout_sec: float,
+    messages: list[dict],
+    temperature: float | None,
+    max_tokens: int | None,
+    extra_body: dict | None,
+    user_id: str | None,
+    conversation_id: str | None,
+    request_id: str | None,
+) -> LlmResponse:
+    """One dispatch attempt against one provider. Records cost on success
+    and outcome on failure. Exceptions propagate so the caller (the
+    fallback layer in `call()`) can decide whether to retry."""
+    import time as _time
+
+    provider_meta = PROVIDERS[provider]
+
+    if provider_meta.get("supports_chat") is False:
+        raise RuntimeError(
+            f"llm_registry._do_complete: provider={provider!r} does not support chat (process={process!r})"
+        )
+
+    merged_extra = dict(provider_meta.get("default_extra_body") or {})
+    if extra_body:
+        merged_extra.update(extra_body)
+
+    sem = _semaphore(provider)
+    async with sem:
+        if provider == "gemini":
+            from services.llm_clients import gemini as gemini_client
+
+            client_module = gemini_client
+        else:
+            from services.llm_clients import openai_compatible
+
+            client_module = openai_compatible
+
+        _started = _time.monotonic()
+        try:
+            result = await client_module.complete(
+                provider=provider,
+                base_url=provider_meta.get("base_url"),
+                api_key=_resolve_api_key(provider),
+                model=model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                extra_body=merged_extra or None,
+                timeout=timeout_sec,
+            )
+        except Exception as exc:
+            await _record_outcome(
+                process,
+                provider=provider,
+                model=model,
+                outcome=_classify_outcome(exc),
+                latency_ms=(_time.monotonic() - _started) * 1000.0,
+                error_message=str(exc),
+                user_id=user_id,
+                conversation_id=conversation_id,
+                request_id=request_id,
+            )
+            raise
+        await _record_cost(
+            process,
+            result,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            request_id=request_id,
+        )
+        return result
+
+
 async def call(
     *,
     process: str,
@@ -574,84 +723,76 @@ async def call(
     `extra_body` is the per-invocation escape hatch for provider-specific
     knobs (Gemini's `safetySettings`, vLLM's `chat_template_kwargs`).
     Caller-supplied extras override provider defaults on key collision.
+
+    Fallback (2026-06-08): if the resolved config has a `fallback_provider`,
+    a primary-provider failure triggers exactly ONE retry against the
+    fallback. Both attempts get rows in llm_costs (primary as failure,
+    fallback as success/failure). Sentry warning fires when a fallback
+    is activated so we notice systemic primary outages even if the
+    fallback covers the user.
     """
     cfg = _process_config(process)
     provider = cfg["provider"]
-    provider_meta = PROVIDERS[provider]
+    model = cfg["model"]
+    timeout_sec = float(cfg.get("timeout_sec") or 60.0)
 
-    # Phase 25.10 follow-up — defensive capability gate. Mirrors the
-    # `supports_stream` gate in call_stream() and `supports_transcribe`
-    # in call_transcribe(). Today every PROVIDER has supports_chat=True
-    # so this is latent; the gate stops a future contributor from
-    # adding a transcribe-only or embeddings-only provider and having
-    # call() silently dispatch a chat request to it.
-    if provider_meta.get("supports_chat") is False:
-        raise RuntimeError(
-            f"llm_registry.call: provider={provider!r} does not support chat "
-            f"(process={process!r})"
-        )
+    # Leak guard — async process resolving to gemini is a routing bug.
+    _check_async_gemini_leak(process, provider)
 
-    # Merge: provider default → caller extras (caller wins on collision).
-    merged_extra = dict(provider_meta.get("default_extra_body") or {})
-    if extra_body:
-        merged_extra.update(extra_body)
-
-    sem = _semaphore(provider)
-    async with sem:
-        # Pick the client by provider. Gemini has its own native-API
-        # client (different wire format from OpenAI spec); everything
-        # else goes through openai_compatible. Both clients expose the
-        # same complete()/complete_stream() interface so dispatch is
-        # uniform — no special-casing beyond the import.
-        if provider == "gemini":
-            from services.llm_clients import gemini as gemini_client
-
-            client_module = gemini_client
-        else:
-            from services.llm_clients import openai_compatible
-
-            client_module = openai_compatible
-
-        # Phase 25.5b: wrap the dispatch so failures get a row in llm_costs
-        # too (outcome != 'success', cost_usd=0, error_message populated).
-        # The exception still propagates to the caller — recording is in
-        # addition, not in place of, the existing error path.
-        import time as _time
-
-        _started = _time.monotonic()
-        try:
-            result = await client_module.complete(
-                provider=provider,
-                base_url=provider_meta.get("base_url"),
-                api_key=_resolve_api_key(provider),
-                model=cfg["model"],
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                extra_body=merged_extra or None,
-                timeout=cfg.get("timeout_sec", 60.0),
-            )
-        except Exception as exc:
-            await _record_outcome(
-                process,
-                provider=provider,
-                model=cfg["model"],
-                outcome=_classify_outcome(exc),
-                latency_ms=(_time.monotonic() - _started) * 1000.0,
-                error_message=str(exc),
-                user_id=user_id,
-                conversation_id=conversation_id,
-                request_id=request_id,
-            )
-            raise
-        await _record_cost(
-            process,
-            result,
+    try:
+        return await _do_complete(
+            process=process,
+            provider=provider,
+            model=model,
+            timeout_sec=timeout_sec,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            extra_body=extra_body,
             user_id=user_id,
             conversation_id=conversation_id,
             request_id=request_id,
         )
-        return result
+    except Exception as primary_exc:
+        fallback_provider = cfg.get("fallback_provider")
+        fallback_model = cfg.get("fallback_model") or model
+        if not fallback_provider or fallback_provider not in PROVIDERS:
+            raise
+
+        # Fallback path. Leak guard runs again so a misconfigured
+        # async-process → gemini fallback still alerts.
+        _check_async_gemini_leak(process, fallback_provider)
+        logger.warning(
+            "llm_registry: primary %s failed for process=%s; trying fallback %s. "
+            "Primary error: %s",
+            provider,
+            process,
+            fallback_provider,
+            primary_exc,
+        )
+        try:
+            import sentry_sdk
+
+            sentry_sdk.capture_message(
+                f"LLM fallback activated: {process} {provider}→{fallback_provider}",
+                level="warning",
+            )
+        except Exception:
+            pass
+
+        return await _do_complete(
+            process=process,
+            provider=fallback_provider,
+            model=fallback_model,
+            timeout_sec=timeout_sec,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            extra_body=extra_body,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            request_id=request_id,
+        )
 
 
 async def call_stream(
