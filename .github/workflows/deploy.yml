@@ -209,6 +209,30 @@ jobs:
           echo "✓ Rollback workflow dispatched. Watch it complete at:"
           echo "  https://github.com/${{ github.repository }}/actions/workflows/${{ env.ROLLBACK_WORKFLOW }}"
 
+      # Phase 21αβ.I-Dep1 — tag the just-deployed image as :stable in
+      # GHCR after /health passes. Gives us a known-good marker to pin
+      # to during incidents: any operator can `docker service update
+      # --image ghcr.io/dolr-ai/yral-rishi-agent:stable` to revert to
+      # the last-known-good build without looking up SHAs. Only runs
+      # on health-check success — never tags a failed deploy.
+      #
+      # Uses crane (Google's OCI registry tool, single static binary) to
+      # re-tag remotely without pulling the image. Faster than
+      # `docker pull` + `docker tag` + `docker push` by ~60s.
+      - name: Tag image as :stable after successful deploy
+        if: steps.health_check.outcome == 'success'
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          echo "── Tagging ${{ steps.resolve_sha.outputs.image_ref }} as :stable ──"
+          curl -sSL "https://github.com/google/go-containerregistry/releases/download/v0.20.2/go-containerregistry_Linux_x86_64.tar.gz" \
+            | sudo tar -xzC /usr/local/bin crane
+          crane version
+          echo "$GHCR_TOKEN" | crane auth login ghcr.io -u "${{ github.actor }}" --password-stdin
+          crane tag "ghcr.io/dolr-ai/yral-rishi-agent:${{ steps.resolve_sha.outputs.sha }}" stable
+          echo "✓ ghcr.io/dolr-ai/yral-rishi-agent:stable now points at ${{ steps.resolve_sha.outputs.sha }}"
+
       - name: Deploy summary
         if: always()
         run: |

@@ -49,6 +49,18 @@ You can still trigger a deploy manually if you ever need to:
 
 The auto-rollback safety net applies to manual deploys too.
 
+## The `:stable` tag — known-good image marker
+
+After every deploy passes `/health`, the deploy workflow re-tags the just-deployed image as `:stable` in GHCR (Phase 21αβ.I-Dep1). This gives a stable handle on the last-known-good build.
+
+You don't normally interact with this — auto-rollback already reverts to the prior SHA on failure. But if you ever need to pin manually from an SSH session on a manager node:
+
+```bash
+docker service update --image ghcr.io/dolr-ai/yral-rishi-agent:stable yral-rishi-agent
+```
+
+The `:stable` tag is updated only after `/health` succeeds, so it never points at a known-bad build. If a deploy fails health-check, `:stable` continues to point at the previous good image.
+
 ## How to roll back (the other button)
 
 If a deploy breaks something — `/health` is failing, errors are climbing, mobile app is sad — you can revert.
