@@ -21,14 +21,29 @@ def _read(p: str) -> str:
 # ─── Auto-deploy on merge to main ────────────────────────────────────
 
 
-def test_deploy_workflow_triggers_on_push_to_main():
+def test_deploy_workflow_triggers_after_ci_completes_on_main():
     """The whole point of Path 1: merges to main auto-trigger the
-    deploy. Without this, we're back at manual-button-Tier-1."""
+    deploy AFTER CI's build-and-push has produced the image. Without
+    this chain, we hit the race condition discovered 2026-06-08 with
+    PR #297 (deploy fired 4 sec after merge, before CI had built the
+    image)."""
     src = _read(".github/workflows/deploy.yml")
-    assert "push:" in src
-    assert "branches:" in src
-    # Specifically main — guard against accidental push-on-all-branches.
-    assert "- main" in src
+    assert "workflow_run:" in src
+    assert 'workflows: ["CI"]' in src
+    assert "types: [completed]" in src
+    assert "branches: [main]" in src
+
+
+def test_deploy_job_gated_on_successful_ci_push_event():
+    """A workflow_run trigger fires on ANY CI completion (success or
+    failure, push or PR). The job's `if:` guard must filter to only
+    successful CI runs from push events on main."""
+    src = _read(".github/workflows/deploy.yml")
+    assert "github.event.workflow_run.conclusion == 'success'" in src
+    assert "github.event.workflow_run.event == 'push'" in src
+    assert "github.event.workflow_run.head_branch == 'main'" in src
+    # And the manual button must always bypass this guard.
+    assert "github.event_name == 'workflow_dispatch'" in src
 
 
 def test_deploy_workflow_keeps_manual_button_for_emergencies():
@@ -41,14 +56,13 @@ def test_deploy_workflow_keeps_manual_button_for_emergencies():
     assert "Commit SHA to deploy" in src
 
 
-def test_deploy_workflow_skips_docs_only_changes():
-    """A docs-only PR doesn't change runtime behavior — rolling-restarting
-    the swarm is wasted work. Path filter must skip those."""
+def test_resolve_sha_uses_workflow_run_head_sha():
+    """When triggered by a workflow_run, the deploy must use the
+    triggering CI run's head_sha (= the commit that was merged), NOT
+    the current main HEAD (which can drift between trigger fire and
+    job start if another merge lands)."""
     src = _read(".github/workflows/deploy.yml")
-    assert "paths-ignore:" in src
-    # The four documented-as-skipped paths must all be present.
-    for pattern in ("'**.md'", "'docs/**'", "'mobile-docs-archive/**'"):
-        assert pattern in src, f"missing path-ignore: {pattern}"
+    assert "github.event.workflow_run.head_sha" in src
 
 
 # ─── Concurrency lock ───────────────────────────────────────────────

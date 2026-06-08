@@ -28,15 +28,21 @@ on:
         description: 'Commit SHA to deploy. Leave blank to deploy the latest main HEAD.'
         required: false
         default: ''
-  push:
-    branches:
-      - main
-    # Skip when ONLY docs/markdown files changed — no runtime impact.
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'mobile-docs-archive/**'
-      - 'yral-rishi-agent-plan-and-discussions/**'
+  # Trigger after the CI workflow finishes successfully on main. Using
+  # workflow_run instead of `push: branches: [main]` because `push`
+  # fires the deploy ~4 seconds after the merge — BEFORE CI has finished
+  # building + pushing the image to GHCR. The first auto-deploy attempt
+  # (2026-06-08 ee1a389) failed at "Verify image exists in GHCR" exactly
+  # because of this race.
+  #
+  # `workflow_run` makes deploy fire AFTER CI completes — by then the
+  # image is guaranteed to be in GHCR. The `if:` guard below ensures
+  # deploy runs only for successful CI runs triggered by a push to main
+  # (skipping PR-triggered CI runs which don't push an image anyway).
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
 
 concurrency:
   # Only ONE deploy at a time. If a merge lands while a deploy is
@@ -62,6 +68,14 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # Run if this is a manual button click OR a successful CI run was
+    # triggered by a push event on main. Skips CI runs triggered by
+    # pull_request (no image was pushed).
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main')
     permissions:
       contents: read
       packages: read
@@ -75,10 +89,20 @@ jobs:
 
       - name: Resolve commit SHA to deploy
         id: resolve_sha
+        env:
+          MANUAL_SHA: ${{ inputs.sha }}
+          WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          if [ -n "${{ inputs.sha }}" ]; then
-            SHA="${{ inputs.sha }}"
+          # Three sources for the SHA, in priority order:
+          # 1. Manual button input (workflow_dispatch with explicit SHA)
+          # 2. The workflow_run's head_sha (auto-deploy after CI on main)
+          # 3. Fallback: current origin/main HEAD (workflow_dispatch with blank input)
+          if [ -n "$MANUAL_SHA" ]; then
+            SHA="$MANUAL_SHA"
             echo "Using SHA from manual input: $SHA"
+          elif [ -n "$WORKFLOW_RUN_SHA" ]; then
+            SHA="$WORKFLOW_RUN_SHA"
+            echo "Using SHA from triggering CI workflow_run: $SHA"
           else
             git fetch origin main --quiet
             SHA=$(git rev-parse origin/main)
