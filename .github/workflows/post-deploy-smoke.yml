@@ -1,0 +1,104 @@
+name: Post-deploy smoke test
+
+# Phase 21αβ.I-Dep2 — runs a public-endpoint smoke test against the
+# live service after every successful deploy. Catches the class of
+# regression where /health returns 200 but the route layer is half-
+# broken (e.g. a router file failed to import but the health blueprint
+# loaded fine).
+#
+# Trigger: workflow_run after "Deploy to production" completes
+# successfully. Same indirection pattern Deploy itself uses to fire
+# after CI — guarantees the smoke runs only AFTER the new image is
+# live + /health passed.
+#
+# On failure: triggers the Rollback workflow with a smoke-failure
+# reason string. Mirrors deploy.yml's `Auto-rollback if /health failed`
+# step exactly so the safety profile is identical.
+#
+# What this script covers (the 7 endpoints below) is intentionally
+# narrow: PUBLIC endpoints reachable without a JWT. Authenticated
+# endpoints are harder to smoke-test from CI (would need a long-lived
+# test JWT in a secret) and are NOT in scope here. See the PR
+# description for the explicit endpoint list Rishi reviewed at merge.
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Deploy to production"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+  actions: write   # required to dispatch the Rollback workflow on failure
+
+env:
+  BASE_URL: https://agent.rishi.yral.com
+  ROLLBACK_WORKFLOW: rollback.yml
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    # Run after manual dispatch OR after a SUCCESSFUL deploy. Skips
+    # if the triggering deploy itself failed — auto-rollback already
+    # handled that case via deploy.yml.
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Wait 10 seconds for swarm replicas to fully settle
+        # Deploy's /health poll already confirmed the service is up,
+        # but rolling restarts may still be finishing on the trailing
+        # replica when /health first returned 200. Tiny sleep here
+        # absorbs that gap; otherwise we get sporadic 5xx from the
+        # in-flight-restart replica.
+        run: sleep 10
+
+      - name: Run public-endpoint smoke
+        id: smoke
+        # `scripts/test_all_endpoints.py` exits 1 on ANY failure. No
+        # --token argument → only the 7 public endpoints are exercised
+        # (authenticated paths are skipped, see the script's `if not
+        # args.token` branch). Exit code is the gate.
+        run: |
+          set -euo pipefail
+          python scripts/test_all_endpoints.py --base-url "${{ env.BASE_URL }}"
+
+      # SAFETY NET — same shape as deploy.yml's auto-rollback step.
+      # Failing public endpoint = service in a half-broken state we
+      # don't want users to hit. Rolling back to the previous image
+      # (which deploy.yml just tagged as :stable) is the safe move.
+      - name: Auto-rollback if smoke failed
+        if: failure() && steps.smoke.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REASON="Auto-rollback: post-deploy smoke test failed against ${{ env.BASE_URL }} (triggered after deploy by ${{ github.event.workflow_run.head_sha || github.sha }})"
+          echo "── Triggering auto-rollback ──"
+          gh workflow run "${{ env.ROLLBACK_WORKFLOW }}" -f reason="$REASON" --ref main
+          echo "✓ Rollback workflow dispatched. Watch it complete at:"
+          echo "  https://github.com/${{ github.repository }}/actions/workflows/${{ env.ROLLBACK_WORKFLOW }}"
+
+      - name: Smoke summary
+        if: always()
+        run: |
+          echo "─── Post-deploy smoke summary ───"
+          echo "Base URL:    ${{ env.BASE_URL }}"
+          echo "Triggered by: ${{ github.event_name }}"
+          echo "Triggering SHA: ${{ github.event.workflow_run.head_sha || github.sha }}"
+          echo "Smoke result: ${{ steps.smoke.outcome }}"
+          echo ""
+          if [ "${{ steps.smoke.outcome }}" = "failure" ]; then
+            echo "⚠️  Smoke failed → auto-rollback workflow was triggered."
+            echo "    The :stable tag from the previous deploy is the rollback target."
+            echo "    Investigate the failure in this run's logs + check Sentry."
+          else
+            echo "✅ Smoke passed."
+          fi
