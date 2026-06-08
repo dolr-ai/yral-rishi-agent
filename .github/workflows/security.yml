@@ -1,0 +1,40 @@
+name: Security
+
+# Phase 21αβ.I-Sec1 — gitleaks secret scan on every PR + push to main.
+# Plus the matching weekly drill (per `feedback_adhd_observability_and_security_baseline`)
+# stays as a follow-up; tonight ships the PR-blocking gate that catches
+# secrets BEFORE they merge.
+#
+# Findings policy: any NEW finding fails CI. The 4 known false-positive
+# matches (test idempotency UUIDs in archived orchestrator code per
+# `docs/security/secret-scan-baseline-2026-06-05.md`) are allowlisted via
+# .gitleaks.toml. Future false positives extend that file in their own PR.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: gitleaks secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so gitleaks can sweep across all commits, not
+          # just the PR's diff. Matches the manual `gitleaks detect
+          # --log-opts="--all"` invocation from the DEV-7 audit baseline.
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GITLEAKS_LICENSE is required for org repos; falls back to free
+          # tier if unset, which is fine for our scale.
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+          # Use the repo's `.gitleaks.toml` for the allowlist. The action
+          # picks it up automatically when present.
