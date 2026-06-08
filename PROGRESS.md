@@ -314,7 +314,7 @@ See memory: `project_cutover_model_clarified_2026_06_08.md`.
 |---|-----------|--------|-----------|-----|
 | 21αβ.H1 | **5-MIN LAG REQUIREMENT** — Continuous ETL loop re-enabled + 5-min lag monitoring + alert on >5min on Phase 19.6 dashboard. Currently OFF since 2026-05-30 emergency (PROGRESS.md 21α.B3 = 1.14a). Rebootstrap-style port at prod cutover is NOT acceptable — lag too high. | ⏳ Pending — PROD BLOCKER | 1.5 | — |
 | 21αβ.H2 | DEV-3 follow-through: server-side billing paywall enforcement on V2 (~150 LOC, leverages DEV-12's Redis substrate). Was β-only; now PROD BLOCKER per Rishi 2026-06-08 — motivated user on prod bypasses mobile gate → unbounded Gemini cost. | ⏳ Pending — PROD BLOCKER | 2 | — |
-| 21αβ.H3 | Auto-deploy mechanism (21α.0 promoted) — pick one of: (a) CI deploy-job via OIDC, (b) Watchtower polling GHCR `:main`, (c) GHCR push webhook. Hotfix-during-prod-cutover cannot require manual SSH. | ⏳ Pending — PROD BLOCKER | 1 | — |
+| 21αβ.H3 | Auto-deploy mechanism (21α.0 promoted) — GitHub Actions Deploy + Rollback buttons (#294) → Path 1 auto-deploy on merge with workflow_run + auto-rollback on `/health` failure + concurrency lock (#297, #298). Matches chat-ai's deploy-baremetal.yml pattern PLUS auto-rollback chat-ai doesn't have. First end-to-end auto-deploy 2026-06-08 (#298 merge). | ✅ Done | — | #294 + #297 + #298 |
 | 21αβ.H4 | Patroni failover drill — live test of leader promotion under simulated load. Required per "robust + failover-ready" mandate. | ⏳ Pending | 0.5 | — |
 | 21αβ.H5 | Redis Sentinel failover drill — kill primary, verify subscriber reconnect + WS pub/sub recovery. DEV-6 noted as β follow-up; promoted. | ⏳ Pending | 0.5 | — |
 | 21αβ.H6 | WAL-G restore drill — verified end-to-end (PR `project_walg_disabled_in_production` resolved 2026-06-04 with streaming on; drill remains). | ⏳ Pending | 0.5 | — |
@@ -322,7 +322,30 @@ See memory: `project_cutover_model_clarified_2026_06_08.md`.
 | 21αβ.H8 | Phase 24 security drills promoted from β: 24.1 gitleaks CI workflow on every PR (baseline done in DEV-7), 24.2 weekly automated safety drill, 24.3 dep CI (pip-audit + Trivy), 24.4 rotation runbook. | ⏳ Pending | 5 | — |
 | 21αβ.H9 | DATABASE_URL secret rotation (was I13 + 21α.S2, no longer dedicated to its own session since the audit transcript that leaked it is months old, but still real prereq). | ⏳ Pending — DEDICATED SESSION | 0.5 | — |
 | 21αβ.H10 | Phase 19.6 dashboard additions to cover the new prereqs: ETL lag tile + cost-breaker activations tile + last-failover-drill timestamps. ADHD-observability baseline per `feedback_adhd_observability_and_security_baseline.md`. | ⏳ Pending | 1 | — |
-| **Phase 21α→β total** | | **Not started — established 2026-06-08** | **~8-10 days** | |
+| **Phase 21α→β total** | | **Started 2026-06-08. H3 (auto-deploy) ✅ done. 9 sub-phases remaining.** | **~7-9 days** | |
+
+## PHASE 21αβ.I: PRODUCTION-GRADE SAFETY (industry-standard guardrails before real users)
+**Established 2026-06-08 by Rishi** after the question "are we doing CI/CD right by industry standards?" The 21α→β phase above covers operational hardening (failover drills, ETL, secrets). This phase covers the safety guardrails that go around every code change + every deploy. Each item is small (~30 min to 2 hours) and independent — can ship in any order, one PR each.
+
+**Three groups:** Security checks, Migration safety, Deploy safety. Pick from any group; nothing blocks anything else.
+
+| # | Sub-phase | Group | Status | Est. effort |
+|---|-----------|-------|--------|-------------|
+| 21αβ.I-Sec1 | gitleaks in CI — fail PR if it introduces a secret (API key, password). Already ran once in DEV-7; just needs to be a required check on every PR | Security | ⏳ Pending | 30 min |
+| 21αβ.I-Sec2 | pip-audit in CI — fail PR if it introduces a P0 vulnerable dep. Also addresses 21αβ.H7 (DEV-10 dep bumps) by catching new vulns at the gate | Security | ⏳ Pending | 30 min |
+| 21αβ.I-Mig1 | Automated pre-migration pg_dump — wrap migration runner in a script that always takes a snapshot first. Replaces manual "Rule 9" with automation so we can't forget | Migration safety | ⏳ Pending | 1 hr |
+| 21αβ.I-Mig2 | Migration linter (squawk or similar) — fail PRs that add dangerous patterns (DROP COLUMN, ALTER COLUMN ... NOT NULL without backfill, etc.). Forces backwards-compatible migrations only | Migration safety | ⏳ Pending | 2 hr |
+| 21αβ.I-Mig3 | Migration testing in CI — spin up ephemeral Postgres, run all migrations, verify they succeed. Catches syntax errors before they hit prod | Migration safety | ⏳ Pending | 2 hr |
+| 21αβ.I-Dep1 | Tag `:stable` in GHCR after successful deploy — gives us a known-good marker we can always pin to. Falls out of the existing deploy.yml in ~10 LOC | Deploy safety | ⏳ Pending | 30 min |
+| 21αβ.I-Dep2 | Post-deploy smoke test workflow — runs the 24/24 endpoint script automatically after every successful deploy. Catches "service is up but routes are broken" | Deploy safety | ⏳ Pending | 1 hr |
+| 21αβ.I-Dep3 | Read-only SSH user (`rishi-readonly`) on rishi-1/2/3/4/5/6 with `command=` restriction in authorized_keys → can read logs, can't write. Restrict `rishi-deploy` to CI only. Documentation in CLAUDE.md | Deploy safety | ⏳ Pending — needs Rishi review of design | 1 day |
+| **Phase 21αβ.I total** | | | **Not started — established 2026-06-08** | **~2-3 days** |
+
+**How this maps to Rishi's questions on 2026-06-08:**
+- "Do we have the right CI tests?" → I-Sec1 + I-Sec2 + I-Dep2 add the missing security + smoke gates
+- "Canary rollbacks for DB migrations?" → I-Mig1 + I-Mig2 + I-Mig3 cover the migration safety triangle (snapshot + lint + test)
+- "Last-good-state flag?" → I-Dep1 tags `:stable` after every successful deploy
+- "Post-cutover SSH lockdown" → I-Dep3 splits humans (read) from CI (write)
 
 ## PHASE 21β: PRODUCTION CUTOVER (Play Store prod-track for real users)
 **Model CLARIFIED 2026-06-08 by Rishi:** Prod-track Play Store app (`4974628203228829567`). Same codebase as alpha-track. Triggered after alpha team is satisfied + Phase 21α→β hardening window is closed. Sarvesh bumps versionCode → submits to Play Store production → app store approval (~2-7 days) → live to real users. Firebase Remote Config audience condition flips so 6 v2 flags = `true` for prod users. **V2 must be ≤5 min behind chat-ai at this moment.**
@@ -515,7 +538,8 @@ See memory: `project_cutover_model_clarified_2026_06_08.md`.
 | 19 | Rate Limiting + Observability | 6 | 0 | 6 | 6 |
 | 20 | Self-hosted LLM | 6 | 0 | 6 | 12 |
 | 21α | Alpha Cutover (Play Store alpha-track, YRAL internal team) | 26 | 12 | 14 | ~1 prep + N team-test |
-| 21α→β | V2 Hardening Window (between alpha-satisfied + prod-submission) | 10 | 0 | 10 | ~8-10 |
+| 21α→β | V2 Hardening Window (operational — ETL, failover drills, secrets) | 10 | 1 | 9 | ~7-9 |
+| 21αβ.I | Production-grade safety (CI guardrails — security, migration, deploy) | 8 | 0 | 8 | ~2-3 |
 | 21β | Production Cutover (Play Store prod-track, real users) | 12 | 0 | 12 | ~5-10 |
 | 22 | AI Influencer Profile Sections | 4 | 0 | 4 | 10 |
 | 23 | Skills Framework (post-cutover, dogfood) | 7 | 0 | 7 | 4.5 |
