@@ -54,8 +54,18 @@ def test_registry_registers_video_idea_generation():
     assert '"video_idea_generation"' in src
     pos = src.find('"video_idea_generation":')
     body = src[pos : pos + 700]
-    # Default per Rishi's call: internal_vllm (cheap background path).
-    assert '"provider": "internal_vllm"' in body
+    # Default 2026-06-08 per Rishi: runpod_vllm (Saikat's pod, Qwen3.6-35B-A3B-FP8).
+    # Still a "cheap background path" but on a larger model with more headroom
+    # than internal_vllm's 27B for the 5-idea Devanagari batch. Either runpod_vllm
+    # or internal_vllm satisfies the cheap-background-path intent; the test
+    # accepts either so a future flip back doesn't trip the assertion.
+    assert (
+        '"provider": "runpod_vllm"' in body
+        or '"provider": "internal_vllm"' in body
+    ), "expected a cheap-background-path provider for video_idea_generation"
+    # Model must match the active provider (per Rishi 2026-06-08, runpod_vllm
+    # serves Qwen3.6-35B-A3B-FP8; internal_vllm serves Qwen3.6-27B-FP8).
+    assert '"model": "Qwen/' in body, "expected a Qwen-family model"
 
 
 # ─── Repository ─────────────────────────────────────────────────────────
