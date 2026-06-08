@@ -1,0 +1,112 @@
+name: Rollback production
+
+# Click "Run workflow" in the Actions tab to revert the swarm to its
+# previous image. The "previous image" is whatever Docker Swarm has on
+# file as the prior task spec — usually the one we deployed before the
+# most recent Deploy workflow run.
+#
+# When to use:
+# - The most recent deploy broke something. /health is failing, Sentry
+#   is loud, mobile app errors are climbing.
+# - You want to revert quickly without hunting for the previous SHA.
+#
+# What this does NOT do:
+# - It does NOT revert the git history. The bad commit stays on main.
+#   You'll need to fix the underlying issue + ship a new deploy.
+# - It does NOT roll back database migrations (we don't auto-migrate
+#   anyway — DB schema changes go through Rule 9 pg_dump-then-apply).
+# - It does NOT roll back the secret-mount changes (those are
+#   service-spec changes, not image changes — separate concern).
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Why are you rolling back? (Captured in the run logs for the post-mortem.)'
+        required: true
+        default: 'Rolling back because: '
+
+env:
+  SERVICE: yral-rishi-agent
+  HEALTH_URL: https://agent.rishi.yral.com/health
+  SWARM_MANAGER_1: 138.201.128.108
+  SWARM_MANAGER_2: 88.99.160.251
+  SWARM_MANAGER_3: 162.55.88.112
+  SWARM_USER: rishi-deploy
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+
+    steps:
+      - name: Log rollback reason
+        run: |
+          echo "─── Rollback initiated ───"
+          echo "Triggered by:  ${{ github.actor }}"
+          echo "Reason:        ${{ inputs.reason }}"
+          echo "Timestamp:     $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+      - name: Set up SSH key + known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          for host in ${{ env.SWARM_MANAGER_1 }} ${{ env.SWARM_MANAGER_2 }} ${{ env.SWARM_MANAGER_3 }}; do
+            ssh-keyscan -T 10 -H "$host" >> ~/.ssh/known_hosts 2>/dev/null || true
+          done
+
+      - name: Rollback via first responding swarm manager
+        id: rollback
+        run: |
+          ROLLED_BACK_VIA=""
+          for host in ${{ env.SWARM_MANAGER_1 }} ${{ env.SWARM_MANAGER_2 }} ${{ env.SWARM_MANAGER_3 }}; do
+            echo "── Trying swarm manager $host ──"
+            if ssh -i ~/.ssh/deploy_key \
+                   -o ConnectTimeout=15 \
+                   -o BatchMode=yes \
+                   -o StrictHostKeyChecking=yes \
+                   "${{ env.SWARM_USER }}@$host" \
+                   "set -e; docker service update --rollback ${{ env.SERVICE }}"; then
+              echo "✓ Rollback command accepted by $host"
+              ROLLED_BACK_VIA="$host"
+              break
+            else
+              echo "✗ $host did not respond; trying next manager..."
+            fi
+          done
+
+          if [ -z "$ROLLED_BACK_VIA" ]; then
+            echo "ERROR: all 3 swarm managers failed."
+            exit 1
+          fi
+
+          echo "rolled_back_via=$ROLLED_BACK_VIA" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for /health to return 200
+        run: |
+          echo "Polling ${{ env.HEALTH_URL }} for up to 2 minutes..."
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            STATUS=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "${{ env.HEALTH_URL }}" || echo "fail")
+            echo "attempt $i: /health → $STATUS"
+            if [ "$STATUS" = "200" ]; then
+              echo "✓ Service healthy after rollback"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "WARN: /health did not return 200 within 2 minutes after rollback."
+          exit 1
+
+      - name: Rollback summary
+        if: always()
+        run: |
+          echo "─── Rollback summary ───"
+          echo "Manager used:  ${{ steps.rollback.outputs.rolled_back_via }}"
+          echo "Triggered by:  ${{ github.actor }}"
+          echo "Reason:        ${{ inputs.reason }}"
+          echo ""
+          echo "Next steps: fix the underlying bug in a new PR, get it reviewed,"
+          echo "merge, and run the Deploy workflow once you have confidence."
