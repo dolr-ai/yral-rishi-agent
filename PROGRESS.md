@@ -317,12 +317,14 @@ See memory: `project_cutover_model_clarified_2026_06_08.md`.
 | 21αβ.H3 | Auto-deploy mechanism (21α.0 promoted) — GitHub Actions Deploy + Rollback buttons (#294) → Path 1 auto-deploy on merge with workflow_run + auto-rollback on `/health` failure + concurrency lock (#297, #298). Matches chat-ai's deploy-baremetal.yml pattern PLUS auto-rollback chat-ai doesn't have. First end-to-end auto-deploy 2026-06-08 (#298 merge). | ✅ Done | — | #294 + #297 + #298 |
 | 21αβ.H4 | Patroni failover drill — live test of leader promotion under simulated load. Required per "robust + failover-ready" mandate. | ⏳ Pending | 0.5 | — |
 | 21αβ.H5 | Redis Sentinel failover drill — kill primary, verify subscriber reconnect + WS pub/sub recovery. DEV-6 noted as β follow-up; promoted. | ⏳ Pending | 0.5 | — |
-| 21αβ.H6 | WAL-G restore drill — verified end-to-end (PR `project_walg_disabled_in_production` resolved 2026-06-04 with streaming on; drill remains). | ⏳ Pending | 0.5 | — |
+| 21αβ.H6 | **PROMOTED TO PROD BLOCKER 2026-06-08** — WAL-G restore drill: spin up ephemeral Postgres on a side VM, restore from WAL-G S3 archive, verify all data present, document exact commands so an emergency doesn't require figuring out the mechanism on the fly. WAL-G is streaming (verified 2026-06-04), but we've never actually restored. The 2026-06-04 re-bootstrap showed how painful "figure it out during the incident" can be — same risk applies to backup-restore. Must validate the safety net before real users hit prod. | ⏳ Pending — PROD BLOCKER | 0.5 | — |
 | 21αβ.H7 | DEV-10 dep bumps — pyjwt 2.10.1 → 2.13.0 + python-multipart 0.0.20 → 0.0.27. Verify Caddy `request_body_max_size` is set (DEV-10 flagged as suspect). Defer starlette to FastAPI bump PR. | ⏳ Pending | 0.5 | — |
 | 21αβ.H8 | Phase 24 security drills promoted from β: 24.1 gitleaks CI workflow on every PR (baseline done in DEV-7), 24.2 weekly automated safety drill, 24.3 dep CI (pip-audit + Trivy), 24.4 rotation runbook. | ⏳ Pending | 5 | — |
 | 21αβ.H9 | DATABASE_URL secret rotation (was I13 + 21α.S2, no longer dedicated to its own session since the audit transcript that leaked it is months old, but still real prereq). | ⏳ Pending — DEDICATED SESSION | 0.5 | — |
 | 21αβ.H10 | Phase 19.6 dashboard additions to cover the new prereqs: ETL lag tile + cost-breaker activations tile + last-failover-drill timestamps. ADHD-observability baseline per `feedback_adhd_observability_and_security_baseline.md`. | ⏳ Pending | 1 | — |
-| **Phase 21α→β total** | | **Started 2026-06-08. H3 (auto-deploy) ✅ done. 9 sub-phases remaining.** | **~7-9 days** | |
+| 21αβ.H11 | **NEW PROD BLOCKER 2026-06-08** — Real-time LLM cost alerting. The $22 quality_scorer leak today was caught by Rishi happening to check Google Cloud billing 4 days later. At prod scale that's a $400 incident. **3 alerts to wire:** (1) Sentry alert when Gemini hourly cost > $X threshold (default: $1/hour). (2) Sentry alert when any async process logs a non-200 LLM response in the last 5 min (separate from the existing leak guard — this catches RUNAWAY error spend, not just gemini-leak spend). (3) Daily 08:00 IST email digest: yesterday's cost broken down by process + provider, sourced from `llm_costs` table. Hooks into existing Phase 25.5 substrate. | ⏳ Pending — PROD BLOCKER | 0.5 (3 hours) | — |
+| 21αβ.H12 | **NEW PROD BLOCKER 2026-06-08** — Image/multimodal LLM routing fix. **Real bug surfaced today:** when Rishi flipped user_chat_main → runpod_vllm via dashboard, chat messages with image attachments silently failed (Saikat's pod is text-only). Same pattern as audio is already split as a separate routable process; vision needs the same treatment. **Implementation:** (1) Add new process `user_chat_main_multimodal` to PROCESS_NAMES + LLM_DEFAULTS, default gemini, no fallback to non-vision providers. (2) Add `supports_vision: True/False` capability flag to PROVIDERS — gemini=true, openrouter=true, runpod_vllm=false, internal_vllm=false. (3) `upsert_override()` capability check refuses to flip user_chat_main_multimodal to a non-vision provider (dashboard shows error like the existing audio_transcription guard). (4) chat-send detects images in messages → routes via user_chat_main_multimodal instead of user_chat_main. Text-only stays on user_chat_main. **After this:** flip user_chat_main (text) to runpod for cost savings WITHOUT breaking image chats. They route independently. | ⏳ Pending — PROD BLOCKER | 1 | — |
+| **Phase 21α→β total** | | **Started 2026-06-08. H3 (auto-deploy) ✅ done. 11 sub-phases remaining (H1-H2, H4-H12).** | **~9-11 days** | |
 
 ## PHASE 21αβ.I: PRODUCTION-GRADE SAFETY (industry-standard guardrails before real users)
 **Established 2026-06-08 by Rishi** after the question "are we doing CI/CD right by industry standards?" The 21α→β phase above covers operational hardening (failover drills, ETL, secrets). This phase covers the safety guardrails that go around every code change + every deploy. Each item is small (~30 min to 2 hours) and independent — can ship in any order, one PR each.
@@ -340,6 +342,22 @@ See memory: `project_cutover_model_clarified_2026_06_08.md`.
 | 21αβ.I-Dep2 | Post-deploy smoke test workflow — runs the 24/24 endpoint script automatically after every successful deploy. Catches "service is up but routes are broken" | Deploy safety | ⏳ Pending | 1 hr |
 | 21αβ.I-Dep3 | Read-only SSH user (`rishi-readonly`) on rishi-1/2/3/4/5/6 with `command=` restriction in authorized_keys → can read logs, can't write. Restrict `rishi-deploy` to CI only. Documentation in CLAUDE.md | Deploy safety | ⏳ Pending — needs Rishi review of design | 1 day |
 | **Phase 21αβ.I total** | | | **Not started — established 2026-06-08** | **~2-3 days** |
+
+## PHASE 21γ: POST-CUTOVER POLISH (good-to-have, NOT blocking real-user launch)
+**Established 2026-06-08 by Rishi** after his "what would the best developer in the world add to the cutover plan?" question. Session 6 identified 9 items the best developers would recommend; Rishi accepted 2 as PROD BLOCKERs (now 21αβ.H11 cost alerting + 21αβ.H6 promoted restore drill) and notes the rest below as **post-cutover polish — important but not blocking real users on prod**.
+
+These are listed so they're tracked, not so they're done before real users arrive. Pick one at a time after cutover when bandwidth allows.
+
+| # | Sub-phase | Why nice-to-have | Est. effort |
+|---|-----------|------------------|-------------|
+| 21γ.P1 | Load test before peak traffic shifts — k6/locust script simulating 100 concurrent chat sessions + chaos test (kill rishi-5 mid-load) | We don't know V2's behavior at peak load. Catches "melts down at cutover moment" risk. Bigger concern post-cutover when real-user traffic grows. | 1 day |
+| 21γ.P2 | Caddy rate-limit + body-size cap on public endpoints | Defense against random internet flood + Gemini-key-throttling-by-stranger. Already partially mitigated by per-user rate limits (Phase 19.1) — those need a JWT, so pre-auth flood unprotected. | 2 hr |
+| 21γ.P3 | AI disclosure mechanism — first-message "you're talking to AI" + "AI" badge in mobile profile + ToS update | Legal requirement in some jurisdictions (EU AI Act, California SB-942). Pre-cutover the only real users are YRAL team, who know it's AI; matters more post-cutover. | 1 day |
+| 21γ.P4 | Staging environment (`yral-rishi-agent-staging` swarm service, separate `staging` DB snapshot) | Lets us test changes against real-world data shape without risking real users. Auto-rollback already covers in-production failure; staging is a SECOND safety layer. | 2 days |
+| 21γ.P5 | Incident response playbook — document top 5 failure modes with exact 3-step recovery for each, pin to `docs/INCIDENTS.md` | When something breaks at 3am and Rishi is asleep, no one currently knows the procedure. Documentation surfaces knowledge from heads/context. | 1 day |
+| 21γ.P6 | User data deletion endpoint — `DELETE /api/v1/users/me` nukes user's data across all tables + audit log | GDPR/CCPA compliance + first-user "delete my data" request. Pre-cutover: manual SQL works for tiny YRAL-team scale; post-cutover: needs to be self-serve. | 4 hr |
+| 21γ.P7 | Status page (lightweight) — `status.agent.rishi.yral.com` static page on Caddy OR free hosted service (betterstack, instatus) | When V2 is down (it will happen), users need somewhere to see "we know, working on it" — otherwise they uninstall. Mobile app could surface status via a banner. | 3 hr |
+| **Phase 21γ total** | | **Tracked — NOT blocking real-user launch** | **~6-7 days** |
 
 **How this maps to Rishi's questions on 2026-06-08:**
 - "Do we have the right CI tests?" → I-Sec1 + I-Sec2 + I-Dep2 add the missing security + smoke gates
@@ -538,9 +556,10 @@ See memory: `project_cutover_model_clarified_2026_06_08.md`.
 | 19 | Rate Limiting + Observability | 6 | 0 | 6 | 6 |
 | 20 | Self-hosted LLM | 6 | 0 | 6 | 12 |
 | 21α | Alpha Cutover (Play Store alpha-track, YRAL internal team) | 26 | 12 | 14 | ~1 prep + N team-test |
-| 21α→β | V2 Hardening Window (operational — ETL, failover drills, secrets) | 10 | 1 | 9 | ~7-9 |
+| 21α→β | V2 Hardening Window (operational — ETL, failover drills, cost alerting, multimodal LLM) | 12 | 1 | 11 | ~9-11 |
 | 21αβ.I | Production-grade safety (CI guardrails — security, migration, deploy) | 8 | 0 | 8 | ~2-3 |
 | 21β | Production Cutover (Play Store prod-track, real users) | 12 | 0 | 12 | ~5-10 |
+| 21γ | Post-cutover polish (good-to-have, NOT blocking real-user launch) | 7 | 0 | 7 | ~6-7 |
 | 22 | AI Influencer Profile Sections | 4 | 0 | 4 | 10 |
 | 23 | Skills Framework (post-cutover, dogfood) | 7 | 0 | 7 | 4.5 |
 | 24 | Security & Safety Drills | 5 | 0 | 5 | 5.5 |
