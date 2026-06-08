@@ -207,14 +207,6 @@ async def generate_response_stream(
     temperature = tuning.get("temperature", config.GEMINI_TEMPERATURE)
     max_tokens = tuning.get("max_tokens", config.GEMINI_MAX_TOKENS)
 
-    # Look up the resolved provider/model from the registry so Langfuse
-    # tracing reflects what actually served the request (not just the
-    # default). If LLM_PROCESS__USER_CHAT_MAIN is overridden, the trace
-    # follows the override.
-    routed = llm_registry.current_config("user_chat_main")
-    final_provider = routed["provider"]
-    final_model = routed["model"]
-
     t0 = time.monotonic()
     total_text = ""
     token_count = 0
@@ -223,8 +215,25 @@ async def generate_response_stream(
         messages = await _build_chat_messages(
             system_instructions, conversation_history, user_message, media_urls
         )
+        # Phase 21αβ.H12 — vision-bearing chat routes via the dedicated
+        # multimodal process so flipping user_chat_main to a text-only
+        # provider (e.g. runpod_vllm for cost) doesn't silently break
+        # image chats. Detection is post-build: the helper inspects the
+        # actual outgoing payload, not the upstream media_urls signal.
+        process = (
+            "user_chat_main_multimodal"
+            if llm_registry.has_image_content(messages)
+            else "user_chat_main"
+        )
+
+        # Resolve provider/model AFTER process selection so Langfuse
+        # tracing reflects what actually served the request.
+        routed = llm_registry.current_config(process)
+        final_provider = routed["provider"]
+        final_model = routed["model"]
+
         async for kind, value in llm_registry.call_stream(
-            process="user_chat_main",
+            process=process,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -376,13 +385,23 @@ async def generate_response(
     _temperature = _tuning.get("temperature", config.GEMINI_TEMPERATURE)
     _max_tokens = _tuning.get("max_tokens", config.GEMINI_MAX_TOKENS)
 
-    process = "user_chat_main_nsfw" if is_nsfw else "user_chat_main"
     t0 = time.monotonic()
 
     try:
         messages = await _build_chat_messages(
             system_instructions, conversation_history, user_message, media_urls
         )
+        # Phase 21αβ.H12 — route vision-bearing chat via the dedicated
+        # multimodal process (text-only providers like runpod_vllm would
+        # silently drop images). NSFW + vision is not supported today —
+        # NSFW takes precedence, mirroring the pre-H12 behavior. If a
+        # future product call needs NSFW+vision, add user_chat_main_nsfw_multimodal.
+        if is_nsfw:
+            process = "user_chat_main_nsfw"
+        elif llm_registry.has_image_content(messages):
+            process = "user_chat_main_multimodal"
+        else:
+            process = "user_chat_main"
         result = await llm_registry.call(
             process=process,
             messages=messages,

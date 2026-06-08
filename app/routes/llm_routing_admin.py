@@ -412,6 +412,22 @@ async def patch_routing(process: str, body: dict, request: Request):
                 f"the audio_transcription process."
             ),
         )
+    # Phase 21αβ.H12 — vision capability guard. Same shape as the
+    # audio guard above. The 2026-06-08 bug surfaced because there was
+    # no such guard: Rishi flipped user_chat_main → runpod_vllm
+    # (supports_vision=False) and image chats silently failed. This
+    # gate refuses analogous flips for user_chat_main_multimodal.
+    if process == "user_chat_main_multimodal" and not provider_meta.get(
+        "supports_vision", False
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"provider '{provider}' does not support vision/image input. "
+                f"Today only providers with supports_vision=True work for "
+                f"the user_chat_main_multimodal process."
+            ),
+        )
 
     if isinstance(timeout_sec, str):
         try:
@@ -514,6 +530,14 @@ async def page_update_routing(
         raise HTTPException(
             status_code=400,
             detail=f"provider '{provider}' does not support audio transcription",
+        )
+    # Phase 21αβ.H12 — vision capability guard (form endpoint).
+    if process == "user_chat_main_multimodal" and not provider_meta.get(
+        "supports_vision", False
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=f"provider '{provider}' does not support vision/image input",
         )
 
     tsec: float | None
