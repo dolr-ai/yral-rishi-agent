@@ -694,6 +694,7 @@ async def send_message(
             if skill_ctx["user_skill_state_row"]
             else None
         ),
+        global_rule_overrides=inf.get("global_rule_overrides"),
     )
 
     # Typing indicator START
@@ -941,6 +942,7 @@ async def send_message_stream(
                     if skill_ctx["user_skill_state_row"]
                     else None
                 ),
+                global_rule_overrides=inf.get("global_rule_overrides"),
             )
 
             full_text = ""
