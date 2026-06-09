@@ -1,0 +1,29 @@
+# squawk migration linter config
+# Phase 21αβ.I-Mig2 — see .github/workflows/squawk.yml for context.
+#
+# `excluded_rules` lists rules we explicitly opt OUT of. Everything else
+# in squawk's default set stays ON. This list is intentionally short so
+# the surface area Rishi has to reason about is small.
+
+excluded_rules = [
+    # squawk's `prefer-text-field` flags VARCHAR(n) with a length cap.
+    # The V2 schema uses VARCHAR(255) extensively (id columns, names).
+    # The historical reasoning is fine for our usage — re-flagging
+    # every VARCHAR would be noise without a real safety win.
+    "prefer-text-field",
+
+    # `prefer-big-int` / `prefer-big-serial` — our id columns are
+    # explicitly VARCHAR-based (matches chat-ai contract); BIGINT is
+    # not applicable.
+    "prefer-big-int",
+    "prefer-big-serial",
+
+    # `transaction-nesting` — our migration runner already wraps each
+    # file in BEGIN/COMMIT (see scripts/ci/run-migrations.sh:111-117).
+    # squawk's check for explicit transactions inside the file would
+    # double-up and be inaccurate for our setup.
+    "transaction-nesting",
+]
+
+# Per-rule overrides — none for now. If a future migration needs a
+# specific waiver, add it here with a comment explaining WHY.
