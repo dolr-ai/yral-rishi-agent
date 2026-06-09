@@ -14,6 +14,15 @@
 -- Safety: ADD COLUMN with a DEFAULT of a small constant value is
 -- metadata-only on pg11+ (no row rewrite). Safe on a live table with
 -- ~3,941 rows.
+--
+-- 2026-06-09: added `set lock_timeout` + `set statement_timeout` per
+-- squawk migration linter recommendation. Even though the pg11+
+-- metadata-only optimization makes this fast in practice, the
+-- timeouts are a defense-in-depth net against unexpected lock
+-- contention from concurrent writes during the rollout window.
+
+SET lock_timeout = '3s';
+SET statement_timeout = '60s';
 
 ALTER TABLE ai_influencers
     ADD COLUMN IF NOT EXISTS global_rule_overrides JSONB NOT NULL DEFAULT '{}'::jsonb;
