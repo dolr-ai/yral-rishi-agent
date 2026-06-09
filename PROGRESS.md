@@ -1,6 +1,6 @@
 # Master Feature Tracker — yral-rishi-agent v2 (1000x Vision)
 
-**Last updated:** 2026-06-08 EOD
+**Last updated:** 2026-06-09 EOD
 **Codebase:** ~7,500 lines Python (post 13-PR shipping day 2026-06-08)
 **Total phases:** 25 + cutover phases 21α / 21α→β / 21αβ.I / 21β / 21γ
 **Cutover target:** ~2 weeks from 2026-06-08 (realistic D+17 to real users on V2; mostly waiting on Sarvesh merges + Play Store approval)
@@ -361,13 +361,14 @@ See memory: `project_cutover_model_clarified_2026_06_08.md`.
 |---|-----------|-------|--------|-------------|
 | 21αβ.I-Sec1 | gitleaks in CI — fails PR if a new secret is introduced; 4 DEV-7 baseline FPs allowlisted | Security | ✅ Done 2026-06-08 (PR #300) | — |
 | 21αβ.I-Sec2 | pip-audit in CI — fails PR on new P0 vulns; 14 DEV-10 baseline ignored | Security | ✅ Done 2026-06-08 (PR #302) | — |
-| 21αβ.I-Mig1 | Automated pre-migration pg_dump — wrap migration runner in a script that always takes a snapshot first. Replaces manual "Rule 9" with automation so we can't forget | Migration safety | ⏳ Pending | 1 hr |
-| 21αβ.I-Mig2 | Migration linter (squawk or similar) — fail PRs that add dangerous patterns (DROP COLUMN, ALTER COLUMN ... NOT NULL without backfill, etc.). Forces backwards-compatible migrations only | Migration safety | ⏳ Pending | 2 hr |
-| 21αβ.I-Mig3 | Migration testing in CI — spin up ephemeral Postgres, run all migrations, verify they succeed. Catches syntax errors before they hit prod | Migration safety | ⏳ Pending | 2 hr |
-| 21αβ.I-Dep1 | Tag `:stable` in GHCR after every successful deploy — known-good marker we can always pin to | Deploy safety | ✅ Done 2026-06-08 (PR #303) | — |
+| 21αβ.I-Mig1 | Automated pre-migration pg_dump — wrap migration runner in a script that always takes a snapshot first. Replaces manual "Rule 9" with automation so we can't forget | Migration safety | ✅ Done 2026-06-09 (PR #309 + #326+#328 awscli + #330 rolling-update + verified on 033/034) | — |
+| 21αβ.I-Mig2 | Migration linter (squawk or similar) — fail PRs that add dangerous patterns (DROP COLUMN, ALTER COLUMN ... NOT NULL without backfill, etc.). Forces backwards-compatible migrations only | Migration safety | 🔄 Partial 2026-06-09 (squawk wired + lock_timeout/statement_timeout enforced; expand to more rules) | 1 hr remaining |
+| 21αβ.I-Mig3 | Migration testing in CI — spin up ephemeral Postgres, run all migrations, verify they succeed. Catches syntax errors before they hit prod | Migration safety | 🔄 Partial 2026-06-09 (`Apply all migrations in order` test live; expand to idempotency + down-migrations) | 1 hr remaining |
+| 21αβ.I-Mig4 | Migration runner hardening — auth, defensive checks, bootstrap workflow, rolling-update workflow for the patroni image. Earned during the 2026-06-09 #314 incident. | Migration safety | ✅ Done 2026-06-09 (PRs #323 + #324 + #325 + #326 + #327 + #328 + #329 + #330 + #331 + #332) | — |
+| 21αβ.I-Dep1 | Tag `:stable` in GHCR after every successful deploy — known-good marker we can always pin to | Deploy safety | 🔄 Wired 2026-06-08 (PR #303) but step has been failing on every deploy with "installation not allowed to Write organization package" — needs GHCR token scoped to `write:packages` at org level OR remove the step in favor of commit-SHA tags only | 1 hr |
 | 21αβ.I-Dep2 | Post-deploy smoke test workflow — runs the 24/24 endpoint script automatically after every successful deploy. Catches "service is up but routes are broken" | Deploy safety | ⏳ Pending | 1 hr |
 | 21αβ.I-Dep3 | Read-only SSH user (`rishi-readonly`) on rishi-1/2/3/4/5/6 with `command=` restriction in authorized_keys → can read logs, can't write. Restrict `rishi-deploy` to CI only. Documentation in CLAUDE.md | Deploy safety | ⏳ Pending — needs Rishi review of design | 1 day |
-| **Phase 21αβ.I total** | | | **3/8 done 2026-06-08 (Sec1 + Sec2 + Dep1). 5 remaining: Mig1+Mig2+Mig3 + Dep2+Dep3.** | **~1.5-2 days remaining** |
+| **Phase 21αβ.I total** | | | **4/9 fully done + 3 partial 2026-06-09 (Sec1 + Sec2 + Mig1 + Mig4 complete; Mig2/Mig3/Dep1 partial). 2 remaining: Dep2 + Dep3.** | **~1.5 days remaining** |
 
 ## PHASE 21γ: POST-CUTOVER POLISH (good-to-have, NOT blocking real-user launch)
 **Established 2026-06-08 by Rishi** after his "what would the best developer in the world add to the cutover plan?" question. Session 6 identified 9 items the best developers would recommend; Rishi accepted 2 as PROD BLOCKERs (now 21αβ.H11 cost alerting + 21αβ.H6 promoted restore drill) and notes the rest below as **post-cutover polish — important but not blocking real users on prod**.
