@@ -1,5 +1,60 @@
 # Daily Log
 
+## 2026-06-09 — #314 P0 incident + full migration-runner hardening + Coach Fix 1/Fix 2 backends live
+
+### What happened in one paragraph
+
+Dev session's PR #314 (Coach Fix 1 PR-A — per-bot `global_rule_overrides` JSONB column on `ai_influencers` + 5 code references) merged at ~11:34 UTC and broke prod. The `migrations_changed` gate planted in PR #322 yesterday silently skipped the migration apply step on shallow clones (`git rev-parse SHA~1` partial-outputs the original SHA, defeating the empty-detection), so the new image rolled to swarm with no column to read against. `/api/v1/influencers` started returning 500 (`UndefinedColumnError`) within minutes. Caught it via manual endpoint check, triggered `rollback.yml` workflow at 11:52 UTC — prod restored to image-of-471260e in ~30s. Alpha team's effective outage was ~5 min. Real users on chat-ai unaffected (different cluster). Built 8 follow-up PRs to fix the runner end-to-end. Re-applied #314 via #332 — runner exercised its full happy path for the first time ever (pg_dump → S3 → apply → record → image roll → /health 200). Then reopened the dev session's stacked PRs (#316 → #333, #317 → #334) which had been auto-closed when #314's branch was deleted. Both deployed clean. End state: 33 + 34 schema migrations applied, all 3 Coach Fix 1 + Fix 2 PRs live, recovery plumbing permanent.
+
+### PRs merged today (11 total)
+
+| # | What | When |
+|---|------|------|
+| #314 | Coach Fix 1 PR-A — `global_rule_overrides` column + code (THE one that hit the gate bug) | 11:34 — reverted 12:18 — re-applied via #332 13:01 |
+| #323 | Migration runner: UNIX-socket trust auth (not TCP+md5) | 11:27 |
+| #324 | Remove broken `migrations_changed` gate from deploy.yml | 11:33 |
+| #325 | Revert #314 to neutralize main while runner is being hardened | 12:18 |
+| #326 | Patroni image: install `awscli` for migration runner safety pg_dumps | 12:21 (build failed → #328) |
+| #327 | Runner defensive — refuse on empty `schema_migrations` + populated DB | 12:21 |
+| #328 | Patroni image: add `python3-docutils` so apt awscli runs (followup to #326) | 12:24 |
+| #329 | One-shot bootstrap workflow for `schema_migrations` | 12:32 |
+| #330 | Rolling-update workflow for patroni image (leader-last, gated on 3/3 healthy) | 12:38 |
+| #331 | Fix new workflows to use `ssh-keyscan` (was using static `KNOWN_HOSTS` with only RSA entries) | 12:44 |
+| #332 | Reapply #314 — now safe because runner has all 4 fixes in place | 13:01 |
+| #333 | Coach Fix 1 PR-B (originally #316) — platform-rule awareness + migration 034 | 13:08 |
+| #334 | Fix 2 backend (originally #317) — plain-English summary endpoint | 13:18 |
+
+### Migrations applied to prod
+
+- `033_ai_influencers_global_rule_overrides.sql` — applied 12:57 UTC via runner; safety dump at `s3://rishi-yral/yral-rishi-agent-pre-migration-dumps/pre-migration-033_...20260609T125722Z.sql.gz`
+- `034_coach_message_proposed_override.sql` — applied 13:13 UTC via runner; safety dump at `s3://rishi-yral/yral-rishi-agent-pre-migration-dumps/pre-migration-034_...20260609T131158Z.sql.gz`
+
+`schema_migrations` now has 34 entries (001-034). 32 of those were backfilled by the one-shot bootstrap workflow at 12:51 UTC; the last two (033, 034) were recorded by the runner during normal deploys.
+
+### Patroni cluster state
+
+Rolled all 3 patroni services to `ghcr.io/dolr-ai/yral-rishi-patroni-pgvector:5950fdc...` (the build with `awscli` + `python3-docutils`) via #330's new rolling-update workflow at 12:48-12:50 UTC. Roll order was: rishi-4 (replica) → rishi-6 (replica) → rishi-5 (leader, with Patroni failover). Cluster stayed 3/3 healthy on shared timeline throughout. Leader after roll: TBD (Patroni promotes the most-current replica; verify via `patronictl list` next session).
+
+### What the runner can now do
+
+1. Connect via UNIX socket + trust auth (no password drift risk)
+2. Refuse cleanly when `schema_migrations` is empty AND the DB has tables already (prevents replay of 001+ on populated DB)
+3. Take a pre-migration pg_dump → upload to S3 → only then apply (Rule 9 automation)
+4. Record applied filenames in `schema_migrations` so future runs know what's done
+5. Halt the deploy if any apply step fails — old image keeps serving on old schema
+
+### Followups noted
+
+- **`:stable` GHCR tag step in deploy.yml has been failing on every deploy** with `installation not allowed to Write organization package`. Pre-existing, not blocking, but worth fixing. Either: (a) PAT with `write:packages` on the org, or (b) remove the step in favor of commit-SHA tags only. Tasked to dev session in EOD prompt.
+- The runner's failover message still says "✗ Migration script failed — likely a replica" when the actual failure is a defensive refusal. Tiny UX fix.
+- The roll workflow's `image_tag` input rejects abbreviated SHAs — first roll attempt failed because the workflow tags with the full 40-char SHA but I typed the 7-char one. Could auto-resolve; not urgent.
+
+### Prod health at EOD
+
+`/health` 200, `/api/v1/influencers` 200, `/trending` 200. Zero open PRs. Both new schema columns in place. Image deployed includes all the Coach Fix 1 + Fix 2 backend logic.
+
+---
+
 ## 2026-05-30 — ETL Option A live; cursor refactor; H2H verified; sender_id polish
 
 ### ETL fully operational
