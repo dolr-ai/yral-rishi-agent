@@ -1,0 +1,236 @@
+name: Roll patroni image (rolling, leader-last)
+
+# Manually triggered. Rolls the three patroni services to a given image
+# tag, one at a time, replicas first, leader last. Between each roll
+# verifies the new container is Running on swarm AND that
+# `patronictl list` reports all 3 members healthy on the same timeline.
+# Fails fast if anything regresses — no further rolls happen and the
+# already-rolled members stay on the new image (still recoverable via
+# this same workflow).
+#
+# Use case: roll the patroni-pgvector image to a new build (e.g. after
+# the 2026-06-09 awscli + python3-docutils fix in #326+#328).
+#
+# What this does NOT do:
+# - Does NOT take a pre-roll pg_dump. WAL-G PITR covers worst-case
+#   data recovery; this workflow only swaps container images.
+# - Does NOT modify the patroni-stack.yml on disk. The stack file
+#   keeps the :spilo-15-3.0-p1 floating tag for first-bootstrap reads;
+#   this workflow pins to a SHA-tagged image at the swarm-service level
+#   so the running cluster is deterministic.
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to roll to (use a commit SHA like 5950fdc — NOT :latest).'
+        required: true
+      reason:
+        description: 'Why are you rolling? (Captured in run logs for the post-mortem.)'
+        required: true
+        default: 'Rolling patroni image because: '
+      i_understand:
+        description: 'Type ROLL PATRONI to confirm you understand this restarts every patroni container in the production cluster.'
+        required: true
+        default: ''
+
+env:
+  SWARM_STACK: yral-v2-patroni
+  IMAGE: ghcr.io/dolr-ai/yral-rishi-patroni-pgvector
+  SWARM_MANAGER_1: 138.201.128.108
+  SWARM_MANAGER_2: 88.99.160.251
+  SWARM_MANAGER_3: 162.55.88.112
+  SWARM_USER: rishi-deploy
+  POSTGRES_DB: yral_agent_db
+
+jobs:
+  roll:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+
+    steps:
+      - name: Confirm ROLL PATRONI typed
+        run: |
+          if [ "${{ inputs.i_understand }}" != "ROLL PATRONI" ]; then
+            echo "::error::Confirmation phrase mismatched (must be exactly 'ROLL PATRONI'); aborting."
+            exit 1
+          fi
+          echo "─── Patroni image roll initiated ───"
+          echo "Triggered by:  ${{ github.actor }}"
+          echo "Reason:        ${{ inputs.reason }}"
+          echo "Image tag:     ${{ inputs.image_tag }}"
+          echo "Full image:    ${{ env.IMAGE }}:${{ inputs.image_tag }}"
+          echo "Timestamp:     $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+      - name: Reject floating tags
+        # SHA-tagged or version-tagged only. :latest / :stable / etc are
+        # mutable — the cluster we roll today could differ from the
+        # cluster the same tag would resolve to next week, making
+        # rollback ambiguous.
+        run: |
+          T='${{ inputs.image_tag }}'
+          if [ "$T" = "latest" ] || [ "$T" = "stable" ] || [ "$T" = "" ]; then
+            echo "::error::Floating or empty tag '$T' rejected — supply a commit SHA tag."
+            exit 1
+          fi
+
+      - name: Set up SSH key + known_hosts
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          echo "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Pick a responding swarm manager + verify image exists
+        id: pick
+        run: |
+          SSH_OPTS="-i ~/.ssh/deploy_key -o ConnectTimeout=15 -o BatchMode=yes -o StrictHostKeyChecking=yes"
+          MGR=""
+          for host in ${{ env.SWARM_MANAGER_1 }} ${{ env.SWARM_MANAGER_2 }} ${{ env.SWARM_MANAGER_3 }}; do
+            if ssh $SSH_OPTS "${{ env.SWARM_USER }}@$host" "docker info --format '{{.Swarm.LocalNodeState}}' 2>/dev/null | grep -q active"; then
+              MGR="$host"
+              break
+            fi
+          done
+          if [ -z "$MGR" ]; then
+            echo "::error::No responding swarm manager"
+            exit 1
+          fi
+          echo "Using swarm manager: $MGR"
+          echo "mgr=$MGR" >> "$GITHUB_OUTPUT"
+
+          # Verify the requested image exists on GHCR by pulling onto the
+          # manager. If the pull fails, abort BEFORE touching any service.
+          IMG="${{ env.IMAGE }}:${{ inputs.image_tag }}"
+          if ! ssh $SSH_OPTS "${{ env.SWARM_USER }}@$MGR" "docker pull $IMG"; then
+            echo "::error::Image $IMG not pullable on $MGR — aborting before any roll"
+            exit 1
+          fi
+
+      - name: Identify current leader + build roll order
+        id: order
+        run: |
+          SSH_OPTS="-i ~/.ssh/deploy_key -o ConnectTimeout=15 -o BatchMode=yes -o StrictHostKeyChecking=yes"
+          MGR="${{ steps.pick.outputs.mgr }}"
+          # Run patronictl from inside any patroni container on the
+          # manager. `patronictl list` is read-only.
+          CID=$(ssh $SSH_OPTS "${{ env.SWARM_USER }}@$MGR" "docker ps -qf name=${{ env.SWARM_STACK }}_patroni | head -1")
+          if [ -z "$CID" ]; then
+            echo "::error::No patroni container on $MGR"
+            exit 1
+          fi
+          LIST=$(ssh $SSH_OPTS "${{ env.SWARM_USER }}@$MGR" "docker exec $CID patronictl list 2>&1")
+          echo "$LIST"
+
+          # Grep the Member column for the Leader row.
+          LEADER=$(echo "$LIST" | awk '/Leader/ && /patroni-rishi-/ {for(i=1;i<=NF;i++) if($i ~ /patroni-rishi-/) print $i; exit}')
+          if [ -z "$LEADER" ]; then
+            echo "::error::Could not parse leader from patronictl output"
+            exit 1
+          fi
+          echo "Current leader: $LEADER"
+
+          # Roll non-leaders first, leader last.
+          ORDER=""
+          for M in patroni-rishi-4 patroni-rishi-5 patroni-rishi-6; do
+            if [ "$M" != "$LEADER" ]; then
+              ORDER="$ORDER $M"
+            fi
+          done
+          ORDER="$ORDER $LEADER"
+          ORDER=$(echo "$ORDER" | xargs)  # trim
+          echo "Roll order: $ORDER"
+          echo "order=$ORDER" >> "$GITHUB_OUTPUT"
+
+      - name: Roll services one at a time, gating on cluster health
+        run: |
+          SSH_OPTS="-i ~/.ssh/deploy_key -o ConnectTimeout=15 -o BatchMode=yes -o StrictHostKeyChecking=yes"
+          MGR="${{ steps.pick.outputs.mgr }}"
+          IMG="${{ env.IMAGE }}:${{ inputs.image_tag }}"
+          STACK="${{ env.SWARM_STACK }}"
+
+          wait_cluster_healthy() {
+            # Re-pick a patroni container each call — the one we used
+            # before might be the one we just restarted.
+            local cid
+            cid=$(ssh $SSH_OPTS "${{ env.SWARM_USER }}@$MGR" "docker ps -qf name=${STACK}_patroni | head -1")
+            if [ -z "$cid" ]; then
+              echo "::error::No patroni container available for health check"
+              return 1
+            fi
+            # Poll for up to 3 minutes — first replication catch-up post
+            # restart can take ~60s.
+            for i in $(seq 1 36); do
+              local list tl_count member_count running_count
+              list=$(ssh $SSH_OPTS "${{ env.SWARM_USER }}@$MGR" "docker exec $cid patronictl list 2>&1" || true)
+              member_count=$(echo "$list" | grep -c 'patroni-rishi-' || echo 0)
+              running_count=$(echo "$list" | grep 'patroni-rishi-' | grep -c 'running' || echo 0)
+              # Timeline column varies in column position; just check we
+              # see one timeline value repeated 3x or that all members
+              # are running on a shared TL.
+              tl_count=$(echo "$list" | grep 'patroni-rishi-' | awk '{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+$/ && $i+0 > 0) {print $i; break}}' | sort -u | wc -l)
+              if [ "$member_count" -ge 3 ] && [ "$running_count" -ge 3 ] && [ "$tl_count" = "1" ]; then
+                echo "  ✓ cluster: 3/3 members running on same timeline (after $((i*5))s)"
+                echo "$list"
+                return 0
+              fi
+              sleep 5
+            done
+            echo "::error::Cluster did not reach 3/3 healthy on shared timeline within 180s"
+            echo "$list"
+            return 1
+          }
+
+          wait_service_running() {
+            local svc="$1"
+            # Wait up to 3 minutes for the new task to reach Running.
+            for i in $(seq 1 36); do
+              local state
+              state=$(ssh $SSH_OPTS "${{ env.SWARM_USER }}@$MGR" "docker service ps $svc --filter desired-state=running --format '{{.CurrentState}}' | head -1" || true)
+              case "$state" in
+                Running\ *) echo "  ✓ $svc task is Running (after $((i*5))s)"; return 0 ;;
+              esac
+              sleep 5
+            done
+            echo "::error::Service $svc did not reach Running within 180s"
+            ssh $SSH_OPTS "${{ env.SWARM_USER }}@$MGR" "docker service ps $svc --no-trunc"
+            return 1
+          }
+
+          # Pre-flight: cluster must be healthy BEFORE we start touching
+          # anything. Otherwise we'd be rolling on top of an existing
+          # problem.
+          echo "── Pre-flight: confirm cluster is 3/3 healthy ──"
+          wait_cluster_healthy || exit 1
+
+          for MEMBER in ${{ steps.order.outputs.order }}; do
+            SERVICE="${STACK}_${MEMBER}"
+            echo ""
+            echo "════════════════════════════════════════════════════════════"
+            echo "Rolling $SERVICE → $IMG"
+            echo "════════════════════════════════════════════════════════════"
+
+            if ! ssh $SSH_OPTS "${{ env.SWARM_USER }}@$MGR" "docker service update --image $IMG --update-order start-first $SERVICE"; then
+              echo "::error::docker service update failed for $SERVICE — halting roll"
+              exit 1
+            fi
+
+            wait_service_running "$SERVICE" || exit 1
+            wait_cluster_healthy || exit 1
+          done
+
+          echo ""
+          echo "─── All 3 patroni services rolled to $IMG ───"
+
+      - name: Final summary
+        run: |
+          echo "─── Patroni image roll complete ───"
+          echo "Image tag rolled: ${{ env.IMAGE }}:${{ inputs.image_tag }}"
+          echo "Cluster verified 3/3 healthy after each individual roll."
+          echo "Next step: trigger 'Bootstrap schema_migrations' workflow."
