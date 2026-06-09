@@ -15,6 +15,7 @@ from services import (
     character_generator,
     google_chat,
     video_ideas as video_ideas_service,
+    influencer_summary,
 )
 from services.character_generator import GeminiSafetyBlocked
 from models import (
@@ -204,6 +205,48 @@ async def get_influencer(influencer_id: str):
 
     response = JSONResponse(content=_format_influencer_detail(inf))
     response.headers["Cache-Control"] = "public, max-age=300"
+    return response
+
+
+@router.get("/influencers/{influencer_id}/summary")
+async def get_influencer_summary(influencer_id: str):
+    """Coach Fix 2 backend — plain-English bullet summary of what the
+    bot does. 5-7 bullets covering personality + reply behavior, each
+    optionally tagged with an `override_target` slug pointing at one
+    of the overrideable GLOBAL_RULES so mobile can offer "tap to
+    override" CTAs.
+
+    Cached on the bot row (`metadata.plain_english_summary`) keyed by
+    the bot's `updated_at` for staleness; regenerated on the next call
+    after any edit to the bot. Public — no auth — same as the
+    /influencers/{id} detail endpoint above."""
+    pool = await get_pool()
+    inf = await influencer_repo.get_by_id(pool, influencer_id)
+    if not inf:
+        raise HTTPException(status_code=404, detail="Influencer not found")
+
+    cached = influencer_summary.cache_is_fresh(inf)
+    if cached is not None:
+        response = JSONResponse(content=cached)
+        response.headers["Cache-Control"] = "public, max-age=300"
+        response.headers["X-Summary-Cache"] = "hit"
+        return response
+
+    try:
+        summary = await influencer_summary.generate_for_influencer(inf)
+    except Exception as e:
+        logger.exception(
+            "summary generation failed for influencer %s: %s", influencer_id, e
+        )
+        raise HTTPException(
+            status_code=503, detail="summary unavailable — try again shortly"
+        ) from None
+
+    await influencer_repo.cache_plain_english_summary(pool, influencer_id, summary)
+
+    response = JSONResponse(content=summary)
+    response.headers["Cache-Control"] = "public, max-age=300"
+    response.headers["X-Summary-Cache"] = "miss"
     return response
 
 

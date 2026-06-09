@@ -182,6 +182,30 @@ async def update_system_prompt(pool, influencer_id: str, instructions: str):
     )
 
 
+async def cache_plain_english_summary(pool, influencer_id: str, summary: dict) -> None:
+    """Coach Fix 2 backend — persist the LLM-generated bullet summary
+    into `metadata.plain_english_summary` + a parallel
+    `metadata.summary_generated_at` timestamp for cheap staleness checks.
+
+    Uses jsonb_set so the rest of metadata (whatever else lives there)
+    is preserved. Does NOT touch the row's updated_at — that would
+    immediately invalidate the cache we just wrote."""
+    await pool.execute(
+        """
+        UPDATE ai_influencers
+        SET metadata = COALESCE(metadata, '{}'::jsonb)
+                       || jsonb_build_object(
+                              'plain_english_summary', $1::jsonb,
+                              'summary_generated_at', $2::text
+                          )
+        WHERE id = $3
+        """,
+        json.dumps(summary),
+        summary.get("generated_at"),
+        influencer_id,
+    )
+
+
 async def soft_delete(pool, influencer_id: str):
     await pool.execute(
         """
