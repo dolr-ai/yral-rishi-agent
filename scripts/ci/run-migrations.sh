@@ -96,6 +96,40 @@ LOCAL_C=$(find_local_patroni)
 APPLIED=$(docker exec -i "$LOCAL_C" psql -U postgres -d "${POSTGRES_DB}" -tA \
     -c "SELECT filename FROM schema_migrations ORDER BY filename;" 2>/dev/null || true)
 
+# Defensive check: if schema_migrations is empty but the schema clearly
+# already has non-trivial tables (e.g. ai_influencers from migration
+# 001_initial.sql), refuse rather than replay 001+ on a populated DB.
+#
+# This is exactly the trap the 2026-06-09 #314 deploy fell into:
+# schema_migrations had never been populated on prod (migrations had
+# been applied manually before this runner existed), so the runner saw
+# "nothing applied, everything pending" and started trying to replay
+# 001_initial.sql against a database that already had `conversations`,
+# `messages`, `ai_influencers`, etc. The only thing that stopped it
+# from creating real damage was the pg_dump → S3 step failing first.
+#
+# Skip via FORCE_RUN_ON_EMPTY_SCHEMA_MIGRATIONS=true for the explicit
+# bootstrap path (a fresh cluster, or after the one-shot backfill
+# workflow has seeded schema_migrations with already-applied filenames).
+if [ -z "$APPLIED" ]; then
+    SCHEMA_HAS_TABLES=$(docker exec -i "$LOCAL_C" psql -U postgres -d "${POSTGRES_DB}" -tA \
+        -c "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='ai_influencers');" 2>/dev/null || echo "f")
+    SCHEMA_HAS_TABLES=$(echo "$SCHEMA_HAS_TABLES" | tr -d '[:space:]')
+    if [ "$SCHEMA_HAS_TABLES" = "t" ] && [ "${FORCE_RUN_ON_EMPTY_SCHEMA_MIGRATIONS:-false}" != "true" ]; then
+        echo "[migrations] FATAL: schema_migrations is empty but ai_influencers already exists."
+        echo "[migrations] This means migrations were applied OUTSIDE this runner (e.g. manually before"
+        echo "[migrations] PR #309), and the runner would otherwise try to replay 001_initial.sql on a"
+        echo "[migrations] populated database — which would either fail mid-transaction or corrupt data."
+        echo "[migrations]"
+        echo "[migrations] To unblock: run the one-shot bootstrap workflow that seeds schema_migrations"
+        echo "[migrations] with the already-applied filenames, then re-run this deploy."
+        echo "[migrations]"
+        echo "[migrations] If you are SURE this is a fresh cluster and you want to actually apply"
+        echo "[migrations] 001_initial.sql onward, set FORCE_RUN_ON_EMPTY_SCHEMA_MIGRATIONS=true."
+        exit 1
+    fi
+fi
+
 PENDING=0
 while IFS= read -r FILE; do
     [ -z "$FILE" ] && continue
