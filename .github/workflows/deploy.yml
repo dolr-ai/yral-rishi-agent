@@ -141,6 +141,88 @@ jobs:
             ssh-keyscan -T 10 -H "$host" >> ~/.ssh/known_hosts 2>/dev/null || true
           done
 
+      # Apply pending migrations BEFORE rolling the new image. This
+      # closes the "expand part of expand-then-contract" gap: when a
+      # PR ships new code that depends on a new column, the column
+      # must exist before the new image starts serving traffic — else
+      # the first request crashes.
+      #
+      # The runner script (`scripts/ci/run-migrations.sh`) already does
+      # the right things internally per PR #309 + Rule 9:
+      #   - Auto-pg_dumps the live DB to S3 BEFORE applying
+      #   - Creates a WAL restore point (fast PITR handle)
+      #   - Tracks applied migrations in `schema_migrations` table
+      #     (so a second run on the same SHA is a no-op)
+      #   - Wraps each migration in its own transaction
+      #
+      # If the migration fails (or all 3 managers are unreachable), we
+      # exit non-zero BEFORE touching the swarm — old image keeps
+      # serving traffic on the old schema. No broken state.
+      #
+      # Retry across managers: the runner connects to the LOCAL Patroni
+      # container via `psql -h localhost`. If we hit a replica, writes
+      # fail (read-only) → next manager. Eventually we hit the leader.
+      # No-op deploys (no new migrations) skip cleanly at "no pending
+      # migrations".
+      - name: Apply pending migrations BEFORE rolling new image
+        id: apply_migrations
+        run: |
+          STAGING_DIR="/tmp/migrate-${{ steps.resolve_sha.outputs.sha }}-$$"
+          APPLIED_VIA=""
+          SSH_OPTS="-i ~/.ssh/deploy_key -o ConnectTimeout=15 -o BatchMode=yes -o StrictHostKeyChecking=yes"
+
+          # Quick local visibility: which migration files are in this commit?
+          if [ -d migrations ]; then
+            echo "Migration files in this commit:"
+            ls migrations/ | sort | tail -15
+          else
+            echo "WARN: no migrations/ directory in this checkout — script will no-op"
+          fi
+
+          for host in ${{ env.SWARM_MANAGER_1 }} ${{ env.SWARM_MANAGER_2 }} ${{ env.SWARM_MANAGER_3 }}; do
+            echo "── Trying migration apply via $host ──"
+
+            # Step 1: stage the small set of files needed by the runner.
+            # We don't ship the whole repo — just project.config (POSTGRES_DB),
+            # migrations/, and the runner script itself.
+            if ! ssh $SSH_OPTS "${{ env.SWARM_USER }}@$host" "mkdir -p $STAGING_DIR/scripts/ci" 2>&1; then
+              echo "✗ Could not mkdir staging on $host; trying next manager..."
+              continue
+            fi
+
+            if ! scp $SSH_OPTS -q project.config "${{ env.SWARM_USER }}@$host:$STAGING_DIR/project.config" \
+              || ! scp $SSH_OPTS -q -r migrations "${{ env.SWARM_USER }}@$host:$STAGING_DIR/" \
+              || ! scp $SSH_OPTS -q scripts/ci/run-migrations.sh "${{ env.SWARM_USER }}@$host:$STAGING_DIR/scripts/ci/run-migrations.sh"; then
+              echo "✗ Could not stage files on $host; trying next manager..."
+              ssh $SSH_OPTS "${{ env.SWARM_USER }}@$host" "rm -rf $STAGING_DIR" 2>/dev/null || true
+              continue
+            fi
+
+            # Step 2: run the migration script. It internally:
+            # - pg_dumps the live DB to S3 (PR #309 — Rule 9)
+            # - Creates restore point + applies pending migrations
+            # - Records each applied file in schema_migrations
+            if ssh $SSH_OPTS "${{ env.SWARM_USER }}@$host" \
+                  "set -e; APP_DIR=$STAGING_DIR bash $STAGING_DIR/scripts/ci/run-migrations.sh"; then
+              echo "✓ Migrations applied (or already up to date) via $host"
+              ssh $SSH_OPTS "${{ env.SWARM_USER }}@$host" "rm -rf $STAGING_DIR" 2>/dev/null || true
+              APPLIED_VIA="$host"
+              break
+            else
+              echo "✗ Migration script failed on $host — likely a replica (writes rejected). Trying next manager..."
+              ssh $SSH_OPTS "${{ env.SWARM_USER }}@$host" "rm -rf $STAGING_DIR" 2>/dev/null || true
+            fi
+          done
+
+          if [ -z "$APPLIED_VIA" ]; then
+            echo "ERROR: Migration apply failed on all 3 swarm managers."
+            echo "Migrations were NOT applied. New image deploy is HALTED to prevent serving traffic on a stale schema."
+            echo "Investigate Patroni cluster health + leader state, then re-run this workflow."
+            exit 1
+          fi
+
+          echo "applied_via=$APPLIED_VIA" >> "$GITHUB_OUTPUT"
+
       - name: Deploy via first responding swarm manager
         id: deploy
         env:
