@@ -16,84 +16,12 @@ LAYER_SEPARATOR = "\n\n---\n\n"
 # works for any user-language pair (Hinglish stays handled; Spanglish,
 # Singlish, Arabish, etc. now equally handled). The "mirror exactly" wording
 # is the load-bearing instruction; the prior enumeration was just examples.
-#
-# Phase 21αβ Coach Fix 1 (2026-06-09): the prior flat-string GLOBAL_RULES
-# wrapped EVERY chat regardless of the per-influencer system_instructions —
-# so a creator's "give longer replies" instruction was silently overridden
-# by the "1-3 sentences" platform rule. Saikat hit this in alpha testing.
-#
-# The rules are now split into two pieces:
-#   - GLOBAL_RULES_OVERRIDEABLE: keyed by override-slug; Coach can opt a
-#     specific bot out of any one of these via ai_influencers.global_rule_overrides
-#     (migration 033). When an override is present, compose() OMITS that
-#     rule line from the assembled prompt for that bot.
-#   - GLOBAL_RULES_FIXED: hard platform rules that can NEVER be overridden
-#     (in-character, no AI-mention, no excessive apology, warm tone).
-#
-# Coach PR-B will surface this dict to the Coach LLM so it can ASK the user
-# before flipping an override instead of silently editing system_instructions.
-GLOBAL_RULES_PREAMBLE = (
-    "You are an AI personality on the YRAL social platform. Follow these rules:"
-)
-
-GLOBAL_RULES_OVERRIDEABLE: dict[str, str] = {
-    "language_mirror": (
-        "Mirror the user's language exactly. Match their script, vocabulary, "
-        "dialect, and any mid-message language mixing (code-switching). If "
-        "they write in two languages, reply in the same mix."
-    ),
-    "response_length": (
-        "Keep responses bite-sized: 1-3 sentences max. Users are on mobile."
-    ),
-}
-
-GLOBAL_RULES_FIXED: tuple[str, ...] = (
-    "Stay in character at all times. Never mention being an AI, LLM, or language model.",
-    'Never apologize excessively or use phrases like "I apologize for the confusion."',
-    "Be warm, engaging, and conversational. End responses with hooks that invite replies.",
-)
-
-
-def _render_global_rules(overrides: dict | str | None) -> str:
-    """Assemble the GLOBAL_RULES block for a bot's effective config.
-
-    Each entry in GLOBAL_RULES_OVERRIDEABLE is included UNLESS the bot has
-    a truthy override for that key. The fixed rules always render.
-
-    The override VALUE (e.g. "long_allowed", "always_english") is currently
-    not consulted by this function — any truthy value means "opt out of
-    the platform default." Coach + future features may reference the
-    value via separate code paths to drive different UX, but the prompt
-    layer just sees "rule present or absent."
-
-    Accepts the override blob as either a dict or a JSON string — asyncpg
-    returns JSONB columns as strings in this codebase (see
-    app/routes/influencers.py:59 for the pattern). Parsing here keeps the
-    call sites uniform: they just pass `inf.get("global_rule_overrides")`.
-    """
-    if isinstance(overrides, str):
-        import json
-
-        try:
-            overrides = json.loads(overrides)
-        except (json.JSONDecodeError, TypeError):
-            overrides = None
-    if not isinstance(overrides, dict):
-        overrides = {}
-    lines: list[str] = [GLOBAL_RULES_PREAMBLE]
-    for key, rule_text in GLOBAL_RULES_OVERRIDEABLE.items():
-        if overrides.get(key):
-            continue
-        lines.append(f"- {rule_text}")
-    for rule_text in GLOBAL_RULES_FIXED:
-        lines.append(f"- {rule_text}")
-    return "\n".join(lines)
-
-
-# Module-level constant kept for backward compat — any caller that read
-# GLOBAL_RULES directly before PR-A gets the unchanged-platform-default text.
-# Callers that need per-bot overrides go through compose() instead.
-GLOBAL_RULES = _render_global_rules(None)
+GLOBAL_RULES = """You are an AI personality on the YRAL social platform. Follow these rules:
+- Mirror the user's language exactly. Match their script, vocabulary, dialect, and any mid-message language mixing (code-switching). If they write in two languages, reply in the same mix.
+- Keep responses bite-sized: 1-3 sentences max. Users are on mobile.
+- Stay in character at all times. Never mention being an AI, LLM, or language model.
+- Never apologize excessively or use phrases like "I apologize for the confusion."
+- Be warm, engaging, and conversational. End responses with hooks that invite replies."""
 
 # Phase 12 (Task C) — second pass. The first pass added per-archetype
 # sentence caps (`at most N sentences`) + tight max_tokens (500-800) and
@@ -175,7 +103,6 @@ def compose(
     memories: dict | None = None,
     skill_slug: str | None = None,
     user_skill_state: dict | None = None,
-    global_rule_overrides: dict | None = None,
 ) -> str:
     """Compose a Soul File prompt.
 
@@ -186,15 +113,10 @@ def compose(
     response without polluting the archetype/skill identity. Memories
     stay last so they remain "background facts" not "current task."
 
-    `global_rule_overrides` is the JSONB column from the ai_influencers row
-    (Coach Fix 1 PR-A). When present, rules in GLOBAL_RULES_OVERRIDEABLE
-    whose keys appear with a truthy value are OMITTED from layer 1 so the
-    per-influencer instructions can land without competing platform rules.
-
     Returns a single string with all layers concatenated, suitable for
     passing as the system prompt to Gemini or OpenRouter.
     """
-    layers = [_render_global_rules(global_rule_overrides)]
+    layers = [GLOBAL_RULES]
 
     archetype = (category or "").lower().strip()
     if archetype in ARCHETYPE_PROMPTS:
