@@ -94,15 +94,19 @@ jobs:
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
 
       - name: Set up SSH key + known_hosts
-        env:
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          KNOWN_HOSTS: ${{ secrets.KNOWN_HOSTS }}
+        # Same pattern as deploy.yml / rollback.yml: ssh-keyscan picks
+        # up whichever host key algorithms each manager actually offers
+        # (RSA, ED25519, ECDSA) rather than relying on a static secret
+        # that only had RSA entries — that mismatch surfaced first in
+        # the 2026-06-09 patroni roll attempt. Idempotent + safe to
+        # run every job.
         run: |
           mkdir -p ~/.ssh
-          echo "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          echo "$KNOWN_HOSTS" > ~/.ssh/known_hosts
-          chmod 644 ~/.ssh/known_hosts
+          for host in ${{ env.SWARM_MANAGER_1 }} ${{ env.SWARM_MANAGER_2 }} ${{ env.SWARM_MANAGER_3 }}; do
+            ssh-keyscan -T 10 -H "$host" >> ~/.ssh/known_hosts 2>/dev/null || true
+          done
 
       - name: Apply bootstrap on first responding leader
         run: |
