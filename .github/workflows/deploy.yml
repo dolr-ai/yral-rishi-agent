@@ -78,7 +78,15 @@ jobs:
        github.event.workflow_run.head_branch == 'main')
     permissions:
       contents: read
-      packages: read
+      # `write` (not `read`) — the I-Dep1 step further down uses crane
+      # to push a new tag manifest to ghcr.io/dolr-ai/yral-rishi-agent.
+      # With `read`, GHCR returns "installation not allowed to Write
+      # organization package" on every deploy (pre-existing since #303 —
+      # Rishi flagged 2026-06-09 end-of-day).
+      #
+      # If post-merge this still fails, the next layer is repo Settings
+      # → Actions → General → Workflow permissions (must allow R+W).
+      packages: write
       actions: write   # required to gh workflow run rollback.yml on health failure
 
     steps:
