@@ -14,7 +14,8 @@ async def get_by_id(pool, influencer_id: str) -> dict | None:
         SELECT id, name, display_name, avatar_url, description, category,
                system_instructions, personality_traits, initial_greeting,
                suggested_messages, is_active, is_nsfw, parent_principal_id,
-               source, created_at, updated_at, metadata, skill_slug
+               source, created_at, updated_at, metadata, skill_slug,
+               global_rule_overrides
         FROM ai_influencers WHERE id = $1
         """,
         influencer_id,
@@ -28,7 +29,8 @@ async def get_by_name(pool, name: str) -> dict | None:
         SELECT id, name, display_name, avatar_url, description, category,
                system_instructions, personality_traits, initial_greeting,
                suggested_messages, is_active, is_nsfw, parent_principal_id,
-               source, created_at, updated_at, metadata, skill_slug
+               source, created_at, updated_at, metadata, skill_slug,
+               global_rule_overrides
         FROM ai_influencers WHERE name = $1
         """,
         name,
@@ -42,7 +44,8 @@ async def get_by_id_or_name(pool, id_or_name: str) -> dict | None:
         SELECT id, name, display_name, avatar_url, description, category,
                system_instructions, personality_traits, initial_greeting,
                suggested_messages, is_active, is_nsfw, parent_principal_id,
-               source, created_at, updated_at, metadata, skill_slug
+               source, created_at, updated_at, metadata, skill_slug,
+               global_rule_overrides
         FROM ai_influencers WHERE id = $1 OR name = $1 LIMIT 1
         """,
         id_or_name,
@@ -68,6 +71,7 @@ async def get_with_conversation_count(pool, influencer_id: str) -> dict | None:
                i.initial_greeting, i.suggested_messages,
                i.is_active, i.is_nsfw, i.parent_principal_id, i.source,
                i.created_at, i.updated_at, i.metadata, i.skill_slug,
+               i.global_rule_overrides,
                COUNT(c.id) as conversation_count
         FROM ai_influencers i
         LEFT JOIN conversations c ON i.id = c.influencer_id
@@ -85,7 +89,8 @@ async def list_all(pool, limit: int = 50, offset: int = 0) -> list[dict]:
         SELECT id, name, display_name, avatar_url, description, category,
                system_instructions, personality_traits, initial_greeting,
                suggested_messages, is_active, is_nsfw, parent_principal_id,
-               source, created_at, updated_at, metadata, skill_slug
+               source, created_at, updated_at, metadata, skill_slug,
+               global_rule_overrides
         FROM ai_influencers
         WHERE is_active != 'discontinued'
         ORDER BY CASE is_active
@@ -114,6 +119,7 @@ async def list_trending(pool, limit: int = 50, offset: int = 0) -> list[dict]:
                i.initial_greeting, i.suggested_messages,
                i.is_active, i.is_nsfw, i.parent_principal_id, i.source,
                i.created_at, i.updated_at, i.metadata, i.skill_slug,
+               i.global_rule_overrides,
                COALESCE(s.conversation_count, 0) AS conversation_count,
                COALESCE(s.message_count, 0)      AS message_count
         FROM ai_influencers i
