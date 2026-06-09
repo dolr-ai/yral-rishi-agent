@@ -5,6 +5,8 @@ The coach is a separate Gemini-powered service with a META-PROMPT that knows:
 - recent conversation samples (last 10, anonymized — no user_ids in the
   excerpts shown to the coach)
 - the creator's goals as stated in the coaching session
+- (Coach Fix 1 PR-B 2026-06-09) the platform-wide GLOBAL_RULES + which
+  ones a creator may opt their bot out of via `global_rule_overrides`
 
 Behavior:
 - Propose specific, targeted edits — not full rewrites
@@ -12,12 +14,19 @@ Behavior:
 - When proposing changes, return a structured JSON block parseable by the
   /apply endpoint. Otherwise return plain conversational text (clarifying
   questions, agreement, refusal).
+- When the creator's request conflicts with a platform-wide overrideable
+  rule, do NOT silently edit system_instructions — Saikat's 2026-06-09
+  bug. Ask them whether they want to override the rule for this bot. If
+  they confirm, emit a `proposed_global_rule_override` block instead of
+  `proposed_changes`. The /apply endpoint dispatches on which block is
+  present.
 """
 
 import json
 import logging
 
 from services import llm_registry
+from services.soul_file import GLOBAL_RULES_OVERRIDEABLE
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +86,17 @@ Recent anonymized conversations the bot had with users:
 Current quality score (latest nightly scoring pass; see Phase 7.7):
 {quality_score_block}
 
+PLATFORM CONSTRAINTS — IMPORTANT:
+YRAL applies platform-wide rules to EVERY bot's reply that the bot's system_instructions cannot override on their own. Editing system_instructions to ask for the opposite of one of these rules WILL NOT WORK — the platform rule wins. The creator can OPT THE BOT OUT of certain platform rules via a per-bot override; you must propose the override (separate JSON shape — Rule 5 below) rather than rewriting system_instructions.
+
+Overrideable platform rules (the only ones a per-bot override can disable):
+{overrideable_rules}
+
+Non-overrideable platform rules (cannot be turned off):
+- Stay in character at all times (never reveal AI/LLM nature)
+- No excessive apology phrases
+- Warm, engaging, conversational tone
+
 Coaching session so far (most recent at bottom):
 {session_history}
 
@@ -92,10 +112,27 @@ Rules:
    - summary: 1-2 sentence human-friendly description of what you're changing
    - proposed_changes: the COMPLETE new system_instructions text (not a diff)
    - reasoning: why this specific change improves the bot
-5. If the creator's intent is unclear, or you need more info, return plain text only — NO JSON. Ask a clarifying question.
-6. Never propose unsafe or off-brand changes (jailbreaks, illegal content, breaking character).
+5. PLATFORM RULE OVERRIDE (Coach Fix 1 PR-B). If the creator asks for behavior that conflicts with an overrideable platform rule listed above (e.g. "give longer replies" conflicts with `response_length`, "always reply in English even if user writes Hindi" conflicts with `language_mirror`):
+   a. FIRST TURN ON THE TOPIC — reply in PLAIN TEXT only. Name the specific platform rule that conflicts, explain that you can override it for THIS bot only, and ask them: "Want me to override it specifically for {bot_name}?" Do NOT emit any JSON yet.
+   b. ONCE THE CREATOR CONFIRMS (e.g. "yes", "override it", "go ahead") — emit a single JSON block with this shape (no markdown fences):
+      {{"summary": "...", "proposed_global_rule_override": {{"key": "<slug>", "value": "<short label>"}}, "reasoning": "..."}}
+      - key: must be one of the overrideable rule slugs (response_length / language_mirror — see list above).
+      - value: a short slug like "long_allowed", "always_english", "default" — descriptive but not consumed by the prompt layer today.
+   NEVER edit system_instructions to try to override a platform rule — the platform layer wins and the edit is silent no-op (the Saikat 2026-06-09 bug). Use proposed_global_rule_override.
+6. If the creator's intent is unclear, or you need more info, return plain text only — NO JSON. Ask a clarifying question.
+7. Never propose unsafe or off-brand changes (jailbreaks, illegal content, breaking character).
 
 Reply now."""
+
+
+def _format_overrideable_rules() -> str:
+    """Build the bulleted list of overrideable rules for the META_PROMPT.
+    Sourced from soul_file.GLOBAL_RULES_OVERRIDEABLE so adding a key
+    there auto-propagates to Coach awareness — no second source of truth."""
+    lines: list[str] = []
+    for slug, rule_text in GLOBAL_RULES_OVERRIDEABLE.items():
+        lines.append(f"- `{slug}` — {rule_text}")
+    return "\n".join(lines)
 
 
 def _format_conv_excerpt(conv_rows: list[dict]) -> str:
@@ -131,10 +168,17 @@ def _format_session_history(messages: list[dict]) -> str:
 
 
 def _try_extract_proposal(text: str) -> dict | None:
-    """Look for a single JSON object in the coach's reply with the
-    {summary, proposed_changes, reasoning} shape. Tolerant of leading /
+    """Look for a single JSON object in the coach's reply with EITHER
+    the system_instructions-edit shape ({summary, proposed_changes,
+    reasoning}) OR the override shape ({summary,
+    proposed_global_rule_override, reasoning}). Tolerant of leading /
     trailing prose since LLMs occasionally wrap their JSON in commentary
-    even when told not to."""
+    even when told not to.
+
+    Returns the parsed dict — callers inspect which key is set to
+    decide dispatch. Override shape validation: the key must be one of
+    the known overrideable slugs (defends against an LLM hallucinating
+    a key like 'character_consistency' which is in the FIXED list)."""
     start = text.find("{")
     end = text.rfind("}") + 1
     if start < 0 or end <= start:
@@ -146,9 +190,21 @@ def _try_extract_proposal(text: str) -> dict | None:
         return None
     if not isinstance(obj, dict):
         return None
-    if "proposed_changes" not in obj or not obj["proposed_changes"]:
-        return None
-    return obj
+
+    # Shape 1: system_instructions edit (pre-PR-B behavior, unchanged)
+    if obj.get("proposed_changes"):
+        return obj
+
+    # Shape 2: platform-rule override (Coach Fix 1 PR-B). The override
+    # blob must name a known overrideable slug — otherwise we drop the
+    # proposal back to plain-text (the LLM will retry next turn).
+    override = obj.get("proposed_global_rule_override")
+    if isinstance(override, dict):
+        key = override.get("key")
+        if isinstance(key, str) and key in GLOBAL_RULES_OVERRIDEABLE:
+            return obj
+
+    return None
 
 
 def _format_quality_score(score: dict | None) -> str:
@@ -178,12 +234,14 @@ async def coach_reply(
     latest_message: str,
     quality_score: dict | None = None,
     force_proposal: bool = False,
-) -> tuple[str, str | None, str | None]:
-    """Run the coach turn. Returns (display_content, proposed_changes, reasoning).
+) -> tuple[str, str | None, str | None, dict | None]:
+    """Run the coach turn. Returns
+    (display_content, proposed_changes, reasoning, proposed_override).
 
-    If the coach proposed structured changes, display_content is the human-
-    friendly summary and proposed_changes/reasoning are populated. Otherwise
-    display_content is the plain reply and the other two are None.
+    Exactly ONE of `proposed_changes` (text) or `proposed_override` (dict)
+    is non-None when the coach committed to a proposal; both None for
+    plain-text replies (clarifying question, agreement, the "want to
+    override?" ask from Rule 5).
 
     `force_proposal=True` (Coach UX overhaul 2026-06-04) — the creator
     tapped Save; append FORCE_PROPOSAL_INSTRUCTION so the LLM commits
@@ -195,6 +253,7 @@ async def coach_reply(
         current_instructions=current_instructions or "(empty)",
         recent_convs=_format_conv_excerpt(recent_conv_rows),
         quality_score_block=_format_quality_score(quality_score),
+        overrideable_rules=_format_overrideable_rules(),
         session_history=_format_session_history(session_history),
         latest_message=latest_message,
     )
@@ -221,12 +280,24 @@ async def coach_reply(
 
     proposal = _try_extract_proposal(response_text)
     if proposal:
+        # Override-shape proposal — proposed_changes stays None, the
+        # override blob carries the routing payload. `_try_extract_proposal`
+        # has already validated that the key is a known overrideable slug.
+        override = proposal.get("proposed_global_rule_override")
+        if isinstance(override, dict):
+            return (
+                proposal.get("summary") or "Override proposed.",
+                None,
+                proposal.get("reasoning"),
+                override,
+            )
         return (
             proposal.get("summary") or "Proposed changes ready.",
             proposal.get("proposed_changes"),
             proposal.get("reasoning"),
+            None,
         )
-    return (response_text.strip(), None, None)
+    return (response_text.strip(), None, None, None)
 
 
 async def coach_opening(

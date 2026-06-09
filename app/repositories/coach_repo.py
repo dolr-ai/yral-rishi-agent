@@ -82,23 +82,34 @@ async def add_message(
     proposed_changes: str | None = None,
     reasoning: str | None = None,
     suggestions: list[str] | None = None,
+    proposed_global_rule_override: dict | None = None,
 ) -> dict:
     """Insert a coach_messages row.
 
     `suggestions` (Coach UX overhaul, migration 031) is a JSONB list of
     3 short tappable strings rendered as chips below the opening coach
-    message. NULL for creator turns and non-opening coach turns."""
+    message. NULL for creator turns and non-opening coach turns.
+
+    `proposed_global_rule_override` (Coach Fix 1 PR-B, migration 034)
+    is a JSONB blob of shape {"key": "<slug>", "value": "<label>"}.
+    EXACTLY ONE of proposed_changes and proposed_global_rule_override
+    should be set on any given coach turn — the apply endpoint
+    dispatches on which is present. NULL for non-proposal turns and
+    for system-instructions-edit proposals.
+    """
     import json as _json
 
     row = await pool.fetchrow(
         """
         INSERT INTO coach_messages (
             coach_conversation_id, role, content,
-            proposed_changes, reasoning, suggestions
+            proposed_changes, reasoning, suggestions,
+            proposed_global_rule_override
         )
-        VALUES ($1::uuid, $2, $3, $4, $5, $6::jsonb)
+        VALUES ($1::uuid, $2, $3, $4, $5, $6::jsonb, $7::jsonb)
         RETURNING id, coach_conversation_id, role, content,
-                  proposed_changes, reasoning, suggestions, created_at
+                  proposed_changes, reasoning, suggestions,
+                  proposed_global_rule_override, created_at
         """,
         coach_conversation_id,
         role,
@@ -106,6 +117,9 @@ async def add_message(
         proposed_changes,
         reasoning,
         _json.dumps(suggestions) if suggestions else None,
+        _json.dumps(proposed_global_rule_override)
+        if proposed_global_rule_override
+        else None,
     )
     return dict(row)
 
@@ -114,7 +128,8 @@ async def list_messages(pool, coach_conversation_id: str) -> list[dict]:
     rows = await pool.fetch(
         """
         SELECT id, coach_conversation_id, role, content,
-               proposed_changes, reasoning, suggestions, created_at
+               proposed_changes, reasoning, suggestions,
+               proposed_global_rule_override, created_at
         FROM coach_messages
         WHERE coach_conversation_id = $1::uuid
         ORDER BY created_at ASC
@@ -125,16 +140,20 @@ async def list_messages(pool, coach_conversation_id: str) -> list[dict]:
 
 
 async def latest_proposal(pool, coach_conversation_id: str) -> dict | None:
-    """Most recent coach message that includes proposed_changes — used by
-    the /apply endpoint to find what to commit."""
+    """Most recent coach message that includes EITHER proposed_changes
+    OR proposed_global_rule_override (Coach Fix 1 PR-B). Used by the
+    /apply endpoint to find what to commit; that endpoint dispatches on
+    which column is non-NULL."""
     row = await pool.fetchrow(
         """
         SELECT id, coach_conversation_id, role, content,
-               proposed_changes, reasoning, suggestions, created_at
+               proposed_changes, reasoning, suggestions,
+               proposed_global_rule_override, created_at
         FROM coach_messages
         WHERE coach_conversation_id = $1::uuid
           AND role = 'coach'
-          AND proposed_changes IS NOT NULL
+          AND (proposed_changes IS NOT NULL
+               OR proposed_global_rule_override IS NOT NULL)
         ORDER BY created_at DESC
         LIMIT 1
         """,
