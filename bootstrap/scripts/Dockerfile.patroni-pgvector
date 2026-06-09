@@ -24,12 +24,21 @@ USER root
 # extension control file into /usr/share/postgresql/15/extension/ and the
 # .so into /usr/lib/postgresql/15/lib/, which is exactly where Postgres
 # 15's CREATE EXTENSION lookup expects them.
+#
+# awscli is needed by scripts/ci/run-migrations.sh — every migration
+# triggers a pre-apply pg_dump that's uploaded to S3 (CLAUDE.md Rule 9 +
+# Phase 21αβ.I-Mig1). The 2026-06-09 deploy of #314 hit "aws CLI not
+# present in patroni container" because this Dockerfile didn't ship it.
+# WAL-G has its own AWS SDK so daily backups never needed apt-installed
+# awscli — only the migration runner does.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends postgresql-15-pgvector \
+ && apt-get install -y --no-install-recommends postgresql-15-pgvector awscli \
  && rm -rf /var/lib/apt/lists/* \
  && ls -la /usr/share/postgresql/15/extension/vector.control \
  && echo "pgvector installed:" \
- && find /usr/lib/postgresql/15/lib/ -name 'vector*'
+ && find /usr/lib/postgresql/15/lib/ -name 'vector*' \
+ && echo "awscli installed:" \
+ && aws --version
 
 # Sanity-check the bundled Postgres binary can load the extension. Build
 # fails fast if the package version mismatches Spilo's bundled Postgres.
