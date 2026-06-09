@@ -109,6 +109,13 @@ async def lifespan(app: FastAPI):
 
     video_ideas_task = asyncio.create_task(video_ideas_loop())
 
+    # Phase 21αβ.H11 — real-time LLM cost alerting (hourly Gemini cost
+    # threshold + async error spike). Gated by kill_switch "cost_alerts"
+    # → ENABLE_COST_ALERTS.
+    from services.cost_alerts import cost_alerts_loop
+
+    cost_alerts_task = asyncio.create_task(cost_alerts_loop())
+
     # Hydrate rate-limit config from DB into Redis so the middleware
     # reads the operator-tuned values, not just the defaults. Idempotent.
     try:
@@ -130,6 +137,7 @@ async def lifespan(app: FastAPI):
     integrity_task.cancel()
     digest_task.cancel()
     video_ideas_task.cancel()
+    cost_alerts_task.cancel()
     llm_routing_pubsub_task.cancel()
     try:
         await trending_refresher_task
@@ -173,6 +181,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await video_ideas_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await cost_alerts_task
     except asyncio.CancelledError:
         pass
     try:
