@@ -46,10 +46,16 @@ jobs:
           fetch-depth: 0
 
       - name: Install squawk
+        # Pin to a tagged release at PR time. The asset name format is
+        # `squawk-linux-x64` (NOT `-x86_64`, which my first attempt
+        # used — 404 → exit 127 here on PR #310).
+        # curl `-f` fails fast on HTTP 4xx/5xx so we don't silently
+        # `chmod +x` an error-page HTML.
         run: |
           set -euo pipefail
-          VERSION="2.21.0"
-          curl -sSL "https://github.com/sbdchd/squawk/releases/download/v${VERSION}/squawk-linux-x86_64" -o squawk
+          VERSION="2.57.0"
+          ASSET_URL="https://github.com/sbdchd/squawk/releases/download/v${VERSION}/squawk-linux-x64"
+          curl -fsSL "$ASSET_URL" -o squawk
           chmod +x squawk
           sudo mv squawk /usr/local/bin/squawk
           squawk --version
