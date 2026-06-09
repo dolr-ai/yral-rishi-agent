@@ -83,7 +83,10 @@ def test_route_persists_opening_with_suggestions():
 def test_repo_add_message_accepts_suggestions():
     src = _read("app/repositories/coach_repo.py")
     pos = src.find("async def add_message(")
-    body = src[pos : pos + 1200]
+    # Window bumped to 2000 (was 1200) — Coach Fix 1 PR-B added the
+    # `proposed_global_rule_override` kwarg + docstring lines, pushing
+    # the `_json.dumps(suggestions)` literal past the original window.
+    body = src[pos : pos + 2000]
     assert "suggestions: list[str] | None = None" in body
     # suggestions JSONB written via json.dumps so asyncpg accepts
     # the parameter shape.
@@ -135,7 +138,11 @@ def test_route_threads_request_proposal_flag():
 def test_apply_writes_receipt_message():
     src = _read("app/routes/creator_coach.py")
     pos = src.find("async def apply_coach_proposal(")
-    body = src[pos : pos + 3500]
+    # Window bumped to 7000 (was 3500) — Coach Fix 1 PR-B added the
+    # global_rule_override dispatch path (~80 lines) before the legacy
+    # system_instructions branch. Receipt message now lives in BOTH
+    # branches; the 3500-char window stopped before either.
+    body = src[pos : pos + 7000]
     # Receipt content prefix
     assert "✅ Saved" in body
     # Persisted via add_message
