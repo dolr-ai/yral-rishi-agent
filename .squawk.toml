@@ -12,11 +12,15 @@ excluded_rules = [
     # every VARCHAR would be noise without a real safety win.
     "prefer-text-field",
 
-    # `prefer-big-int` / `prefer-big-serial` — our id columns are
-    # explicitly VARCHAR-based (matches chat-ai contract); BIGINT is
-    # not applicable.
-    "prefer-big-int",
-    "prefer-big-serial",
+    # 2026-06-09 fix: previous versions of this file listed
+    # `prefer-big-int` and `prefer-big-serial` here, but those rule
+    # names do not exist in squawk's catalog — squawk fails-closed
+    # ("Configuration error: invalid rule name ...") when an excluded
+    # rule name is unknown, breaking the entire lint run for every PR
+    # that touches a migration (PR #314 hit this). Our id columns are
+    # explicitly VARCHAR-based (chat-ai contract), so neither
+    # int-vs-bigint rule would fire on our migrations anyway — removed
+    # rather than guessing the correct rule names.
 
     # `transaction-nesting` — our migration runner already wraps each
     # file in BEGIN/COMMIT (see scripts/ci/run-migrations.sh:111-117).
