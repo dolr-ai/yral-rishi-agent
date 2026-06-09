@@ -44,12 +44,29 @@ find_local_patroni() {
     docker ps -qf "name=${SWARM_STACK}_patroni" 2>/dev/null | head -1
 }
 
+# Read the Postgres superuser password from the Patroni container's
+# /run/secrets. Production uses the file name `postgres-superuser-password`
+# (per the patroni-stack.yml secret-mount convention from the bootstrap
+# scripts). Older docs / dev environments sometimes used `postgres_password`
+# — fall back to that to stay compatible. Echoes the password to stdout;
+# empty string if neither file exists.
+read_pg_password() {
+    local container="$1"
+    [ -z "$container" ] && { echo ""; return; }
+    local pw
+    pw=$(docker exec "$container" cat /run/secrets/postgres-superuser-password 2>/dev/null || true)
+    if [ -z "$pw" ]; then
+        pw=$(docker exec "$container" cat /run/secrets/postgres_password 2>/dev/null || true)
+    fi
+    echo "$pw"
+}
+
 wait_for_db() {
     echo "[migrations] waiting for database (up to 120s)..."
     for i in $(seq 1 40); do
         LOCAL_C=$(find_local_patroni)
         if [ -n "$LOCAL_C" ]; then
-            PG_PASS=$(docker exec "$LOCAL_C" cat /run/secrets/postgres_password 2>/dev/null || echo "")
+            PG_PASS=$(read_pg_password "$LOCAL_C")
             if docker exec -e PGPASSWORD="$PG_PASS" "$LOCAL_C" psql -h localhost -U postgres -d "${POSTGRES_DB}" -tAc "SELECT 1;" >/dev/null 2>&1; then
                 echo "[migrations] database reachable after $((i*3))s"
                 return 0
@@ -65,7 +82,7 @@ run_sql() {
     local sql="$1"
     LOCAL_C=$(find_local_patroni)
     [ -z "$LOCAL_C" ] && { echo "[migrations] FATAL: no local Patroni container"; exit 1; }
-    docker exec -i -e PGPASSWORD="$(docker exec "$LOCAL_C" cat /run/secrets/postgres_password 2>/dev/null)" \
+    docker exec -i -e PGPASSWORD="$(read_pg_password "$LOCAL_C")" \
         "$LOCAL_C" psql -h localhost -U postgres -d "${POSTGRES_DB}" -v ON_ERROR_STOP=1 <<< "$sql"
 }
 
@@ -77,7 +94,7 @@ run_sql "CREATE TABLE IF NOT EXISTS schema_migrations (
 );"
 
 LOCAL_C=$(find_local_patroni)
-PG_PASS=$(docker exec "$LOCAL_C" cat /run/secrets/postgres_password 2>/dev/null || echo "")
+PG_PASS=$(read_pg_password "$LOCAL_C")
 APPLIED=$(docker exec -i -e PGPASSWORD="$PG_PASS" "$LOCAL_C" psql -h localhost -U postgres -d "${POSTGRES_DB}" -tA \
     -c "SELECT filename FROM schema_migrations ORDER BY filename;" 2>/dev/null || true)
 
@@ -100,7 +117,7 @@ while IFS= read -r FILE; do
     echo "[migrations] applying: ${BASENAME}"
 
     LOCAL_C=$(find_local_patroni)
-    PG_PASS=$(docker exec "$LOCAL_C" cat /run/secrets/postgres_password 2>/dev/null || echo "")
+    PG_PASS=$(read_pg_password "$LOCAL_C")
 
     docker exec -i -e PGPASSWORD="$PG_PASS" "$LOCAL_C" \
         psql -h localhost -U postgres -d "${POSTGRES_DB}" -tAc \
