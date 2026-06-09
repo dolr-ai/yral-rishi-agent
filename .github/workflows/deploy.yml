@@ -162,41 +162,15 @@ jobs:
       # Retry across managers: the runner connects to the LOCAL Patroni
       # container via `psql -h localhost`. If we hit a replica, writes
       # fail (read-only) → next manager. Eventually we hit the leader.
-      # No-op deploys (no new migrations) skip cleanly at "no pending
-      # migrations".
-      # Skip the auto-apply step when this deploy doesn't actually touch
-      # the migrations/ directory. Most deploys are code-only and the
-      # script's "no pending migrations" early-exit would still consume
-      # ~30s/manager × 3 managers + a known auth-plumbing issue that
-      # we're still untangling. Skipping here is safe: no migration =
-      # nothing to apply; the previous-deploy schema is already in
-      # production. PRs that DO modify migrations/ still run the
-      # apply step normally.
-      - name: Check if migrations/ changed in this commit
-        id: migrations_changed
-        run: |
-          # Compare the deploy target SHA against the previous main HEAD
-          # (the SHA we deployed last time). If migrations/ differs at all,
-          # we have pending work; otherwise skip.
-          BEFORE_SHA=$(git rev-parse ${{ steps.resolve_sha.outputs.sha }}~1 2>/dev/null || echo "")
-          if [ -z "$BEFORE_SHA" ]; then
-            echo "No previous commit available; assuming migrations may have changed"
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          CHANGED=$(git diff --name-only "$BEFORE_SHA" ${{ steps.resolve_sha.outputs.sha }} -- 'migrations/*.sql' || true)
-          if [ -n "$CHANGED" ]; then
-            echo "Migration files changed in this commit:"
-            echo "$CHANGED"
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "No migration changes in this commit — skipping apply step."
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
-
+      # The runner is idempotent: it consults schema_migrations and exits
+      # cleanly when nothing is pending. The earlier "changed in this
+      # commit" gate (PR #322) used `git rev-parse SHA~1` against a
+      # shallow clone, which silently passed an empty-diff condition and
+      # skipped the apply step even when migrations DID change (PR #314
+      # 918e9a6 missed migration 033). Trusting the runner is both
+      # simpler and safer than guarding it.
       - name: Apply pending migrations BEFORE rolling new image
         id: apply_migrations
-        if: steps.migrations_changed.outputs.changed == 'true'
         run: |
           STAGING_DIR="/tmp/migrate-${{ steps.resolve_sha.outputs.sha }}-$$"
           APPLIED_VIA=""
