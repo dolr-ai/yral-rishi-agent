@@ -108,6 +108,65 @@ while IFS= read -r FILE; do
         && echo "[migrations]   restore point: pre-migration-${BASENAME}" \
         || echo "[migrations]   restore point failed (non-fatal)"
 
+    # Phase 21αβ.I-Mig1 — automated pre-migration pg_dump.
+    # The WAL restore point above is the *fast* recovery handle (PITR
+    # via WAL-G). This is the *slow* recovery handle (a full plain dump
+    # that can be restored into a fresh cluster without WAL replay).
+    # Both serve a purpose: PITR is faster but assumes the WAL stream
+    # is intact; pg_dump is slower but is a self-contained artifact.
+    #
+    # Fatal on failure — if we can't take the safety snapshot, we
+    # don't apply the migration. Rule 9 in CLAUDE.md is "before any
+    # schema change, take a pg_dump snapshot first."
+    #
+    # Skip via PRE_MIGRATION_DUMP_ENABLED=false (e.g. in local CI test
+    # runs that have already verified the migration in I-Mig3's
+    # ephemeral pg). Default is enabled.
+    PRE_MIGRATION_DUMP_ENABLED="${PRE_MIGRATION_DUMP_ENABLED:-true}"
+    if [ "${PRE_MIGRATION_DUMP_ENABLED}" = "true" ]; then
+        DUMP_TS=$(date -u +%Y%m%dT%H%M%SZ)
+        DUMP_NAME="pre-migration-${BASENAME%.sql}-${DUMP_TS}.sql.gz"
+        DUMP_LOCAL="/tmp/${DUMP_NAME}"
+        S3_PREFIX="${PRE_MIGRATION_DUMP_S3_PREFIX:-s3://rishi-yral/yral-rishi-agent-pre-migration-dumps}"
+
+        echo "[migrations]   pg_dump → ${DUMP_NAME}"
+
+        # Custom format (-Fc) + level-6 gzip (matches the nightly
+        # backup convention from docs/BACKUP-RESTORE-DRILL-2026-06-04.md).
+        # `--no-owner --no-acl` so the dump restores cleanly into a
+        # fresh cluster with potentially different roles.
+        if ! docker exec -e PGPASSWORD="$PG_PASS" "$LOCAL_C" \
+            pg_dump -Fc -Z 6 --no-owner --no-acl \
+            -h localhost -U postgres -d "${POSTGRES_DB}" \
+            -f "${DUMP_LOCAL}" 2>&1; then
+            echo "[migrations] FATAL: pre-migration pg_dump failed for ${BASENAME} — refusing to apply migration without a safety snapshot"
+            exit 1
+        fi
+
+        # Upload to S3 (Hetzner Object Storage). Uses the AWS_*
+        # credentials already mounted into the patroni container for
+        # WAL-G. Endpoint + region pinned for Hetzner hel1.
+        if ! docker exec "$LOCAL_C" \
+            sh -c "command -v aws >/dev/null 2>&1"; then
+            echo "[migrations] FATAL: 'aws' CLI not present in patroni container — pre-migration dump cannot be uploaded"
+            exit 1
+        fi
+
+        if ! docker exec "$LOCAL_C" \
+            aws --endpoint-url "${AWS_ENDPOINT:-https://hel1.your-objectstorage.com}" \
+                s3 cp "${DUMP_LOCAL}" "${S3_PREFIX}/${DUMP_NAME}" 2>&1; then
+            echo "[migrations] FATAL: pre-migration dump upload failed for ${BASENAME} — refusing to apply migration without a remote-stored snapshot"
+            exit 1
+        fi
+
+        # Local cleanup. The S3 copy is the durable artifact.
+        docker exec "$LOCAL_C" rm -f "${DUMP_LOCAL}" 2>/dev/null || true
+
+        echo "[migrations]   pre-migration dump uploaded: ${S3_PREFIX}/${DUMP_NAME}"
+    else
+        echo "[migrations]   pre-migration dump SKIPPED (PRE_MIGRATION_DUMP_ENABLED=false)"
+    fi
+
     {
         echo "BEGIN;"
         echo "SET lock_timeout = '5s';"
