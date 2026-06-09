@@ -13,13 +13,21 @@ REPO = Path(__file__).resolve().parents[1]
 
 
 def test_cost_alerts_module_exists():
-    """services.cost_alerts must define the three building blocks the
-    digest + loop wire to."""
+    """services.cost_alerts must define the two checks the loop wires to."""
     src = (REPO / "app" / "services" / "cost_alerts.py").read_text()
     assert "async def cost_alerts_loop" in src
     assert "async def _check_hourly_gemini_cost" in src
     assert "async def _check_async_error_spike" in src
-    assert "async def section_llm_costs_yesterday" in src
+
+
+def test_no_email_digest_section_per_rishi_2026_06_09():
+    """Rishi 2026-06-09 — no daily email digest section. The two
+    periodic Sentry alerts are sufficient. Defend that the digest
+    integration stays OUT to avoid quietly reintroducing it."""
+    src = (REPO / "app" / "services" / "cost_alerts.py").read_text()
+    digest = (REPO / "app" / "services" / "email_digest.py").read_text()
+    assert "section_llm_costs_yesterday" not in src
+    assert "section_llm_costs_yesterday" not in digest
 
 
 def test_main_wires_cost_alerts_task():
@@ -38,16 +46,8 @@ def test_kill_switch_has_cost_alerts_entry():
     assert '"cost_alerts": "ENABLE_COST_ALERTS"' in ks
 
 
-def test_email_digest_includes_yesterday_costs_section():
-    """The 08:00 IST digest must call section_llm_costs_yesterday so
-    Rishi's morning skim catches slow leaks the hourly alert misses."""
-    digest = (REPO / "app" / "services" / "email_digest.py").read_text()
-    assert "from services.cost_alerts import section_llm_costs_yesterday" in digest
-    assert "await section_llm_costs_yesterday(pool)" in digest
-
-
 def test_thresholds_env_overridable():
-    """Operators must be able to retune thresholds without a redeploy.
+    """Operators must be able to retune thresholds without a code change.
     Env knobs must be honored by name (not buried as literals)."""
     src = (REPO / "app" / "services" / "cost_alerts.py").read_text()
     assert "COST_ALERT_HOURLY_GEMINI_USD" in src
@@ -55,6 +55,13 @@ def test_thresholds_env_overridable():
     assert "COST_ALERT_TICK_SEC" in src
     assert 'os.environ.get("COST_ALERT_HOURLY_GEMINI_USD"' in src
     assert 'os.environ.get("COST_ALERT_ASYNC_ERROR_COUNT"' in src
+
+
+def test_default_hourly_gemini_threshold_matches_rishi_choice():
+    """Rishi 2026-06-09 — default $10/hr. Pin the literal so a future
+    refactor doesn't quietly drift back to the original $1/hr."""
+    src = (REPO / "app" / "services" / "cost_alerts.py").read_text()
+    assert 'os.environ.get("COST_ALERT_HOURLY_GEMINI_USD", "10.0")' in src
 
 
 def test_nx_dedup_on_both_alerts():

@@ -4,10 +4,10 @@ Motivated by the 2026-06-08 quality_scorer leak: ~$22 of unnoticed
 Gemini spend over 4 days, caught only because Rishi happened to glance
 at Google Cloud billing. At prod scale that's a $400 incident.
 
-Two periodic Sentry alerts + one email-digest section:
+Two periodic Sentry alerts:
 
   1. Hourly Gemini cost — fire when last-hour Gemini spend > threshold
-     (default $1.00/hr). One alert per UTC hour, NX-deduped on Redis.
+     (default $10.00/hr). One alert per UTC hour, NX-deduped on Redis.
 
   2. Async error spike — fire when non-success llm_costs.outcome rows
      in the last 5 min exceed a count threshold (default 10). One
@@ -17,9 +17,20 @@ Two periodic Sentry alerts + one email-digest section:
      runaway error spend that the routing table can't see (e.g. a
      downed provider returning 5xx in a tight loop).
 
-  3. Daily 08:00 IST email digest — yesterday's cost broken down by
-     (process, provider), sourced from llm_costs. Adds one new section
-     to services.email_digest.
+How to change the thresholds (Rishi 2026-06-09):
+  Set the env var on the swarm service and restart. The defaults below
+  are the in-code fallback; the env value wins when present.
+
+      docker service update yral-rishi-agent \\
+          --env-add COST_ALERT_HOURLY_GEMINI_USD=15
+
+      docker service update yral-rishi-agent \\
+          --env-add COST_ALERT_ASYNC_ERROR_COUNT=20
+
+  A redeploy is needed today (the constants below are read once at
+  module import). If hot-editing without redeploy becomes important,
+  the follow-up is the rate_limiter pattern: a DB-config table + Redis
+  cache that the loop re-reads each tick. Out of scope for this PR.
 
 Fail-open semantics throughout: if Redis is down or Sentry can't be
 imported, the loop logs and continues. The whole module is best-effort
@@ -39,11 +50,11 @@ logger = logging.getLogger(__name__)
 # ─── config ───────────────────────────────────────────────────────────────
 
 # Last-hour Gemini cost above this fires a Sentry alert (one per hour).
-# $1/hr is the conservative default — Gemini steady-state cost on V2 is
-# usually < $0.20/hr; sustained > $1/hr means a leak or a spike worth
-# eyeballing.
+# $10/hr is Rishi's chosen default (2026-06-09). Gemini steady-state on
+# V2 is usually < $0.20/hr; sustained > $10/hr means a serious leak.
+# Adjustable via the env var below without code change (redeploy required).
 COST_ALERT_HOURLY_GEMINI_USD = float(
-    os.environ.get("COST_ALERT_HOURLY_GEMINI_USD", "1.0")
+    os.environ.get("COST_ALERT_HOURLY_GEMINI_USD", "10.0")
 )
 
 # Non-success llm_costs.outcome rows in the last 5 min above this fires
@@ -160,42 +171,6 @@ async def _check_async_error_spike(pool) -> dict:
             )
             fired = True
     return {"error_count": errors, "error_cost_usd": error_cost, "fired": fired}
-
-
-# ─── digest section (consumed by services.email_digest) ───────────────────
-
-
-async def section_llm_costs_yesterday(pool) -> dict:
-    """Build the email-digest section showing yesterday's LLM spend
-    broken down by (process, provider). 'Yesterday' = the UTC calendar
-    day preceding the digest run. Top 10 rows by cost; rest collapsed."""
-    rows = await pool.fetch(
-        """
-        SELECT process, provider,
-               COUNT(*)::int                    AS calls,
-               COALESCE(SUM(cost_usd), 0)::float AS cost_usd
-        FROM llm_costs
-        WHERE created_at >= (current_date - interval '1 day')::timestamp at time zone 'UTC'
-          AND created_at <  current_date::timestamp at time zone 'UTC'
-        GROUP BY process, provider
-        ORDER BY cost_usd DESC
-        LIMIT 50
-        """
-    )
-    total = sum(float(r["cost_usd"]) for r in rows)
-    lines = [f"Total: ${total:.2f} across {len(rows)} (process, provider) buckets"]
-    top = rows[:10]
-    if top:
-        lines.append("Top 10:")
-        for r in top:
-            lines.append(
-                f"  {r['process']:30s} {r['provider']:14s} "
-                f"${float(r['cost_usd']):>7.2f}  ({int(r['calls'])} calls)"
-            )
-    if len(rows) > 10:
-        rest_cost = sum(float(r["cost_usd"]) for r in rows[10:])
-        lines.append(f"  (+ {len(rows) - 10} more buckets totaling ${rest_cost:.2f})")
-    return {"title": "LLM cost — yesterday", "lines": lines}
 
 
 # ─── background loop ──────────────────────────────────────────────────────
