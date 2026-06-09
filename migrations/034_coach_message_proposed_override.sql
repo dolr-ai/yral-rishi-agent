@@ -17,6 +17,11 @@
 -- Safety: ADD COLUMN NULLABLE (no DEFAULT) is metadata-only on pg11+,
 -- safe on the coach_messages table.
 
+-- squawk: cap how long this statement can wait for a lock and how long
+-- it can run. Same pattern as migration 033 (Coach Fix 1 PR-A).
+SET lock_timeout = '3s';
+SET statement_timeout = '60s';
+
 ALTER TABLE coach_messages
     ADD COLUMN IF NOT EXISTS proposed_global_rule_override JSONB;
 
