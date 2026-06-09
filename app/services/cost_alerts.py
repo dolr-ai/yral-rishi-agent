@@ -60,9 +60,7 @@ COST_ALERT_HOURLY_GEMINI_USD = float(
 # Non-success llm_costs.outcome rows in the last 5 min above this fires
 # the runaway-errors alert. 10 errors in 5 min = sustained 2/min — well
 # above normal flakiness.
-COST_ALERT_ASYNC_ERROR_COUNT = int(
-    os.environ.get("COST_ALERT_ASYNC_ERROR_COUNT", "10")
-)
+COST_ALERT_ASYNC_ERROR_COUNT = int(os.environ.get("COST_ALERT_ASYNC_ERROR_COUNT", "10"))
 
 # How often the loop wakes to evaluate both checks. 5 min matches the
 # async-error bucket; the hourly check naturally falls out of a once-
@@ -88,7 +86,9 @@ async def _try_set_nx(key: str, ttl_sec: int) -> bool:
         result = await redis.set(key, "1", nx=True, ex=ttl_sec)
         return bool(result)
     except Exception as e:
-        logger.warning("cost_alerts: NX dedupe failed (treating as not-acquired): %s", e)
+        logger.warning(
+            "cost_alerts: NX dedupe failed (treating as not-acquired): %s", e
+        )
         return False
 
 
