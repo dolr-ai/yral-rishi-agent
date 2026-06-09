@@ -1,0 +1,117 @@
+name: Migrations CI
+
+# Phase 21αβ.I-Mig3 — apply every migration in order against an ephemeral
+# Postgres on every PR + push to main. Catches the "migration has a
+# syntax error / depends on out-of-order column / references missing
+# extension" class of bug at PR time instead of at prod-apply time.
+#
+# Why pgvector/pgvector:pg15 not postgres:15: migration 008 does
+# `CREATE EXTENSION IF NOT EXISTS vector` and that extension isn't in
+# the stock Postgres image. The Spilo image V2 production runs has it,
+# so we match that here.
+#
+# Re-applies are NOT tested (every prod migration is one-shot). If a
+# migration is meant to be idempotent the migration itself uses IF NOT
+# EXISTS / IF EXISTS — that idempotency lives in the SQL, not in the
+# CI shape.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "migrations/**"
+      - ".github/workflows/migrations-ci.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "migrations/**"
+      - ".github/workflows/migrations-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  apply-all-migrations:
+    name: Apply all migrations in order
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        # pg15 matches V2 production (rishi-4/5/6 Patroni run pg15
+        # under the Spilo image). pgvector pins to a tagged release —
+        # `latest` would silently roll us forward.
+        image: pgvector/pgvector:pg15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: yral_rishi_agent_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: yral_rishi_agent_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install psql client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client
+
+      - name: Wait for Postgres to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" > /dev/null 2>&1; then
+              echo "Postgres ready after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Postgres not ready after 30s"
+          exit 1
+
+      - name: Apply all migrations in lexicographic order
+        # ON_ERROR_STOP makes psql exit non-zero on the first SQL
+        # error — so a single broken migration fails CI loudly.
+        # `! -name '*.down.sql'` mirrors the prod runner's filter.
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          FILES=$(find migrations -maxdepth 1 -name '*.sql' ! -name '*.down.sql' -type f | sort)
+          if [ -z "$FILES" ]; then
+            echo "no migrations to apply"
+            exit 0
+          fi
+          COUNT=0
+          while IFS= read -r FILE; do
+            [ -z "$FILE" ] && continue
+            echo "→ applying $(basename "$FILE")"
+            psql -v ON_ERROR_STOP=1 -f "$FILE"
+            COUNT=$((COUNT + 1))
+          done <<< "$FILES"
+          echo "✓ applied $COUNT migrations cleanly"
+
+      - name: Sanity-check post-apply schema
+        # Catches "migration applied but didn't create what it claimed".
+        # The three critical tables are the V2 mobile contract floor —
+        # if any of them is missing post-apply, the runtime can't boot.
+        run: |
+          set -euo pipefail
+          for tbl in ai_influencers conversations messages; do
+            count=$(psql -tAc "SELECT count(*) FROM information_schema.tables WHERE table_name = '$tbl';")
+            if [ "$count" != "1" ]; then
+              echo "FAIL: table '$tbl' missing after migrations applied"
+              exit 1
+            fi
+            echo "✓ table $tbl present"
+          done
