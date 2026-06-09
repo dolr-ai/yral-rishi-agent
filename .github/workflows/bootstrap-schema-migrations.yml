@@ -1,0 +1,155 @@
+name: Bootstrap schema_migrations (one-shot)
+
+# Manually triggered. Seeds `schema_migrations` on production with rows
+# for every .sql file currently in `migrations/` at HEAD. Use case: a
+# long-lived cluster that had migrations applied OUTSIDE the runner
+# (manually, before PR #309's automation existed) and now needs the
+# runner to know what's already applied.
+#
+# Idempotent: every INSERT uses ON CONFLICT DO NOTHING. Re-running with
+# the same migration set is a no-op.
+#
+# Why this workflow exists: scripts/ci/run-migrations.sh refuses (PR
+# #327) when schema_migrations is empty AND `ai_influencers` already
+# exists, because the runner cannot distinguish a fresh cluster from a
+# populated-but-untracked one. This workflow is the explicit, audited
+# way to unstick the latter.
+#
+# What this does NOT do:
+# - It does NOT apply any migration SQL — only inserts rows into the
+#   tracking table.
+# - It does NOT take a pg_dump first. The INSERTs are tiny tracking
+#   rows; rollback is `DELETE FROM schema_migrations WHERE filename = ...`.
+#   WAL-G PITR still covers worst-case recovery.
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Why are you bootstrapping? (Captured in run logs for the post-mortem.)'
+        required: true
+        default: 'Bootstrapping schema_migrations because: '
+      i_understand:
+        description: 'Type BOOTSTRAP to confirm you understand this inserts rows into the prod schema_migrations table.'
+        required: true
+        default: ''
+
+env:
+  SWARM_STACK: yral-v2-patroni
+  POSTGRES_DB: yral_agent_db
+  SWARM_MANAGER_1: 138.201.128.108
+  SWARM_MANAGER_2: 88.99.160.251
+  SWARM_MANAGER_3: 162.55.88.112
+  SWARM_USER: rishi-deploy
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+
+    steps:
+      - name: Confirm BOOTSTRAP typed
+        run: |
+          if [ "${{ inputs.i_understand }}" != "BOOTSTRAP" ]; then
+            echo "::error::Confirmation phrase mismatched (must be exactly 'BOOTSTRAP'); aborting."
+            exit 1
+          fi
+          echo "─── Bootstrap initiated ───"
+          echo "Triggered by:  ${{ github.actor }}"
+          echo "Reason:        ${{ inputs.reason }}"
+          echo "Timestamp:     $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+      - uses: actions/checkout@v4
+
+      - name: List migrations to seed + build SQL
+        id: build_sql
+        run: |
+          # Match the runner's discovery rule exactly so the seeded
+          # filenames match what the runner will later check against.
+          MIGS=$(find migrations -maxdepth 1 -name '*.sql' ! -name '*.down.sql' -type f -printf '%f\n' | sort)
+          if [ -z "$MIGS" ]; then
+            echo "::error::No .sql files found in migrations/; aborting."
+            exit 1
+          fi
+          COUNT=$(echo "$MIGS" | wc -l | tr -d '[:space:]')
+          echo "Will seed schema_migrations with $COUNT filename(s):"
+          echo "$MIGS" | sed 's/^/  /'
+
+          # Build the VALUES list. One row per file. ON CONFLICT keeps
+          # this idempotent — re-runs do nothing.
+          VALUES=$(echo "$MIGS" | awk '{printf "(\047%s\047),\n", $0}' | sed '$ s/,$//')
+          SQL="CREATE TABLE IF NOT EXISTS schema_migrations (
+              filename VARCHAR(255) PRIMARY KEY,
+              applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          );
+          INSERT INTO schema_migrations (filename) VALUES
+          ${VALUES}
+          ON CONFLICT (filename) DO NOTHING;
+          SELECT filename, applied_at FROM schema_migrations ORDER BY filename;"
+
+          # Persist for the apply step.
+          echo "$SQL" > /tmp/bootstrap.sql
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+
+      - name: Set up SSH key + known_hosts
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          echo "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Apply bootstrap on first responding leader
+        run: |
+          SSH_OPTS="-i ~/.ssh/deploy_key -o ConnectTimeout=15 -o BatchMode=yes -o StrictHostKeyChecking=yes"
+          APPLIED_VIA=""
+
+          for host in ${{ env.SWARM_MANAGER_1 }} ${{ env.SWARM_MANAGER_2 }} ${{ env.SWARM_MANAGER_3 }}; do
+            echo "── Trying bootstrap via $host ──"
+
+            # Stage the SQL file
+            if ! scp $SSH_OPTS -q /tmp/bootstrap.sql "${{ env.SWARM_USER }}@$host:/tmp/bootstrap.sql"; then
+              echo "✗ scp failed to $host; trying next manager..."
+              continue
+            fi
+
+            # Find the local patroni container + apply via UNIX socket
+            # trust auth (matches the runner — see scripts/ci/run-migrations.sh).
+            # On a replica, the CREATE TABLE/INSERT will fail with "read-only
+            # transaction" and we move to the next manager.
+            if ssh $SSH_OPTS "${{ env.SWARM_USER }}@$host" \
+                  "set -e
+                   CID=\$(docker ps -qf name=${{ env.SWARM_STACK }}_patroni | head -1)
+                   if [ -z \"\$CID\" ]; then
+                     echo 'No local patroni container on this host'
+                     exit 2
+                   fi
+                   docker cp /tmp/bootstrap.sql \$CID:/tmp/bootstrap.sql
+                   docker exec -i \$CID psql -U postgres -d ${{ env.POSTGRES_DB }} -v ON_ERROR_STOP=1 -f /tmp/bootstrap.sql
+                   docker exec \$CID rm -f /tmp/bootstrap.sql"; then
+              echo "✓ Bootstrap applied via $host"
+              APPLIED_VIA="$host"
+              ssh $SSH_OPTS "${{ env.SWARM_USER }}@$host" "rm -f /tmp/bootstrap.sql" 2>/dev/null || true
+              break
+            else
+              echo "✗ Bootstrap failed on $host — likely a replica or container missing. Trying next manager..."
+              ssh $SSH_OPTS "${{ env.SWARM_USER }}@$host" "rm -f /tmp/bootstrap.sql" 2>/dev/null || true
+            fi
+          done
+
+          if [ -z "$APPLIED_VIA" ]; then
+            echo "::error::Bootstrap failed on all 3 swarm managers. Investigate Patroni leader state."
+            exit 1
+          fi
+
+      - name: Bootstrap summary
+        run: |
+          echo "─── Bootstrap complete ───"
+          echo "Seeded ${{ steps.build_sql.outputs.count }} filename(s) into schema_migrations."
+          echo "Re-runs are no-ops (ON CONFLICT DO NOTHING)."
+          echo "Next deploy can now apply genuinely-pending migrations via the runner."
