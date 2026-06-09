@@ -14,6 +14,7 @@ from auth import get_current_user
 from database import get_pool
 from repositories import coach_repo, influencer_repo, quality_score_repo
 from services import coach as coach_service
+from services import coach_intent
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +182,36 @@ async def send_coach_message(coach_conversation_id: str, body: dict, request: Re
     creator_msg = await coach_repo.add_message(
         pool, coach_conversation_id, "creator", content.strip()
     )
+
+    # Coach Fix 4 (2026-06-09) — action-verb fast path. If the creator
+    # typed a short action verb like "save it" or "discard" AND there's
+    # a pending unapplied proposal in this session, skip the Coach LLM
+    # cycle entirely and return {type: action, ...}. Mobile reads this
+    # and triggers the existing /apply or /discard flow without
+    # rendering another Coach reply.
+    #
+    # Saikat 2026-06-09: after Coach showed ✅ Saved he typed "Save
+    # these changes." and Coach treated it as a NEW edit request,
+    # producing more proposed_changes — the "infinite loop" feel.
+    # The pending-proposal guard means we only short-circuit when
+    # there's actually something to act on. If matched but no pending
+    # (Saikat's exact case), we fall through to Coach LLM which has
+    # the receipt in history and can answer sensibly.
+    intent = coach_intent.classify_intent(content.strip())
+    if intent is not None:
+        pending = await coach_repo.pending_proposal(pool, coach_conversation_id)
+        if pending is not None:
+            return {
+                "type": "action",
+                "action": intent,
+                "pending_proposal_id": str(pending["id"]),
+                "creator_message": _format_message(creator_msg),
+                "coach_message": None,
+            }
+        # No pending proposal — fall through to Coach LLM. It has the
+        # session history (including any prior receipt) and can ask
+        # the right clarifying question ("there's nothing pending to
+        # save — what would you like to change?").
 
     # Build context for the coach: prior session turns + last ~60 user-bot
     # messages across this bot's conversations (anonymized — no user_id in
