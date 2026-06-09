@@ -31,8 +31,17 @@ USER root
 # present in patroni container" because this Dockerfile didn't ship it.
 # WAL-G has its own AWS SDK so daily backups never needed apt-installed
 # awscli — only the migration runner does.
+#
+# python3-docutils is a runtime dep of Debian's awscli — it's pulled in
+# as a Recommends, so the global --no-install-recommends strips it.
+# Without docutils, `aws` throws ModuleNotFoundError on first invocation
+# (PR #326 build hit this on 2026-06-09). Listing it explicitly keeps
+# the --no-install-recommends discipline for everything else.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends postgresql-15-pgvector awscli \
+ && apt-get install -y --no-install-recommends \
+        postgresql-15-pgvector \
+        awscli \
+        python3-docutils \
  && rm -rf /var/lib/apt/lists/* \
  && ls -la /usr/share/postgresql/15/extension/vector.control \
  && echo "pgvector installed:" \
