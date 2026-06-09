@@ -44,31 +44,30 @@ find_local_patroni() {
     docker ps -qf "name=${SWARM_STACK}_patroni" 2>/dev/null | head -1
 }
 
-# Read the Postgres superuser password from the Patroni container's
-# /run/secrets. Production uses the file name `postgres-superuser-password`
-# (per the patroni-stack.yml secret-mount convention from the bootstrap
-# scripts). Older docs / dev environments sometimes used `postgres_password`
-# — fall back to that to stay compatible. Echoes the password to stdout;
-# empty string if neither file exists.
-read_pg_password() {
-    local container="$1"
-    [ -z "$container" ] && { echo ""; return; }
-    local pw
-    pw=$(docker exec "$container" cat /run/secrets/postgres-superuser-password 2>/dev/null || true)
-    if [ -z "$pw" ]; then
-        pw=$(docker exec "$container" cat /run/secrets/postgres_password 2>/dev/null || true)
-    fi
-    echo "$pw"
-}
+# Connect via the local UNIX socket inside the Patroni container — NOT
+# TCP. Patroni's pg_hba.conf is:
+#     local   all   all                   trust         ← UNIX socket: no password
+#     host    all   all   127.0.0.1/32    md5           ← TCP: password required
+# Passing `-h localhost` forces TCP → md5 path; the runner used to do
+# that, then tried to read /run/secrets/postgres-superuser-password to
+# satisfy the password prompt. The file is mounted but its value
+# (rendered at stack-up time) doesn't match what Patroni currently
+# accepts for the postgres role over TCP. Rather than chase the
+# password drift, we use the trust path the platform already provides:
+# default `-h` (the socket at /var/run/postgresql/.s.PGSQL.5432) +
+# `-U postgres`. No PGPASSWORD env needed; no /run/secrets read needed.
+#
+# This is the same path you get with `docker exec $CID psql -U postgres
+# -d yral_agent_db` — already known to work (verified against rishi-4
+# 2026-06-09 during the migration-runner auth audit).
 
 wait_for_db() {
     echo "[migrations] waiting for database (up to 120s)..."
     for i in $(seq 1 40); do
         LOCAL_C=$(find_local_patroni)
         if [ -n "$LOCAL_C" ]; then
-            PG_PASS=$(read_pg_password "$LOCAL_C")
-            if docker exec -e PGPASSWORD="$PG_PASS" "$LOCAL_C" psql -h localhost -U postgres -d "${POSTGRES_DB}" -tAc "SELECT 1;" >/dev/null 2>&1; then
-                echo "[migrations] database reachable after $((i*3))s"
+            if docker exec "$LOCAL_C" psql -U postgres -d "${POSTGRES_DB}" -tAc "SELECT 1;" >/dev/null 2>&1; then
+                echo "[migrations] database reachable after $((i*3))s (via UNIX socket trust auth)"
                 return 0
             fi
         fi
@@ -82,8 +81,8 @@ run_sql() {
     local sql="$1"
     LOCAL_C=$(find_local_patroni)
     [ -z "$LOCAL_C" ] && { echo "[migrations] FATAL: no local Patroni container"; exit 1; }
-    docker exec -i -e PGPASSWORD="$(read_pg_password "$LOCAL_C")" \
-        "$LOCAL_C" psql -h localhost -U postgres -d "${POSTGRES_DB}" -v ON_ERROR_STOP=1 <<< "$sql"
+    docker exec -i "$LOCAL_C" \
+        psql -U postgres -d "${POSTGRES_DB}" -v ON_ERROR_STOP=1 <<< "$sql"
 }
 
 wait_for_db || exit 1
@@ -94,8 +93,7 @@ run_sql "CREATE TABLE IF NOT EXISTS schema_migrations (
 );"
 
 LOCAL_C=$(find_local_patroni)
-PG_PASS=$(read_pg_password "$LOCAL_C")
-APPLIED=$(docker exec -i -e PGPASSWORD="$PG_PASS" "$LOCAL_C" psql -h localhost -U postgres -d "${POSTGRES_DB}" -tA \
+APPLIED=$(docker exec -i "$LOCAL_C" psql -U postgres -d "${POSTGRES_DB}" -tA \
     -c "SELECT filename FROM schema_migrations ORDER BY filename;" 2>/dev/null || true)
 
 PENDING=0
@@ -117,10 +115,9 @@ while IFS= read -r FILE; do
     echo "[migrations] applying: ${BASENAME}"
 
     LOCAL_C=$(find_local_patroni)
-    PG_PASS=$(read_pg_password "$LOCAL_C")
 
-    docker exec -i -e PGPASSWORD="$PG_PASS" "$LOCAL_C" \
-        psql -h localhost -U postgres -d "${POSTGRES_DB}" -tAc \
+    docker exec -i "$LOCAL_C" \
+        psql -U postgres -d "${POSTGRES_DB}" -tAc \
         "SELECT pg_create_restore_point('pre-migration-${BASENAME}');" 2>/dev/null \
         && echo "[migrations]   restore point: pre-migration-${BASENAME}" \
         || echo "[migrations]   restore point failed (non-fatal)"
@@ -152,9 +149,11 @@ while IFS= read -r FILE; do
         # backup convention from docs/BACKUP-RESTORE-DRILL-2026-06-04.md).
         # `--no-owner --no-acl` so the dump restores cleanly into a
         # fresh cluster with potentially different roles.
-        if ! docker exec -e PGPASSWORD="$PG_PASS" "$LOCAL_C" \
+        # No `-h` / no PGPASSWORD — UNIX socket trust path, same as
+        # everywhere else in this script (see wait_for_db comment).
+        if ! docker exec "$LOCAL_C" \
             pg_dump -Fc -Z 6 --no-owner --no-acl \
-            -h localhost -U postgres -d "${POSTGRES_DB}" \
+            -U postgres -d "${POSTGRES_DB}" \
             -f "${DUMP_LOCAL}" 2>&1; then
             echo "[migrations] FATAL: pre-migration pg_dump failed for ${BASENAME} — refusing to apply migration without a safety snapshot"
             exit 1
@@ -190,7 +189,7 @@ while IFS= read -r FILE; do
         cat "$FILE"
         echo "INSERT INTO schema_migrations (filename) VALUES ('${BASENAME}');"
         echo "COMMIT;"
-    } | docker exec -i -e PGPASSWORD="$PG_PASS" "$LOCAL_C" psql -h localhost -U postgres -d "${POSTGRES_DB}" -v ON_ERROR_STOP=1 2>&1
+    } | docker exec -i "$LOCAL_C" psql -U postgres -d "${POSTGRES_DB}" -v ON_ERROR_STOP=1 2>&1
 
     if [ $? -ne 0 ]; then
         echo "[migrations] FATAL: ${BASENAME} failed — transaction rolled back, deploy halted"
