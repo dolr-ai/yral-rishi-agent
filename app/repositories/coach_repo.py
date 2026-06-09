@@ -143,6 +143,30 @@ async def latest_proposal(pool, coach_conversation_id: str) -> dict | None:
     return _row(row)
 
 
+async def pending_proposal(pool, coach_conversation_id: str) -> dict | None:
+    """Coach Fix 4 — return the latest UNAPPLIED proposal in this session
+    or None. A proposal is "pending" if it exists in coach_messages with
+    proposed_changes IS NOT NULL AND no system_instructions_history row
+    references it yet.
+
+    Used by the action-verb classifier path in send_coach_message: if
+    the creator types "save it" and a pending proposal exists, the
+    route returns {type: action, action: save} and skips the Coach LLM.
+    """
+    proposal = await latest_proposal(pool, coach_conversation_id)
+    if not proposal:
+        return None
+    applied = await pool.fetchval(
+        """
+        SELECT 1 FROM system_instructions_history
+        WHERE coach_message_id = $1::uuid
+        LIMIT 1
+        """,
+        str(proposal["id"]),
+    )
+    return None if applied else proposal
+
+
 # ─── system_instructions_history ──────────────────────────────────────────
 
 
