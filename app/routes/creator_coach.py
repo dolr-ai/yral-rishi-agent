@@ -34,12 +34,24 @@ def _format_message(m: dict) -> dict:
             suggestions = _json.loads(suggestions)
         except (_json.JSONDecodeError, TypeError):
             suggestions = None
+    # Coach Fix 1 PR-B — surface the override blob on proposal turns
+    # so mobile knows whether ✅ Save will edit system_instructions
+    # (proposed_changes set) or flip an override (proposed_global_rule_override set).
+    override = m.get("proposed_global_rule_override")
+    if isinstance(override, str):
+        import json as _json
+
+        try:
+            override = _json.loads(override)
+        except (_json.JSONDecodeError, TypeError):
+            override = None
     return {
         "id": str(m["id"]),
         "coach_conversation_id": str(m["coach_conversation_id"]),
         "role": m["role"],
         "content": m["content"],
         "proposed_changes": m.get("proposed_changes"),
+        "proposed_global_rule_override": override,
         "reasoning": m.get("reasoning"),
         "suggestions": suggestions,
         "created_at": m["created_at"].isoformat()
@@ -241,7 +253,7 @@ async def send_coach_message(coach_conversation_id: str, body: dict, request: Re
     # coach to commit to a JSON proposal block this turn.
     force_proposal = bool((body or {}).get("request_proposal"))
 
-    display, proposed, reasoning = await coach_service.coach_reply(
+    display, proposed, reasoning, proposed_override = await coach_service.coach_reply(
         bot_name=inf.get("display_name") or inf.get("name") or "this bot",
         bot_archetype=inf.get("category") or "general",
         current_instructions=inf.get("system_instructions") or "",
@@ -254,6 +266,10 @@ async def send_coach_message(coach_conversation_id: str, body: dict, request: Re
         force_proposal=force_proposal,
     )
 
+    # Coach Fix 1 PR-B — coach_reply returns EITHER proposed_changes
+    # (system_instructions edit) OR proposed_override (global_rule_overrides
+    # flip), never both. Persist whichever is present; both NULL for
+    # plain-text turns (clarifying question, the override-confirmation ask).
     coach_msg = await coach_repo.add_message(
         pool,
         coach_conversation_id,
@@ -261,6 +277,7 @@ async def send_coach_message(coach_conversation_id: str, body: dict, request: Re
         display,
         proposed_changes=proposed,
         reasoning=reasoning,
+        proposed_global_rule_override=proposed_override,
     )
     await coach_repo.touch_session(pool, coach_conversation_id)
 
@@ -288,6 +305,87 @@ async def apply_coach_proposal(coach_conversation_id: str, request: Request):
     if not inf:
         raise HTTPException(status_code=410, detail="Underlying bot was deleted")
 
+    # Coach Fix 1 PR-B — dispatch on proposal type. The override path
+    # writes to ai_influencers.global_rule_overrides (JSONB merge); the
+    # legacy path writes proposed_changes to system_instructions. EXACTLY
+    # ONE column is populated per proposal turn (enforced by coach_reply
+    # + repo.add_message contracts).
+    override_raw = proposal.get("proposed_global_rule_override")
+    if override_raw:
+        import json as _json
+
+        if isinstance(override_raw, str):
+            try:
+                override_blob = _json.loads(override_raw)
+            except (_json.JSONDecodeError, TypeError):
+                raise HTTPException(
+                    status_code=500,
+                    detail="Stored override blob is malformed; cannot apply",
+                ) from None
+        else:
+            override_blob = override_raw
+        if not isinstance(override_blob, dict) or not override_blob.get("key"):
+            raise HTTPException(
+                status_code=500,
+                detail="Stored override blob missing 'key'; cannot apply",
+            )
+        key = override_blob["key"]
+        value = override_blob.get("value", "set")
+        # Merge into existing overrides (preserve other per-bot opts).
+        # `||` JSONB-merge: right-hand-side wins on conflict.
+        await pool.execute(
+            """
+            UPDATE ai_influencers
+            SET global_rule_overrides = COALESCE(global_rule_overrides, '{}'::jsonb)
+                                       || jsonb_build_object($1::text, $2::text),
+                updated_at = NOW()
+            WHERE id = $3
+            """,
+            key,
+            value,
+            session["bot_id"],
+        )
+        # History row is per-system_instructions today; we still record
+        # the event for the audit trail using a sentinel "PRE→POST" pair
+        # so a future migration to a typed override-history table can
+        # backfill from system_instructions_history if needed.
+        prev_overrides_json = _json.dumps(inf.get("global_rule_overrides") or {})
+        new_overrides_json = _json.dumps(
+            {**(inf.get("global_rule_overrides") or {}), key: value}
+        )
+        history_row = await coach_repo.record_application(
+            pool,
+            bot_id=session["bot_id"],
+            coach_conversation_id=coach_conversation_id,
+            coach_message_id=str(proposal["id"]),
+            previous_instructions=f"global_rule_overrides={prev_overrides_json}",
+            new_instructions=f"global_rule_overrides={new_overrides_json}",
+            applied_by=user_id,
+        )
+        receipt_content = (
+            f"✅ Saved — platform-rule override applied for "
+            f"{inf.get('display_name') or 'your bot'}: "
+            f"{key} = {value}. {proposal['content']}"
+        )
+        receipt_msg = await coach_repo.add_message(
+            pool,
+            coach_conversation_id,
+            "coach",
+            receipt_content,
+        )
+        return {
+            "applied": True,
+            "applied_type": "global_rule_override",
+            "history_id": str(history_row["id"]),
+            "override_key": key,
+            "override_value": value,
+            "applied_at": history_row["applied_at"].isoformat()
+            if isinstance(history_row["applied_at"], datetime)
+            else history_row["applied_at"],
+            "receipt_message": _format_message(receipt_msg),
+        }
+
+    # ─── Legacy path: system_instructions edit ─────────────────────────
     previous = inf.get("system_instructions") or ""
     new_text = proposal["proposed_changes"] or ""
     if previous == new_text:
@@ -332,6 +430,7 @@ async def apply_coach_proposal(coach_conversation_id: str, request: Request):
 
     return {
         "applied": True,
+        "applied_type": "system_instructions",
         "history_id": str(history_row["id"]),
         "previous_instructions": previous,
         "new_instructions": new_text,
