@@ -41,6 +41,14 @@ PROCESS_NAMES: tuple[str, ...] = (
     # safety policy than Gemini). Separate process so the admin
     # dashboard can route NSFW independently of mainline chat.
     "user_chat_main_nsfw",
+    # Phase 21αβ.H12 (2026-06-08) — image/multimodal chat is its own
+    # routable process. The 2026-06-08 bug: Rishi flipped user_chat_main
+    # to runpod_vllm (text-only Qwen pod), chat messages with images
+    # silently failed. Vision-bearing requests now route here; text-only
+    # stays on user_chat_main. Routing decision is made at the chat-send
+    # boundary, based on whether the built message payload contains
+    # image_url / input_image parts. Same pattern as audio_transcription.
+    "user_chat_main_multimodal",
     "audio_transcription",
     "proactive_generation",
     "quality_scorer",
@@ -91,6 +99,11 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "supports_chat": True,
         "supports_stream": True,
         "supports_transcribe": True,
+        # Phase 21αβ.H12 — vision capability flag. Gemini Flash is
+        # natively multimodal (image_url parts in messages). Used by
+        # both the routing detector in chat-send and the
+        # llm_routing_admin capability guard.
+        "supports_vision": True,
     },
     "openai": {
         "concurrency_cap": 10,
@@ -103,6 +116,11 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "supports_chat": True,
         "supports_stream": True,
         "supports_transcribe": False,
+        # OpenAI GPT-4 family supports vision; the SDK's image_url shape
+        # matches what we emit from _build_user_content. (We don't
+        # currently route any process here, but the flag stays accurate
+        # so a future admin flip won't break the multimodal guard.)
+        "supports_vision": True,
     },
     "openrouter": {
         "concurrency_cap": 10,
@@ -115,6 +133,10 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "supports_chat": True,
         "supports_stream": True,
         "supports_transcribe": False,
+        # OpenRouter's Gemini-2.5-flash route is multimodal (same
+        # underlying model). True even though we don't currently use it
+        # for vision-bearing chat (NSFW path is text-only today).
+        "supports_vision": True,
     },
     "internal_vllm": {
         "concurrency_cap": 5,
@@ -130,6 +152,10 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "supports_chat": True,
         "supports_stream": True,
         "supports_transcribe": False,
+        # Anshuman's Qwen pod is text-only. Routing user_chat_main_multimodal
+        # here would silently drop images — the H12 capability guard
+        # in llm_routing_admin will refuse such a flip.
+        "supports_vision": False,
     },
     "runpod_vllm": {
         # Saikat's runpod-hosted vLLM, in addition to internal_vllm (Anshuman's
@@ -153,6 +179,10 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "supports_chat": True,
         "supports_stream": True,
         "supports_transcribe": False,
+        # Saikat's pod is the same Qwen family — text-only. This is the
+        # provider the H12 bug surfaced on (Rishi's 2026-06-08 flip
+        # silently broke image chats).
+        "supports_vision": False,
     },
     "ollama": {
         "concurrency_cap": 2,
@@ -165,6 +195,10 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "supports_chat": True,
         "supports_stream": True,
         "supports_transcribe": False,
+        # Local Ollama models we host are text-only (Qwen / Llama base).
+        # Vision-capable local models would need a different image-encoding
+        # path; we flip this when/if that's wired up.
+        "supports_vision": False,
     },
 }
 
@@ -200,6 +234,16 @@ LLM_DEFAULTS: dict[str, dict[str, Any]] = {
         # policy is stricter than what we want for NSFW companions).
         "provider": "openrouter",
         "model": "google/gemini-2.5-flash",
+        "timeout_sec": 60.0,
+    },
+    # Phase 21αβ.H12 — vision-bearing chat. Gemini default; NO fallback.
+    # Reason: a text-only fallback would silently drop images at the
+    # exact moment vision matters. Failing loud (NO_PROVIDER surfaced to
+    # mobile) is the right behavior; the operator can flip user_chat_main
+    # to a cost-saving text-only provider WITHOUT this process moving.
+    "user_chat_main_multimodal": {
+        "provider": "gemini",
+        "model": "gemini-2.5-flash",
         "timeout_sec": 60.0,
     },
     "audio_transcription": {
@@ -488,6 +532,39 @@ def current_config(process: str) -> dict[str, Any]:
         "cost_basis": provider_meta.get("cost_basis"),
         "concurrency_cap": provider_meta.get("concurrency_cap"),
     }
+
+
+def has_image_content(messages: list[dict]) -> bool:
+    """Phase 21αβ.H12 — detect whether a chat-send payload carries image
+    content. Used at the routing boundary to decide between user_chat_main
+    (text-only) and user_chat_main_multimodal (vision).
+
+    Canonical image shapes we recognize (mirrors _build_user_content in
+    services/ai_client.py):
+      - {"type": "image_url", "image_url": {"url": "..."}}  ← OpenAI-style
+      - {"type": "input_image", ...}                         ← Responses API
+      - {"inlineData": {"mimeType": "...", "data": "..."}}   ← Gemini-native
+
+    All three appear in some path of the message-building code or in
+    historical chat-ai DTOs; recognizing all three keeps the detector
+    robust as the builders evolve."""
+    if not messages:
+        return False
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            ptype = part.get("type")
+            if ptype in ("image_url", "input_image"):
+                return True
+            # Gemini-native shape doesn't use a `type` key; it nests
+            # `inlineData` directly. Match either nested form.
+            if "inlineData" in part or "inline_data" in part:
+                return True
+    return False
 
 
 def _classify_outcome(exception: BaseException) -> str:
