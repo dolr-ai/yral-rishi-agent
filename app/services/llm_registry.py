@@ -158,13 +158,16 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "supports_vision": False,
     },
     "runpod_vllm": {
-        # Saikat's runpod-hosted vLLM, in addition to internal_vllm (Anshuman's
-        # endpoint). Serves Qwen3.6-35B-A3B-FP8 — larger active-parameter model
-        # than internal_vllm's 27B. Added 2026-06-08 to let video_idea_generation
-        # route here while internal_vllm stays load-bearing for the rest of the
-        # background-loop tier.
+        # Saikat's vLLM serving. Originally a runpod proxy URL (hence the
+        # `runpod_vllm` provider key — kept stable so LLM_DEFAULTS,
+        # dashboards, and the leak-guard allow-list don't churn). On
+        # 2026-06-10 Saikat moved the serving behind
+        # saikat-llm-medium-fast.yral.com with dynamic scaling + load
+        # balancing. The bearer token rotation flow is now:
+        # GitHub Secret RUNPOD_VLLM_API_KEY → rotate-runpod-vllm-key
+        # workflow → swarm secret → /run/secrets/RUNPOD_VLLM_API_KEY.
         "concurrency_cap": 5,
-        "base_url": "https://tthcp4vkghjzgl-8000.proxy.runpod.net/v1",
+        "base_url": "https://saikat-llm-medium-fast.yral.com/v1",
         "secret_path": "/run/secrets/RUNPOD_VLLM_API_KEY",
         "env_fallback": "RUNPOD_VLLM_API_KEY",
         "cost_basis": "synthetic",
