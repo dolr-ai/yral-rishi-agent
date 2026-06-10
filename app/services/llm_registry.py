@@ -385,6 +385,7 @@ def _resolve_api_key(provider: str) -> str:
     if vault_meta:
         try:
             from services.vault import get_secret as _vault_get_secret
+
             val = _vault_get_secret(vault_meta["path"], vault_meta["key"])
             if val:
                 return val
