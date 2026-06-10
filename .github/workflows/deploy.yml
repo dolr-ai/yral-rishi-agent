@@ -215,15 +215,30 @@ jobs:
             # - pg_dumps the live DB to S3 (PR #309 — Rule 9)
             # - Creates restore point + applies pending migrations
             # - Records each applied file in schema_migrations
-            if ssh $SSH_OPTS "${{ env.SWARM_USER }}@$host" \
-                  "set -e; APP_DIR=$STAGING_DIR bash $STAGING_DIR/scripts/ci/run-migrations.sh"; then
+            #
+            # Capture the exit code so we can DISTINGUISH:
+            #   0  → applied OR no-op; we're done.
+            #   78 → runner refused (e.g. empty schema_migrations on a
+            #        populated DB). The same refusal would fire on every
+            #        manager; no point retrying. Halt the loop.
+            #   *  → any other non-zero. Most likely the manager wasn't
+            #        the Patroni leader and writes got rejected. Retry on
+            #        the next manager.
+            ssh $SSH_OPTS "${{ env.SWARM_USER }}@$host" \
+                  "set -e; APP_DIR=$STAGING_DIR bash $STAGING_DIR/scripts/ci/run-migrations.sh"
+            RUNNER_RC=$?
+            ssh $SSH_OPTS "${{ env.SWARM_USER }}@$host" "rm -rf $STAGING_DIR" 2>/dev/null || true
+            if [ $RUNNER_RC -eq 0 ]; then
               echo "✓ Migrations applied (or already up to date) via $host"
-              ssh $SSH_OPTS "${{ env.SWARM_USER }}@$host" "rm -rf $STAGING_DIR" 2>/dev/null || true
               APPLIED_VIA="$host"
               break
+            elif [ $RUNNER_RC -eq 78 ]; then
+              echo "✗ Migration runner REFUSED on $host (config error — see runner output above)."
+              echo "  Retrying on another manager would surface the same refusal — halting loop."
+              echo "  Fix the config issue (likely: seed schema_migrations via the one-shot bootstrap workflow), then re-run this deploy."
+              break
             else
-              echo "✗ Migration script failed on $host — likely a replica (writes rejected). Trying next manager..."
-              ssh $SSH_OPTS "${{ env.SWARM_USER }}@$host" "rm -rf $STAGING_DIR" 2>/dev/null || true
+              echo "✗ Migration script failed on $host (exit=$RUNNER_RC) — likely a replica (writes rejected). Trying next manager..."
             fi
           done
 

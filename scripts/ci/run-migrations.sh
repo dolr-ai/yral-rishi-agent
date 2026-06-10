@@ -126,7 +126,14 @@ if [ -z "$APPLIED" ]; then
         echo "[migrations]"
         echo "[migrations] If you are SURE this is a fresh cluster and you want to actually apply"
         echo "[migrations] 001_initial.sql onward, set FORCE_RUN_ON_EMPTY_SCHEMA_MIGRATIONS=true."
-        exit 1
+        # Exit code 78 (sysexits.h EX_CONFIG) signals "configuration refusal,
+        # not a transient error" — the deploy.yml manager-retry loop treats
+        # this differently from the generic exit-1 path (which means writes
+        # rejected → probably a replica → try the next manager). Trying
+        # another manager on a config refusal would surface the same FATAL
+        # there too, so we want to halt the loop immediately with a clearer
+        # log message instead of misleading "likely a replica" prompts.
+        exit 78
     fi
 fi
 
