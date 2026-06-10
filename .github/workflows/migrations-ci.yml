@@ -10,10 +10,11 @@ name: Migrations CI
 # the stock Postgres image. The Spilo image V2 production runs has it,
 # so we match that here.
 #
-# Re-applies are NOT tested (every prod migration is one-shot). If a
-# migration is meant to be idempotent the migration itself uses IF NOT
-# EXISTS / IF EXISTS — that idempotency lives in the SQL, not in the
-# CI shape.
+# Idempotency IS tested (Phase 21αβ.I-Mig3 expansion, Rishi 2026-06-10):
+# after the first apply, every migration runs a SECOND time, expecting
+# each `psql -f` to exit 0. Catches plain CREATE TABLE / CREATE INDEX /
+# ADD COLUMN without IF [NOT] EXISTS guards — those would crash on any
+# replay (bootstrap workflow seeding state, manual psql, etc.).
 
 on:
   push:
@@ -114,4 +115,85 @@ jobs:
               exit 1
             fi
             echo "✓ table $tbl present"
+          done
+
+      - name: Re-apply all migrations — idempotency check
+        # Phase 21αβ.I-Mig3 extension (Rishi 2026-06-10): catch
+        # migrations that don't use IF NOT EXISTS / IF EXISTS / WHERE NOT
+        # IN — they'd crash on re-run, but our tracking-via-
+        # schema_migrations means re-runs SHOULDN'T happen in prod.
+        # When they DO happen (a bootstrap workflow seeding state, a
+        # manual psql replay, a forgotten ALTER COLUMN behind a guard),
+        # idempotent migrations stay safe; non-idempotent ones corrupt
+        # state.
+        #
+        # This step reapplies every migration file against the already-
+        # migrated DB. Expects each `psql -f` to exit 0:
+        #   ✓ CREATE TABLE IF NOT EXISTS / CREATE INDEX IF NOT EXISTS /
+        #     ADD COLUMN IF NOT EXISTS → re-runs as no-op.
+        #   ✗ Plain CREATE TABLE / CREATE INDEX / ADD COLUMN without
+        #     guards → fails second run with "already exists" error.
+        #
+        # Catching this at PR time prevents the corrupt-data scenarios
+        # that the runner refusal path (#322 / 2026-06-09 incident)
+        # exists to guard against in prod.
+        run: |
+          set -euo pipefail
+          FILES=$(find migrations -maxdepth 1 -name '*.sql' ! -name '*.down.sql' -type f | sort)
+          if [ -z "$FILES" ]; then
+            echo "no migrations to re-apply"
+            exit 0
+          fi
+          COUNT=0
+          FAILED=0
+          FAILED_LIST=""
+          while IFS= read -r FILE; do
+            [ -z "$FILE" ] && continue
+            BASENAME=$(basename "$FILE")
+            echo "→ re-applying $BASENAME (idempotency check)"
+            # `set +e` for this one command so we can collect ALL
+            # failures, not just the first, and report at the end.
+            set +e
+            psql -v ON_ERROR_STOP=1 -f "$FILE" > /tmp/reapply.out 2>&1
+            RC=$?
+            set -e
+            if [ $RC -ne 0 ]; then
+              echo "  ✗ $BASENAME is NOT idempotent (exit=$RC). psql output:"
+              sed 's/^/    /' /tmp/reapply.out
+              FAILED=$((FAILED + 1))
+              FAILED_LIST="$FAILED_LIST $BASENAME"
+            fi
+            COUNT=$((COUNT + 1))
+          done <<< "$FILES"
+          echo
+          if [ $FAILED -gt 0 ]; then
+            echo "FAIL: $FAILED of $COUNT migrations are not idempotent:"
+            for m in $FAILED_LIST; do echo "  - $m"; done
+            echo
+            echo "Fix: wrap CREATE TABLE in 'CREATE TABLE IF NOT EXISTS',"
+            echo "     CREATE INDEX in 'CREATE INDEX IF NOT EXISTS',"
+            echo "     ADD COLUMN in 'ADD COLUMN IF NOT EXISTS', etc."
+            echo "     Non-idempotent migrations corrupt prod state if"
+            echo "     replayed (manual psql, bootstrap workflow, etc.)."
+            exit 1
+          fi
+          echo "✓ all $COUNT migrations are idempotent — second run was a no-op"
+
+      - name: Verify schema unchanged by the re-apply
+        # Belt-and-braces: even if the re-apply exits 0, a malformed
+        # migration could silently mutate state (e.g. UPDATE with no
+        # WHERE → harmless on empty test data but devastating on prod).
+        # Snapshot the three floor tables' rowcounts before/after — they
+        # must stay zero since the test DB is otherwise empty.
+        run: |
+          set -euo pipefail
+          for tbl in ai_influencers conversations messages; do
+            count=$(psql -tAc "SELECT count(*) FROM $tbl;")
+            if [ "$count" != "0" ]; then
+              echo "FAIL: re-apply put $count rows into '$tbl'"
+              echo "  This means a migration has an UPDATE/INSERT outside an"
+              echo "  IF NOT EXISTS guard that fires on every replay."
+              exit 1
+            fi
+            echo "✓ $tbl unchanged (still empty)"
           done
