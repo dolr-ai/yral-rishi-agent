@@ -158,13 +158,22 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "supports_vision": False,
     },
     "runpod_vllm": {
-        # Saikat's runpod-hosted vLLM, in addition to internal_vllm (Anshuman's
-        # endpoint). Serves Qwen3.6-35B-A3B-FP8 — larger active-parameter model
-        # than internal_vllm's 27B. Added 2026-06-08 to let video_idea_generation
-        # route here while internal_vllm stays load-bearing for the rest of the
-        # background-loop tier.
+        # Saikat's vLLM serving. Originally a runpod proxy URL (hence the
+        # `runpod_vllm` key — kept stable so dashboards + LLM_DEFAULTS
+        # don't churn). On 2026-06-10 Saikat moved the serving behind
+        # saikat-llm-medium-fast.yral.com with dynamic scaling + load
+        # balancing. Bearer token rotation now flows through Vault per
+        # `app/services/vault.py` so we don't need swarm-secret swaps
+        # every time Saikat rotates.
         "concurrency_cap": 5,
-        "base_url": "https://tthcp4vkghjzgl-8000.proxy.runpod.net/v1",
+        "base_url": "https://saikat-llm-medium-fast.yral.com/v1",
+        "vault": {
+            "path": "saikat-llm-medium-fast-bearer-token",
+            "key": "token",  # confirm with Saikat — key name inside the Vault secret
+        },
+        # File + env paths kept as fallbacks during the Vault-transition
+        # window. Once Vault is verified-working in prod, these can be
+        # cleaned up.
         "secret_path": "/run/secrets/RUNPOD_VLLM_API_KEY",
         "env_fallback": "RUNPOD_VLLM_API_KEY",
         "cost_basis": "synthetic",
@@ -349,9 +358,19 @@ def _semaphore(provider: str) -> asyncio.Semaphore:
 
 
 def _resolve_api_key(provider: str) -> str:
-    """File-first secret resolution: /run/secrets/<NAME> then env var.
-    Matches the pattern in redis_config.get_redis_url."""
+    """File-first → Vault → env-var secret resolution.
+
+    Resolution order:
+      1. /run/secrets/<NAME>   — Docker swarm secret (canonical for keys we own)
+      2. Vault                 — only if provider declares a `vault` block
+      3. <NAME>                — env-var fallback (local dev + transition window)
+
+    Vault sits between file and env so swarm secrets stay authoritative
+    for keys we control directly (gemini, openrouter, etc.), and Vault
+    handles secrets we don't own (e.g. saikat-llm-medium-fast-bearer-token).
+    """
     meta = PROVIDERS.get(provider) or {}
+
     path = meta.get("secret_path")
     if path and os.path.exists(path):
         try:
@@ -361,6 +380,21 @@ def _resolve_api_key(provider: str) -> str:
                 return val
         except OSError:
             pass
+
+    vault_meta = meta.get("vault")
+    if vault_meta:
+        try:
+            from services.vault import get_secret as _vault_get_secret
+            val = _vault_get_secret(vault_meta["path"], vault_meta["key"])
+            if val:
+                return val
+        except Exception as e:
+            logger.warning(
+                "llm_registry: Vault lookup failed for provider=%s — falling through to env. err=%s",
+                provider,
+                e,
+            )
+
     env_name = meta.get("env_fallback")
     if env_name:
         val = os.environ.get(env_name)
