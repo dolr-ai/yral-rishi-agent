@@ -2,12 +2,65 @@
 
 The real verification is: CI runs the workflow on every PR. These
 tests just defend the shape (right image, right triggers, right
-sanity check) against unintentional regression.
+sanity checks, idempotency check) against unintentional regression.
 """
 
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
+WF = REPO / ".github" / "workflows" / "migrations-ci.yml"
+
+
+def _wf_body() -> str:
+    return WF.read_text()
+
+
+# ─── idempotency expansion (Rishi 2026-06-10) ────────────────────────────
+
+
+def test_workflow_has_re_apply_idempotency_step():
+    """The 2nd-run step must exist. Catches non-IF-NOT-EXISTS migrations
+    that would corrupt prod state on any replay."""
+    body = _wf_body()
+    assert "Re-apply all migrations" in body
+    assert "idempotency check" in body or "idempotency" in body
+
+
+def test_idempotency_step_uses_on_error_stop():
+    """Without ON_ERROR_STOP the 2nd-run psql would log errors but
+    keep going, masking the non-idempotent migration."""
+    body = _wf_body()
+    pos = body.find("Re-apply all migrations")
+    block = body[pos : pos + 3500]
+    assert "ON_ERROR_STOP=1" in block
+
+
+def test_idempotency_step_collects_all_failures():
+    """Failing on the FIRST non-idempotent migration would only surface
+    one bug at a time. The step must keep going and report ALL
+    failures so a single CI run shows the full picture."""
+    body = _wf_body()
+    pos = body.find("Re-apply all migrations")
+    block = body[pos : pos + 3500]
+    assert "FAILED=$((FAILED + 1))" in block
+    assert "FAILED_LIST" in block
+    assert "set +e" in block and "set -e" in block
+
+
+def test_post_reapply_rowcount_check():
+    """Belt-and-braces: a migration could exit 0 from re-apply but
+    silently mutate state. The post-re-apply step counts rows in the
+    floor tables (all should be 0 since the test DB is empty)."""
+    body = _wf_body()
+    assert "Verify schema unchanged by the re-apply" in body
+    pos = body.find("Verify schema unchanged")
+    block = body[pos : pos + 2000]
+    for tbl in ("ai_influencers", "conversations", "messages"):
+        assert tbl in block
+    assert "SELECT count(*) FROM" in block
+
+
+# ─── original 6 tests (unchanged below) ──────────────────────────────────
 WF = REPO / ".github" / "workflows" / "migrations-ci.yml"
 
 
