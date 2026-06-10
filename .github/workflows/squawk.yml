@@ -85,7 +85,69 @@ jobs:
         # `squawk lint` exits non-zero on any rule violation.
         # `.squawk.toml` at repo root controls excluded/included rules
         # so config lives in version control, not the workflow YAML.
+        #
+        # Rules we depend on from squawk's defaults (NOT in our excluded
+        # list — so they ARE enforced):
+        #   - ban-drop-column  → DROP COLUMN fails CI
+        #   - ban-drop-table   → DROP TABLE fails CI
+        #   - renaming-column  → RENAME COLUMN fails CI (breaks clients)
+        #   - renaming-table   → RENAME TABLE fails CI (breaks clients)
+        #   - adding-required-field      → ADD COLUMN NOT NULL without DEFAULT fails CI
+        #   - adding-not-nullable-field  → ALTER COLUMN SET NOT NULL fails CI
+        #   - constraint-missing-not-valid  → ADD CHECK / FK without NOT VALID fails CI
+        #   - require-concurrent-index-creation  → CREATE INDEX without CONCURRENTLY fails CI
+        #   - disallowed-unique-constraint  → ALTER TABLE ADD UNIQUE constraint fails CI
+        #   - prefer-robust-stmts  → CREATE TABLE without IF NOT EXISTS fails CI
+        #   - ban-char-field  → CHAR(n) fails CI (use VARCHAR / TEXT)
         if: steps.changed.outputs.files != ''
         run: |
           set -euo pipefail
           echo "${{ steps.changed.outputs.files }}" | xargs squawk lint
+
+      - name: Require SET lock_timeout / statement_timeout in new migrations
+        # 2026-06-10 expansion (Rishi EOD). squawk doesn't have a rule
+        # for "every migration must declare lock_timeout" but the live
+        # prod runner DOES set `lock_timeout=5s` per file (see
+        # scripts/ci/run-migrations.sh:185 — `SET lock_timeout = '5s'`
+        # inside the BEGIN block). That means most migrations don't need
+        # to set it themselves.
+        #
+        # But: migrations that contain long-lived DDL (CREATE INDEX,
+        # large UPDATE, ALTER TABLE on a populated table) SHOULD declare
+        # their own tighter limit so prod ops can reason about worst-case
+        # blocking from the file alone, not by combining the runner's
+        # default with the file's content.
+        #
+        # Rule: any migration that touches CREATE INDEX or UPDATE or
+        # ALTER TABLE must declare `SET lock_timeout` (in any form —
+        # SET LOCAL, SET, etc.). Migrations that only do small CREATE
+        # TABLE / ADD COLUMN are exempt — the runner's default is fine.
+        if: steps.changed.outputs.files != ''
+        run: |
+          set -euo pipefail
+          FAILED=0
+          while IFS= read -r FILE; do
+            [ -z "$FILE" ] && continue
+            BASENAME=$(basename "$FILE")
+            # Heuristic: scan for the long-lived-DDL markers we care about.
+            if grep -qiE 'CREATE INDEX|UPDATE [a-z_]+ SET|ALTER TABLE [a-z_.]+ (ALTER|DROP|RENAME)' "$FILE"; then
+              # Long-lived: require a lock_timeout SET.
+              if ! grep -qiE 'SET\s+(LOCAL\s+)?lock_timeout' "$FILE"; then
+                echo "✗ $BASENAME contains long-lived DDL (CREATE INDEX / UPDATE / ALTER TABLE …)"
+                echo "  but does NOT declare its own SET lock_timeout."
+                echo "  Add a top-of-file line like:  SET lock_timeout = '2s';"
+                echo "  (or '500ms' for very short statements). This makes the"
+                echo "  worst-case prod-blocking duration readable from the file."
+                FAILED=$((FAILED + 1))
+              else
+                echo "✓ $BASENAME has long-lived DDL + declares lock_timeout"
+              fi
+            else
+              echo "✓ $BASENAME is short DDL only — runner's default lock_timeout=5s covers it"
+            fi
+          done <<< "${{ steps.changed.outputs.files }}"
+          if [ $FAILED -gt 0 ]; then
+            echo
+            echo "$FAILED migration(s) need an explicit SET lock_timeout."
+            exit 1
+          fi

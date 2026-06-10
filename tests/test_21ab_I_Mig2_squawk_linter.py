@@ -66,3 +66,59 @@ def test_config_excludes_have_justification_comments():
     # And each has surrounding prose (the `#` comment lines).
     assert "VARCHAR" in body
     assert "BEGIN/COMMIT" in body
+
+
+# ─── 2026-06-10 expansion (Rishi EOD #4) ─────────────────────────────────
+
+
+def test_workflow_documents_default_rules_we_depend_on():
+    """squawk's defaults enforce the dangerous-DDL rules we care about
+    (ban-drop-column, adding-required-field, renaming-column, etc.).
+    The workflow must document them explicitly so a future contributor
+    knows what's covered without reading squawk source."""
+    body = WF.read_text()
+    for rule in (
+        "ban-drop-column",
+        "ban-drop-table",
+        "renaming-column",
+        "renaming-table",
+        "adding-required-field",
+        "adding-not-nullable-field",
+        "constraint-missing-not-valid",
+        "require-concurrent-index-creation",
+    ):
+        assert rule in body, f"workflow must document dependence on `{rule}`"
+
+
+def test_lock_timeout_check_exists():
+    """squawk doesn't have a rule for 'every long-lived migration must
+    declare lock_timeout'. The complementary grep check fills that gap
+    so prod ops can read worst-case blocking duration from the file."""
+    body = WF.read_text()
+    assert "Require SET lock_timeout" in body
+    # The check looks for the long-lived markers
+    assert "CREATE INDEX" in body
+    assert "ALTER TABLE" in body
+    # And requires `SET lock_timeout` declaration
+    assert "SET\\s+(LOCAL\\s+)?lock_timeout" in body
+
+
+def test_lock_timeout_check_exempts_short_DDL():
+    """A migration that only does CREATE TABLE / ADD COLUMN doesn't need
+    its own lock_timeout — the runner's default (5s) covers it. The
+    check must EXEMPT those, not pessimistically fail every migration."""
+    body = WF.read_text()
+    pos = body.find("Require SET lock_timeout")
+    block = body[pos : pos + 3000]
+    assert "runner" in block.lower() and "default" in block.lower()
+    # The else branch logs ✓ for short DDL
+    assert "short DDL only" in block or "covers it" in block
+
+
+def test_lock_timeout_check_collects_all_failures():
+    """One CI run should surface every offending migration, not just
+    the first. Important when a PR ships multiple migrations."""
+    body = WF.read_text()
+    pos = body.find("Require SET lock_timeout")
+    block = body[pos : pos + 3000]
+    assert "FAILED=$((FAILED + 1))" in block
