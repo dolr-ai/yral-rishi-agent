@@ -24,6 +24,7 @@ Behavior:
 
 import json
 import logging
+import re
 
 from services import llm_registry
 from services.soul_file import GLOBAL_RULES_OVERRIDEABLE
@@ -167,42 +168,78 @@ def _format_session_history(messages: list[dict]) -> str:
     return "\n".join(lines)
 
 
+_FENCED_BLOCK_RE = re.compile(
+    r"```(?:json)?\s*\n?(.*?)\n?```",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
 def _try_extract_proposal(text: str) -> dict | None:
     """Look for a single JSON object in the coach's reply with EITHER
     the system_instructions-edit shape ({summary, proposed_changes,
     reasoning}) OR the override shape ({summary,
-    proposed_global_rule_override, reasoning}). Tolerant of leading /
-    trailing prose since LLMs occasionally wrap their JSON in commentary
-    even when told not to.
+    proposed_global_rule_override, reasoning}). Tolerant of:
+      - Leading / trailing prose ("Here's the proposal: { ... }. Hope this helps.")
+      - ```json ... ``` fences (Gemini emits these intermittently — Rule 4
+        in the META_PROMPT explicitly says "no markdown fences" but Gemini
+        ignores ~5-10% of the time; the parser must not crater on that).
+        2026-06-09 mobile expert report: this was making the Coach UI
+        show "incomplete messages" because the parser fell back silently
+        on every fenced reply, returning plain-text + null proposed_changes.
+      - Multiple fenced blocks (an example block + a real block); we try
+        every block from LAST to first since the real proposal is
+        typically last.
 
     Returns the parsed dict — callers inspect which key is set to
     decide dispatch. Override shape validation: the key must be one of
     the known overrideable slugs (defends against an LLM hallucinating
     a key like 'character_consistency' which is in the FIXED list)."""
+    if not text:
+        return None
+
+    # Build the list of candidate JSON strings to try.
+    # Order: fenced blocks (last → first) → the find-rfind fallback.
+    candidates: list[str] = []
+    for match in _FENCED_BLOCK_RE.finditer(text):
+        inner = match.group(1).strip()
+        if inner:
+            candidates.append(inner)
+    # Try last fenced block first — typical pattern is "example block,
+    # then the real proposal."
+    candidates.reverse()
+    # Final fallback: greedy first-{-to-last-} slice (legacy behavior,
+    # covers JSON with no fences and some leading prose).
     start = text.find("{")
     end = text.rfind("}") + 1
-    if start < 0 or end <= start:
-        return None
-    candidate = text[start:end]
-    try:
-        obj = json.loads(candidate)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(obj, dict):
-        return None
+    if start >= 0 and end > start:
+        candidates.append(text[start:end])
 
-    # Shape 1: system_instructions edit (pre-PR-B behavior, unchanged)
-    if obj.get("proposed_changes"):
-        return obj
+    for candidate in candidates:
+        # The fenced block's content might still have surrounding prose
+        # (e.g. trailing newline). Trim to the outer {...} for safety.
+        s = candidate.find("{")
+        e = candidate.rfind("}") + 1
+        if s < 0 or e <= s:
+            continue
+        try:
+            obj = json.loads(candidate[s:e])
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
 
-    # Shape 2: platform-rule override (Coach Fix 1 PR-B). The override
-    # blob must name a known overrideable slug — otherwise we drop the
-    # proposal back to plain-text (the LLM will retry next turn).
-    override = obj.get("proposed_global_rule_override")
-    if isinstance(override, dict):
-        key = override.get("key")
-        if isinstance(key, str) and key in GLOBAL_RULES_OVERRIDEABLE:
+        # Shape 1: system_instructions edit (pre-PR-B behavior, unchanged)
+        if obj.get("proposed_changes"):
             return obj
+
+        # Shape 2: platform-rule override (Coach Fix 1 PR-B). The override
+        # blob must name a known overrideable slug — otherwise we drop the
+        # proposal back to plain-text (the LLM will retry next turn).
+        override = obj.get("proposed_global_rule_override")
+        if isinstance(override, dict):
+            key = override.get("key")
+            if isinstance(key, str) and key in GLOBAL_RULES_OVERRIDEABLE:
+                return obj
 
     return None
 
