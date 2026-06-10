@@ -224,9 +224,22 @@ jobs:
             #   *  → any other non-zero. Most likely the manager wasn't
             #        the Patroni leader and writes got rejected. Retry on
             #        the next manager.
+            # `|| RUNNER_RC=$?` is required because GitHub Actions runs
+            # this `run:` block with `set -e` (shell: bash -e). Without
+            # the `||`, a non-zero ssh exit would terminate the whole
+            # step IMMEDIATELY — `RUNNER_RC=$?` would never be reached
+            # and the for-host loop would never iterate to the next
+            # manager. The 2026-06-10 c6a1796 deploy hit exactly this:
+            # first manager (rishi-4) was a Patroni replica, runner
+            # exited 3 on the read-only transaction, deploy.yml
+            # terminated instead of retrying on the leader. PR #338
+            # added the RUNNER_RC capture without this guard, so
+            # failover post-#338 silently broke whenever manager-1 was
+            # not the current leader.
+            RUNNER_RC=0
             ssh $SSH_OPTS "${{ env.SWARM_USER }}@$host" \
-                  "set -e; APP_DIR=$STAGING_DIR bash $STAGING_DIR/scripts/ci/run-migrations.sh"
-            RUNNER_RC=$?
+                  "set -e; APP_DIR=$STAGING_DIR bash $STAGING_DIR/scripts/ci/run-migrations.sh" \
+                  || RUNNER_RC=$?
             ssh $SSH_OPTS "${{ env.SWARM_USER }}@$host" "rm -rf $STAGING_DIR" 2>/dev/null || true
             if [ $RUNNER_RC -eq 0 ]; then
               echo "✓ Migrations applied (or already up to date) via $host"
