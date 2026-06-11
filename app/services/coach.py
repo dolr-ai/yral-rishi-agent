@@ -174,6 +174,58 @@ _FENCED_BLOCK_RE = re.compile(
 )
 
 
+# Plain-English fallback the route + mobile show when the model emitted
+# JSON-shaped output that failed to parse (truncated mid-stream, missing
+# closing brace, etc.). Better than dumping raw `{"summary": "...`.
+TRUNCATED_REPROMPT_TEXT = (
+    "Sorry — my last reply got cut off before I could finish the proposal. "
+    "Tell me again what you'd like to change about the bot and I'll redo it."
+)
+
+
+# JSON-shape markers used by the truncation detector. Includes the
+# proposal shapes (Rule 4 / Rule 5) so we recognize fragments that LOOK
+# proposal-ish but can't parse.
+_JSON_SHAPE_MARKERS = (
+    '"summary"',
+    '"proposed_changes"',
+    '"proposed_global_rule_override"',
+    '"reasoning"',
+    '"key"',
+    '"value"',
+)
+
+
+def _looks_like_truncated_proposal(text: str | None) -> bool:
+    """Heuristic: does the response APPEAR to be a JSON proposal that
+    failed mid-stream? Used by coach_reply when _try_extract_proposal
+    returns None — we'd rather surface a clean reprompt than dump the
+    half-string to the creator.
+
+    Conservative on TRUE — we only flag responses that contain at
+    least one canonical proposal JSON key AND show structural damage
+    (unbalanced braces or quotes). A plain-text reply with no JSON
+    markers (clarifying question, agreement) returns False and falls
+    through to the normal plain-text path."""
+    if not text:
+        return False
+    if not any(marker in text for marker in _JSON_SHAPE_MARKERS):
+        return False
+    # Structural damage signals: unbalanced braces / unmatched quotes.
+    opens = text.count("{")
+    closes = text.count("}")
+    if opens > closes:
+        return True
+    # Even number of quotes is the expected case; odd = unmatched.
+    quotes = text.count('"')
+    if quotes % 2 == 1:
+        return True
+    # All braces closed + balanced quotes + still failed to parse →
+    # something else is wrong (escape errors, etc.); call it truncated
+    # too because the route can't surface it meaningfully.
+    return True
+
+
 def _try_extract_proposal(text: str) -> dict | None:
     """Look for a single JSON object in the coach's reply with EITHER
     the system_instructions-edit shape ({summary, proposed_changes,
@@ -311,7 +363,14 @@ async def coach_reply(
             {"role": "user", "content": prompt},
         ],
         temperature=0.5,
-        max_tokens=2048,
+        # 2026-06-11 PR-1: bumped 2048 → 4096. The 2048 cap was
+        # truncating long-reasoning replies mid-stream — creator saw
+        # "...." answers that ended mid-thought (Rishi's Motorola
+        # complaint from yesterday's dev report). 4096 leaves headroom
+        # for the full proposal JSON block + multi-sentence reasoning.
+        # Gemini Flash returns most coach replies well under 1500
+        # tokens; the cap is a safety belt, not a typical limit.
+        max_tokens=4096,
     )
     response_text = response.content
 
@@ -334,6 +393,19 @@ async def coach_reply(
             proposal.get("reasoning"),
             None,
         )
+    # 2026-06-11 PR-1: if the LLM emitted JSON-shaped output that
+    # FAILED to parse (truncated mid-stream, opening { but no closing
+    # }), don't dump the raw half-JSON to the creator — it shows up
+    # as `{"summary": "...` and looks like a bug to a non-technical
+    # user. Detect the partial-JSON signal and substitute a clean
+    # "let me redo that" reprompt instead.
+    if _looks_like_truncated_proposal(response_text):
+        logger.warning(
+            "coach_reply: response looks truncated/partial JSON (len=%d); "
+            "surfacing reprompt instead of raw fragment",
+            len(response_text or ""),
+        )
+        return (TRUNCATED_REPROMPT_TEXT, None, None, None)
     return (response_text.strip(), None, None, None)
 
 
