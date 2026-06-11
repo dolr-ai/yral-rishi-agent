@@ -99,17 +99,27 @@ async def add_message(
     """
     import json as _json
 
+    # Coach PR-3 lifecycle: proposal rows (role=coach + proposed_* set)
+    # start as 'pending'. Everything else — creator turns, opening
+    # greetings, receipts — is 'na' (not applicable to the lifecycle).
+    # Same rule as the migration 035 backfill.
+    is_proposal = role == "coach" and (
+        proposed_changes is not None or proposed_global_rule_override is not None
+    )
+    status = "pending" if is_proposal else "na"
+
     row = await pool.fetchrow(
         """
         INSERT INTO coach_messages (
             coach_conversation_id, role, content,
             proposed_changes, reasoning, suggestions,
-            proposed_global_rule_override
+            proposed_global_rule_override, status
         )
-        VALUES ($1::uuid, $2, $3, $4, $5, $6::jsonb, $7::jsonb)
+        VALUES ($1::uuid, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8)
         RETURNING id, coach_conversation_id, role, content,
                   proposed_changes, reasoning, suggestions,
-                  proposed_global_rule_override, created_at
+                  proposed_global_rule_override, status,
+                  status_changed_at, created_at
         """,
         coach_conversation_id,
         role,
@@ -120,6 +130,7 @@ async def add_message(
         _json.dumps(proposed_global_rule_override)
         if proposed_global_rule_override
         else None,
+        status,
     )
     return dict(row)
 
@@ -129,7 +140,8 @@ async def list_messages(pool, coach_conversation_id: str) -> list[dict]:
         """
         SELECT id, coach_conversation_id, role, content,
                proposed_changes, reasoning, suggestions,
-               proposed_global_rule_override, created_at
+               proposed_global_rule_override, status,
+               status_changed_at, created_at
         FROM coach_messages
         WHERE coach_conversation_id = $1::uuid
         ORDER BY created_at ASC
@@ -141,14 +153,15 @@ async def list_messages(pool, coach_conversation_id: str) -> list[dict]:
 
 async def latest_proposal(pool, coach_conversation_id: str) -> dict | None:
     """Most recent coach message that includes EITHER proposed_changes
-    OR proposed_global_rule_override (Coach Fix 1 PR-B). Used by the
-    /apply endpoint to find what to commit; that endpoint dispatches on
-    which column is non-NULL."""
+    OR proposed_global_rule_override (Coach Fix 1 PR-B). Used by
+    backward-compat callers; new code should use `get_proposal_by_id`
+    (PR-3 trust fix — the wrong-proposal-applied bug fix)."""
     row = await pool.fetchrow(
         """
         SELECT id, coach_conversation_id, role, content,
                proposed_changes, reasoning, suggestions,
-               proposed_global_rule_override, created_at
+               proposed_global_rule_override, status,
+               status_changed_at, created_at
         FROM coach_messages
         WHERE coach_conversation_id = $1::uuid
           AND role = 'coach'
@@ -163,27 +176,127 @@ async def latest_proposal(pool, coach_conversation_id: str) -> dict | None:
 
 
 async def pending_proposal(pool, coach_conversation_id: str) -> dict | None:
-    """Coach Fix 4 — return the latest UNAPPLIED proposal in this session
-    or None. A proposal is "pending" if it exists in coach_messages with
-    proposed_changes IS NOT NULL AND no system_instructions_history row
-    references it yet.
+    """Coach Fix 4 + PR-3 — return the latest PENDING proposal in this
+    session or None. Used by:
+      - send-message action-verb fast path (Fix 4): "save it" + a
+        pending exists → return {type: action, ...} and skip the LLM.
+      - send-message + list-messages responses (PR-4): the
+        `pending_proposal_exists` field that gates mobile's Save button.
 
-    Used by the action-verb classifier path in send_coach_message: if
-    the creator types "save it" and a pending proposal exists, the
-    route returns {type: action, action: save} and skips the Coach LLM.
-    """
-    proposal = await latest_proposal(pool, coach_conversation_id)
-    if not proposal:
-        return None
-    applied = await pool.fetchval(
+    Post-PR-3 this is a typed lookup on `status='pending'` — was
+    previously a join into system_instructions_history. The typed
+    column is faster (the new partial index `idx_coach_messages_
+    pending_per_session` lets this query return in O(log pending))
+    AND captures discarded/superseded states the audit-table join
+    couldn't see."""
+    row = await pool.fetchrow(
         """
-        SELECT 1 FROM system_instructions_history
-        WHERE coach_message_id = $1::uuid
+        SELECT id, coach_conversation_id, role, content,
+               proposed_changes, reasoning, suggestions,
+               proposed_global_rule_override, status,
+               status_changed_at, created_at
+        FROM coach_messages
+        WHERE coach_conversation_id = $1::uuid
+          AND role = 'coach'
+          AND status = 'pending'
+          AND (proposed_changes IS NOT NULL
+               OR proposed_global_rule_override IS NOT NULL)
+        ORDER BY created_at DESC
         LIMIT 1
         """,
-        str(proposal["id"]),
+        coach_conversation_id,
     )
-    return None if applied else proposal
+    return _row(row)
+
+
+async def get_proposal_by_id(
+    pool, coach_conversation_id: str, proposal_id: str
+) -> dict | None:
+    """Coach PR-3 — fetch a SPECIFIC proposal by id, scoped to the
+    session. Returns None if the id doesn't exist OR belongs to a
+    different session (defense-in-depth against ID forgery from
+    another creator's session).
+
+    Returns the row regardless of status — callers (the /apply and
+    /discard endpoints) inspect the status themselves so they can
+    surface a precise 409 with the current state."""
+    row = await pool.fetchrow(
+        """
+        SELECT id, coach_conversation_id, role, content,
+               proposed_changes, reasoning, suggestions,
+               proposed_global_rule_override, status,
+               status_changed_at, created_at
+        FROM coach_messages
+        WHERE id = $1::uuid
+          AND coach_conversation_id = $2::uuid
+          AND role = 'coach'
+          AND (proposed_changes IS NOT NULL
+               OR proposed_global_rule_override IS NOT NULL)
+        LIMIT 1
+        """,
+        proposal_id,
+        coach_conversation_id,
+    )
+    return _row(row)
+
+
+async def supersede_and_apply(
+    pool, coach_conversation_id: str, proposal_id: str
+) -> None:
+    """Coach PR-3 — transactionally:
+      1. Mark every OTHER pending proposal in this session as
+         'superseded' (creator may have scrolled back to an older
+         card; once they apply ANY proposal the other pending ones
+         are no longer actionable).
+      2. Mark the chosen proposal as 'applied'.
+
+    Both UPDATEs run in a single transaction so the lifecycle stays
+    consistent — after this returns, the session has exactly one
+    `applied` row + zero `pending` rows.
+
+    Caller is responsible for: status==pending check BEFORE calling
+    this (cleaner 409 surface); the system_instructions UPDATE on the
+    bot row (this helper only touches coach_messages.status)."""
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                """
+                UPDATE coach_messages
+                SET status = 'superseded',
+                    status_changed_at = NOW()
+                WHERE coach_conversation_id = $1::uuid
+                  AND status = 'pending'
+                  AND id != $2::uuid
+                """,
+                coach_conversation_id,
+                proposal_id,
+            )
+            await conn.execute(
+                """
+                UPDATE coach_messages
+                SET status = 'applied',
+                    status_changed_at = NOW()
+                WHERE id = $1::uuid
+                """,
+                proposal_id,
+            )
+
+
+async def mark_discarded(pool, proposal_id: str) -> None:
+    """Coach PR-3 — /discard endpoint marks the chosen proposal
+    `discarded`. Does NOT touch other pending in the session — the
+    creator may want to apply a different one. Idempotent: re-call
+    on an already-discarded id is a no-op."""
+    await pool.execute(
+        """
+        UPDATE coach_messages
+        SET status = 'discarded',
+            status_changed_at = NOW()
+        WHERE id = $1::uuid
+          AND status = 'pending'
+        """,
+        proposal_id,
+    )
 
 
 # ─── system_instructions_history ──────────────────────────────────────────

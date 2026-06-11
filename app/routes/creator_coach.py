@@ -45,6 +45,11 @@ def _format_message(m: dict) -> dict:
             override = _json.loads(override)
         except (_json.JSONDecodeError, TypeError):
             override = None
+    # Coach PR-3 (migration 035) — surface the proposal lifecycle status
+    # so mobile can render active/passive/applied/discarded card states.
+    # 'na' rows (creator messages, opening greetings, receipts) are
+    # passed through unchanged; mobile treats anything except 'pending'
+    # as a non-actionable card.
     return {
         "id": str(m["id"]),
         "coach_conversation_id": str(m["coach_conversation_id"]),
@@ -54,6 +59,10 @@ def _format_message(m: dict) -> dict:
         "proposed_global_rule_override": override,
         "reasoning": m.get("reasoning"),
         "suggestions": suggestions,
+        "status": m.get("status") or "na",
+        "status_changed_at": m["status_changed_at"].isoformat()
+        if isinstance(m.get("status_changed_at"), datetime)
+        else m.get("status_changed_at"),
         "created_at": m["created_at"].isoformat()
         if isinstance(m["created_at"], datetime)
         else m["created_at"],
@@ -300,17 +309,55 @@ async def send_coach_message(coach_conversation_id: str, body: dict, request: Re
 
 
 @router.post("/conversations/{coach_conversation_id}/apply")
-async def apply_coach_proposal(coach_conversation_id: str, request: Request):
-    """Apply the most recent coach proposal to the bot's system_instructions.
-    Records previous text in system_instructions_history for rollback."""
+async def apply_coach_proposal(
+    coach_conversation_id: str, body: dict, request: Request
+):
+    """Apply a SPECIFIC coach proposal (by id) to the bot.
+
+    Coach PR-3 (migration 035): the request now carries `proposal_id`
+    in the body — was implicit "whatever is most recent" pre-PR-3,
+    which silently applied newer proposals when the creator scrolled
+    up + tapped Save on an older card.
+
+    Lifecycle:
+      - proposal_id MUST exist + belong to this session + be a real
+        proposal (not a receipt/creator msg/opening) → 404 otherwise.
+      - status MUST be 'pending' → 409 with current status otherwise.
+      - On success: transactionally mark other pending in this session
+        as 'superseded', mark the chosen one as 'applied', then write
+        the bot-side change (system_instructions or override merge).
+        After return, the session has exactly 1 'applied' + 0 'pending'.
+    """
     user_id = get_current_user(request)
     pool = await get_pool()
     session = await _load_owned_session(pool, user_id, coach_conversation_id)
 
-    proposal = await coach_repo.latest_proposal(pool, coach_conversation_id)
+    proposal_id = (body or {}).get("proposal_id")
+    if not isinstance(proposal_id, str) or not proposal_id.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="proposal_id is required (the coach_message id of the "
+            "proposal card you tapped Save on)",
+        )
+
+    proposal = await coach_repo.get_proposal_by_id(
+        pool, coach_conversation_id, proposal_id.strip()
+    )
     if not proposal:
         raise HTTPException(
-            status_code=409, detail="No proposal to apply in this session"
+            status_code=404,
+            detail="No such proposal in this session — id mismatch or wrong session",
+        )
+    current_status = proposal.get("status") or "na"
+    if current_status != "pending":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "proposal_not_pending",
+                "current_status": current_status,
+                "message": f"Proposal status is {current_status!r}, not pending. "
+                f"Newer proposals in this session are already applied or pending.",
+            },
         )
 
     inf = await influencer_repo.get_by_id(pool, session["bot_id"])
@@ -374,6 +421,11 @@ async def apply_coach_proposal(coach_conversation_id: str, request: Request):
             new_instructions=f"global_rule_overrides={new_overrides_json}",
             applied_by=user_id,
         )
+        # Coach PR-3: typed lifecycle transition. Supersede every other
+        # pending proposal in this session + mark this one applied.
+        await coach_repo.supersede_and_apply(
+            pool, coach_conversation_id, str(proposal["id"])
+        )
         receipt_content = (
             f"✅ Saved — platform-rule override applied for "
             f"{inf.get('display_name') or 'your bot'}: "
@@ -422,6 +474,11 @@ async def apply_coach_proposal(coach_conversation_id: str, request: Request):
         new_text,
         session["bot_id"],
     )
+    # Coach PR-3: typed lifecycle transition. Supersede every other
+    # pending proposal in this session + mark this one applied.
+    await coach_repo.supersede_and_apply(
+        pool, coach_conversation_id, str(proposal["id"])
+    )
 
     # Coach UX overhaul (2026-06-04) — receipt message in the session
     # history so the apply event is visible in GET /messages on the
@@ -450,6 +507,62 @@ async def apply_coach_proposal(coach_conversation_id: str, request: Request):
         if isinstance(history_row["applied_at"], datetime)
         else history_row["applied_at"],
         "receipt_message": _format_message(receipt_msg),
+    }
+
+
+@router.post("/conversations/{coach_conversation_id}/discard")
+async def discard_coach_proposal(
+    coach_conversation_id: str, body: dict, request: Request
+):
+    """Mark a specific proposal as discarded.
+
+    Coach PR-3 — the explicit counterpart to /apply. Does NOT touch
+    other pending proposals in this session (the creator may want to
+    apply a different one). Idempotent: re-call on an already-discarded
+    id is a 200 with `discarded: false` (nothing changed).
+
+    Lifecycle checks mirror /apply exactly so a client can use the
+    same error handling for both flows."""
+    user_id = get_current_user(request)
+    pool = await get_pool()
+    await _load_owned_session(pool, user_id, coach_conversation_id)
+
+    proposal_id = (body or {}).get("proposal_id")
+    if not isinstance(proposal_id, str) or not proposal_id.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="proposal_id is required",
+        )
+
+    proposal = await coach_repo.get_proposal_by_id(
+        pool, coach_conversation_id, proposal_id.strip()
+    )
+    if not proposal:
+        raise HTTPException(
+            status_code=404,
+            detail="No such proposal in this session — id mismatch or wrong session",
+        )
+    current_status = proposal.get("status") or "na"
+    if current_status not in ("pending", "discarded"):
+        # discarded is allowed for idempotency; pending is the actual
+        # transition. Other statuses (applied / superseded / na) are
+        # not legal targets for /discard.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "proposal_not_discardable",
+                "current_status": current_status,
+                "message": f"Proposal status is {current_status!r}; "
+                f"only pending proposals can be discarded.",
+            },
+        )
+
+    await coach_repo.mark_discarded(pool, str(proposal["id"]))
+    return {
+        "discarded": current_status == "pending",  # false if already discarded
+        "proposal_id": str(proposal["id"]),
+        "previous_status": current_status,
+        "current_status": "discarded",
     }
 
 
