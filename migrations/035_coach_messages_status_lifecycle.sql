@@ -16,6 +16,18 @@
 --                         CHECK IN ('pending','applied','discarded','superseded','na')
 --   status_changed_at   TIMESTAMPTZ NULL — set on transition;
 --                         NULL means "still in default state"
+--
+-- Same SET lock_timeout / statement_timeout preamble as 033 + 034 per
+-- the squawk I-Mig2 rule (#340): every migration that touches a
+-- populated table must declare its own bound so prod ops can read
+-- worst-case blocking duration from the file alone. 3s lock_timeout
+-- matches the runner's default; 60s statement_timeout covers the
+-- 3-pass backfill comfortably (the heaviest pass is the
+-- system_instructions_history join; coach_messages today is on the
+-- order of ~3K rows, so the joins + the partial-index CREATE finish
+-- in well under 5s on prod hardware).
+SET lock_timeout = '3s';
+SET statement_timeout = '60s';
 
 ALTER TABLE coach_messages
     ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'pending'
