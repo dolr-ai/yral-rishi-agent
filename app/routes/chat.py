@@ -695,6 +695,7 @@ async def send_message(
             else None
         ),
         global_rule_overrides=inf.get("global_rule_overrides"),
+        sections=inf.get("system_instructions_sections"),
     )
 
     # Typing indicator START
@@ -943,6 +944,7 @@ async def send_message_stream(
                     else None
                 ),
                 global_rule_overrides=inf.get("global_rule_overrides"),
+                sections=inf.get("system_instructions_sections"),
             )
 
             full_text = ""

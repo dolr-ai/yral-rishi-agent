@@ -267,7 +267,13 @@ async def send_coach_message(coach_conversation_id: str, body: dict, request: Re
     # coach to commit to a JSON proposal block this turn.
     force_proposal = bool((body or {}).get("request_proposal"))
 
-    display, proposed, reasoning, proposed_override = await coach_service.coach_reply(
+    (
+        display,
+        proposed,
+        reasoning,
+        proposed_override,
+        proposed_section,
+    ) = await coach_service.coach_reply(
         bot_name=inf.get("display_name") or inf.get("name") or "this bot",
         bot_archetype=inf.get("category") or "general",
         current_instructions=inf.get("system_instructions") or "",
@@ -278,12 +284,14 @@ async def send_coach_message(coach_conversation_id: str, body: dict, request: Re
         session_history=[m for m in history if m["id"] != creator_msg["id"]],
         latest_message=content.strip(),
         force_proposal=force_proposal,
+        sections=inf.get("system_instructions_sections"),
     )
 
-    # Coach Fix 1 PR-B — coach_reply returns EITHER proposed_changes
-    # (system_instructions edit) OR proposed_override (global_rule_overrides
-    # flip), never both. Persist whichever is present; both NULL for
-    # plain-text turns (clarifying question, the override-confirmation ask).
+    # Coach Bucket 2 — coach_reply returns EXACTLY ONE of proposed (text)
+    # / proposed_override (dict) / proposed_section (dict), or all three
+    # None for plain-text turns. Persist whichever is present; add_message
+    # supersedes any older pending proposals in the same conversation
+    # inside its own transaction (Rishi 2026-06-11 follow-up).
     coach_msg = await coach_repo.add_message(
         pool,
         coach_conversation_id,
@@ -292,6 +300,7 @@ async def send_coach_message(coach_conversation_id: str, body: dict, request: Re
         proposed_changes=proposed,
         reasoning=reasoning,
         proposed_global_rule_override=proposed_override,
+        proposed_section_change=proposed_section,
     )
     await coach_repo.touch_session(pool, coach_conversation_id)
 
@@ -364,11 +373,171 @@ async def apply_coach_proposal(
     if not inf:
         raise HTTPException(status_code=410, detail="Underlying bot was deleted")
 
-    # Coach Fix 1 PR-B — dispatch on proposal type. The override path
-    # writes to ai_influencers.global_rule_overrides (JSONB merge); the
-    # legacy path writes proposed_changes to system_instructions. EXACTLY
-    # ONE column is populated per proposal turn (enforced by coach_reply
-    # + repo.add_message contracts).
+    # Coach Bucket 2 PR-2 — dispatch on proposal type. EXACTLY ONE column
+    # is populated per proposal turn (enforced by coach_reply + repo
+    # contracts). The three lanes:
+    #   1. proposed_section_change → UPDATE one section body inside
+    #      ai_influencers.system_instructions_sections via jsonb_set;
+    #      validates previous_body_sha256 vs live body (409 stale_proposal
+    #      on drift). [Bucket 2 PR-2]
+    #   2. proposed_global_rule_override → JSONB merge into
+    #      ai_influencers.global_rule_overrides. [Coach Fix 1 PR-B]
+    #   3. proposed_changes (text) → UPDATE ai_influencers.system_instructions.
+    #      [Historical Coach path]
+    section_raw = proposal.get("proposed_section_change")
+    if section_raw:
+        import json as _json
+
+        if isinstance(section_raw, str):
+            try:
+                section_blob = _json.loads(section_raw)
+            except (_json.JSONDecodeError, TypeError):
+                raise HTTPException(
+                    status_code=500,
+                    detail="Stored section_change blob is malformed; cannot apply",
+                ) from None
+        else:
+            section_blob = section_raw
+        if not isinstance(section_blob, dict):
+            raise HTTPException(
+                status_code=500,
+                detail="Stored section_change blob is not a dict; cannot apply",
+            )
+        section_id = section_blob.get("section_id")
+        new_body = section_blob.get("new_body")
+        claimed_sha = section_blob.get("previous_body_sha256")
+        if not (isinstance(section_id, str) and section_id.strip()):
+            raise HTTPException(
+                status_code=500,
+                detail="Stored section_change blob missing section_id",
+            )
+        if not (isinstance(new_body, str) and new_body.strip()):
+            raise HTTPException(
+                status_code=500,
+                detail="Stored section_change blob missing new_body",
+            )
+
+        # Pull the live sections array + locate the target section by id.
+        live_sections_raw = inf.get("system_instructions_sections")
+        if isinstance(live_sections_raw, str):
+            try:
+                live_sections = _json.loads(live_sections_raw)
+            except (_json.JSONDecodeError, TypeError):
+                live_sections = []
+        else:
+            live_sections = live_sections_raw or []
+        if not isinstance(live_sections, list):
+            live_sections = []
+        target_index = None
+        target_section = None
+        for idx, sec in enumerate(live_sections):
+            if isinstance(sec, dict) and sec.get("id") == section_id:
+                target_index = idx
+                target_section = sec
+                break
+        if target_index is None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "section_not_found",
+                    "section_id": section_id,
+                    "message": (
+                        f"Section {section_id!r} no longer exists on this bot. "
+                        "The creator may have deleted it on the Soul File page."
+                    ),
+                },
+            )
+        if target_section.get("editable") is False:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "section_not_editable",
+                    "section_id": section_id,
+                    "message": (
+                        f"Section {section_id!r} is read-only. The Soul File "
+                        "page may have flipped editable=false since the proposal."
+                    ),
+                },
+            )
+
+        # Optimistic-concurrency check: the live body's sha must equal what
+        # Coach claimed at proposal time. If drifted (creator edited the
+        # section between proposal + apply, OR a parallel Coach turn
+        # superseded it), refuse with 409 stale_proposal — same shape as
+        # the section_not_editable branch so mobile can surface either
+        # case via one error path.
+        from services.coach import section_body_sha256 as _sha
+
+        live_body = target_section.get("body") or ""
+        live_sha = _sha(live_body)
+        if isinstance(claimed_sha, str) and claimed_sha and claimed_sha != live_sha:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "stale_proposal",
+                    "section_id": section_id,
+                    "live_sha256": live_sha,
+                    "claimed_sha256": claimed_sha,
+                    "message": (
+                        f"Section {section_id!r} body changed since Coach read it. "
+                        "Re-open the Soul File page and have Coach propose again."
+                    ),
+                },
+            )
+
+        # Build the new section list + apply. Preserves all fields except
+        # `body`; mobile-edited heading/editable on the same section stay.
+        new_sections = list(live_sections)
+        merged_section = dict(target_section)
+        merged_section["body"] = new_body
+        new_sections[target_index] = merged_section
+
+        previous_text = f"section[{section_id}].body={live_body}"
+        new_text = f"section[{section_id}].body={new_body}"
+        history_row = await coach_repo.record_application(
+            pool,
+            bot_id=session["bot_id"],
+            coach_conversation_id=coach_conversation_id,
+            coach_message_id=str(proposal["id"]),
+            previous_instructions=previous_text,
+            new_instructions=new_text,
+            applied_by=user_id,
+        )
+        await pool.execute(
+            """
+            UPDATE ai_influencers
+            SET system_instructions_sections = $1::jsonb,
+                updated_at = NOW()
+            WHERE id = $2
+            """,
+            _json.dumps(new_sections),
+            session["bot_id"],
+        )
+        await coach_repo.supersede_and_apply(
+            pool, coach_conversation_id, str(proposal["id"])
+        )
+        receipt_content = (
+            f"✅ Saved — {inf.get('display_name') or 'your bot'}'s "
+            f"'{target_section.get('heading') or section_id}' section updated: "
+            f"{proposal['content']}"
+        )
+        receipt_msg = await coach_repo.add_message(
+            pool,
+            coach_conversation_id,
+            "coach",
+            receipt_content,
+        )
+        return {
+            "applied": True,
+            "applied_type": "section_change",
+            "section_id": section_id,
+            "history_id": str(history_row["id"]),
+            "applied_at": history_row["applied_at"].isoformat()
+            if isinstance(history_row["applied_at"], datetime)
+            else history_row["applied_at"],
+            "receipt_message": _format_message(receipt_msg),
+        }
+
     override_raw = proposal.get("proposed_global_rule_override")
     if override_raw:
         import json as _json

@@ -343,6 +343,7 @@ async def generate_skill_checkin(
         skill_slug=inf.get("skill_slug"),
         user_skill_state=state_row.get("state") or {},
         global_rule_overrides=inf.get("global_rule_overrides"),
+        sections=inf.get("system_instructions_sections"),
     )
 
     checkin_prompt = skill_def.get("checkin_prompt") or (

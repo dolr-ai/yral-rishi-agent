@@ -139,22 +139,35 @@ def test_meta_prompt_overrideable_rules_sourced_from_soul_file():
 
 
 def test_coach_reply_returns_4_tuple():
-    """The 4th element (proposed_override) is the new PR-B addition.
-    Without changing the return arity, the route can't tell whether
-    Coach proposed an override or a system_instructions edit."""
+    """Bucket 2 PR-2 (2026-06-11): coach_reply grew to a 5-tuple
+    (display, proposed_changes, reasoning, proposed_override,
+    proposed_section_change). The PR-B's 4-tuple invariant — at least
+    one None per non-proposal turn — still holds; just check the
+    section slot lives in the return shape."""
     src = (REPO / "app" / "services" / "coach.py").read_text()
-    # The signature annotation should reflect the new 4-tuple shape
-    assert "tuple[str, str | None, str | None, dict | None]" in src
+    # 5-tuple shape: str + 4×(str|None or dict|None) — pinned by counting
+    # the | None tokens within the coach_reply return-type annotation.
+    pos = src.find("async def coach_reply(")
+    sig_block = src[pos : pos + 2000]
+    assert sig_block.count("| None") >= 4
 
 
 # ─── route persistence ───────────────────────────────────────────────────
 
 
 def test_route_destructures_override_from_coach_reply():
-    """Route unpacks 4 values now; persists proposed_override via
-    coach_repo.add_message(proposed_global_rule_override=...)."""
+    """Bucket 2 PR-2 (2026-06-11): unpack is now 5 values
+    (display, proposed, reasoning, proposed_override, proposed_section).
+    Persistence still routes the override blob through
+    coach_repo.add_message's proposed_global_rule_override kwarg."""
     src = (REPO / "app" / "routes" / "creator_coach.py").read_text()
-    assert "display, proposed, reasoning, proposed_override" in src
+    # Tolerate both multi-line tuple-unpack shapes (formatter-dependent)
+    # by checking for the 5 names individually in proximity to coach_reply
+    pos = src.find("coach_service.coach_reply(")
+    assert pos != -1
+    unpack_window = src[max(0, pos - 400) : pos]
+    for name in ("display", "proposed", "reasoning", "proposed_override", "proposed_section"):
+        assert name in unpack_window, f"unpack missing name: {name}"
     assert "proposed_global_rule_override=proposed_override" in src
 
 
@@ -188,7 +201,11 @@ def test_apply_writes_to_global_rule_overrides_on_override_proposal():
     migration 033) instead of system_instructions."""
     src = (REPO / "app" / "routes" / "creator_coach.py").read_text()
     pos = src.find("async def apply_coach_proposal(")
-    body = src[pos : pos + 7000]
+    # Window 14000 — Bucket 2 PR-2 added the proposed_section_change
+    # dispatch branch (~150 lines) at the TOP of the dispatch ladder,
+    # pushing the override + legacy branches further down. Previous
+    # window 7000 stopped before the override branch's body even began.
+    body = src[pos : pos + 14000]
     # The override branch dispatches BEFORE the legacy path
     override_pos = body.find('proposal.get("proposed_global_rule_override")')
     legacy_pos = body.find('proposal["proposed_changes"]')
@@ -208,11 +225,11 @@ def test_apply_response_carries_applied_type():
     edit was applied — different UX for each."""
     src = (REPO / "app" / "routes" / "creator_coach.py").read_text()
     pos = src.find("async def apply_coach_proposal(")
-    # Window 9000 — Coach PR-3 added the proposal_id validation +
-    # supersede_and_apply call to both branches, pushing the
-    # system_instructions applied_type past 7000 chars. Previous
-    # bumps: 3500→7000 (PR-B), 7000→9000 (PR-3).
-    body = src[pos : pos + 9000]
+    # Window 15000 — Bucket 2 PR-2 prepended the proposed_section_change
+    # dispatch (~150 lines incl. sha concurrency check + jsonb-array
+    # swap + history record). Previous bumps: 3500→7000 (PR-B),
+    # 7000→9000 (PR-3), 9000→15000 (Bucket 2 PR-2).
+    body = src[pos : pos + 15000]
     assert '"applied_type": "global_rule_override"' in body
     assert '"applied_type": "system_instructions"' in body
 

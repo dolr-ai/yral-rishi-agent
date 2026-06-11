@@ -30,7 +30,7 @@ def test_send_message_response_includes_pending_proposal_exists():
     Save button after a coach turn lands."""
     src = _src()
     pos = src.find("async def send_coach_message(")
-    body = src[pos : pos + 6000]
+    body = src[pos : pos + 8000]
     # The response dict that follows touch_session(...) must have the field.
     # Find the response after touch_session
     tspos = body.find("touch_session(pool, coach_conversation_id)")
@@ -48,7 +48,7 @@ def test_send_message_action_short_circuit_also_includes_field():
     pending exists."""
     src = _src()
     pos = src.find("async def send_coach_message(")
-    body = src[pos : pos + 6000]
+    body = src[pos : pos + 8000]
     intent_pos = body.find('"type": "action"')
     assert intent_pos != -1
     # The action response block should also include the field
