@@ -57,8 +57,10 @@ def test_migration_039_adds_two_columns_idempotently():
 
 
 def test_migration_039_has_squawk_preamble():
+    """30s lock_timeout (not 3s) — symmetric with 038 after the
+    2026-06-11T09:46Z hot-table lesson on ai_influencers."""
     src = MIG_039.read_text()
-    assert "SET lock_timeout = '3s';" in src
+    assert "SET lock_timeout = '30s';" in src
     assert "SET statement_timeout = '60s';" in src
 
 

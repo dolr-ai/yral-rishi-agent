@@ -43,8 +43,15 @@
 -- this week from 033/034/035/036/038.
 
 -- squawk: cap lock-wait + statement duration per the I-Mig2 rule (#340).
--- Same 3s/60s as 033 + 034 + 035 + 036 + 038.
-SET lock_timeout = '3s';
+-- 30s lock_timeout (NOT the 3s used by 033 + 034 + 035 + 036)
+-- defensively — 038 hit the 3s ceiling on the hot ai_influencers
+-- table 2026-06-11T09:46Z (PR #368 was the recovery). coach_messages
+-- is smaller + less hot than ai_influencers (~3K rows, alpha-only
+-- Coach traffic) so 3s would probably succeed, but the symmetric
+-- 30s precedent costs nothing — the alter is metadata-only on PG11+
+-- and we want every future "ADD COLUMN on a live table" to use the
+-- same 30s default.
+SET lock_timeout = '30s';
 SET statement_timeout = '60s';
 
 ALTER TABLE coach_messages
