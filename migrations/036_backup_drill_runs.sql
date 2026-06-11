@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS backup_drill_runs (
         CHECK (drill_type IN ('walg_restore', 'pg_dump_restore')),
     started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     finished_at TIMESTAMPTZ,
-    exit_code INT,
+    exit_code BIGINT,
     triggered_by VARCHAR(255),
     sanity_results JSONB,
     notes TEXT
