@@ -93,6 +93,25 @@ Two PROD BLOCKERs down, two left. H8 is the largest; needs scope-trim decision f
 
 `/health`, `/api/v1/influencers`, `/trending` all 200. All migrations applied (35 entries in `schema_migrations`). Patroni 3/3 healthy. WAL-G safety net verified live.
 
+### Evening shipping (6 more PRs after the H6 close)
+
+After the H6 close, a second shipping wave landed in the evening:
+
+| # | What |
+|---|---|
+| #356 | Coach PR-3 — `/apply` binding to explicit `proposal_id` + migration 035 lifecycle status (`pending` / `applied` / `discarded` / `superseded` / `na`) + `/discard` endpoint + 18 tests + supersede transaction |
+| #357 | Coach Bucket 2 contract — first cut (sectioned soul-file GET/PUT contract for mobile) |
+| #358 | EOD doc — H6 + 10-PR shipping day recap |
+| #359 | squawk lint: exclude `require-concurrent-index-creation` — runner already wraps in BEGIN/COMMIT (false positive) |
+| #360 | **Phase 21αβ.H10** — `/admin/backup-health` dashboard + migration 036 `backup_drill_runs` audit table + drill-script audit-row plumbing + 25 source-pin tests. JS-free, bookmark-friendly via `?token=`. Three data layers: `pg_stat_archiver` + `pg_class` + `backup_drill_runs`. Verdict GREEN / WARN / RED. |
+| #361 | Coach Bucket 2 contract refinements (3 incorporated into the doc for tomorrow's backend work) |
+
+That's **16 PRs total today** — the largest single-day shipping count of the project. Both #356 + #360 deploys landed clean in the evening; migrations 035 (Coach lifecycle status) + 036 (backup_drill_runs) applied via the auto-pg_dump runner. `schema_migrations` now at 36 entries.
+
+H10 squawk note: `prefer-bigint-over-{int,smallint}` flagged `exit_code` (0-255 bounded range). Pragmatic fix — kept as `BIGINT` for now. Future bounded-int columns will hit this; if it accumulates to 2-3 examples we'll add a per-column `# squawk-ignore: prefer-bigint` convention.
+
+PR-3 follow-through (the original "tomorrow morning" item) is **done** — #356 + #360 both shipped + deployed tonight. Tomorrow's queue collapses to: (1) Coach Bucket 2 backend per `docs/designs/coach-bucket-2-sections-contract.md`, (2) H2 server-side billing per the brief.
+
 ---
 
 ## 2026-06-09 — #314 P0 incident + full migration-runner hardening + Coach Fix 1/Fix 2 backends live
