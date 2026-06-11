@@ -225,11 +225,13 @@ def test_apply_response_carries_applied_type():
     edit was applied — different UX for each."""
     src = (REPO / "app" / "routes" / "creator_coach.py").read_text()
     pos = src.find("async def apply_coach_proposal(")
-    # Window 15000 — Bucket 2 PR-2 prepended the proposed_section_change
-    # dispatch (~150 lines incl. sha concurrency check + jsonb-array
-    # swap + history record). Previous bumps: 3500→7000 (PR-B),
-    # 7000→9000 (PR-3), 9000→15000 (Bucket 2 PR-2).
-    body = src[pos : pos + 15000]
+    # Window 20000 — Bucket 2 section-snapshot follow-up (2026-06-12)
+    # added the section_change JSONB coercion block in _format_message
+    # AND inserted `_ensure_section_snapshots` helper above the apply
+    # handler, pushing the system_instructions branch line offset
+    # further out. Previous bumps: 3500→7000 (PR-B), 7000→9000 (PR-3),
+    # 9000→15000 (Bucket 2 PR-2), 15000→20000 (snapshot follow-up).
+    body = src[pos : pos + 20000]
     assert '"applied_type": "global_rule_override"' in body
     assert '"applied_type": "system_instructions"' in body
 

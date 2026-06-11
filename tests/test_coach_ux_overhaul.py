@@ -99,9 +99,11 @@ def test_format_message_surfaces_suggestions():
     chip UI renders on the opening turn."""
     src = _read("app/routes/creator_coach.py")
     pos = src.find("def _format_message(")
-    # Window 2000 — Coach PR-3 added `status` + `status_changed_at` to
-    # the return dict, pushing `"suggestions": suggestions` past 1500.
-    body = src[pos : pos + 2000]
+    # Window 3000 — Bucket 2 section-snapshot follow-up (2026-06-12)
+    # added the section_change JSONB coercion block (~17 lines) before
+    # the return dict, pushing `"suggestions": suggestions` past 2000.
+    # Previous bumps: 1500→2000 (PR-3), 2000→3000 (snapshot follow-up).
+    body = src[pos : pos + 3000]
     assert '"suggestions": suggestions' in body
 
 
