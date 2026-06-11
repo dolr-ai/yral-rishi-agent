@@ -45,6 +45,21 @@ def _format_message(m: dict) -> dict:
             override = _json.loads(override)
         except (_json.JSONDecodeError, TypeError):
             override = None
+    # Coach Bucket 2 (2026-06-12 follow-up): surface the section-change
+    # blob on proposal turns so mobile renders the badge ("Coach proposed
+    # an edit to **Voice and tone**") from the snapshot fields without a
+    # re-lookup into the live sections array. Same JSONB-string coercion
+    # as the override blob — asyncpg's codec behaviour is identical.
+    # Without this, the JSONB lived in coach_messages but the GET
+    # /messages response dropped it on the floor.
+    section_change = m.get("proposed_section_change")
+    if isinstance(section_change, str):
+        import json as _json
+
+        try:
+            section_change = _json.loads(section_change)
+        except (_json.JSONDecodeError, TypeError):
+            section_change = None
     # Coach PR-3 (migration 035) — surface the proposal lifecycle status
     # so mobile can render active/passive/applied/discarded card states.
     # 'na' rows (creator messages, opening greetings, receipts) are
@@ -57,6 +72,7 @@ def _format_message(m: dict) -> dict:
         "content": m["content"],
         "proposed_changes": m.get("proposed_changes"),
         "proposed_global_rule_override": override,
+        "proposed_section_change": section_change,
         "reasoning": m.get("reasoning"),
         "suggestions": suggestions,
         "status": m.get("status") or "na",
@@ -67,6 +83,67 @@ def _format_message(m: dict) -> dict:
         if isinstance(m["created_at"], datetime)
         else m["created_at"],
     }
+
+
+def _ensure_section_snapshots(section_change: dict, inf: dict) -> dict:
+    """Defensive snapshot injection (PR #361 contract refinement).
+
+    Per the contract, every `proposed_section_change` blob carries:
+      - section_id (load-bearing — resolves to live row at apply time)
+      - section_heading (snapshot — mobile's badge label)
+      - section_editable (snapshot — mobile's "can edit" gate)
+      - new_body (load-bearing — the proposed text)
+      - previous_body_sha256 (optimistic-concurrency handle)
+
+    The META_PROMPT (services/coach.py SECTION_RULES_ADDENDUM) tells
+    Coach to emit all five, but LLMs forget fields. When Coach omits
+    `section_heading` or `section_editable`, look them up on the live
+    sections array (already in `inf`) and inject before persistence —
+    mobile then renders the badge from a complete blob without needing
+    to re-fetch the live row.
+
+    Live values are authoritative AT APPLY TIME (the /apply endpoint
+    resolves section_id against the live row + checks the body sha).
+    The snapshots are purely a render-time convenience for mobile — they
+    let the badge render WITHOUT a re-fetch of the live sections array.
+
+    We only fill MISSING fields. A Coach-emitted heading/editable stays
+    intact (the contract says snapshots reflect "what Coach read," which
+    can legitimately differ from the current live row if the creator
+    renamed mid-session).
+
+    Idempotent: re-call with the same input produces the same output.
+    Safe on a `section_id` that no longer exists on the live row
+    (returns the blob unchanged).
+    """
+    import json as _json
+
+    section_id = section_change.get("section_id")
+    if not isinstance(section_id, str) or not section_id.strip():
+        return section_change
+
+    needs_heading = not isinstance(section_change.get("section_heading"), str)
+    needs_editable = not isinstance(section_change.get("section_editable"), bool)
+    if not (needs_heading or needs_editable):
+        return section_change
+
+    live_sections = inf.get("system_instructions_sections")
+    if isinstance(live_sections, str):
+        try:
+            live_sections = _json.loads(live_sections)
+        except (_json.JSONDecodeError, TypeError):
+            live_sections = []
+    if not isinstance(live_sections, list):
+        return section_change
+
+    for sec in live_sections:
+        if isinstance(sec, dict) and sec.get("id") == section_id:
+            if needs_heading and isinstance(sec.get("heading"), str):
+                section_change["section_heading"] = sec["heading"]
+            if needs_editable:
+                section_change["section_editable"] = bool(sec.get("editable", True))
+            break
+    return section_change
 
 
 async def _load_owned_bot(pool, user_id: str, bot_id: str) -> dict:
@@ -292,6 +369,18 @@ async def send_coach_message(coach_conversation_id: str, body: dict, request: Re
     # None for plain-text turns. Persist whichever is present; add_message
     # supersedes any older pending proposals in the same conversation
     # inside its own transaction (Rishi 2026-06-11 follow-up).
+    #
+    # 2026-06-12 follow-up (per PR #361 contract refinement audit):
+    # defensive snapshot injection. The META_PROMPT asks Coach to emit
+    # section_heading + section_editable alongside section_id, but LLMs
+    # forget fields. When Coach omits a snapshot, look up the live
+    # section by section_id and inject the missing field so mobile's
+    # badge render NEVER sees an incomplete blob. The live row stays
+    # authoritative at apply time (which resolves via section_id);
+    # the snapshots are purely a render-time convenience for mobile.
+    if proposed_section:
+        proposed_section = _ensure_section_snapshots(proposed_section, inf)
+
     coach_msg = await coach_repo.add_message(
         pool,
         coach_conversation_id,
@@ -577,10 +666,31 @@ async def apply_coach_proposal(
         # the event for the audit trail using a sentinel "PRE→POST" pair
         # so a future migration to a typed override-history table can
         # backfill from system_instructions_history if needed.
-        prev_overrides_json = _json.dumps(inf.get("global_rule_overrides") or {})
-        new_overrides_json = _json.dumps(
-            {**(inf.get("global_rule_overrides") or {}), key: value}
-        )
+        #
+        # asyncpg returns JSONB columns as raw strings unless a JSON
+        # codec is registered on the pool (which V2 doesn't do — see
+        # app/database.py). For bots whose global_rule_overrides has
+        # been touched before, inf.get("global_rule_overrides") is a
+        # `str` not a `dict`. `{**str}` crashes with TypeError, surfaces
+        # as 500 — bug found 2026-06-12 ~15:53 IST applying an override
+        # on Anastasia (whose overrides column was already populated by
+        # a prior apply). soul_file.py:_render_global_rules already does
+        # this defensive parse for the same reason; mirror that here.
+        existing_overrides = inf.get("global_rule_overrides") or {}
+        if isinstance(existing_overrides, str):
+            try:
+                existing_overrides = _json.loads(existing_overrides) or {}
+            except (_json.JSONDecodeError, TypeError):
+                logger.warning(
+                    "creator_coach: bot=%s has malformed global_rule_overrides JSONB; "
+                    "treating as empty for apply",
+                    session["bot_id"],
+                )
+                existing_overrides = {}
+        if not isinstance(existing_overrides, dict):
+            existing_overrides = {}
+        prev_overrides_json = _json.dumps(existing_overrides)
+        new_overrides_json = _json.dumps({**existing_overrides, key: value})
         history_row = await coach_repo.record_application(
             pool,
             bot_id=session["bot_id"],
