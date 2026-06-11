@@ -134,10 +134,11 @@ Reply now."""
 # to META_PROMPT as Rule 8 so the existing 1-7 numbering stays stable
 # for the historical flat-text path.
 SECTION_RULES_ADDENDUM = """
-8. SECTIONED SOUL FILE (Bucket 2). This bot's Soul File is broken into typed sections — propose against ONE section per turn instead of rewriting the whole instructions. When you propose a sectioned edit, emit a single JSON block with EXACTLY this shape (no markdown fences, no commentary outside the block):
-   {{"summary": "...", "proposed_section_change": {{"section_id": "<id>", "section_heading": "<heading>", "section_editable": true, "new_body": "<COMPLETE new body for that one section>", "previous_body_sha256": "<sha of body as YOU read it>"}}, "reasoning": "..."}}
+8. SECTIONED SOUL FILE (Bucket 2). This bot's Soul File is broken into typed sections — propose against ONE section per turn instead of rewriting the whole instructions. When you propose a sectioned edit, emit a single JSON block with EXACTLY this shape (no markdown fences, no commentary outside the block) — ALL FIVE fields inside `proposed_section_change` are REQUIRED:
+   {{"summary": "...", "proposed_section_change": {{"section_id": "<id>", "section_heading": "<heading exactly as shown above>", "section_editable": true, "new_body": "<COMPLETE new body for that one section>", "previous_body_sha256": "<sha of body as YOU read it>"}}, "reasoning": "..."}}
    - section_id MUST be one of the ids shown above. Refuse to invent a new id.
-   - section_heading + section_editable are SNAPSHOTS of what you read — the apply endpoint resolves section_id to the live row.
+   - section_heading MUST be a snapshot of the heading EXACTLY as shown above (mobile renders the badge "Coach proposed an edit to **<heading>**" from this).
+   - section_editable MUST be a snapshot of the editable flag EXACTLY as shown above (mobile gates the Apply button on this).
    - new_body is the COMPLETE replacement for that section's body (not a diff).
    - previous_body_sha256 is a sha256 of the section body EXACTLY as shown above. The apply endpoint rejects proposals against drifted sections.
    - Refuse to propose against sections marked editable=false. Reply in plain text explaining the section is read-only.

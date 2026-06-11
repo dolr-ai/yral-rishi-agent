@@ -216,7 +216,10 @@ def test_format_message_surfaces_status_and_changed_at():
     card states. status_changed_at lets mobile show "Applied 2 min ago"."""
     src = _read("app/routes/creator_coach.py")
     pos = src.find("def _format_message(")
-    body = src[pos : pos + 2500]
+    # Window 3500 — Bucket 2 section-snapshot follow-up (2026-06-12)
+    # inserted the section_change JSONB coercion block before the
+    # return dict, pushing the status keys further down.
+    body = src[pos : pos + 3500]
     assert '"status":' in body
     assert '"status_changed_at":' in body
 
