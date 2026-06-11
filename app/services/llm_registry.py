@@ -671,6 +671,44 @@ async def _record_outcome(
     except Exception as e:
         logger.warning("llm_registry: _record_outcome skipped (%s)", e)
 
+    # 2026-06-11 PR-5 — Sentry on timeout for user-facing sync processes.
+    # Plan §4 item E: the 4 server_error 110s soul_file_coach rows from
+    # 2026-06-09 fired no Sentry alert. The leak-guard
+    # (_check_async_gemini_leak) only fires for processes in
+    # ASYNC_PROCESSES_NEVER_GEMINI; soul_file_coach is correctly NOT
+    # there because it's a sync creator-waiting path. That left
+    # user-facing timeouts silent.
+    #
+    # Fires Sentry ONLY for outcome=='timeout' on the explicit allow-list
+    # below — every other failure mode is already covered by the dispatch
+    # path's own logger.exception + Sentry breadcrumbs. Capture is
+    # best-effort: if sentry_sdk import or capture fails, we swallow.
+    if outcome == "timeout" and process in _USER_FACING_SYNC_PROCESSES:
+        try:
+            import sentry_sdk as _sentry
+
+            _sentry.capture_message(
+                f"LLM timeout on user-facing process {process!r} "
+                f"(provider={provider}, latency_ms={latency_ms})",
+                level="error",
+            )
+        except Exception:
+            # Never let Sentry-side failure break the dispatch path.
+            pass
+
+
+# 2026-06-11 PR-5 — user-facing SYNC processes where a timeout is
+# directly visible to a creator/end-user. Async-background processes
+# stay out of this set (their failure-loud guard is the leak-guard
+# alerting in _check_async_gemini_leak). Today only soul_file_coach
+# is on the list per the plan's narrow scope; add other user-facing
+# sync processes here if/when their timeouts need the same alerting.
+_USER_FACING_SYNC_PROCESSES: frozenset[str] = frozenset(
+    {
+        "soul_file_coach",
+    }
+)
+
 
 async def _record_cost(
     process: str,
