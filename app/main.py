@@ -30,6 +30,7 @@ from routes.health import router as health_router
 from routes.human_chat import router as human_chat_router
 from routes.influencers import router as influencers_router
 from routes.media import router as media_router
+from routes.soul_file import router as soul_file_router
 from routes.memories import router as memories_router
 from routes.skills import router as skills_router
 from routes.websocket import router as ws_router
@@ -481,6 +482,7 @@ app.include_router(admin_dashboard_router)
 app.include_router(llm_routing_admin_router)
 app.include_router(backup_health_admin_router)
 app.include_router(influencers_router)
+app.include_router(soul_file_router)
 app.include_router(chat_router)
 app.include_router(chat_v2_router)
 app.include_router(media_router)
