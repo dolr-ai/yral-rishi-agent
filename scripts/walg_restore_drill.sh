@@ -177,13 +177,39 @@ done
 # ─── 6. sanity queries ─────────────────────────────────────────────────
 log "running sanity queries against sidecar..."
 
-# Helper: query the sidecar and trim whitespace
+# Helper: query the sidecar and trim whitespace. Always returns 0 from
+# the function so a psql failure (sidecar shutdown mid-drill, table not
+# present, connection refused) doesn't trip `set -e` on the caller —
+# we want to RUN ALL queries and report which ones returned empty, not
+# bail on the first. The 2026-06-11 drill #2 hit exactly this: replay
+# completed cleanly but the first sanity_query call exited the script
+# silently via set -e, never reaching the row-count log lines.
 sidecar_query() {
-    docker exec --user postgres "${CID}" \
-        psql -p "${DRILL_PORT}" -h "${DRILL_DIR}" -d "${POSTGRES_DB}" -tA -c "$1" 2>/dev/null \
-        | tr -d '[:space:]'
+    local out
+    out="$(docker exec --user postgres "${CID}" \
+        psql -p "${DRILL_PORT}" -h "${DRILL_DIR}" -d "${POSTGRES_DB}" -tA -c "$1" 2>&1 || true)"
+    printf '%s' "${out}" | tr -d '[:space:]'
 }
 
+# Pre-flight: confirm the sidecar accepts queries on the target DB. If
+# this fails, every COUNT(*) below would also fail; better to surface
+# the root cause ONCE with diagnostics than five no-ops in a row.
+PRE_FLIGHT="$(sidecar_query "SELECT current_database()")"
+log "sidecar pre-flight (current_database): ${PRE_FLIGHT:-<empty>}"
+if [ -z "${PRE_FLIGHT}" ] || echo "${PRE_FLIGHT}" | grep -qi "error\|refused\|fatal\|could.not"; then
+    fail "sidecar not accepting queries on ${POSTGRES_DB}"
+    log "── diagnostics: list databases via the default postgres DB ──"
+    docker exec --user postgres "${CID}" \
+        psql -p "${DRILL_PORT}" -h "${DRILL_DIR}" -d postgres -tA -c "\l" 2>&1 | head -20 || true
+    log "── diagnostics: list public-schema tables in ${POSTGRES_DB} ──"
+    docker exec --user postgres "${CID}" \
+        psql -p "${DRILL_PORT}" -h "${DRILL_DIR}" -d "${POSTGRES_DB}" -tA -c \
+        "SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY 1" \
+        2>&1 | head -20 || true
+fi
+
+# Run all 5 sanity queries — none short-circuit, even if the pre-flight
+# failed. We want full visibility into which queries return empty.
 USERS_COUNT="$(sidecar_query "SELECT COUNT(*) FROM users")"
 INF_COUNT="$(sidecar_query "SELECT COUNT(*) FROM ai_influencers")"
 CONV_COUNT="$(sidecar_query "SELECT COUNT(*) FROM conversations")"
