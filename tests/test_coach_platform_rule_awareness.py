@@ -205,7 +205,7 @@ def test_apply_writes_to_global_rule_overrides_on_override_proposal():
     # dispatch branch (~150 lines) at the TOP of the dispatch ladder,
     # pushing the override + legacy branches further down. Previous
     # window 7000 stopped before the override branch's body even began.
-    body = src[pos : pos + 14000]
+    body = src[pos : pos + 18000]
     # The override branch dispatches BEFORE the legacy path
     override_pos = body.find('proposal.get("proposed_global_rule_override")')
     legacy_pos = body.find('proposal["proposed_changes"]')

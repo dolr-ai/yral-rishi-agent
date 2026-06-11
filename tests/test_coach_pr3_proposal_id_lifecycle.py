@@ -175,7 +175,7 @@ def test_apply_route_calls_supersede_and_apply_in_both_branches():
     branch (~150 lines). Count ≥3 now."""
     src = _read("app/routes/creator_coach.py")
     pos = src.find("async def apply_coach_proposal(")
-    body = src[pos : pos + 15000]
+    body = src[pos : pos + 18000]
     assert body.count("supersede_and_apply(") >= 3
 
 

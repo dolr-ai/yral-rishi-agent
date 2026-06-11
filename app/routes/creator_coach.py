@@ -698,31 +698,97 @@ async def apply_coach_proposal(
             existing_overrides = {}
         prev_overrides_json = _json.dumps(existing_overrides)
         new_overrides_json = _json.dumps({**existing_overrides, key: value})
-        history_row = await coach_repo.record_application(
-            pool,
-            bot_id=session["bot_id"],
-            coach_conversation_id=coach_conversation_id,
-            coach_message_id=str(proposal["id"]),
-            previous_instructions=f"global_rule_overrides={prev_overrides_json}",
-            new_instructions=f"global_rule_overrides={new_overrides_json}",
-            applied_by=user_id,
-        )
+        # 2026-06-12: mobile expert reported override-apply still 500s
+        # after the JSONB-string-decode fix in PR #370. The crash is in
+        # ONE of the four DB calls below (record_application,
+        # supersede_and_apply, add_message) but the response body was
+        # a generic 500 with no JSON detail — i.e. uncaught Python
+        # exception that bypassed our HTTPException(500, detail=...)
+        # raises. Wrapping the suspect block in try/except so:
+        #   1. The next 500 surfaces a clear error body naming WHICH
+        #      step failed + the exception class
+        #   2. Sentry capture fires with full traceback (the existing
+        #      Sentry SDK is already configured in main.py)
+        # This is diagnostic scaffolding — once the root cause is
+        # known + fixed in a follow-up, the wrapper can stay (it's a
+        # robust pattern) or come off (caller's choice).
+        try:
+            history_row = await coach_repo.record_application(
+                pool,
+                bot_id=session["bot_id"],
+                coach_conversation_id=coach_conversation_id,
+                coach_message_id=str(proposal["id"]),
+                previous_instructions=f"global_rule_overrides={prev_overrides_json}",
+                new_instructions=f"global_rule_overrides={new_overrides_json}",
+                applied_by=user_id,
+            )
+        except Exception as e:
+            import sentry_sdk
+
+            sentry_sdk.capture_exception(e)
+            logger.exception(
+                "coach.apply: record_application failed for override "
+                "proposal=%s bot=%s session=%s",
+                str(proposal["id"]),
+                session["bot_id"],
+                coach_conversation_id,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"override apply failed at record_application: "
+                f"{type(e).__name__}: {e}",
+            ) from e
+
         # Coach PR-3: typed lifecycle transition. Supersede every other
         # pending proposal in this session + mark this one applied.
-        await coach_repo.supersede_and_apply(
-            pool, coach_conversation_id, str(proposal["id"])
-        )
+        try:
+            await coach_repo.supersede_and_apply(
+                pool, coach_conversation_id, str(proposal["id"])
+            )
+        except Exception as e:
+            import sentry_sdk
+
+            sentry_sdk.capture_exception(e)
+            logger.exception(
+                "coach.apply: supersede_and_apply failed for override "
+                "proposal=%s session=%s",
+                str(proposal["id"]),
+                coach_conversation_id,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"override apply failed at supersede_and_apply: "
+                f"{type(e).__name__}: {e}",
+            ) from e
+
         receipt_content = (
             f"✅ Saved — platform-rule override applied for "
             f"{inf.get('display_name') or 'your bot'}: "
             f"{key} = {value}. {proposal['content']}"
         )
-        receipt_msg = await coach_repo.add_message(
-            pool,
-            coach_conversation_id,
-            "coach",
-            receipt_content,
-        )
+        try:
+            receipt_msg = await coach_repo.add_message(
+                pool,
+                coach_conversation_id,
+                "coach",
+                receipt_content,
+            )
+        except Exception as e:
+            import sentry_sdk
+
+            sentry_sdk.capture_exception(e)
+            logger.exception(
+                "coach.apply: receipt add_message failed for override "
+                "proposal=%s session=%s receipt_content_len=%d",
+                str(proposal["id"]),
+                coach_conversation_id,
+                len(receipt_content),
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"override apply failed at receipt add_message: "
+                f"{type(e).__name__}: {e}",
+            ) from e
         return {
             "applied": True,
             "applied_type": "global_rule_override",

@@ -483,7 +483,7 @@ def test_apply_dispatches_on_proposed_section_change():
     proposal is ignored at apply time and the section never updates."""
     src = _read("app/routes/creator_coach.py")
     apply_pos = src.find("async def apply_coach_proposal(")
-    body = src[apply_pos : apply_pos + 14000]
+    body = src[apply_pos : apply_pos + 18000]
     # Three dispatch branches in priority order
     section_pos = body.find('proposal.get("proposed_section_change")')
     override_pos = body.find('proposal.get("proposed_global_rule_override")')
@@ -502,7 +502,7 @@ def test_apply_section_branch_checks_sha_concurrency():
     the sha check is caught."""
     src = _read("app/routes/creator_coach.py")
     apply_pos = src.find("async def apply_coach_proposal(")
-    body = src[apply_pos : apply_pos + 14000]
+    body = src[apply_pos : apply_pos + 18000]
     assert "section_body_sha256" in body
     assert "stale_proposal" in body
 
@@ -513,7 +513,7 @@ def test_apply_section_branch_refuses_non_editable_section():
     bypasses the check is caught."""
     src = _read("app/routes/creator_coach.py")
     apply_pos = src.find("async def apply_coach_proposal(")
-    body = src[apply_pos : apply_pos + 14000]
+    body = src[apply_pos : apply_pos + 18000]
     assert "section_not_editable" in body
     assert 'target_section.get("editable") is False' in body
 
@@ -525,7 +525,7 @@ def test_apply_section_branch_refuses_missing_section_id():
     between."""
     src = _read("app/routes/creator_coach.py")
     apply_pos = src.find("async def apply_coach_proposal(")
-    body = src[apply_pos : apply_pos + 14000]
+    body = src[apply_pos : apply_pos + 18000]
     assert "section_not_found" in body
 
 
@@ -536,7 +536,7 @@ def test_apply_section_branch_updates_via_jsonb_array_swap():
     the section's heading/editable fields unchanged."""
     src = _read("app/routes/creator_coach.py")
     apply_pos = src.find("async def apply_coach_proposal(")
-    body = src[apply_pos : apply_pos + 14000]
+    body = src[apply_pos : apply_pos + 18000]
     assert "UPDATE ai_influencers" in body
     assert "SET system_instructions_sections" in body
     # The new_sections array is built from the live one
@@ -548,7 +548,7 @@ def test_apply_section_branch_records_history():
     for the audit trail. The section path is no exception."""
     src = _read("app/routes/creator_coach.py")
     apply_pos = src.find("async def apply_coach_proposal(")
-    body = src[apply_pos : apply_pos + 14000]
+    body = src[apply_pos : apply_pos + 18000]
     # record_application is called in the section branch
     section_pos = body.find('proposal.get("proposed_section_change")')
     section_block = body[section_pos : section_pos + 6000]
@@ -561,7 +561,7 @@ def test_apply_section_branch_returns_section_change_type():
     'system_instructions' + 'global_rule_override'."""
     src = _read("app/routes/creator_coach.py")
     apply_pos = src.find("async def apply_coach_proposal(")
-    body = src[apply_pos : apply_pos + 14000]
+    body = src[apply_pos : apply_pos + 18000]
     assert '"applied_type": "section_change"' in body
 
 
