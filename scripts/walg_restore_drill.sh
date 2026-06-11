@@ -80,6 +80,41 @@ fi
 
 log "container env looks healthy — wal-g + WALG_S3_PREFIX present"
 
+# ─── 1b. pre-flight orphan cleanup ─────────────────────────────────────
+# A previous drill that exited via set -e BEFORE teardown leaves:
+#   1. A sidecar postgres still bound to port 5433
+#   2. /tmp/walg-drill-* directories with ~1GB+ of base backup data
+# Both block the next drill from running clean. The 2026-06-11 drill #3
+# hit this — drill #2's silent set-e exit skipped teardown, the orphan
+# postgres on 5433 made drill #3's pg_ctl fail immediately with "could
+# not bind". Pre-flight cleans them defensively so each drill starts
+# from a known-empty state on the container.
+log "pre-flight: clearing any orphan sidecars + stale drill dirs..."
+docker exec --user postgres "${CID}" sh -c "
+    # Stop any postgres process whose data dir matches /tmp/walg-drill-*.
+    # pg_ctl -mode immediate is the fastest stop; orphans don't deserve a graceful shutdown.
+    for olddir in /tmp/walg-drill-*; do
+        [ -d \"\$olddir\" ] || continue
+        if [ -f \"\$olddir/postmaster.pid\" ]; then
+            pg_ctl -D \"\$olddir\" stop -m immediate 2>/dev/null || true
+        fi
+    done
+    true
+" 2>/dev/null || true
+# Remove the dirs after stopping the daemons (run as root in case
+# postgres process owned files that postgres user can't unlink).
+docker exec "${CID}" sh -c "rm -rf /tmp/walg-drill-* 2>/dev/null; true" || true
+
+# Defensive trap: teardown runs ALWAYS, even on `set -e` exit mid-flight.
+# Without this, a sanity-query failure leaves an orphan postgres + drill
+# dir that block the next run (the exact bug this section prevents for
+# THIS run; the trap prevents it for the NEXT run).
+trap 'if [ -n "${CID:-}" ] && [ -n "${DRILL_DIR:-}" ]; then
+    echo "[walg-drill trap] cleaning up sidecar + ${DRILL_DIR}..." >&2
+    docker exec --user postgres "${CID}" pg_ctl -D "${DRILL_DIR}" stop -m immediate 2>/dev/null || true
+    docker exec "${CID}" rm -rf "${DRILL_DIR}" 2>/dev/null || true
+fi' EXIT
+
 # ─── 2. inspect backups before fetching ────────────────────────────────
 log "listing available backups..."
 if ! docker exec "${CID}" sh -c "wal-g backup-list 2>&1 | tail -20"; then
@@ -146,7 +181,16 @@ log "starting sidecar postgres on port ${DRILL_PORT}..."
 if ! docker exec --user postgres "${CID}" \
         pg_ctl -D "${DRILL_DIR}" -l "${DRILL_DIR}/startup.log" -w -t 90 start; then
     fail "sidecar postgres failed to start — see ${DRILL_DIR}/startup.log on container ${CID}"
-    docker exec "${CID}" sh -c "cat ${DRILL_DIR}/startup.log 2>&1 | tail -30" || true
+    # Sleep first so any buffered postgres output flushes to disk before
+    # we read. Without this, we sometimes see only the first LOG line
+    # (the 2026-06-11 drill #3 case) and miss the actual failure cause.
+    sleep 2
+    log "── full startup.log dump ──"
+    docker exec "${CID}" cat "${DRILL_DIR}/startup.log" 2>&1 || true
+    log "── /tmp/walg-drill-* dirs on container (orphan check) ──"
+    docker exec "${CID}" sh -c "ls -la /tmp/ | grep walg-drill || true" 2>&1 || true
+    log "── port 5433 owner inside container (if known) ──"
+    docker exec "${CID}" sh -c "ss -tlnp 2>/dev/null | grep ':5433 ' || netstat -tlnp 2>/dev/null | grep ':5433 ' || echo '(ss/netstat unavailable)'" || true
     exit 3
 fi
 log "sidecar started; waiting for WAL replay to catch up..."
