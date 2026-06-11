@@ -176,6 +176,12 @@ async def generate_proactive_message(
         user_id=user_id,
         conversation_id=conversation_id,
         archetype=archetype,
+        # Proactive nudges are async background generation, NOT real-user
+        # chat. Tagging the process correctly lands the cost row under
+        # `proactive_generation` (not `user_chat_main`) AND honors the
+        # LLM_DEFAULTS routing (runpod_vllm primary → internal_vllm
+        # fallback) so background traffic stops hitting Gemini.
+        process_override="proactive_generation",
     )
 
     if llm_result.is_fallback:
@@ -344,14 +350,17 @@ async def generate_skill_checkin(
         "End with one question."
     )
 
-    # Phase 23.6 — skill check-ins route through ai_client.generate_response
-    # (process=user_chat_main) deliberately. Skills are pure Soul File
-    # composition — the skill identity lives in the prompt layers, NOT
-    # in routing. The legacy generate_proactive_message uses the same
-    # path. If per-skill cost tracking is ever needed, the right move
-    # is a `skill_slug` tag column on `llm_costs` (one query for cost
-    # per skill), not a separate process per skill (would multiply the
-    # routing surface every time a new vertical ships).
+    # Phase 23.6 — skill check-ins are async background generation, same
+    # category as the legacy proactive loop. Route via the
+    # `proactive_generation` process so:
+    #   1. The cost lands in the right bucket (was inflating
+    #      `user_chat_main` per the 2026-06-11 Rishi audit).
+    #   2. The LLM_DEFAULTS routing (runpod_vllm → internal_vllm fallback,
+    #      NEVER gemini) is actually honored. Pre-2026-06-11 this fell
+    #      through to `user_chat_main` → gemini and burned premium $.
+    # If per-skill cost tracking is ever needed, the right move is a
+    # `skill_slug` tag column on `llm_costs`, not a separate process per
+    # skill — that would multiply the routing surface for every vertical.
     llm_result = await ai_client.generate_response(
         system_instructions=system_instructions,
         conversation_history=[],
@@ -360,6 +369,7 @@ async def generate_skill_checkin(
         user_id=user_id,
         conversation_id=None,
         archetype=inf.get("category"),
+        process_override="proactive_generation",
     )
 
     if llm_result.is_fallback or llm_result.error_code:

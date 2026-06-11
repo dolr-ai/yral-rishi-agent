@@ -369,6 +369,7 @@ async def generate_response(
     user_id: str | None = None,
     conversation_id: str | None = None,
     archetype: str | None = None,
+    process_override: str | None = None,
 ) -> LlmResponse:
     """Chat orchestration shim — builds messages, routes through registry.
 
@@ -377,6 +378,15 @@ async def generate_response(
     is now an orchestrator that handles archetype tuning, NSFW routing,
     Langfuse tracing, and error mapping — leaving dispatch + retries +
     concurrency capping to the registry.
+
+    `process_override` lets background callers (proactive, skill check-ins)
+    label their cost rows under a distinct registry process — so the
+    `llm_costs` table separates real-user chat from background generation
+    AND so the routing in LLM_DEFAULTS for that process is actually
+    honored. Without this, every background call defaulted to
+    `user_chat_main` and ended up on Gemini despite LLM_DEFAULTS routing
+    `proactive_generation` to runpod_vllm. Fixed 2026-06-11 after Rishi
+    noticed proactive_generation showing 0 calls in the dashboard.
     """
     from services import llm_registry
     from services.soul_file import tuning_for
@@ -391,12 +401,18 @@ async def generate_response(
         messages = await _build_chat_messages(
             system_instructions, conversation_history, user_message, media_urls
         )
+        # When the caller asks for a specific registry process (proactive
+        # / skill check-in), trust them — they know their cost-attribution
+        # intent. We skip the NSFW/multimodal heuristic in that case
+        # because the override IS the routing decision.
+        if process_override is not None:
+            process = process_override
         # Phase 21αβ.H12 — route vision-bearing chat via the dedicated
         # multimodal process (text-only providers like runpod_vllm would
         # silently drop images). NSFW + vision is not supported today —
         # NSFW takes precedence, mirroring the pre-H12 behavior. If a
         # future product call needs NSFW+vision, add user_chat_main_nsfw_multimodal.
-        if is_nsfw:
+        elif is_nsfw:
             process = "user_chat_main_nsfw"
         elif llm_registry.has_image_content(messages):
             process = "user_chat_main_multimodal"
