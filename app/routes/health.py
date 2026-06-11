@@ -150,3 +150,51 @@ async def etl_skipped(request: Request, hours: int = 24, reason: str | None = No
     pool = await database.get_pool()
     raw = await get_skipped(pool, hours, reason)
     return _iso_serialize(raw)
+
+
+# ─── On-demand drain + reconciliation (Pieces B + C, 2026-06-11 plan) ────
+#
+# These endpoints are called by .github/workflows/etl-drain.yml. Both
+# JWT-gated to match the rest of /admin/*. The drain endpoint POSTs
+# because it has side effects (forces importer + integrity ticks). The
+# reconciliation endpoint GETs because it's pure-read; cheap enough to
+# call anytime without coordination.
+
+
+@router.post("/admin/etl/drain")
+async def etl_drain_endpoint(request: Request):
+    """Force the importer + integrity verifier to tick NOW instead of
+    waiting up to 5 min. Loops `etl_chat_ai.run_once` until 2 consecutive
+    empties (steady state), then drives `etl_integrity.run_once` until
+    all 3 layers (hourly/sample/sentinel) have results newer than the
+    drain start time. Returns the inline reconciliation report so the
+    workflow has one round-trip.
+
+    Hard deadline = 180 s (the workflow's outer timeout is longer).
+    Idempotent — importer dedupes via etl_processed_files PK.
+
+    JWT-gated. Operator JWT (any authenticated principal) is fine for
+    this endpoint — the underlying ETL is already running, this just
+    accelerates it."""
+    from auth import get_current_user
+    from services.etl_drain import drain
+
+    get_current_user(request)
+    pool = await database.get_pool()
+    raw = await drain(pool)
+    return _iso_serialize(raw)
+
+
+@router.get("/admin/etl/reconciliation")
+async def etl_reconciliation_endpoint(request: Request):
+    """One-shot report Rishi can read in 60 seconds: per-table chat-ai
+    vs V2 counts, deliberate-skip breakdown, integrity layer pass/fail
+    counts in the last 24h, lag seconds, and a verdict
+    (GREEN | DRAIN_AGAIN | INVESTIGATE). Pure read; no side effects."""
+    from auth import get_current_user
+    from services.etl_drain import reconciliation
+
+    get_current_user(request)
+    pool = await database.get_pool()
+    raw = await reconciliation(pool)
+    return _iso_serialize(raw)

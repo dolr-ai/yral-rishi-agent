@@ -1,0 +1,258 @@
+name: Drain ETL + reconciliation
+
+# Manual button Rishi presses to force the chat-ai → V2 ETL to tick
+# RIGHT NOW (instead of waiting up to 5 min for the cron), then get
+# back ONE clear "all good / not all good" verdict.
+#
+# Use case: pre-cutover practice runs, cutover day itself, and the
+# post-cutover settlement window. Each press of the button is one
+# end-to-end verification.
+#
+# Symmetric with bootstrap-schema-migrations.yml, roll-patroni-image.yml,
+# rotate-runpod-vllm-key.yml — typed confirmation, ssh-keyscan with the
+# manager failover loop, SHA8-suffixed audit trail.
+#
+# What this does (in order):
+#   1. SSH rishi-1, run scripts/etl-manual-trigger.sh (which calls
+#      incremental_export.py --force). This emits a tick + fresh
+#      integrity layers to S3.
+#   2. Sleep 90s so the S3 files land + V2 has time to pick them up.
+#   3. SSH a V2 swarm manager, docker exec into the agent container,
+#      curl POST /admin/etl/drain. This loops importer + integrity
+#      run_once until steady state; returns the reconciliation report.
+#   4. Print the verdict block in the workflow log.
+#   5. If mode=cutover, upload the JSON report to S3 at
+#      s3://rishi-yral/cutover-runs/<ts>.json + post a 1-line summary
+#      to the Google Chat webhook.
+#   6. Exit 0 on GREEN; exit 1 on anything else so the run goes red
+#      and Rishi knows to click in.
+#
+# What this does NOT do:
+#   - Does NOT pause the regular 5-min ETL — it runs additively.
+#   - Does NOT mutate any data on chat-ai (the exporter connects as
+#     etl_readonly with SELECT-only grants).
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Drain mode. routine = practice run; cutover = the real one (writes report to S3 + posts to Google Chat).'
+        required: true
+        default: 'routine'
+        type: choice
+        options:
+          - routine
+          - cutover
+      reason:
+        description: 'Why are you draining? (Captured in run logs for the audit trail.)'
+        required: true
+        default: 'Draining ETL because: '
+      i_understand:
+        description: "Type DRAIN ETL to confirm. Drain is read-only on chat-ai and idempotent on V2; this is the safety phrase."
+        required: true
+        default: ''
+
+env:
+  SERVICE: yral-rishi-agent
+  RISHI_1_HOST: 136.243.150.84  # chat-ai exporter host
+  SWARM_MANAGER_1: 138.201.128.108
+  SWARM_MANAGER_2: 88.99.160.251
+  SWARM_MANAGER_3: 162.55.88.112
+  SWARM_USER: rishi-deploy
+  CHAT_AI_USER: deploy  # rishi-1 etl-export ssh user
+  CUTOVER_S3_BUCKET: rishi-yral
+  CUTOVER_S3_PREFIX: cutover-runs
+
+jobs:
+  drain:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    # Hard cap. The drain endpoint itself has a 180s deadline; this is
+    # the wall budget across all 5 SSH/sleep/curl steps below.
+    timeout-minutes: 8
+
+    steps:
+      - name: Confirm DRAIN ETL typed + validate mode
+        run: |
+          if [ "${{ inputs.i_understand }}" != "DRAIN ETL" ]; then
+            echo "::error::Confirmation phrase mismatched (must be exactly 'DRAIN ETL'); aborting."
+            exit 1
+          fi
+          MODE="${{ inputs.mode }}"
+          if [ "$MODE" != "routine" ] && [ "$MODE" != "cutover" ]; then
+            echo "::error::mode must be 'routine' or 'cutover'; got '$MODE'"
+            exit 1
+          fi
+          echo "─── ETL drain initiated ───"
+          echo "Mode:          $MODE"
+          echo "Triggered by:  ${{ github.actor }}"
+          echo "Reason:        ${{ inputs.reason }}"
+          echo "Timestamp:     $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+      - name: Verify ADMIN_JWT_TOKEN is set
+        # The drain + reconciliation endpoints are JWT-gated. The
+        # workflow stores a long-lived operator JWT in a GitHub Secret.
+        # Length-only confirmation, never log the value itself.
+        env:
+          TOK: ${{ secrets.ADMIN_JWT_TOKEN }}
+        run: |
+          if [ -z "$TOK" ]; then
+            echo "::error::GitHub Secret ADMIN_JWT_TOKEN is empty. Provision a long-lived admin JWT and set it under repo Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+          echo "✓ ADMIN_JWT_TOKEN present (length=${#TOK})"
+
+      - name: Set up SSH key + known_hosts
+        # ssh-keyscan against all 3 V2 managers + rishi-1. Same pattern
+        # as bootstrap-schema-migrations.yml.
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          for host in ${{ env.SWARM_MANAGER_1 }} ${{ env.SWARM_MANAGER_2 }} ${{ env.SWARM_MANAGER_3 }} ${{ env.RISHI_1_HOST }}; do
+            ssh-keyscan -T 10 -H "$host" >> ~/.ssh/known_hosts 2>/dev/null || true
+          done
+
+      - name: Step 1 — Force exporter tick on rishi-1
+        # The wrapper takes a flock + calls incremental_export.py --force.
+        # If another manual run is in progress (flock held) the wrapper
+        # exits 78 — surface that to the operator with a clear message
+        # instead of mysterious failure.
+        id: export
+        run: |
+          SSH_OPTS="-i ~/.ssh/deploy_key -o ConnectTimeout=15 -o BatchMode=yes -o StrictHostKeyChecking=yes"
+          echo "── SSH ${{ env.CHAT_AI_USER }}@${{ env.RISHI_1_HOST }} → run wrapper ──"
+          set +e
+          ssh $SSH_OPTS "${{ env.CHAT_AI_USER }}@${{ env.RISHI_1_HOST }}" \
+              'bash ~/.etl-export/etl-manual-trigger.sh'
+          RC=$?
+          set -e
+          if [ $RC -eq 78 ]; then
+            echo "::error::Wrapper refused (exit 78) — another manual trigger may be in progress or the install is missing on rishi-1."
+            exit 1
+          fi
+          if [ $RC -ne 0 ]; then
+            echo "::error::Wrapper exited rc=$RC. Check rishi-1 ~/.etl-export/ logs."
+            exit 1
+          fi
+          echo "✓ Wrapper completed cleanly; new files should be in S3 within 90s."
+
+      - name: Step 2 — Wait 90s for S3 files to land
+        # Hetzner Object Storage usually returns LIST results within
+        # ~5s of PUT completion, but we give a generous buffer so the
+        # V2 importer has a chance to list-and-fetch on the first
+        # drain tick.
+        run: |
+          echo "Waiting 90s for S3 propagation..."
+          sleep 90
+          echo "✓ Wait complete; calling drain endpoint."
+
+      - name: Step 3 — Pick a responding swarm manager
+        id: pick
+        run: |
+          SSH_OPTS="-i ~/.ssh/deploy_key -o ConnectTimeout=15 -o BatchMode=yes -o StrictHostKeyChecking=yes"
+          MGR=""
+          for host in ${{ env.SWARM_MANAGER_1 }} ${{ env.SWARM_MANAGER_2 }} ${{ env.SWARM_MANAGER_3 }}; do
+            if ssh $SSH_OPTS "${{ env.SWARM_USER }}@$host" "docker info --format '{{.Swarm.LocalNodeState}}' 2>/dev/null | grep -q active"; then
+              MGR="$host"
+              break
+            fi
+          done
+          if [ -z "$MGR" ]; then
+            echo "::error::No responding swarm manager"
+            exit 1
+          fi
+          echo "Using swarm manager: $MGR"
+          echo "mgr=$MGR" >> "$GITHUB_OUTPUT"
+
+      - name: Step 4 — POST /admin/etl/drain (returns reconciliation report)
+        # Docker-exec into the running agent container + curl the
+        # endpoint via the loopback. The agent's own service port
+        # 8000 is bound; we hit it directly. JWT comes through the
+        # SSH env so it never lands on disk.
+        id: drain_call
+        env:
+          ADMIN_JWT_TOKEN: ${{ secrets.ADMIN_JWT_TOKEN }}
+        run: |
+          set -euo pipefail
+          SSH_OPTS="-i ~/.ssh/deploy_key -o ConnectTimeout=15 -o BatchMode=yes -o StrictHostKeyChecking=yes"
+          MGR="${{ steps.pick.outputs.mgr }}"
+          echo "── POST /admin/etl/drain via $MGR ──"
+          # SendEnv allows the JWT to cross to the manager without
+          # echoing into command-line history. The remote uses it via
+          # `curl -H "Authorization: Bearer $ADMIN_JWT_TOKEN"`.
+          REPORT=$(ADMIN_JWT_TOKEN="$ADMIN_JWT_TOKEN" \
+            ssh $SSH_OPTS -o SendEnv=ADMIN_JWT_TOKEN \
+              "${{ env.SWARM_USER }}@$MGR" \
+              'AGENT=$(docker ps -qf name=yral-rishi-agent | head -1); \
+               if [ -z "$AGENT" ]; then echo "no agent container running" >&2; exit 1; fi; \
+               docker exec -i -e ADMIN_JWT_TOKEN="$ADMIN_JWT_TOKEN" "$AGENT" \
+                 curl -sS -X POST -H "Authorization: Bearer $ADMIN_JWT_TOKEN" \
+                      --max-time 300 \
+                      http://localhost:8000/admin/etl/drain')
+          if [ -z "$REPORT" ]; then
+            echo "::error::Empty response from drain endpoint"
+            exit 1
+          fi
+          echo "$REPORT" > /tmp/reconciliation.json
+          VERDICT=$(echo "$REPORT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('verdict', 'UNKNOWN'))")
+          echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+          echo "Verdict: $VERDICT"
+
+      - name: Step 5 — Print the verdict block
+        run: |
+          echo "─── Reconciliation report ───"
+          python3 -m json.tool < /tmp/reconciliation.json
+
+      - name: Step 6 — Cutover-mode artifacts (S3 upload + Google Chat)
+        # Per the plan §9 Rishi pre-decision: cutover-mode runs leave
+        # forensic trail. Routine runs would be noisy.
+        if: inputs.mode == 'cutover'
+        env:
+          GOOGLE_CHAT_WEBHOOK_URL: ${{ secrets.GOOGLE_CHAT_WEBHOOK_URL }}
+          S3_ACCESS_KEY: ${{ secrets.HETZNER_S3_ACCESS_KEY }}
+          S3_SECRET_KEY: ${{ secrets.HETZNER_S3_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          TS=$(date -u +%Y%m%dT%H%M%SZ)
+          S3_KEY="${{ env.CUTOVER_S3_PREFIX }}/${TS}.json"
+          # Upload to Hetzner. We use the agent's S3 creds via secrets
+          # so this workflow doesn't need its own copy in plaintext.
+          if [ -z "${S3_ACCESS_KEY:-}" ] || [ -z "${S3_SECRET_KEY:-}" ]; then
+            echo "::warning::HETZNER_S3_* secrets not set; skipping S3 upload of cutover report"
+          else
+            pip install --quiet awscli >/dev/null
+            AWS_ACCESS_KEY_ID="$S3_ACCESS_KEY" AWS_SECRET_ACCESS_KEY="$S3_SECRET_KEY" \
+              aws --endpoint-url https://hel1.your-objectstorage.com \
+                  s3 cp /tmp/reconciliation.json \
+                       "s3://${{ env.CUTOVER_S3_BUCKET }}/${S3_KEY}"
+            echo "✓ Report uploaded to s3://${{ env.CUTOVER_S3_BUCKET }}/${S3_KEY}"
+          fi
+          # Google Chat notification — 1-line summary.
+          if [ -n "${GOOGLE_CHAT_WEBHOOK_URL:-}" ]; then
+            VERDICT="${{ steps.drain_call.outputs.verdict }}"
+            LAG=$(python3 -c "import json; r=json.load(open('/tmp/reconciliation.json')); print(r.get('lag_seconds') or 0)")
+            MSG="ETL cutover drain by ${{ github.actor }}: verdict=$VERDICT lag=${LAG}s reason=${{ inputs.reason }}"
+            curl -sS -X POST -H "Content-Type: application/json" \
+                 -d "{\"text\": \"$MSG\"}" \
+                 "$GOOGLE_CHAT_WEBHOOK_URL" \
+                 || echo "::warning::Google Chat notification failed"
+          else
+            echo "::warning::GOOGLE_CHAT_WEBHOOK_URL not set; skipping notification"
+          fi
+
+      - name: Step 7 — Exit code reflects verdict
+        # GREEN = 0; anything else = 1 so the workflow run shows red
+        # and the operator clicks in. The verdict block is already
+        # printed above so this exit is the last word.
+        run: |
+          VERDICT="${{ steps.drain_call.outputs.verdict }}"
+          if [ "$VERDICT" = "GREEN" ]; then
+            echo "✓ Verdict GREEN. Drain complete."
+            exit 0
+          else
+            echo "::error::Verdict $VERDICT — see report above + GET /admin/etl/reconciliation"
+            exit 1
+          fi

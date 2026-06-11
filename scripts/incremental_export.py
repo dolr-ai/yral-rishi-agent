@@ -530,8 +530,15 @@ def emit_sentinel_integrity(s3, container: str, password: str) -> str:
 # ─── main per-tick ─────────────────────────────────────────────────────────
 
 
-def run_once() -> int:
-    """Returns 0 on success, non-zero on failure. cron captures stdout."""
+def run_once(force_all_integrity: bool = False) -> int:
+    """Returns 0 on success, non-zero on failure. cron captures stdout.
+
+    `force_all_integrity` (Piece A of the on-demand drain system):
+    emit ALL integrity layers regardless of their time-gate. The drain
+    workflow uses this so the GREEN verdict can require fresh layer
+    results in the reconciliation report — without it, the last
+    sentinel/hourly/sample might be 30-360 min stale and the verdict
+    would be unprovable."""
     t0 = time.monotonic()
     try:
         creds = load_credentials()
@@ -573,18 +580,35 @@ def run_once() -> int:
 
         # Time-gated emissions. _is_overdue handles None → emit on first
         # tick after the script first runs (or after an upgrade).
-        if _is_overdue(new_state["_last_sentinel_emit"], SENTINEL_INTERVAL_SEC):
+        # `force_all_integrity` bypasses the gates so a drain run emits
+        # fresh layer payloads regardless of when they last ran.
+        if force_all_integrity or _is_overdue(
+            new_state["_last_sentinel_emit"], SENTINEL_INTERVAL_SEC
+        ):
             emit_sentinel_integrity(s3, container, creds["ETL_PG_PASSWORD"])
             new_state["_last_sentinel_emit"] = _utc_now_iso()
-            log.info("emitted sentinel integrity")
-        if _is_overdue(new_state["_last_hourly_emit"], HOURLY_INTERVAL_SEC):
+            log.info(
+                "emitted sentinel integrity%s",
+                " (forced)" if force_all_integrity else "",
+            )
+        if force_all_integrity or _is_overdue(
+            new_state["_last_hourly_emit"], HOURLY_INTERVAL_SEC
+        ):
             emit_hourly_integrity(s3, container, creds["ETL_PG_PASSWORD"])
             new_state["_last_hourly_emit"] = _utc_now_iso()
-            log.info("emitted hourly integrity")
-        if _is_overdue(new_state["_last_sample_emit"], SAMPLE_INTERVAL_SEC):
+            log.info(
+                "emitted hourly integrity%s",
+                " (forced)" if force_all_integrity else "",
+            )
+        if force_all_integrity or _is_overdue(
+            new_state["_last_sample_emit"], SAMPLE_INTERVAL_SEC
+        ):
             emit_sample_integrity(s3, container, creds["ETL_PG_PASSWORD"])
             new_state["_last_sample_emit"] = _utc_now_iso()
-            log.info("emitted sample integrity")
+            log.info(
+                "emitted sample integrity%s",
+                " (forced)" if force_all_integrity else "",
+            )
 
         save_state(new_state)
 
@@ -634,4 +658,22 @@ def run_once() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(run_once())
+    # `--force` (Piece A of the on-demand drain) — same export tick but
+    # emits all integrity layers regardless of time-gate. Used by the
+    # etl-drain.yml workflow via scripts/etl-manual-trigger.sh. Cron
+    # runs without this flag.
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Force-emit ALL integrity layers (hourly + sample + sentinel) "
+            "regardless of their normal time-gates. Used by manual drain "
+            "runs so the reconciliation report has fresh evidence on every "
+            "layer."
+        ),
+    )
+    args = parser.parse_args()
+    sys.exit(run_once(force_all_integrity=args.force))
