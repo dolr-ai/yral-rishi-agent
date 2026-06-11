@@ -27,6 +27,20 @@ excluded_rules = [
     # squawk's check for explicit transactions inside the file would
     # double-up and be inaccurate for our setup.
     "transaction-nesting",
+
+    # `require-concurrent-index-creation` — structural conflict with
+    # our migration runner. Postgres rejects `CREATE INDEX CONCURRENTLY`
+    # inside a transaction block ("CREATE INDEX CONCURRENTLY cannot run
+    # inside a transaction block"), and `scripts/ci/run-migrations.sh`
+    # wraps every migration file in BEGIN/COMMIT for atomicity. We
+    # accept a brief write-block during index creation in exchange for
+    # transactional migration atomicity. The blocking duration is
+    # bounded by our `lock_timeout = '5s'` runner default + `SET
+    # lock_timeout = '3s'` declared at the top of every migration that
+    # touches a populated table (per the I-Mig2 rule from PR #340).
+    # First hit by PR #356's migration 035 (Coach PR-3 partial index
+    # for the supersede transaction).
+    "require-concurrent-index-creation",
 ]
 
 # Per-rule overrides — none for now. If a future migration needs a
