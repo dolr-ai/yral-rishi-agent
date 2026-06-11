@@ -213,6 +213,10 @@ async def create_coach_session(bot_id: str, request: Request):
     # ~2-4s latency is covered by mobile's existing "loading session"
     # state per the spec.
     try:
+        # Strategy doc Item C — 60 → 20 trim. coach._format_conv_excerpt
+        # already caps to 10 conversations × 6 turns; the prior 60 was
+        # over-fetching by 3x with no signal gain. The trim saves 1-2s
+        # of asyncpg row materialization on the largest-history bots.
         recent = await pool.fetch(
             """
             SELECT m.conversation_id, m.role, m.content, m.created_at
@@ -220,7 +224,7 @@ async def create_coach_session(bot_id: str, request: Request):
             JOIN conversations c ON m.conversation_id = c.id
             WHERE c.influencer_id = $1
             ORDER BY m.created_at DESC
-            LIMIT 60
+            LIMIT 20
             """,
             bot_id,
         )
@@ -316,11 +320,14 @@ async def send_coach_message(coach_conversation_id: str, body: dict, request: Re
         # the right clarifying question ("there's nothing pending to
         # save — what would you like to change?").
 
-    # Build context for the coach: prior session turns + last ~60 user-bot
+    # Build context for the coach: prior session turns + last ~20 user-bot
     # messages across this bot's conversations (anonymized — no user_id in
-    # the prompt). 60 is enough to cover 5-10 short conversations; the
-    # coach service caps each line to 200 chars to stay under Gemini's
-    # input budget.
+    # the prompt). The Coach service's `_format_conv_excerpt` already caps
+    # the rendered window to 10 conversations × 6 turns; 20 rows comfortably
+    # covers that without over-fetching. Strategy doc Item C — was 60 pre
+    # 2026-06-12; the 3x trim saves 1-2s of asyncpg row materialization on
+    # big-history sessions with zero signal loss because the downstream
+    # render-time cap was already the binding constraint.
     history = await coach_repo.list_messages(pool, coach_conversation_id)
     recent = await pool.fetch(
         """
@@ -329,7 +336,7 @@ async def send_coach_message(coach_conversation_id: str, body: dict, request: Re
         JOIN conversations c ON m.conversation_id = c.id
         WHERE c.influencer_id = $1
         ORDER BY m.created_at DESC
-        LIMIT 60
+        LIMIT 20
         """,
         session["bot_id"],
     )
