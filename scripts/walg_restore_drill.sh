@@ -88,13 +88,22 @@ if ! docker exec "${CID}" sh -c "wal-g backup-list 2>&1 | tail -20"; then
 fi
 
 # ─── 3. fetch LATEST into a fresh drill dir ────────────────────────────
+# The mkdir + chown + chmod run as the default container user (root or
+# postgres depending on image hardening). The wal-g call then runs as
+# postgres via `--user postgres` — cleaner than `su postgres -c '...'`
+# because we avoid an extra single-quoting layer that bites us in the
+# config-file step below.
 log "fetching LATEST backup into ${DRILL_DIR}..."
 if ! docker exec "${CID}" sh -c "
     mkdir -p ${DRILL_DIR}
     chown postgres:postgres ${DRILL_DIR}
     chmod 700 ${DRILL_DIR}
-    su postgres -c 'wal-g backup-fetch ${DRILL_DIR} LATEST'
 "; then
+    fail "could not create drill dir ${DRILL_DIR} on container ${CID}"
+    exit 2
+fi
+if ! docker exec --user postgres "${CID}" \
+        wal-g backup-fetch "${DRILL_DIR}" LATEST; then
     fail "wal-g backup-fetch failed — drill aborted"
     exit 2
 fi
@@ -107,20 +116,26 @@ log "fetch complete; configuring sidecar postgres..."
 # `restore_command` pulls each WAL segment via wal-g.
 # Custom port + unix_socket_directories isolates the sidecar from the
 # live Patroni Postgres listening on 5432.
-if ! docker exec "${CID}" sh -c "
-    su postgres -c '
-        touch ${DRILL_DIR}/recovery.signal
-        cat >> ${DRILL_DIR}/postgresql.auto.conf <<EOF
+#
+# Note on quoting: postgresql.auto.conf REQUIRES single quotes around
+# string values (Postgres rejects double quotes with a syntax error).
+# Using `docker exec --user postgres` instead of `su postgres -c '...'`
+# means we only have ONE outer quoting layer (the `sh -c "..."` arg)
+# and can use literal single quotes inside the heredoc cleanly. The
+# 2026-06-11 first-ever drill run failed exactly here — escaped \"..."\"
+# values produced postgres config with `"` chars that Postgres rejected.
+if ! docker exec --user postgres "${CID}" sh -c "
+    touch ${DRILL_DIR}/recovery.signal
+    cat >> ${DRILL_DIR}/postgresql.auto.conf <<EOF
 
 # Drill-only overrides — never used by live Patroni
-restore_command = \"wal-g wal-fetch %f %p\"
+restore_command = 'wal-g wal-fetch %f %p'
 port = ${DRILL_PORT}
-unix_socket_directories = \"${DRILL_DIR}\"
+unix_socket_directories = '${DRILL_DIR}'
 # Quiet sidecar logs go to the drill dir so they roll off with the dir
-log_destination = \"stderr\"
+log_destination = 'stderr'
 logging_collector = off
 EOF
-    '
 "; then
     fail "failed to configure sidecar postgres in ${DRILL_DIR}"
     exit 3
@@ -128,9 +143,8 @@ fi
 
 # ─── 5. start sidecar postgres + wait for recovery to finish ───────────
 log "starting sidecar postgres on port ${DRILL_PORT}..."
-if ! docker exec "${CID}" sh -c "
-    su postgres -c 'pg_ctl -D ${DRILL_DIR} -l ${DRILL_DIR}/startup.log -w -t 90 start'
-"; then
+if ! docker exec --user postgres "${CID}" \
+        pg_ctl -D "${DRILL_DIR}" -l "${DRILL_DIR}/startup.log" -w -t 90 start; then
     fail "sidecar postgres failed to start — see ${DRILL_DIR}/startup.log on container ${CID}"
     docker exec "${CID}" sh -c "cat ${DRILL_DIR}/startup.log 2>&1 | tail -30" || true
     exit 3
@@ -142,9 +156,9 @@ log "sidecar started; waiting for WAL replay to catch up..."
 # during archive recovery is to keep replaying until WAL is exhausted.
 for i in $(seq 1 60); do
     REPLAY_STATE="$(
-        docker exec "${CID}" su postgres -c \
-            "psql -p ${DRILL_PORT} -h ${DRILL_DIR} -d ${POSTGRES_DB} -tA \
-                -c \"SELECT pg_is_in_recovery()\" 2>/dev/null" \
+        docker exec --user postgres "${CID}" \
+            psql -p "${DRILL_PORT}" -h "${DRILL_DIR}" -d "${POSTGRES_DB}" -tA \
+                -c "SELECT pg_is_in_recovery()" 2>/dev/null \
         || echo "ERROR"
     )"
     REPLAY_STATE="$(echo "${REPLAY_STATE}" | tr -d '[:space:]')"
@@ -165,8 +179,8 @@ log "running sanity queries against sidecar..."
 
 # Helper: query the sidecar and trim whitespace
 sidecar_query() {
-    docker exec "${CID}" su postgres -c \
-        "psql -p ${DRILL_PORT} -h ${DRILL_DIR} -d ${POSTGRES_DB} -tA -c \"$1\" 2>/dev/null" \
+    docker exec --user postgres "${CID}" \
+        psql -p "${DRILL_PORT}" -h "${DRILL_DIR}" -d "${POSTGRES_DB}" -tA -c "$1" 2>/dev/null \
         | tr -d '[:space:]'
 }
 
@@ -204,9 +218,9 @@ fi
 # ─── 7. teardown ───────────────────────────────────────────────────────
 log "stopping sidecar postgres..."
 TEARDOWN_FAILED=0
-docker exec "${CID}" sh -c "su postgres -c 'pg_ctl -D ${DRILL_DIR} stop -m fast'" 2>/dev/null \
+docker exec --user postgres "${CID}" pg_ctl -D "${DRILL_DIR}" stop -m fast 2>/dev/null \
     || { log "pg_ctl stop failed (sidecar may have already exited); attempting fast kill"; TEARDOWN_FAILED=1; }
-docker exec "${CID}" sh -c "rm -rf ${DRILL_DIR}" 2>/dev/null \
+docker exec "${CID}" rm -rf "${DRILL_DIR}" 2>/dev/null \
     || { fail "could not rm -rf ${DRILL_DIR} on container ${CID} — manual cleanup needed"; TEARDOWN_FAILED=1; }
 
 if [ "${FAILED}" -eq 1 ]; then
