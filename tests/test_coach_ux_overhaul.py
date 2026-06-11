@@ -83,10 +83,10 @@ def test_route_persists_opening_with_suggestions():
 def test_repo_add_message_accepts_suggestions():
     src = _read("app/repositories/coach_repo.py")
     pos = src.find("async def add_message(")
-    # Window bumped to 2000 (was 1200) — Coach Fix 1 PR-B added the
-    # `proposed_global_rule_override` kwarg + docstring lines, pushing
-    # the `_json.dumps(suggestions)` literal past the original window.
-    body = src[pos : pos + 2000]
+    # Window 2500 — Coach PR-3 added the `status` insert column +
+    # is_proposal computation block, pushing the `_json.dumps(suggestions)`
+    # literal further down. Previous bumps: 1200→2000 (PR-B), 2000→2500 (PR-3).
+    body = src[pos : pos + 2500]
     assert "suggestions: list[str] | None = None" in body
     # suggestions JSONB written via json.dumps so asyncpg accepts
     # the parameter shape.
@@ -98,7 +98,9 @@ def test_format_message_surfaces_suggestions():
     chip UI renders on the opening turn."""
     src = _read("app/routes/creator_coach.py")
     pos = src.find("def _format_message(")
-    body = src[pos : pos + 1500]
+    # Window 2000 — Coach PR-3 added `status` + `status_changed_at` to
+    # the return dict, pushing `"suggestions": suggestions` past 1500.
+    body = src[pos : pos + 2000]
     assert '"suggestions": suggestions' in body
 
 

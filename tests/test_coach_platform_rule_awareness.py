@@ -208,7 +208,11 @@ def test_apply_response_carries_applied_type():
     edit was applied — different UX for each."""
     src = (REPO / "app" / "routes" / "creator_coach.py").read_text()
     pos = src.find("async def apply_coach_proposal(")
-    body = src[pos : pos + 7000]
+    # Window 9000 — Coach PR-3 added the proposal_id validation +
+    # supersede_and_apply call to both branches, pushing the
+    # system_instructions applied_type past 7000 chars. Previous
+    # bumps: 3500→7000 (PR-B), 7000→9000 (PR-3).
+    body = src[pos : pos + 9000]
     assert '"applied_type": "global_rule_override"' in body
     assert '"applied_type": "system_instructions"' in body
 
