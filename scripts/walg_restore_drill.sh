@@ -74,6 +74,54 @@ if [ -z "${CID}" ]; then
 fi
 log "using container ${CID}"
 
+# ─── 1a. H10 audit row — write START to backup_drill_runs ──────────────
+# The /admin/backup-health dashboard reads from this table. We write a
+# START row on the live V2 DB (NOT the drill sidecar) via the patroni
+# container's UNIX socket (same trust auth path the runner uses).
+# Finish UPDATE happens at the end (and via the EXIT trap on failure
+# paths) so a drill that hangs mid-restore still leaves a row visible.
+TRIGGERED_BY="${TRIGGERED_BY:-manual}"
+DRILL_RUN_ID="$(docker exec "${CID}" psql -U postgres -d "${POSTGRES_DB}" -tAc \
+    "INSERT INTO backup_drill_runs (drill_type, triggered_by)
+     VALUES ('walg_restore', '${TRIGGERED_BY}')
+     RETURNING id;" 2>/dev/null || true)"
+DRILL_RUN_ID="$(echo "${DRILL_RUN_ID}" | tr -d '[:space:]')"
+if [ -n "${DRILL_RUN_ID}" ]; then
+    log "audit row created: backup_drill_runs.id=${DRILL_RUN_ID}"
+else
+    # The dashboard tile gracefully degrades if the row is missing.
+    # Most likely cause: migration 036 not yet applied. Surface but
+    # don't fail — the drill itself is still valuable.
+    log "audit row NOT created (migration 036 may not be applied) — drill continues"
+fi
+
+# Helper: write FINISH back to the audit row. Called from teardown
+# AND the EXIT trap so partial drills are still visible.
+finish_audit_row() {
+    local _exit_code="$1"
+    local _notes="${2:-}"
+    if [ -z "${DRILL_RUN_ID:-}" ]; then return 0; fi
+    # sanity_results is a small JSON blob with the queried counts.
+    # Empty / missing values default to null so the dashboard tile
+    # can render "drill ran but sanity not captured" instead of crashing.
+    local _ai="${AI_COUNT:-null}"
+    local _conv="${CONV_COUNT:-null}"
+    local _msg="${MSG_COUNT:-null}"
+    local _latest="${LATEST_MSG_EPOCH:-null}"
+    docker exec "${CID}" psql -U postgres -d "${POSTGRES_DB}" -c "
+        UPDATE backup_drill_runs
+        SET finished_at = NOW(),
+            exit_code = ${_exit_code},
+            sanity_results = jsonb_build_object(
+                'ai_influencers_count', ${_ai}::bigint,
+                'conversations_count',  ${_conv}::bigint,
+                'messages_count',       ${_msg}::bigint,
+                'latest_message_epoch', ${_latest}::bigint
+            ),
+            notes = NULLIF('${_notes//\'/\'\'}', '')
+        WHERE id = '${DRILL_RUN_ID}'::uuid;" >/dev/null 2>&1 || true
+}
+
 # Quick environment sanity inside the container
 if ! docker exec "${CID}" sh -c "command -v wal-g >/dev/null 2>&1"; then
     fail "wal-g binary missing inside container ${CID}"
@@ -115,10 +163,17 @@ docker exec "${CID}" sh -c "rm -rf /tmp/walg-drill-* 2>/dev/null; true" || true
 # Without this, a sanity-query failure leaves an orphan postgres + drill
 # dir that block the next run (the exact bug this section prevents for
 # THIS run; the trap prevents it for the NEXT run).
-trap 'if [ -n "${CID:-}" ] && [ -n "${DRILL_DIR:-}" ]; then
+# H10: also writes the FINISH row to backup_drill_runs (exit_code=$? at
+# trap time) so a drill that crashes mid-stream still leaves a queryable
+# trail for the /admin/backup-health dashboard.
+trap '_rc=$?
+if [ -n "${CID:-}" ] && [ -n "${DRILL_DIR:-}" ]; then
     echo "[walg-drill trap] cleaning up sidecar + ${DRILL_DIR}..." >&2
     docker exec --user postgres "${CID}" pg_ctl -D "${DRILL_DIR}" stop -m immediate 2>/dev/null || true
     docker exec "${CID}" rm -rf "${DRILL_DIR}" 2>/dev/null || true
+fi
+if [ -n "${DRILL_RUN_ID:-}" ]; then
+    finish_audit_row "$_rc" "trap-finalised"
 fi' EXIT
 
 # ─── 2. inspect backups before fetching ────────────────────────────────
@@ -338,4 +393,8 @@ log "  WAL replay completed"
 log "  4 critical tables present with counts above minimums"
 log "  latest message within ${MAX_LATEST_MESSAGE_AGE_SECONDS}s window"
 log "  sidecar cleaned up cleanly"
+# H10: write FINISH row with exit_code=0 explicitly. The EXIT trap would
+# also do this, but recording PASS here means a successful drill carries
+# notes=NULL rather than 'trap-finalised'.
+finish_audit_row 0 ""
 exit 0

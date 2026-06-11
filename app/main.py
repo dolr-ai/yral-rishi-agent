@@ -25,6 +25,7 @@ from routes.wizard import router as wizard_router
 from routes.earnings import router as earnings_router
 from routes.admin_dashboard import router as admin_dashboard_router
 from routes.llm_routing_admin import router as llm_routing_admin_router
+from routes.backup_health_admin import router as backup_health_admin_router
 from routes.health import router as health_router
 from routes.human_chat import router as human_chat_router
 from routes.influencers import router as influencers_router
@@ -478,6 +479,7 @@ async def debug_whoami(request: Request):
 app.include_router(health_router)
 app.include_router(admin_dashboard_router)
 app.include_router(llm_routing_admin_router)
+app.include_router(backup_health_admin_router)
 app.include_router(influencers_router)
 app.include_router(chat_router)
 app.include_router(chat_v2_router)
