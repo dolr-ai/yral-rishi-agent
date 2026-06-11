@@ -219,6 +219,11 @@ async def send_coach_message(coach_conversation_id: str, body: dict, request: Re
                 "pending_proposal_id": str(pending["id"]),
                 "creator_message": _format_message(creator_msg),
                 "coach_message": None,
+                # 2026-06-11 PR-4 — pending_proposal_exists is a top-level
+                # constant of the contract. Always present, even on the
+                # action short-circuit, so mobile doesn't have to special-
+                # case the response shape.
+                "pending_proposal_exists": True,
             }
         # No pending proposal — fall through to Coach LLM. It has the
         # session history (including any prior receipt) and can ask
@@ -281,9 +286,16 @@ async def send_coach_message(coach_conversation_id: str, body: dict, request: Re
     )
     await coach_repo.touch_session(pool, coach_conversation_id)
 
+    # 2026-06-11 PR-4 (plan §4 item D): mobile uses this bool to gate
+    # the Save button — disabled when no proposal is pending so the
+    # "tap Save → mystery LLM round-trip" failure mode goes away.
+    # Compute against the latest state (post-add_message) so a proposal
+    # just emitted this turn shows pending_proposal_exists=true.
+    pending = await coach_repo.pending_proposal(pool, coach_conversation_id)
     return {
         "creator_message": _format_message(creator_msg),
         "coach_message": _format_message(coach_msg),
+        "pending_proposal_exists": pending is not None,
     }
 
 
@@ -447,8 +459,15 @@ async def list_coach_messages(coach_conversation_id: str, request: Request):
     pool = await get_pool()
     await _load_owned_session(pool, user_id, coach_conversation_id)
     messages = await coach_repo.list_messages(pool, coach_conversation_id)
+    # 2026-06-11 PR-4 (plan §4 item D): mobile gates the Save button on
+    # this bool. Computing here means a session-reload after navigating
+    # away + back shows the correct Save-button state without needing
+    # mobile to scan every coach_message for a proposal that wasn't
+    # applied yet.
+    pending = await coach_repo.pending_proposal(pool, coach_conversation_id)
     return {
         "coach_conversation_id": coach_conversation_id,
         "messages": [_format_message(m) for m in messages],
         "total": len(messages),
+        "pending_proposal_exists": pending is not None,
     }
