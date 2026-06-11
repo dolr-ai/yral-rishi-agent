@@ -136,6 +136,8 @@ When `COACH_SECTIONED_V2_ENABLED=true` AND the bot has non-empty `sections`, Coa
   "summary": "Make Tara's voice less corporate when she's flirting",
   "proposed_section_change": {
     "section_id": "voice_and_tone",
+    "section_heading": "Voice and tone",
+    "section_editable": true,
     "new_body": "When flirty: drop into a more playful, lowercase register. Use 1-2 emojis max. When emotional: warm, no slang.",
     "previous_body_sha256": "<sha of body as Coach read it>"
   },
@@ -146,6 +148,8 @@ When `COACH_SECTIONED_V2_ENABLED=true` AND the bot has non-empty `sections`, Coa
 | Field | Why |
 |---|---|
 | `section_id` | The exact id from the GET /soul-file response. Coach won't propose against ids it didn't see. |
+| `section_heading` | **2026-06-11 ADDITION (mobile expert):** snapshot of the section's `heading` at proposal time. Lets mobile render "Coach proposed an edit to **Voice and tone**" badge without a re-lookup into the current sections array. If the creator renamed the section between proposal and apply, this snapshot may be stale — that's fine; the section_id resolves to the live row at apply time. |
+| `section_editable` | **2026-06-11 ADDITION (mobile expert):** snapshot of `editable` at proposal time. Mobile uses this to refuse the apply CTA for proposals against a section that's now read-only (rare — would only happen if the section flipped editable=false between proposal and apply). |
 | `new_body` | The COMPLETE new body for that section (not a diff — same as today's `proposed_changes`). |
 | `previous_body_sha256` | Optimistic concurrency. /apply rejects if the section body changed since Coach read it (`409 stale_proposal`). |
 
@@ -154,7 +158,7 @@ When `COACH_SECTIONED_V2_ENABLED=true` AND the bot has non-empty `sections`, Coa
 | Shape | When | What `/apply` does |
 |---|---|---|
 | `proposed_changes` (text) | sections OFF or bot has no sections — today's behavior | UPDATE `ai_influencers.system_instructions` |
-| `proposed_section_change` ({section_id, new_body, previous_body_sha256}) | sections ON + bot has sections | UPDATE the section's body inside `system_instructions_sections` |
+| `proposed_section_change` ({section_id, section_heading, section_editable, new_body, previous_body_sha256}) | sections ON + bot has sections | UPDATE the section's body inside `system_instructions_sections` |
 | `proposed_global_rule_override` ({key, value}) | always — Coach Fix 1 PR-B | merge into `ai_influencers.global_rule_overrides` |
 
 These are mutually exclusive — Coach emits EXACTLY one per turn. `/apply` dispatches on which is set, same as today's two-shape dispatch.
@@ -234,6 +238,7 @@ Owner-gated (creator must own the bot).
 ```
 
 - `fallback_to_flat: true` means the bot still uses flat `system_instructions` (sections empty or flag OFF). Response then includes `system_instructions` as a synthetic single section so mobile renders consistently.
+- **2026-06-11 ADDITION (mobile expert):** the synthetic fallback section uses the FIXED `id="core_personality"` + `heading="Core personality"` + `editable=true`. Mobile renders the same UI shell whether the bot has real sections or fallback — only the section count differs.
 - `sections_version_sha256` is mobile's optimistic-concurrency handle for PUT.
 
 ### `PUT /api/v1/influencers/{bot_id}/soul-file`
@@ -251,6 +256,28 @@ Owner-gated. Body:
 - 422 if any `id` is not a valid slug OR if section ordering is inconsistent (duplicates, missing ids, etc.).
 - 403 if creator doesn't own the bot.
 - 200 with the new state + new sha on success.
+
+**2026-06-11 ADDITION (mobile expert) — 409 reconciliation contract:**
+
+When PUT returns 409 `stale_sections`, the response carries the CURRENT state so mobile can drive UX without a re-GET:
+
+```json
+{
+  "error": {
+    "code": "stale_sections",
+    "message": "Sections were edited elsewhere since you opened this page.",
+    "current_sections": [...],
+    "current_sections_version_sha256": "..."
+  }
+}
+```
+
+Mobile contract:
+1. Show a "Reload?" dialog with the message above.
+2. On Reload tap: discard the local edit + replace state with `current_sections` (no extra GET round-trip).
+3. On Cancel tap: keep the local edit BUT mark the section dirty + disable Save until the user explicitly chooses (a reload that wipes local OR a force-overwrite — Bucket 2 v1 ships without force-overwrite; creator must reload).
+
+This treats the "another tab edited" case as a clean recoverable state, not a data loss event.
 
 PUT is the path the Soul File page uses for direct editing. Coach proposals go through `/apply` instead (server-side dispatch sets the new body).
 
