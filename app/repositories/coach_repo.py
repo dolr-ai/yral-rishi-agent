@@ -83,6 +83,7 @@ async def add_message(
     reasoning: str | None = None,
     suggestions: list[str] | None = None,
     proposed_global_rule_override: dict | None = None,
+    proposed_section_change: dict | None = None,
 ) -> dict:
     """Insert a coach_messages row.
 
@@ -92,46 +93,92 @@ async def add_message(
 
     `proposed_global_rule_override` (Coach Fix 1 PR-B, migration 034)
     is a JSONB blob of shape {"key": "<slug>", "value": "<label>"}.
-    EXACTLY ONE of proposed_changes and proposed_global_rule_override
-    should be set on any given coach turn — the apply endpoint
-    dispatches on which is present. NULL for non-proposal turns and
-    for system-instructions-edit proposals.
+
+    `proposed_section_change` (Coach Bucket 2 PR-2, migration 039) is a
+    JSONB blob of shape {section_id, section_heading, section_editable,
+    new_body, previous_body_sha256}. `target_section_id` is denormalised
+    server-side from this blob so a future "all proposals against
+    section X" filter can hit a typed indexable column.
+
+    EXACTLY ONE of proposed_changes / proposed_global_rule_override /
+    proposed_section_change should be set on any given coach turn — the
+    apply endpoint dispatches on which is present. NULL on every other
+    role/turn combination.
     """
     import json as _json
 
-    # Coach PR-3 lifecycle: proposal rows (role=coach + proposed_* set)
-    # start as 'pending'. Everything else — creator turns, opening
+    # Coach PR-3 lifecycle: proposal rows (role=coach + any proposed_*
+    # set) start as 'pending'. Everything else — creator turns, opening
     # greetings, receipts — is 'na' (not applicable to the lifecycle).
     # Same rule as the migration 035 backfill.
     is_proposal = role == "coach" and (
-        proposed_changes is not None or proposed_global_rule_override is not None
+        proposed_changes is not None
+        or proposed_global_rule_override is not None
+        or proposed_section_change is not None
     )
     status = "pending" if is_proposal else "na"
 
-    row = await pool.fetchrow(
-        """
-        INSERT INTO coach_messages (
-            coach_conversation_id, role, content,
-            proposed_changes, reasoning, suggestions,
-            proposed_global_rule_override, status
-        )
-        VALUES ($1::uuid, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8)
-        RETURNING id, coach_conversation_id, role, content,
-                  proposed_changes, reasoning, suggestions,
-                  proposed_global_rule_override, status,
-                  status_changed_at, created_at
-        """,
-        coach_conversation_id,
-        role,
-        content,
-        proposed_changes,
-        reasoning,
-        _json.dumps(suggestions) if suggestions else None,
-        _json.dumps(proposed_global_rule_override)
-        if proposed_global_rule_override
-        else None,
-        status,
-    )
+    target_section_id: str | None = None
+    if isinstance(proposed_section_change, dict):
+        candidate = proposed_section_change.get("section_id")
+        if isinstance(candidate, str) and candidate.strip():
+            target_section_id = candidate.strip()
+
+    # PR-2 follow-up (Rishi 2026-06-11): supersede-on-insert. The
+    # moment a NEW proposal lands in a session, every OLDER pending
+    # proposal in the same session must flip to 'superseded' so mobile
+    # can disable the old card's Apply button immediately — before the
+    # creator might tap an older Apply button and silently override the
+    # newer suggestion. Pre-fix the supersede only ran inside /apply,
+    # leaving a window where TWO pending proposals could co-exist.
+    #
+    # Wrap the INSERT + supersede in a single transaction so a partial
+    # failure can't leave the session in an inconsistent state. Same
+    # rule as supersede_and_apply().
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            if is_proposal:
+                await conn.execute(
+                    """
+                    UPDATE coach_messages
+                    SET status = 'superseded',
+                        status_changed_at = NOW()
+                    WHERE coach_conversation_id = $1::uuid
+                      AND status = 'pending'
+                    """,
+                    coach_conversation_id,
+                )
+            row = await conn.fetchrow(
+                """
+                INSERT INTO coach_messages (
+                    coach_conversation_id, role, content,
+                    proposed_changes, reasoning, suggestions,
+                    proposed_global_rule_override,
+                    proposed_section_change, target_section_id, status
+                )
+                VALUES ($1::uuid, $2, $3, $4, $5, $6::jsonb, $7::jsonb,
+                        $8::jsonb, $9, $10)
+                RETURNING id, coach_conversation_id, role, content,
+                          proposed_changes, reasoning, suggestions,
+                          proposed_global_rule_override,
+                          proposed_section_change, target_section_id, status,
+                          status_changed_at, created_at
+                """,
+                coach_conversation_id,
+                role,
+                content,
+                proposed_changes,
+                reasoning,
+                _json.dumps(suggestions) if suggestions else None,
+                _json.dumps(proposed_global_rule_override)
+                if proposed_global_rule_override
+                else None,
+                _json.dumps(proposed_section_change)
+                if proposed_section_change
+                else None,
+                target_section_id,
+                status,
+            )
     return dict(row)
 
 
@@ -140,7 +187,8 @@ async def list_messages(pool, coach_conversation_id: str) -> list[dict]:
         """
         SELECT id, coach_conversation_id, role, content,
                proposed_changes, reasoning, suggestions,
-               proposed_global_rule_override, status,
+               proposed_global_rule_override,
+               proposed_section_change, target_section_id, status,
                status_changed_at, created_at
         FROM coach_messages
         WHERE coach_conversation_id = $1::uuid
@@ -160,13 +208,15 @@ async def latest_proposal(pool, coach_conversation_id: str) -> dict | None:
         """
         SELECT id, coach_conversation_id, role, content,
                proposed_changes, reasoning, suggestions,
-               proposed_global_rule_override, status,
+               proposed_global_rule_override,
+               proposed_section_change, target_section_id, status,
                status_changed_at, created_at
         FROM coach_messages
         WHERE coach_conversation_id = $1::uuid
           AND role = 'coach'
           AND (proposed_changes IS NOT NULL
-               OR proposed_global_rule_override IS NOT NULL)
+               OR proposed_global_rule_override IS NOT NULL
+               OR proposed_section_change IS NOT NULL)
         ORDER BY created_at DESC
         LIMIT 1
         """,
@@ -193,14 +243,16 @@ async def pending_proposal(pool, coach_conversation_id: str) -> dict | None:
         """
         SELECT id, coach_conversation_id, role, content,
                proposed_changes, reasoning, suggestions,
-               proposed_global_rule_override, status,
+               proposed_global_rule_override,
+               proposed_section_change, target_section_id, status,
                status_changed_at, created_at
         FROM coach_messages
         WHERE coach_conversation_id = $1::uuid
           AND role = 'coach'
           AND status = 'pending'
           AND (proposed_changes IS NOT NULL
-               OR proposed_global_rule_override IS NOT NULL)
+               OR proposed_global_rule_override IS NOT NULL
+               OR proposed_section_change IS NOT NULL)
         ORDER BY created_at DESC
         LIMIT 1
         """,
@@ -224,14 +276,16 @@ async def get_proposal_by_id(
         """
         SELECT id, coach_conversation_id, role, content,
                proposed_changes, reasoning, suggestions,
-               proposed_global_rule_override, status,
+               proposed_global_rule_override,
+               proposed_section_change, target_section_id, status,
                status_changed_at, created_at
         FROM coach_messages
         WHERE id = $1::uuid
           AND coach_conversation_id = $2::uuid
           AND role = 'coach'
           AND (proposed_changes IS NOT NULL
-               OR proposed_global_rule_override IS NOT NULL)
+               OR proposed_global_rule_override IS NOT NULL
+               OR proposed_section_change IS NOT NULL)
         LIMIT 1
         """,
         proposal_id,

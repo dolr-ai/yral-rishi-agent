@@ -121,7 +121,7 @@ def test_soul_file_compose_layer_order_skill_after_archetype():
     USER_STATE → MEMORIES. Skill AFTER archetype so its carve-outs win."""
     src = _read("app/services/soul_file.py")
     fn_start = src.find("def compose(")
-    body = src[fn_start : fn_start + 3500]
+    body = src[fn_start : fn_start + 5000]
     # The archetype lookup must come before the skill lookup
     archetype_pos = body.find("ARCHETYPE_PROMPTS[archetype]")
     skill_pos = body.find("_skills.get(skill_slug)")
@@ -134,7 +134,7 @@ def test_soul_file_compose_user_state_includes_setup_and_runtime():
     so the bot grounds its reply in the full plan, not just onboarding."""
     src = _read("app/services/soul_file.py")
     fn_start = src.find("def compose(")
-    body = src[fn_start : fn_start + 3500]
+    body = src[fn_start : fn_start + 5000]
     assert '"setup"' in body and '"runtime"' in body
     # The plan layer is rendered as a bullet list
     assert "Your current plan for this user" in body

@@ -107,6 +107,7 @@ async def generate_for_influencer(inf: dict) -> dict:
         system_instructions=inf.get("system_instructions") or "",
         category=inf.get("category"),
         global_rule_overrides=inf.get("global_rule_overrides"),
+        sections=inf.get("system_instructions_sections"),
     )
     prompt = _SUMMARY_PROMPT.format(
         effective_prompt=effective_prompt,

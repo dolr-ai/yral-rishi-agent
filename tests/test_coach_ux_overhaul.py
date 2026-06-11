@@ -83,10 +83,11 @@ def test_route_persists_opening_with_suggestions():
 def test_repo_add_message_accepts_suggestions():
     src = _read("app/repositories/coach_repo.py")
     pos = src.find("async def add_message(")
-    # Window 2500 — Coach PR-3 added the `status` insert column +
-    # is_proposal computation block, pushing the `_json.dumps(suggestions)`
-    # literal further down. Previous bumps: 1200→2000 (PR-B), 2000→2500 (PR-3).
-    body = src[pos : pos + 2500]
+    # Window 5500 — Bucket 2 PR-2 added the proposed_section_change kwarg,
+    # target_section_id denormalisation, transaction wrap, and the
+    # supersede-on-insert UPDATE inside add_message. Previous bumps:
+    # 1200→2000 (PR-B), 2000→2500 (PR-3), 2500→5500 (Bucket 2 PR-2).
+    body = src[pos : pos + 5500]
     assert "suggestions: list[str] | None = None" in body
     # suggestions JSONB written via json.dumps so asyncpg accepts
     # the parameter shape.
@@ -140,11 +141,13 @@ def test_route_threads_request_proposal_flag():
 def test_apply_writes_receipt_message():
     src = _read("app/routes/creator_coach.py")
     pos = src.find("async def apply_coach_proposal(")
-    # Window bumped to 7000 (was 3500) — Coach Fix 1 PR-B added the
-    # global_rule_override dispatch path (~80 lines) before the legacy
-    # system_instructions branch. Receipt message now lives in BOTH
-    # branches; the 3500-char window stopped before either.
-    body = src[pos : pos + 7000]
+    # Window bumped to 14000 (was 7000) — Coach Bucket 2 PR-2 added the
+    # proposed_section_change dispatch path (~150 lines incl. sha
+    # concurrency check + UPDATE jsonb_set), pushing the global_rule and
+    # legacy-text branches further down. Receipt message lives in ALL
+    # THREE branches. Previous bumps: 3500→7000 (Fix 1 PR-B), 7000→14000
+    # (Bucket 2 PR-2).
+    body = src[pos : pos + 14000]
     # Receipt content prefix
     assert "✅ Saved" in body
     # Persisted via add_message

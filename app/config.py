@@ -51,6 +51,15 @@ CHAT_HISTORY_WINDOW = _env_int("CHAT_HISTORY_WINDOW", 30)
 # default = TRUE so the streaming path is reachable as soon as mobile is ready.
 ENABLE_SSE_STREAMING = _env_bool("ENABLE_SSE_STREAMING", True)
 
+# Coach Bucket 2: when ON, soul_file.compose() prefers a bot's
+# `system_instructions_sections` (migration 038) over the flat
+# `system_instructions` blob, and Coach proposes against ONE section per
+# turn (proposed_section_change shape on coach_messages, migration 039).
+# Default OFF so the column is dormant until mobile + backend cutover.
+# Per-bot per-env override via COACH_SECTIONED_V2_ENABLED=true. See
+# docs/designs/coach-bucket-2-sections-contract.md.
+COACH_SECTIONED_V2_ENABLED = _env_bool("COACH_SECTIONED_V2_ENABLED", False)
+
 # OpenRouter (NSFW content routing)
 OPENROUTER_API_KEY = _env("OPENROUTER_API_KEY")
 OPENROUTER_MODEL = _env("OPENROUTER_MODEL", "google/gemini-2.5-flash")

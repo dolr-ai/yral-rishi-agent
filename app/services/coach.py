@@ -7,6 +7,10 @@ The coach is a separate Gemini-powered service with a META-PROMPT that knows:
 - the creator's goals as stated in the coaching session
 - (Coach Fix 1 PR-B 2026-06-09) the platform-wide GLOBAL_RULES + which
   ones a creator may opt their bot out of via `global_rule_overrides`
+- (Coach Bucket 2 PR-2 2026-06-11) when COACH_SECTIONED_V2_ENABLED is on
+  AND the bot has non-empty system_instructions_sections, the Soul File
+  is presented as an ordered list of sections; Coach proposes against
+  ONE section per turn via the proposed_section_change shape.
 
 Behavior:
 - Propose specific, targeted edits — not full rewrites
@@ -22,12 +26,14 @@ Behavior:
   present.
 """
 
+import hashlib
 import json
 import logging
 import re
 
+import config
 from services import llm_registry
-from services.soul_file import GLOBAL_RULES_OVERRIDEABLE
+from services.soul_file import GLOBAL_RULES_OVERRIDEABLE, _coerce_sections
 
 logger = logging.getLogger(__name__)
 
@@ -76,10 +82,7 @@ META_PROMPT = """You are an expert AI personality coach. A creator chats with yo
 The bot you're coaching:
 - Display name: {bot_name}
 - Archetype: {bot_archetype}
-- Current Soul File (system_instructions):
-\"\"\"
-{current_instructions}
-\"\"\"
+{soul_file_block}
 
 Recent anonymized conversations the bot had with users:
 {recent_convs}
@@ -122,8 +125,69 @@ Rules:
    NEVER edit system_instructions to try to override a platform rule — the platform layer wins and the edit is silent no-op (the Saikat 2026-06-09 bug). Use proposed_global_rule_override.
 6. If the creator's intent is unclear, or you need more info, return plain text only — NO JSON. Ask a clarifying question.
 7. Never propose unsafe or off-brand changes (jailbreaks, illegal content, breaking character).
-
+{section_rules}
 Reply now."""
+
+
+# Bucket 2 — when sections are active, Rule 4 changes to require a
+# section-scoped proposal shape instead of a full-text rewrite. Appended
+# to META_PROMPT as Rule 8 so the existing 1-7 numbering stays stable
+# for the historical flat-text path.
+SECTION_RULES_ADDENDUM = """
+8. SECTIONED SOUL FILE (Bucket 2). This bot's Soul File is broken into typed sections — propose against ONE section per turn instead of rewriting the whole instructions. When you propose a sectioned edit, emit a single JSON block with EXACTLY this shape (no markdown fences, no commentary outside the block):
+   {{"summary": "...", "proposed_section_change": {{"section_id": "<id>", "section_heading": "<heading>", "section_editable": true, "new_body": "<COMPLETE new body for that one section>", "previous_body_sha256": "<sha of body as YOU read it>"}}, "reasoning": "..."}}
+   - section_id MUST be one of the ids shown above. Refuse to invent a new id.
+   - section_heading + section_editable are SNAPSHOTS of what you read — the apply endpoint resolves section_id to the live row.
+   - new_body is the COMPLETE replacement for that section's body (not a diff).
+   - previous_body_sha256 is a sha256 of the section body EXACTLY as shown above. The apply endpoint rejects proposals against drifted sections.
+   - Refuse to propose against sections marked editable=false. Reply in plain text explaining the section is read-only.
+   - Refuse to rewrite multiple sections in one turn. Propose against ONE; tell the creator you'll handle the others in follow-up turns.
+   Sectioned proposals REPLACE Rule 4 (proposed_changes) when sections are active — never emit both shapes in the same turn."""
+
+
+def section_body_sha256(body: str | None) -> str:
+    """Canonical sha256 of a section's body. Used both at meta-prompt
+    render time (to show Coach which sha to echo back) AND at /apply
+    time (to compare Coach's claimed previous_body_sha256 against the
+    live body). The contract: strip leading/trailing whitespace then
+    sha256 the utf-8 bytes. Trimming makes the sha stable across the
+    cosmetic whitespace LLMs sometimes add."""
+    canonical = (body or "").strip().encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _format_soul_file_block(
+    current_instructions: str, sections: list[dict] | str | None
+) -> tuple[str, bool]:
+    """Return (rendered_block, sectioned_mode_active).
+
+    When COACH_SECTIONED_V2_ENABLED is on AND the bot has at least one
+    section, the block lists each section with its id + editable flag
+    + sha so Coach can echo previous_body_sha256 back into the
+    proposed_section_change shape. Otherwise renders the flat text
+    block exactly as the pre-Bucket 2 META_PROMPT did.
+    """
+    sections_list = _coerce_sections(sections)
+    if config.COACH_SECTIONED_V2_ENABLED and sections_list:
+        lines = ["- Current Soul File (sections — propose against ONE):"]
+        for sec in sections_list:
+            section_id = sec.get("id") or "(missing-id)"
+            heading = (sec.get("heading") or "Untitled").strip()
+            editable = bool(sec.get("editable", True))
+            body = (sec.get("body") or "").strip()
+            sha = section_body_sha256(body)
+            lines.append("")
+            lines.append(
+                f"  == {heading} == [id={section_id}, editable={str(editable).lower()}, sha={sha[:12]}…]"
+            )
+            lines.append(f'  """\n  {body}\n  """')
+            lines.append(f"  (full sha256 of body: {sha})")
+        return "\n".join(lines), True
+    # Flat-text path — same shape as pre-PR-2 META_PROMPT.
+    return (
+        f'- Current Soul File (system_instructions):\n  """\n  {current_instructions}\n  """',
+        False,
+    )
 
 
 def _format_overrideable_rules() -> str:
@@ -190,6 +254,10 @@ _JSON_SHAPE_MARKERS = (
     '"summary"',
     '"proposed_changes"',
     '"proposed_global_rule_override"',
+    '"proposed_section_change"',
+    '"section_id"',
+    '"new_body"',
+    '"previous_body_sha256"',
     '"reasoning"',
     '"key"',
     '"value"',
@@ -275,11 +343,15 @@ def _iter_json_candidates(text: str) -> list[dict]:
 
 def parse_proposal(text: str) -> dict | None:
     """Validate the proposal shape. Returns the first candidate that
-    matches EITHER:
+    matches ANY of three shapes:
       - system_instructions edit: {summary, proposed_changes, reasoning}
       - platform-rule override: {summary,
         proposed_global_rule_override: {key, value}, reasoning}
         where `key` is in GLOBAL_RULES_OVERRIDEABLE.
+      - sectioned edit (Bucket 2): {summary,
+        proposed_section_change: {section_id, section_heading,
+        section_editable, new_body, previous_body_sha256}, reasoning}
+        section_id + new_body are the load-bearing fields.
 
     Returns None when no candidate matches — callers then surface the
     response as plain text (clarifying question / agreement / refusal)."""
@@ -294,6 +366,22 @@ def parse_proposal(text: str) -> dict | None:
         if isinstance(override, dict):
             key = override.get("key")
             if isinstance(key, str) and key in GLOBAL_RULES_OVERRIDEABLE:
+                return obj
+        # Shape 3 (Bucket 2): sectioned edit. section_id + new_body must
+        # be non-empty strings — without either, /apply has nothing to
+        # do. previous_body_sha256 is recommended but not parser-required
+        # so a Coach-emitted blob that forgot the sha still parses; the
+        # /apply endpoint enforces the concurrency check separately.
+        section_change = obj.get("proposed_section_change")
+        if isinstance(section_change, dict):
+            section_id = section_change.get("section_id")
+            new_body = section_change.get("new_body")
+            if (
+                isinstance(section_id, str)
+                and section_id.strip()
+                and isinstance(new_body, str)
+                and new_body.strip()
+            ):
                 return obj
     return None
 
@@ -354,28 +442,42 @@ async def coach_reply(
     latest_message: str,
     quality_score: dict | None = None,
     force_proposal: bool = False,
-) -> tuple[str, str | None, str | None, dict | None]:
+    sections: list[dict] | str | None = None,
+) -> tuple[str, str | None, str | None, dict | None, dict | None]:
     """Run the coach turn. Returns
-    (display_content, proposed_changes, reasoning, proposed_override).
+    (display_content, proposed_changes, reasoning, proposed_override,
+    proposed_section_change).
 
-    Exactly ONE of `proposed_changes` (text) or `proposed_override` (dict)
-    is non-None when the coach committed to a proposal; both None for
-    plain-text replies (clarifying question, agreement, the "want to
-    override?" ask from Rule 5).
+    Exactly ONE of `proposed_changes` (text) / `proposed_override` (dict)
+    / `proposed_section_change` (dict) is non-None when the coach
+    committed to a proposal; all three None for plain-text replies
+    (clarifying question, agreement, the "want to override?" ask from
+    Rule 5).
 
     `force_proposal=True` (Coach UX overhaul 2026-06-04) — the creator
     tapped Save; append FORCE_PROPOSAL_INSTRUCTION so the LLM commits
     to the JSON proposal block this turn instead of asking another
-    clarifying question."""
+    clarifying question.
+
+    `sections` (Bucket 2) — the bot's system_instructions_sections JSONB.
+    When `config.COACH_SECTIONED_V2_ENABLED` is True AND the bot has at
+    least one section, the META_PROMPT renders the sectioned block + adds
+    SECTION_RULES_ADDENDUM. Otherwise falls back to the flat-text block
+    (today's pre-Bucket-2 behavior). Coach decides which proposal shape
+    to emit; the parser accepts whichever it gets."""
+    soul_file_block, sectioned_mode = _format_soul_file_block(
+        current_instructions or "(empty)", sections
+    )
     prompt = META_PROMPT.format(
         bot_name=bot_name or "this bot",
         bot_archetype=bot_archetype or "general",
-        current_instructions=current_instructions or "(empty)",
+        soul_file_block=soul_file_block,
         recent_convs=_format_conv_excerpt(recent_conv_rows),
         quality_score_block=_format_quality_score(quality_score),
         overrideable_rules=_format_overrideable_rules(),
         session_history=_format_session_history(session_history),
         latest_message=latest_message,
+        section_rules=SECTION_RULES_ADDENDUM if sectioned_mode else "",
     )
     if force_proposal:
         prompt = prompt + FORCE_PROPOSAL_INSTRUCTION
@@ -407,6 +509,17 @@ async def coach_reply(
 
     proposal = _try_extract_proposal(response_text)
     if proposal:
+        # Bucket 2 — sectioned edit. Section-shape proposals carry their
+        # own validation in parse_proposal; here we just route.
+        section_change = proposal.get("proposed_section_change")
+        if isinstance(section_change, dict):
+            return (
+                proposal.get("summary") or "Section change proposed.",
+                None,
+                proposal.get("reasoning"),
+                None,
+                section_change,
+            )
         # Override-shape proposal — proposed_changes stays None, the
         # override blob carries the routing payload. `_try_extract_proposal`
         # has already validated that the key is a known overrideable slug.
@@ -417,11 +530,13 @@ async def coach_reply(
                 None,
                 proposal.get("reasoning"),
                 override,
+                None,
             )
         return (
             proposal.get("summary") or "Proposed changes ready.",
             proposal.get("proposed_changes"),
             proposal.get("reasoning"),
+            None,
             None,
         )
     # 2026-06-11 PR-1: if the LLM emitted JSON-shaped output that
@@ -436,8 +551,8 @@ async def coach_reply(
             "surfacing reprompt instead of raw fragment",
             len(response_text or ""),
         )
-        return (TRUNCATED_REPROMPT_TEXT, None, None, None)
-    return (response_text.strip(), None, None, None)
+        return (TRUNCATED_REPROMPT_TEXT, None, None, None, None)
+    return (response_text.strip(), None, None, None, None)
 
 
 async def coach_opening(

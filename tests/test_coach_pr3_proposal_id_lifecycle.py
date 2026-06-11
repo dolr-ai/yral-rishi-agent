@@ -168,13 +168,15 @@ def test_apply_route_returns_409_on_non_pending_status():
 
 
 def test_apply_route_calls_supersede_and_apply_in_both_branches():
-    """Both dispatch branches (override + system_instructions) must
-    transition the lifecycle. Without this, the row stays 'pending'
-    forever and pending_proposal_exists keeps returning true."""
+    """All THREE dispatch branches (section_change + override +
+    system_instructions) must transition the lifecycle. Without this,
+    the row stays 'pending' forever and pending_proposal_exists keeps
+    returning true. Window 15000 — Bucket 2 PR-2 added the section
+    branch (~150 lines). Count ≥3 now."""
     src = _read("app/routes/creator_coach.py")
     pos = src.find("async def apply_coach_proposal(")
-    body = src[pos : pos + 9000]
-    assert body.count("supersede_and_apply(") >= 2
+    body = src[pos : pos + 15000]
+    assert body.count("supersede_and_apply(") >= 3
 
 
 # ─── Route /discard ─────────────────────────────────────────────────────
@@ -225,10 +227,13 @@ def test_format_message_surfaces_status_and_changed_at():
 def test_add_message_inserts_pending_for_proposals():
     """Newly inserted proposal rows must start as 'pending' so the
     lifecycle invariant holds. Source-pin the is_proposal computation
-    + the column in the INSERT."""
+    + the column in the INSERT. Window bumped to 5500 — Bucket 2 PR-2
+    wrapped INSERT in a transaction with supersede-on-insert UPDATE
+    above + added proposed_section_change kwarg + target_section_id
+    denormalisation, so the INSERT now sits further into the function."""
     src = _read("app/repositories/coach_repo.py")
     pos = src.find("async def add_message(")
-    body = src[pos : pos + 2500]
+    body = src[pos : pos + 5500]
     # is_proposal heuristic
     assert "is_proposal" in body
     # The status column is in the INSERT list

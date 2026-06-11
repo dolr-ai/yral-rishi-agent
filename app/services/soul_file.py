@@ -10,6 +10,8 @@ The composed prompt is deterministic for a given (influencer, memories) pair,
 enabling provider-side prompt caching (byte-identical prefix across turns).
 """
 
+import config
+
 LAYER_SEPARATOR = "\n\n---\n\n"
 
 # Generalized 2026-06-04 (Rishi): language enumeration removed so the rule
@@ -169,6 +171,54 @@ def tuning_for(category: str | None) -> dict | None:
     return ARCHETYPE_TUNING.get(category.lower().strip())
 
 
+def _coerce_sections(raw) -> list[dict]:
+    """asyncpg returns JSONB as either dict/list directly or a JSON
+    string depending on codec config. Accept either; return [] for
+    anything not parseable so chat-time compose() can't crash on a
+    malformed DB cell."""
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        import json
+
+        try:
+            raw = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return []
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for section in raw:
+        if isinstance(section, dict) and section.get("body"):
+            out.append(section)
+    return out
+
+
+def render_sections(sections: list[dict]) -> str:
+    """Render the L4 sections block for chat-time prompts.
+
+    Output shape (per Bucket 2 contract §3):
+        == Core personality ==
+        You are Tara, a warm 22-year-old...
+
+        == Voice and tone ==
+        Sassy when the user flirts...
+
+    Sections are rendered in the order they appear in the JSONB array
+    — the contract says ordering is meaningful (mobile renders the same
+    order, Coach proposes against the same order). Sections missing a
+    heading still render with a fallback "== Section N ==" header so a
+    half-built bot doesn't crash the prompt."""
+    blocks: list[str] = []
+    for idx, sec in enumerate(sections, 1):
+        heading = (sec.get("heading") or f"Section {idx}").strip()
+        body = (sec.get("body") or "").strip()
+        if not body:
+            continue
+        blocks.append(f"== {heading} ==\n{body}")
+    return "\n\n".join(blocks)
+
+
 def compose(
     system_instructions: str,
     category: str | None = None,
@@ -176,6 +226,7 @@ def compose(
     skill_slug: str | None = None,
     user_skill_state: dict | None = None,
     global_rule_overrides: dict | None = None,
+    sections: list[dict] | str | None = None,
 ) -> str:
     """Compose a Soul File prompt.
 
@@ -190,6 +241,15 @@ def compose(
     (Coach Fix 1 PR-A). When present, rules in GLOBAL_RULES_OVERRIDEABLE
     whose keys appear with a truthy value are OMITTED from layer 1 so the
     per-influencer instructions can land without competing platform rules.
+
+    `sections` is the new system_instructions_sections JSONB column
+    (Coach Bucket 2 PR-1, migration 038). When `config.COACH_SECTIONED_V2_ENABLED`
+    is True AND the bot has at least one non-empty section, L4
+    (per-influencer) renders FROM the sections list (heading + body per
+    section) instead of the flat `system_instructions` string. When the
+    flag is OFF or the sections list is empty, falls back to flat text
+    — the historical 2026-05-XX path is unchanged. This keeps PR-1's
+    column dormant in prod until the flag flips.
 
     Returns a single string with all layers concatenated, suitable for
     passing as the system prompt to Gemini or OpenRouter.
@@ -211,7 +271,16 @@ def compose(
         if skill and skill.get("system_prompt_block"):
             layers.append(skill["system_prompt_block"])
 
-    if system_instructions:
+    # Bucket 2: prefer sections when the flag is on AND the bot has any.
+    # Otherwise fall back to flat text exactly as today.
+    sections_list = _coerce_sections(sections)
+    if (
+        config.COACH_SECTIONED_V2_ENABLED
+        and sections_list
+        and (rendered := render_sections(sections_list))
+    ):
+        layers.append(rendered)
+    elif system_instructions:
         layers.append(system_instructions)
 
     # Phase 23: per-user plan layer. The structured state the skill
