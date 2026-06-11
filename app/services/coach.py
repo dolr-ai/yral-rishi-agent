@@ -275,7 +275,15 @@ def _looks_like_truncated_proposal(text: str | None) -> bool:
     least one canonical proposal JSON key AND show structural damage
     (unbalanced braces or quotes). A plain-text reply with no JSON
     markers (clarifying question, agreement) returns False and falls
-    through to the normal plain-text path."""
+    through to the normal plain-text path.
+
+    Mobile expert report: the prior catch-all `return True` fired on
+    long plain-English Coach replies that quoted JSON-y vocabulary
+    like `"summary"` while explaining a proposal. Braces + quotes
+    balanced because the reply wasn't JSON in the first place, but
+    we still reprompted — kicking Rishi's long Anastasia session
+    into a loop. Tightened: catch-all is now False. Reprompt only
+    on genuine structural damage."""
     if not text:
         return False
     if not any(marker in text for marker in _JSON_SHAPE_MARKERS):
@@ -289,10 +297,9 @@ def _looks_like_truncated_proposal(text: str | None) -> bool:
     quotes = text.count('"')
     if quotes % 2 == 1:
         return True
-    # All braces closed + balanced quotes + still failed to parse →
-    # something else is wrong (escape errors, etc.); call it truncated
-    # too because the route can't surface it meaningfully.
-    return True
+    # Markers present BUT braces + quotes balanced → text is plain
+    # English that quotes proposal field names. Surface as-is.
+    return False
 
 
 def _iter_json_candidates(text: str) -> list[dict]:
@@ -547,10 +554,14 @@ async def coach_reply(
     # user. Detect the partial-JSON signal and substitute a clean
     # "let me redo that" reprompt instead.
     if _looks_like_truncated_proposal(response_text):
+        # text[:500] gives future debuggability for tightening the
+        # heuristic further if a false-positive ever recurs (mobile
+        # expert ask, 2026-06-12 carry-forward).
         logger.warning(
             "coach_reply: response looks truncated/partial JSON (len=%d); "
-            "surfacing reprompt instead of raw fragment",
+            "surfacing reprompt instead of raw fragment. text[:500]=%r",
             len(response_text or ""),
+            (response_text or "")[:500],
         )
         return (TRUNCATED_REPROMPT_TEXT, None, None, None, None)
     return (response_text.strip(), None, None, None, None)

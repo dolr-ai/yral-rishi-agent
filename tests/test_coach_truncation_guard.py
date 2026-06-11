@@ -77,10 +77,18 @@ def test_detector_passes_clean_plain_text():
 
 
 def test_detector_passes_full_valid_proposal_text():
-    """A well-formed proposal text shouldn't be flagged either —
-    structurally balanced + parseable. (The detector only runs after
+    """A well-formed proposal text shouldn't be flagged — structurally
+    balanced + parseable. The detector only runs after
     _try_extract_proposal returned None, but defense-in-depth says it
-    must not false-positive on a healthy string.)"""
+    must not false-positive on a healthy string.
+
+    Mobile expert report: the prior catch-all `return True` at the
+    bottom of the detector turned long plain-English Coach replies
+    that quoted JSON-y vocabulary (e.g. "summary"/"reasoning" inside
+    prose) into reprompt loops on Rishi's Anastasia session. The
+    detector now requires actual structural damage (unbalanced
+    braces or odd quote count) — balanced text falls through to
+    plain-text surfacing even if markers are present."""
     from services.coach import _looks_like_truncated_proposal
 
     healthy = (
@@ -88,15 +96,26 @@ def test_detector_passes_full_valid_proposal_text():
         '"proposed_changes": "You are sassy.", '
         '"reasoning": "Matches alpha pattern."}'
     )
-    # Balanced braces (1=1), balanced quotes (even count). Detector
-    # falls through to the final "call it truncated" branch only when
-    # markers are present AND parse failed — that's the route's
-    # responsibility. For a string that IS balanced AND has markers,
-    # the detector currently returns True (conservative); the route
-    # already won't call the detector when extraction succeeded.
-    # This test pins the behavior: balanced + has markers → True
-    # (conservative on TRUE per the docstring).
-    assert _looks_like_truncated_proposal(healthy) is True
+    # Balanced braces (1=1), balanced quotes (even count), markers
+    # present → False (no damage signal).
+    assert _looks_like_truncated_proposal(healthy) is False
+
+
+def test_detector_passes_plain_text_quoting_marker_vocabulary():
+    """The 2026-06-12 false-positive: a long plain-English Coach reply
+    that mentions JSON-y vocabulary in quotes (e.g. explaining what a
+    "summary" or "reasoning" field would carry) must NOT trigger the
+    reprompt path. Braces + quotes balanced because the text isn't
+    JSON in the first place — the old catch-all flagged it anyway,
+    which kicked Rishi's Anastasia session into a loop."""
+    from services.coach import _looks_like_truncated_proposal
+
+    chatty = (
+        'Got it — the "summary" line for that change would be '
+        '"make Tara sassier" and the "reasoning" would lean on the '
+        'alpha tone we discussed. Want me to draft it?'
+    )
+    assert _looks_like_truncated_proposal(chatty) is False
 
 
 def test_detector_passes_plain_text_with_quotes_but_no_markers():
