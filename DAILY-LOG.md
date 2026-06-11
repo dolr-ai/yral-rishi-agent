@@ -1,5 +1,100 @@
 # Daily Log
 
+## 2026-06-11 — H6 PROD BLOCKER cleared + Coach Bucket 1 mostly done + ETL drain shipped + runpod_vllm rotation + proactive cost-attribution fix
+
+### What happened in one paragraph
+
+Big day. Closed Phase 21αβ.H6 (PROD BLOCKER) — the WAL-G restore drill is verified end-to-end on rishi-6. Took 4 drill iterations to get there: first run hit a config-quoting bug in my script, second hit a silent `set -e` exit, third hit an orphan-postgres port conflict from drill 2's skipped teardown, fourth ran clean and produced the actual proof — 3,941 ai_influencers / 287,183 conversations / 3,460,303 messages restored from S3, with the latest message timestamp lagging by only 10 min. The WAL-G safety net is real and live. Each fix added more defensive scaffolding (`docker exec --user postgres` for cleaner quoting, defensive sanity-query helpers, pre-flight orphan cleanup + EXIT trap, numeric guard on count results). Net 10 backend PRs shipped today — most via dev session executing on the Bucket 1 Coach simplification brief I drafted after the strategy + Codex sessions: PR-1 truncation guard, PR-2 shared JSON extractor + 2 validators, PR-4 `pending_proposal_exists` field, PR-5 Sentry on Coach timeout, plus PR-3 design doc landed as the approval signal for tomorrow's migration 035 + apply-binding code work. Mobile expert ran T2/T3 on Motorola — Item 1 passes. ETL on-demand drain + reconciliation workflow shipped via #344 (yesterday's plan executed). Saikat's runpod_vllm endpoint moved from the dead runpod proxy URL to saikat-llm-medium-fast.yral.com — rotation workflow + GitHub-Secret-based rotation flow shipped (sidestepping Vault for now). Caught a real bug in proactive.py: skill-checkins + the legacy proactive loop were labeled `user_chat_main` in `llm_costs` AND routed through Gemini instead of Saikat — fixed via `process_override` parameter on `ai_client.generate_response()`.
+
+### PRs merged today (10)
+
+| # | What |
+|---|---|
+| #336 | `:stable` GHCR tag fix (packages:read → write) |
+| #337 | Coach JSON-fence parser fix (`_try_extract_proposal` only — left `coach_opening` for PR-2) |
+| #338 | distinguish runner config-refusal from replica-rejection (set-e bug introduced here, fixed later same day) |
+| #339 | CI: idempotency check (second-run no-op verification) |
+| #340 | CI: squawk expansion (lock_timeout + statement_timeout) |
+| #341 | (closed) — Vault path superseded |
+| #342 | runpod_vllm new URL + rotation workflow consuming GitHub Secret |
+| #343 | deploy.yml migration-step failover under set -e (`RUNNER_RC=0; ssh ... || RUNNER_RC=$?`) |
+| #344 | ETL on-demand drain + reconciliation system (yesterday's plan, 1906 LOC) |
+| #345 | proactive cost-attribution + actually use runpod_vllm for background |
+| #346 | WAL-G restore drill — Phase 21αβ.H6 infrastructure |
+| #347 | WAL-G drill quoting fix + Coach PR-1 truncation guard (bundled by branch collision) |
+| #348 | closed (duplicate of #347) |
+| #349 | Coach PR-2 — one JSON extractor + two validators |
+| #350 | Coach PR-4 — expose `pending_proposal_exists` |
+| #351 | PR-5 — Sentry capture on `soul_file_coach` timeout |
+| #352 | Coach PR-3 DESIGN doc (`/apply` binding + status migration) — approval signal |
+| #353 | drill defensive sanity queries + pre-flight diagnostics |
+| #354 | drill orphan cleanup + EXIT trap + full startup log |
+| #355 | drill: drop nonexistent `users` table check + numeric guard |
+
+### Phase 21αβ.H6 — verification numbers
+
+Drill #4 PASSED on rishi-6 at 2026-06-11T06:43Z. Final summary:
+
+```
+─── WAL-G restore drill summary ───
+Target:   rishi-6 (162.55.88.112)
+Exit:     0
+Verdict:  GREEN — restore mechanism proven end-to-end
+
+[walg-drill 20260611T064333Z] row counts:
+[walg-drill 20260611T064333Z]   ai_influencers = 3,941
+[walg-drill 20260611T064333Z]   conversations  = 287,183
+[walg-drill 20260611T064333Z]   messages       = 3,460,303
+[walg-drill 20260611T064333Z]   latest message = 2026-06-11 06:34:01 UTC
+```
+
+Latest-message lag = 10 min. WAL stream is genuinely live.
+
+### Cost attribution fix (the dashboard finally tells the truth)
+
+Rishi noticed `proactive_generation` showing 0 calls while `user_chat_main` was $1.46/1900 — suspect ratio for real-user chat. Root cause in `app/services/proactive.py` lines 171 + 355: both proactive loops called `ai_client.generate_response()` which hard-codes `process="user_chat_main"`. Two consequences: (1) every proactive llm_costs row landed under `user_chat_main`; (2) LLM_DEFAULTS["proactive_generation"] routes to runpod_vllm → internal_vllm, NEVER gemini, but the actual labeling meant the calls took gemini's premium-priced path. Fix: `process_override: str | None = None` parameter on `generate_response()`; proactive passes `process_override="proactive_generation"`. From the next service roll: clean `proactive_generation` rows in cost table + Saikat's pod actually receives proactive traffic + ASYNC_PROCESSES_NEVER_GEMINI guard finally protects in practice.
+
+### Coach Bucket 1 status (from this morning's strategy + Codex brief)
+
+| Item | What | Status |
+|------|------|--------|
+| PR-1 | Truncation guard (max_tokens 2048→4096 + clean reprompt) | ✅ shipped via #347 + Motorola pass via #1191 |
+| PR-2 | One JSON extractor + parse_proposal/parse_opening validators | ✅ shipped via #349 |
+| PR-3 | `/apply` binding to `proposal_id` + status lifecycle | 🟡 design doc landed via #352, code ships tomorrow after Rishi pg_dump |
+| PR-4 | Expose `pending_proposal_exists` on responses | ✅ shipped via #350 |
+| PR-5 | Sentry capture on Coach timeout | ✅ shipped via #351 |
+
+Mobile expert has Item 2 (Save-button gate) committed locally, holding push until PR-3 lands tomorrow. Items 2 + 3 ship as one mobile PR on the `rishi/coach-pivot-bucket1-item2-pending-proposal-gate` branch.
+
+Preview-before-apply UX work parked until Bucket 2 sections land (per Rishi's earlier call; I drifted on that in a midday brief and mobile expert caught it).
+
+### Followups for tomorrow
+
+- **Dev session, first thing AM:** Rishi takes pg_dump → ship Coach PR-3 (migration 035, NOT 037; column shape locked in #352 approval comment). Then write Bucket 2 contract doc (sectioned `system_instructions_sections` JSONB + `coach_sectioned_v2_enabled` flag + GET/PUT soul-file endpoints).
+- **Dev session, autonomous overnight if bandwidth:** ETL drain end-to-end validation via the new workflow; I-Mig2 + I-Mig3 expansions; optionally H10 dashboard tiles for backup health.
+- **Dev session, ~2 days:** H2 server-side billing paywall (PROD BLOCKER). Brief at `/Users/rishichadha/.claude/plans/h2-server-side-billing-paywall-brief-2026-06-11.md` — 3 PRs, leverages existing `BILLING_URL` config + mobile's exact contract with billing.yral.com.
+- **Mobile expert AM:** PR-3 merges → push Item 2 + 3 as one coordinated PR on the pivot branch.
+- **Drill expansion (low priority):** sample more tables (coach_messages, system_instructions_history, llm_costs) — V2 has 23 tables, drill currently samples 3.
+- **Backup-health dashboard (low priority):** tile on `/admin/llm-routing` style page showing latest WAL-G backup timestamp + age + last drill pass + last drill timestamp.
+
+### Cutover PROD-BLOCKER status
+
+| Item | Before today | After today |
+|------|--------------|-------------|
+| H6 WAL-G restore drill | 🔴 PROD BLOCKER | ✅ CLEARED |
+| H11 cost alerting | "in PR" | (verify with dev session it landed) |
+| H12 multimodal routing | (already shipped) | ✅ done |
+| H2 server-side billing paywall | 🔴 PROD BLOCKER | ⏳ ~2 days (brief drafted, dev session owns) |
+| H8 Phase 24 security drills | 🔴 PROD BLOCKER | ⏳ ~5 days (largest remaining) |
+
+Two PROD BLOCKERs down, two left. H8 is the largest; needs scope-trim decision from Rishi.
+
+### Prod health at EOD
+
+`/health`, `/api/v1/influencers`, `/trending` all 200. All migrations applied (35 entries in `schema_migrations`). Patroni 3/3 healthy. WAL-G safety net verified live.
+
+---
+
 ## 2026-06-09 — #314 P0 incident + full migration-runner hardening + Coach Fix 1/Fix 2 backends live
 
 ### What happened in one paragraph
