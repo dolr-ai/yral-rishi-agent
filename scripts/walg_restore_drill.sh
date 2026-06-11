@@ -44,7 +44,13 @@ SWARM_STACK="${SWARM_STACK:-yral-v2-patroni}"
 POSTGRES_DB="${POSTGRES_DB:-yral_agent_db}"
 DRILL_PORT="${DRILL_PORT:-5433}"
 SIDECAR_NAME="walg-drill"
-MIN_ROW_COUNT_USERS="${MIN_ROW_COUNT_USERS:-1}"
+# V2's schema has three core tables (ai_influencers + conversations +
+# messages, see migrations/001_initial.sql). No `users` table — principal
+# IDs are stored directly on the conversations/messages rows. The first
+# successful drill (#4 on 2026-06-11) reported SELECT FROM users as
+# "relation does not exist" and the bash arithmetic compare silently
+# accepted the error string as a numeric value — we'd PASS even though
+# one query had genuinely failed.
 MIN_ROW_COUNT_AI_INFLUENCERS="${MIN_ROW_COUNT_AI_INFLUENCERS:-1}"
 MIN_ROW_COUNT_CONVERSATIONS="${MIN_ROW_COUNT_CONVERSATIONS:-1}"
 MIN_ROW_COUNT_MESSAGES="${MIN_ROW_COUNT_MESSAGES:-1}"
@@ -252,27 +258,52 @@ if [ -z "${PRE_FLIGHT}" ] || echo "${PRE_FLIGHT}" | grep -qi "error\|refused\|fa
         2>&1 | head -20 || true
 fi
 
-# Run all 5 sanity queries — none short-circuit, even if the pre-flight
+# Run all 4 sanity queries — none short-circuit, even if the pre-flight
 # failed. We want full visibility into which queries return empty.
-USERS_COUNT="$(sidecar_query "SELECT COUNT(*) FROM users")"
 INF_COUNT="$(sidecar_query "SELECT COUNT(*) FROM ai_influencers")"
 CONV_COUNT="$(sidecar_query "SELECT COUNT(*) FROM conversations")"
 MSG_COUNT="$(sidecar_query "SELECT COUNT(*) FROM messages")"
 LATEST_MSG_EPOCH="$(sidecar_query "SELECT COALESCE(EXTRACT(EPOCH FROM MAX(created_at))::bigint, 0) FROM messages")"
 
 log "row counts:"
-log "  users          = ${USERS_COUNT}"
 log "  ai_influencers = ${INF_COUNT}"
 log "  conversations  = ${CONV_COUNT}"
 log "  messages       = ${MSG_COUNT}"
 log "  latest message epoch = ${LATEST_MSG_EPOCH} ($(date -u -d @${LATEST_MSG_EPOCH} '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "decode-failed"))"
 
-# Validate each count meets the minimum expected
+# Numeric guard: every count must be a pure-numeric string. If sidecar_query
+# returned an error blob (e.g. "ERROR:relation does not exist"), the bash
+# arithmetic compare would silently accept it as 0 — which means a real
+# query failure would still PASS. Be strict: anything non-numeric = fail.
 FAILED=0
-[ "${USERS_COUNT:-0}" -lt "${MIN_ROW_COUNT_USERS}" ]                 && { fail "users count ${USERS_COUNT} < min ${MIN_ROW_COUNT_USERS}"; FAILED=1; }
-[ "${INF_COUNT:-0}" -lt "${MIN_ROW_COUNT_AI_INFLUENCERS}" ]          && { fail "ai_influencers count ${INF_COUNT} < min ${MIN_ROW_COUNT_AI_INFLUENCERS}"; FAILED=1; }
-[ "${CONV_COUNT:-0}" -lt "${MIN_ROW_COUNT_CONVERSATIONS}" ]          && { fail "conversations count ${CONV_COUNT} < min ${MIN_ROW_COUNT_CONVERSATIONS}"; FAILED=1; }
-[ "${MSG_COUNT:-0}" -lt "${MIN_ROW_COUNT_MESSAGES}" ]                && { fail "messages count ${MSG_COUNT} < min ${MIN_ROW_COUNT_MESSAGES}"; FAILED=1; }
+is_numeric() { case "$1" in (*[!0-9]*|"") return 1 ;; (*) return 0 ;; esac }
+
+if ! is_numeric "${INF_COUNT}"; then
+    fail "ai_influencers query failed (non-numeric result: ${INF_COUNT})"
+    FAILED=1
+elif [ "${INF_COUNT}" -lt "${MIN_ROW_COUNT_AI_INFLUENCERS}" ]; then
+    fail "ai_influencers count ${INF_COUNT} < min ${MIN_ROW_COUNT_AI_INFLUENCERS}"
+    FAILED=1
+fi
+if ! is_numeric "${CONV_COUNT}"; then
+    fail "conversations query failed (non-numeric result: ${CONV_COUNT})"
+    FAILED=1
+elif [ "${CONV_COUNT}" -lt "${MIN_ROW_COUNT_CONVERSATIONS}" ]; then
+    fail "conversations count ${CONV_COUNT} < min ${MIN_ROW_COUNT_CONVERSATIONS}"
+    FAILED=1
+fi
+if ! is_numeric "${MSG_COUNT}"; then
+    fail "messages query failed (non-numeric result: ${MSG_COUNT})"
+    FAILED=1
+elif [ "${MSG_COUNT}" -lt "${MIN_ROW_COUNT_MESSAGES}" ]; then
+    fail "messages count ${MSG_COUNT} < min ${MIN_ROW_COUNT_MESSAGES}"
+    FAILED=1
+fi
+if ! is_numeric "${LATEST_MSG_EPOCH}"; then
+    fail "latest-message-epoch query failed (non-numeric: ${LATEST_MSG_EPOCH})"
+    FAILED=1
+    LATEST_MSG_EPOCH=0  # let the freshness check below produce a clear msg
+fi
 
 NOW_EPOCH="$(date -u +%s)"
 LATEST_AGE_SECONDS=$(( NOW_EPOCH - LATEST_MSG_EPOCH ))

@@ -83,26 +83,37 @@ def test_script_invokes_wal_g_read_only_operations_only():
     assert "wal-g wal-push" not in src
 
 
-def test_script_runs_sanity_queries_on_four_critical_tables():
+def test_script_runs_sanity_queries_on_three_critical_tables():
     """The point of the drill is "data is actually there." Confirm we
-    query the load-bearing tables, not just SELECT 1."""
+    query the load-bearing tables (V2 schema has no `users` table —
+    principal IDs are on conversations/messages directly per
+    migrations/001_initial.sql)."""
     src = _src(SCRIPT)
-    assert 'FROM users' in src
     assert 'FROM ai_influencers' in src
     assert 'FROM conversations' in src
     assert 'FROM messages' in src
     # Latest message timestamp also checked (proves backup is recent)
     assert "MAX(created_at)" in src or "max(created_at)" in src
+    # And the (drill #4) `users` regression must not come back
+    assert 'SELECT COUNT(*) FROM users' not in src
 
 
 def test_script_validates_minimum_row_counts():
     """Without minimum thresholds, an empty restored DB would pass.
     Confirm the script compares counts to a min."""
     src = _src(SCRIPT)
-    assert "MIN_ROW_COUNT_USERS" in src
     assert "MIN_ROW_COUNT_AI_INFLUENCERS" in src
     assert "MIN_ROW_COUNT_CONVERSATIONS" in src
     assert "MIN_ROW_COUNT_MESSAGES" in src
+
+
+def test_script_rejects_non_numeric_query_results():
+    """Drill #4 (2026-06-11) reported PASSED while one query returned
+    'ERROR: relation does not exist' because bash arithmetic compare
+    silently treats non-numeric as 0. Confirm we guard against that."""
+    src = _src(SCRIPT)
+    assert "is_numeric" in src
+    assert "non-numeric result" in src or "non-numeric:" in src
 
 
 def test_script_checks_latest_message_freshness():
