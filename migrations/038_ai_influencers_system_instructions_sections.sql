@@ -29,8 +29,15 @@
 -- s3://rishi-yral/yral-rishi-agent-pre-migration-dumps/.
 
 -- squawk: cap lock-wait + statement duration per the migration linter
--- (I-Mig2, #340). Same 3s/60s as 033 + 034 + 035 + 036.
-SET lock_timeout = '3s';
+-- (I-Mig2, #340). 30s lock_timeout (NOT the 3s default from earlier
+-- migrations) because ai_influencers is the hottest read table on this
+-- service — every chat-send loads the influencer row. The first deploy
+-- attempt of 038 (2026-06-11T09:46Z) timed out at 3s waiting for the
+-- brief AccessExclusive lock to flip the catalog. 30s gives the ALTER
+-- enough headroom to slot in between in-flight reads. The actual write
+-- is metadata-only on PG11+ (no row rewrite), so once the lock IS
+-- acquired the work is sub-millisecond.
+SET lock_timeout = '30s';
 SET statement_timeout = '60s';
 
 ALTER TABLE ai_influencers

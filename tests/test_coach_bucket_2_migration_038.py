@@ -44,9 +44,14 @@ def test_migration_038_has_squawk_preamble():
     """Per I-Mig2 rule (#340): every migration that touches a populated
     table must declare its own lock_timeout + statement_timeout so prod
     ops can read worst-case blocking duration from the file alone.
-    Same 3s/60s as 033 + 034 + 035 + 036."""
+
+    ai_influencers gets 30s lock_timeout (NOT the 3s default the other
+    migrations use) because it's the hottest read table on the
+    service. The 2026-06-11T09:46Z deploy of 038 timed out at 3s with
+    `canceling statement due to lock timeout`; 30s lets the ALTER slot
+    in between in-flight chat-send reads."""
     src = MIG.read_text()
-    assert "SET lock_timeout = '3s';" in src
+    assert "SET lock_timeout = '30s';" in src
     assert "SET statement_timeout = '60s';" in src
 
 
