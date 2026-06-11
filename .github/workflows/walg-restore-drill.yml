@@ -1,0 +1,152 @@
+name: WAL-G restore drill (PROD BLOCKER H6)
+
+# Manually triggered. Validates the WAL-G safety net by actually doing a
+# restore-from-S3 + sanity-querying the restored data. Without this, "we
+# have backups" is theory — we've never proven the restore mechanism.
+#
+# Strategy: scp the drill script to a target host, SSH + run it. The
+# script docker-execs into the running patroni container, does the
+# restore + sidecar postgres + sanity queries inside a /tmp/ dir
+# (NEVER touches the live data dir at /home/postgres/pgdata/pgroot).
+#
+# Same shape as bootstrap-schema-migrations.yml, roll-patroni-image.yml,
+# rotate-runpod-vllm-key.yml: typed confirmation + ssh-keyscan + audit
+# reason.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_host_label:
+        description: 'Which target host to run the drill on'
+        required: true
+        type: choice
+        default: 'rishi-6'
+        options:
+          - rishi-4
+          - rishi-5
+          - rishi-6
+      reason:
+        description: 'Why are you running the drill? (audit trail)'
+        required: true
+        default: 'Scheduled WAL-G restore drill (H6) — '
+      i_understand:
+        description: 'Type RUN WAL-G DRILL to confirm this spins up a sidecar postgres on the target host.'
+        required: true
+        default: ''
+
+env:
+  RISHI_4_IP: 138.201.128.108
+  RISHI_5_IP: 88.99.160.251
+  RISHI_6_IP: 162.55.88.112
+  SWARM_USER: rishi-deploy
+
+jobs:
+  drill:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+
+    steps:
+      - name: Confirm RUN WAL-G DRILL typed
+        run: |
+          if [ "${{ inputs.i_understand }}" != "RUN WAL-G DRILL" ]; then
+            echo "::error::Confirmation phrase mismatched (must be exactly 'RUN WAL-G DRILL'); aborting."
+            exit 1
+          fi
+          echo "─── WAL-G restore drill initiated ───"
+          echo "Triggered by:  ${{ github.actor }}"
+          echo "Target host:   ${{ inputs.target_host_label }}"
+          echo "Reason:        ${{ inputs.reason }}"
+          echo "Timestamp:     $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+      - uses: actions/checkout@v4
+
+      - name: Resolve target host IP
+        id: resolve
+        run: |
+          case "${{ inputs.target_host_label }}" in
+            rishi-4) HOST="${{ env.RISHI_4_IP }}" ;;
+            rishi-5) HOST="${{ env.RISHI_5_IP }}" ;;
+            rishi-6) HOST="${{ env.RISHI_6_IP }}" ;;
+            *) echo "::error::Unknown target_host_label"; exit 1 ;;
+          esac
+          echo "host=$HOST" >> "$GITHUB_OUTPUT"
+          echo "Using host: $HOST"
+
+      - name: Set up SSH key + known_hosts
+        # ssh-keyscan picks up whichever host key algorithms each manager
+        # offers (RSA + ED25519 + ECDSA). Same pattern as the other
+        # manual workflows (rotate-runpod-vllm-key.yml etc.).
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -T 10 -H "${{ steps.resolve.outputs.host }}" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Stage drill script on target
+        run: |
+          SSH_OPTS="-i ~/.ssh/deploy_key -o ConnectTimeout=15 -o BatchMode=yes -o StrictHostKeyChecking=yes"
+          STAGING="/tmp/walg-drill-${{ github.run_id }}"
+          ssh $SSH_OPTS "${{ env.SWARM_USER }}@${{ steps.resolve.outputs.host }}" "mkdir -p $STAGING"
+          scp $SSH_OPTS -q scripts/walg_restore_drill.sh "${{ env.SWARM_USER }}@${{ steps.resolve.outputs.host }}:$STAGING/walg_restore_drill.sh"
+          ssh $SSH_OPTS "${{ env.SWARM_USER }}@${{ steps.resolve.outputs.host }}" "chmod +x $STAGING/walg_restore_drill.sh"
+          echo "staging=$STAGING" >> "$GITHUB_OUTPUT"
+        id: stage
+
+      - name: Run drill + capture output
+        id: drill
+        run: |
+          SSH_OPTS="-i ~/.ssh/deploy_key -o ConnectTimeout=15 -o BatchMode=yes -o StrictHostKeyChecking=yes"
+          STAGING="${{ steps.stage.outputs.staging }}"
+
+          # The drill exits with one of:
+          #   0 — full pass
+          #   1 — prereqs missing (no patroni container, no creds)
+          #   2 — wal-g backup-fetch failed
+          #   3 — sidecar postgres start/replay failed
+          #   4 — sanity query failed (counts low, latest msg stale)
+          #   5 — drill passed but cleanup messy
+          DRILL_RC=0
+          ssh $SSH_OPTS "${{ env.SWARM_USER }}@${{ steps.resolve.outputs.host }}" \
+                "bash $STAGING/walg_restore_drill.sh" \
+              || DRILL_RC=$?
+          echo "drill exit code: $DRILL_RC"
+          echo "rc=$DRILL_RC" >> "$GITHUB_OUTPUT"
+
+          # Clean up the staging script regardless of drill outcome.
+          ssh $SSH_OPTS "${{ env.SWARM_USER }}@${{ steps.resolve.outputs.host }}" "rm -rf $STAGING" 2>/dev/null || true
+
+          if [ "$DRILL_RC" -eq 0 ]; then
+            echo "✓ Drill PASSED"
+            exit 0
+          elif [ "$DRILL_RC" -eq 5 ]; then
+            echo "✓ Drill PASSED but cleanup was messy — operator should verify no /tmp/walg-drill-* left on ${{ inputs.target_host_label }}"
+            exit 0
+          else
+            echo "::error::Drill FAILED with exit code $DRILL_RC (see drill exit-code map in scripts/walg_restore_drill.sh)"
+            exit "$DRILL_RC"
+          fi
+
+      - name: Drill summary
+        if: always()
+        run: |
+          echo "─── WAL-G restore drill summary ───"
+          echo "Target:   ${{ inputs.target_host_label }} (${{ steps.resolve.outputs.host }})"
+          echo "Exit:     ${{ steps.drill.outputs.rc }}"
+          echo "Verdict:  $(
+            case '${{ steps.drill.outputs.rc }}' in
+              0) echo 'GREEN — restore mechanism proven end-to-end' ;;
+              5) echo 'GREEN with note — drill passed but cleanup was messy' ;;
+              1) echo 'BLOCKED — drill prereqs missing on target' ;;
+              2) echo 'FAIL — wal-g backup-fetch failed' ;;
+              3) echo 'FAIL — sidecar postgres did not start / never finished WAL replay' ;;
+              4) echo 'FAIL — sanity queries showed missing data' ;;
+              *) echo 'UNKNOWN' ;;
+            esac
+          )"
+          echo ""
+          echo "If GREEN: record the timestamp in DAILY-LOG.md so the cutover"
+          echo "checklist (H6) can be marked done."
+          echo "If FAIL: read scripts/walg_restore_drill.sh exit-code map +"
+          echo "scripts/walg_restore_drill.sh top comment to diagnose."
