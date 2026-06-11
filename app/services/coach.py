@@ -198,8 +198,8 @@ _JSON_SHAPE_MARKERS = (
 
 def _looks_like_truncated_proposal(text: str | None) -> bool:
     """Heuristic: does the response APPEAR to be a JSON proposal that
-    failed mid-stream? Used by coach_reply when _try_extract_proposal
-    returns None — we'd rather surface a clean reprompt than dump the
+    failed mid-stream? Used by coach_reply when parse_proposal returns
+    None — we'd rather surface a clean reprompt than dump the
     half-string to the creator.
 
     Conservative on TRUE — we only flag responses that contain at
@@ -226,49 +226,40 @@ def _looks_like_truncated_proposal(text: str | None) -> bool:
     return True
 
 
-def _try_extract_proposal(text: str) -> dict | None:
-    """Look for a single JSON object in the coach's reply with EITHER
-    the system_instructions-edit shape ({summary, proposed_changes,
-    reasoning}) OR the override shape ({summary,
-    proposed_global_rule_override, reasoning}). Tolerant of:
-      - Leading / trailing prose ("Here's the proposal: { ... }. Hope this helps.")
-      - ```json ... ``` fences (Gemini emits these intermittently — Rule 4
-        in the META_PROMPT explicitly says "no markdown fences" but Gemini
-        ignores ~5-10% of the time; the parser must not crater on that).
-        2026-06-09 mobile expert report: this was making the Coach UI
-        show "incomplete messages" because the parser fell back silently
-        on every fenced reply, returning plain-text + null proposed_changes.
-      - Multiple fenced blocks (an example block + a real block); we try
-        every block from LAST to first since the real proposal is
-        typically last.
+def _iter_json_candidates(text: str) -> list[dict]:
+    """Single source of truth for JSON extraction from a Gemini reply.
 
-    Returns the parsed dict — callers inspect which key is set to
-    decide dispatch. Override shape validation: the key must be one of
-    the known overrideable slugs (defends against an LLM hallucinating
-    a key like 'character_consistency' which is in the FIXED list)."""
+    2026-06-11 PR-2 (Codex review §4 / plan §3 #5): both proposals
+    AND openings go through this. Before, `_try_extract_proposal` had
+    the fenced-block tolerance from PR #337 but `coach_opening`'s
+    inline `text.find("{")` parser did NOT — that's why mobile saw
+    generic greetings on bots with real content. The JSON was wrapped
+    in ```json fences and the opener parser silently fell back.
+
+    Returns ALL successfully-parsed dict objects in priority order:
+      1. Fenced ```json ... ``` blocks, LAST fence first (the real
+         block typically follows an example fence).
+      2. The greedy first-{-to-last-} slice as the find-rfind fallback.
+
+    Callers apply their shape validator on top (parse_proposal /
+    parse_opening) and pick the first match. Conservative on success:
+    malformed candidates are silently skipped, not raised."""
     if not text:
-        return None
+        return []
 
-    # Build the list of candidate JSON strings to try.
-    # Order: fenced blocks (last → first) → the find-rfind fallback.
-    candidates: list[str] = []
+    raw: list[str] = []
     for match in _FENCED_BLOCK_RE.finditer(text):
         inner = match.group(1).strip()
         if inner:
-            candidates.append(inner)
-    # Try last fenced block first — typical pattern is "example block,
-    # then the real proposal."
-    candidates.reverse()
-    # Final fallback: greedy first-{-to-last-} slice (legacy behavior,
-    # covers JSON with no fences and some leading prose).
+            raw.append(inner)
+    raw.reverse()  # last fence first
     start = text.find("{")
     end = text.rfind("}") + 1
     if start >= 0 and end > start:
-        candidates.append(text[start:end])
+        raw.append(text[start:end])
 
-    for candidate in candidates:
-        # The fenced block's content might still have surrounding prose
-        # (e.g. trailing newline). Trim to the outer {...} for safety.
+    parsed: list[dict] = []
+    for candidate in raw:
         s = candidate.find("{")
         e = candidate.rfind("}") + 1
         if s < 0 or e <= s:
@@ -277,23 +268,63 @@ def _try_extract_proposal(text: str) -> dict | None:
             obj = json.loads(candidate[s:e])
         except json.JSONDecodeError:
             continue
-        if not isinstance(obj, dict):
-            continue
+        if isinstance(obj, dict):
+            parsed.append(obj)
+    return parsed
 
-        # Shape 1: system_instructions edit (pre-PR-B behavior, unchanged)
+
+def parse_proposal(text: str) -> dict | None:
+    """Validate the proposal shape. Returns the first candidate that
+    matches EITHER:
+      - system_instructions edit: {summary, proposed_changes, reasoning}
+      - platform-rule override: {summary,
+        proposed_global_rule_override: {key, value}, reasoning}
+        where `key` is in GLOBAL_RULES_OVERRIDEABLE.
+
+    Returns None when no candidate matches — callers then surface the
+    response as plain text (clarifying question / agreement / refusal)."""
+    for obj in _iter_json_candidates(text):
+        # Shape 1: system_instructions edit
         if obj.get("proposed_changes"):
             return obj
-
-        # Shape 2: platform-rule override (Coach Fix 1 PR-B). The override
-        # blob must name a known overrideable slug — otherwise we drop the
-        # proposal back to plain-text (the LLM will retry next turn).
+        # Shape 2: platform-rule override (Coach Fix 1 PR-B). The
+        # override blob must name a known overrideable slug — otherwise
+        # it falls back to plain-text (LLM retries on next turn).
         override = obj.get("proposed_global_rule_override")
         if isinstance(override, dict):
             key = override.get("key")
             if isinstance(key, str) and key in GLOBAL_RULES_OVERRIDEABLE:
                 return obj
-
     return None
+
+
+def parse_opening(text: str) -> tuple[str, list[str]] | None:
+    """Validate the opening shape: {greeting: str, suggestions: list[str]}
+    with ≥3 non-empty suggestion strings. Returns
+    (greeting, suggestions[:3]) on success, None on miss.
+
+    Mirrors parse_proposal — shared candidate extractor means a fenced
+    opening parses the same as a fenced proposal. Pre-PR-2 the opener
+    used a naive text.find('{') parser that broke on ```json fences
+    (5-10% of Gemini openings), producing the generic fallback greeting
+    even on bots with real history."""
+    for obj in _iter_json_candidates(text):
+        greeting = obj.get("greeting")
+        suggestions = obj.get("suggestions")
+        if (
+            isinstance(greeting, str)
+            and greeting.strip()
+            and isinstance(suggestions, list)
+            and len(suggestions) >= 3
+            and all(isinstance(s, str) and s.strip() for s in suggestions[:3])
+        ):
+            return greeting.strip(), [s.strip() for s in suggestions[:3]]
+    return None
+
+
+def _try_extract_proposal(text: str) -> dict | None:
+    """Back-compat shim. New code should call parse_proposal directly."""
+    return parse_proposal(text)
 
 
 def _format_quality_score(score: dict | None) -> str:
@@ -452,24 +483,15 @@ async def coach_opening(
     )
     text = response.content or ""
 
-    # Reuse the same tolerant {...} extractor as proposals.
-    start = text.find("{")
-    end = text.rfind("}") + 1
-    if start >= 0 and end > start:
-        try:
-            obj = json.loads(text[start:end])
-            greeting = obj.get("greeting")
-            suggestions = obj.get("suggestions")
-            if (
-                isinstance(greeting, str)
-                and greeting.strip()
-                and isinstance(suggestions, list)
-                and len(suggestions) >= 3
-                and all(isinstance(s, str) and s.strip() for s in suggestions[:3])
-            ):
-                return greeting.strip(), [s.strip() for s in suggestions[:3]]
-        except json.JSONDecodeError:
-            pass
+    # 2026-06-11 PR-2: use the shared parse_opening validator built on
+    # _iter_json_candidates — same fenced-block tolerance the proposal
+    # extractor uses. Pre-refactor the opener had its own naive
+    # text.find('{') parser that broke on ```json fences (~5-10% of
+    # Gemini openings), producing the generic fallback greeting even
+    # on bots with real history (plan §3 #5).
+    parsed = parse_opening(text)
+    if parsed is not None:
+        return parsed
 
     # Fallback — generic but never empty. Logged so we can see how often
     # the LLM misses the JSON shape and tune the prompt later.
