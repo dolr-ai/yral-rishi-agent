@@ -344,3 +344,91 @@ async def put_soul_file(bot_id: str, body: dict, request: Request):
         "sections_version_sha256": new_sha,
         "fallback_to_flat": False,
     }
+
+
+# ─── GET /system-prompt-preview ──────────────────────────────────────────
+# Coach Day 14 pivot (2026-06-12): Soul File page goes read-only. All
+# edits flow through Coach /apply; this endpoint is the transparency
+# window — owner-gated, no caching, single source of truth with
+# soul_file.compose() at chat time.
+
+
+_USER_SEGMENT_TEMPLATE = (
+    "**Your current plan for this user:**\n"
+    "- <user-specific plan keys appear here at chat time>\n\n"
+    "Reference these naturally — don't recite the whole plan back."
+)
+
+
+def _decode_overrides(raw) -> dict:
+    """JSONB-string decode per PR #370 pattern (asyncpg returns JSONB as
+    raw string when no codec is registered on the pool)."""
+    if isinstance(raw, str):
+        try:
+            raw = _json.loads(raw)
+        except (_json.JSONDecodeError, TypeError):
+            return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+@router.get("/influencers/{bot_id}/system-prompt-preview")
+async def get_system_prompt_preview(bot_id: str, request: Request):
+    """Read-only transparency view: every layer compose() assembles +
+    skills + overrides + composed_preview_text (memory + last-N stripped)."""
+    from datetime import datetime, timezone
+
+    from fastapi.responses import JSONResponse
+
+    from services import skills as _skills
+    from services import soul_file as _sf
+
+    user_id = get_current_user(request)
+    pool = await get_pool()
+    inf = await _load_owned_influencer(pool, user_id, bot_id)
+
+    archetype = (inf.get("category") or "").lower().strip()
+    overrides = _decode_overrides(inf.get("global_rule_overrides"))
+    sections = _coerce_sections_list(inf.get("system_instructions_sections"))
+    skill_slug = inf.get("skill_slug")
+
+    skills_enabled: list[dict] = []
+    if skill_slug and (sk := _skills.get(skill_slug)) and sk.get("system_prompt_block"):
+        skills_enabled.append(
+            {
+                "id": skill_slug,
+                "name": sk.get("display_name") or skill_slug,
+                "description": sk["system_prompt_block"].split("\n", 1)[0],
+                "prompt_block": sk["system_prompt_block"],
+            }
+        )
+
+    payload = {
+        "bot_id": bot_id,
+        "bot_name": inf.get("display_name") or inf.get("name"),
+        "archetype": archetype or None,
+        "as_of": datetime.now(timezone.utc).isoformat(),
+        "layers": {
+            "L1_global_rules": _sf._render_global_rules(overrides),
+            "L2_archetype_block": _sf.ARCHETYPE_PROMPTS.get(archetype, ""),
+            "L3_personality_sections": [
+                {"id": s.get("id"), "heading": s.get("heading"), "body": s.get("body")}
+                for s in sections
+            ],
+            "L3_flat_fallback": (inf.get("system_instructions") or "")
+            if not sections
+            else None,
+            "L4_user_segment_template": _USER_SEGMENT_TEMPLATE,
+        },
+        "skills_enabled": skills_enabled,
+        "applied_overrides": overrides,
+        "composed_preview_text": _sf.compose(
+            system_instructions=inf.get("system_instructions") or "",
+            category=inf.get("category"),
+            memories=None,
+            skill_slug=skill_slug,
+            user_skill_state=None,
+            global_rule_overrides=overrides,
+            sections=inf.get("system_instructions_sections"),
+        ),
+    }
+    return JSONResponse(content=payload, headers={"Cache-Control": "no-store"})
