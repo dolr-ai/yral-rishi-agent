@@ -338,12 +338,24 @@ async def _chat_ai_counts_from_hourly_payload(
             return {}, None
     if not isinstance(details, dict):
         return {}, None
+    # Prefer snapshot_iso (chat-ai-side wall clock) over verified_at
+    # (V2-side processing time) for the "latest export" timestamp.
+    # Computed BEFORE the per_table early-return so both exit paths
+    # return a datetime, not a raw string. (asyncpg returns ISO-string
+    # timestamps from the JSONB payload; the lag-seconds arithmetic
+    # downstream needs a datetime.)
+    ts = row["snapshot_iso"] or row["verified_at"]
+    if isinstance(ts, str):
+        try:
+            ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except ValueError:
+            ts = row["verified_at"]
     # The hourly payload stores chat-ai counts under "chat_ai_counts" or
     # nested under "per_table" depending on the version. Try both for
     # forward/backward compatibility.
     per_table = details.get("chat_ai_counts") or details.get("per_table")
     if not isinstance(per_table, dict):
-        return {}, row["snapshot_iso"]
+        return {}, ts
     out: dict[str, int] = {}
     for tbl, val in per_table.items():
         if isinstance(val, dict):
@@ -352,14 +364,6 @@ async def _chat_ai_counts_from_hourly_payload(
                 out[tbl] = int(ca)
         elif isinstance(val, (int, float)):
             out[tbl] = int(val)
-    # Prefer snapshot_iso (chat-ai-side wall clock) over verified_at
-    # (V2-side processing time) for the "latest export" timestamp.
-    ts = row["snapshot_iso"] or row["verified_at"]
-    if isinstance(ts, str):
-        try:
-            ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-        except ValueError:
-            ts = row["verified_at"]
     return out, ts
 
 

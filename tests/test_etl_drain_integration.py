@@ -15,7 +15,7 @@ This file is the behavioral coverage.
 import asyncio
 import sys
 import types
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -24,6 +24,17 @@ REPO = Path(__file__).resolve().parents[1]
 APP_DIR = REPO / "app"
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
+
+
+# Hardcoded `datetime(2026, 6, 11, 11, 59, ...)` fixtures made this
+# file wall-clock-fragile: once the real clock drifted past the
+# HEARTBEAT_STALE_SEC threshold (30 min), reconciliation flagged the
+# fixture's heartbeat as stale and the verdict math changed under the
+# test's feet (the `drain_deadline_hit` warning is suppressed when the
+# heartbeat is already flagged). "Now minus 1 min" keeps fixtures
+# fresh forever without pulling in freezegun.
+def _recent_utc() -> datetime:
+    return datetime.now(timezone.utc).replace(microsecond=0) - timedelta(minutes=1)
 
 
 # ─── fakes ────────────────────────────────────────────────────────────────
@@ -48,7 +59,7 @@ class FakePool:
         # V2 row counts dict
         self._v2_counts = {"ai_influencers": 50, "conversations": 200, "messages": 1000}
         # latest processed_at on etl_processed_files
-        self._v2_latest_import = datetime(2026, 6, 11, 12, 0, 0, tzinfo=timezone.utc)
+        self._v2_latest_import = _recent_utc()
 
     async def fetchrow(self, query, *args):
         q = query.strip()
@@ -201,7 +212,7 @@ def test_drain_calls_importer_until_steady_state(fake_etl_services, monkeypatch)
     pool._integrity_rows.append(
         (
             "hourly",
-            datetime(2026, 6, 11, 11, 59, 0, tzinfo=timezone.utc),
+            _recent_utc(),
             True,
             {"chat_ai_counts": {"ai_influencers": 50, "conversations": 200, "messages": 1000}},
         )
@@ -243,16 +254,16 @@ def test_drain_hits_deadline_when_run_once_never_settles(monkeypatch):
     pool._integrity_rows.append(
         (
             "hourly",
-            datetime(2026, 6, 11, 11, 59, 0, tzinfo=timezone.utc),
+            _recent_utc(),
             True,
             {"chat_ai_counts": {"ai_influencers": 50, "conversations": 200, "messages": 1000}},
         )
     )
     pool._integrity_rows.append(
-        ("sample", datetime(2026, 6, 11, 11, 59, 0, tzinfo=timezone.utc), True, {})
+        ("sample", _recent_utc(), True, {})
     )
     pool._integrity_rows.append(
-        ("sentinel", datetime(2026, 6, 11, 11, 59, 0, tzinfo=timezone.utc), True, {})
+        ("sentinel", _recent_utc(), True, {})
     )
 
     # Very small deadline to force the timeout path.
@@ -273,7 +284,7 @@ def test_drain_report_includes_required_top_level_fields():
     pool._integrity_rows.append(
         (
             "hourly",
-            datetime(2026, 6, 11, 11, 59, 0, tzinfo=timezone.utc),
+            _recent_utc(),
             True,
             {"chat_ai_counts": {"ai_influencers": 50, "conversations": 200, "messages": 1000}},
         )
