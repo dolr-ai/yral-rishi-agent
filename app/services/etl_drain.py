@@ -177,6 +177,16 @@ async def drain(pool, deadline_sec: float = DEFAULT_DRAIN_DEADLINE_SEC) -> dict:
             logger.warning("drain: integrity run_once raised %s", e)
         integrity_ticks += 1
         # Check if each required layer has a row newer than drain-start.
+        # `etl_integrity_results.verified_at` is `TIMESTAMP` (no tz —
+        # migration 020). asyncpg refuses to compare a tz-aware datetime
+        # against a naive column with `DataError: can't subtract
+        # offset-naive and offset-aware datetimes` — strip the UTC
+        # tzinfo at the call site. The watermark itself is conceptually
+        # UTC (we built it via datetime.now(timezone.utc)); we just hand
+        # asyncpg the naive form Postgres expects. Schema fix
+        # (TIMESTAMPTZ on verified_at) is a separate post-cutover
+        # hygiene item — touching it requires re-running the integrity
+        # tests against the new column type.
         fresh = await pool.fetchrow(
             """
             SELECT
@@ -186,7 +196,7 @@ async def drain(pool, deadline_sec: float = DEFAULT_DRAIN_DEADLINE_SEC) -> dict:
             FROM etl_integrity_results
             WHERE verified_at > $1
             """,
-            started_dt,
+            started_dt.replace(tzinfo=None),
         )
         if fresh and all(
             fresh[c] is not None for c in ("hourly_at", "sample_at", "sentinel_at")

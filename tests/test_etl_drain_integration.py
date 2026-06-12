@@ -96,10 +96,25 @@ class FakePool:
                     f"layer-freshness query, got {type(since).__name__}: "
                     f"{since!r}. Real asyncpg raises DataError here."
                 )
+            # 2026-06-12: etl_integrity_results.verified_at is TIMESTAMP
+            # (no tz, migration 020). Real asyncpg raises
+            #   DataError: can't subtract offset-naive and offset-aware datetimes
+            # when handed a tz-aware datetime on a naive column. Mirror
+            # that — without this guard the test silently passes while
+            # prod 500s.
+            if since.tzinfo is not None:
+                raise TypeError(
+                    f"FakePool.fetchrow expected a tz-naive datetime for $1 "
+                    f"(verified_at is TIMESTAMP, no tz), got tz-aware "
+                    f"{since!r}. Real asyncpg raises DataError here."
+                )
+            # Layer-row timestamps in the fixture are tz-aware UTC; for
+            # the comparison, normalize both to naive UTC so > works.
             since_dt = since
             by_layer = {}
             for layer, vt, *_ in self._integrity_rows:
-                if vt > since_dt:
+                vt_naive = vt.replace(tzinfo=None) if vt.tzinfo else vt
+                if vt_naive > since_dt:
                     if layer not in by_layer or vt > by_layer[layer]:
                         by_layer[layer] = vt
             return FakeRow(
