@@ -365,6 +365,56 @@ _USER_SEGMENT_PREVIEW = USER_SEGMENT_PLAN_TEMPLATE.format(
 )
 
 
+# Per-conversation override enum from migration 012 (proactive_frequency
+# CHECK constraint). Source-pinned in the preview so the bot owner sees
+# the same values the mobile UI lets users pick from. Read-only — this
+# endpoint never writes proactive_frequency.
+_INACTIVITY_PROACTIVE_OVERRIDES = ("default", "daily", "weekly", "off")
+
+
+def _build_engagement_schedule(skill_slug: str | None) -> dict:
+    """Read-only honest view of every scheduled-engagement mechanism
+    that touches this bot. Each sub-block carries a `source` + `note`
+    field so the owner knows where the value comes from + whether it's
+    per-bot or per-user.
+
+    No DB reads — engagement schedule lives in code constants today
+    (migration 012's CHECK enum, skills.py registry, nudge.py module
+    constant). Bot-owner-configurable cadence is explicitly DROPPED
+    per Rishi 2026-06-12.
+    """
+    from services import nudge as _nudge
+    from services import skills as _skills
+
+    skill_checkins = None
+    if skill_slug and (sk := _skills.get(skill_slug)):
+        skill_checkins = {
+            "skill_slug": skill_slug,
+            "display_name": sk.get("display_name") or skill_slug,
+            "default_cadence_hours": sk.get("default_cadence_hours"),
+            "per_user_preferred_times": True,
+            "source": "app/services/skills.py SKILLS registry + user_skill_state.state.preferred_times (per-user)",
+            "note": "Each onboarded user picks their own check-in times during skill onboarding. The schedule is per-user, not per-bot.",
+        }
+
+    return {
+        "inactivity_proactive": {
+            "enabled_by_default": True,
+            "threshold_hours": 24,
+            "per_conversation_overrides": list(_INACTIVITY_PROACTIVE_OVERRIDES),
+            "source": "conversations.proactive_frequency (per-user, not bot-owner)",
+            "note": "After this many hours of silence, the bot pings. The user picks the cadence per conversation — bot owner does not configure today.",
+        },
+        "skill_checkins": skill_checkins,
+        "first_turn_nudge": {
+            "enabled": True,
+            "initial_idle_minutes": _nudge.DEFAULT_INITIAL_IDLE_MINUTES,
+            "source": "app/services/nudge.py — global default for every bot",
+            "note": "Short-term in-session nudge when the user goes idle mid-conversation. Threshold doubles after the third message.",
+        },
+    }
+
+
 def _decode_overrides(raw) -> dict:
     """JSONB-string decode per PR #370 pattern (asyncpg returns JSONB as
     raw string when no codec is registered on the pool)."""
@@ -426,6 +476,7 @@ async def get_system_prompt_preview(bot_id: str, request: Request):
         },
         "skills_enabled": skills_enabled,
         "applied_overrides": overrides,
+        "engagement_schedule": _build_engagement_schedule(skill_slug),
         "composed_preview_text": _sf.compose(
             system_instructions=inf.get("system_instructions") or "",
             category=inf.get("category"),
