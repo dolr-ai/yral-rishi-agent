@@ -390,3 +390,68 @@ def test_drain_report_started_at_is_wall_clock_not_monotonic(
     assert before - grace <= parsed <= after + grace, (
         f"drain.started_at {parsed!r} should land between {before!r} and {after!r}"
     )
+
+
+def test_reconciliation_handles_tz_naive_v2_import_ts(monkeypatch):
+    """Regression for the 2026-06-12 reconciliation 500.
+
+    `etl_processed_files.processed_at` is TIMESTAMP (naive). asyncpg
+    returns a tz-naive datetime. Reconciliation then computes
+    `v2_latest_import - chat_ai_export_ts` where chat_ai_export_ts is
+    tz-aware UTC. Pre-fix this raised
+      TypeError: can't subtract offset-naive and offset-aware datetimes
+
+    `_v2_latest_import_ts` now tags tzinfo=UTC on the way out so the
+    subtraction is well-defined. This test pins that contract by
+    feeding the function a naive datetime (the shape asyncpg returns
+    for a TIMESTAMP column) and asserting the returned datetime is
+    tz-aware UTC."""
+    from services.etl_drain import _v2_latest_import_ts
+
+    naive_dt = datetime(2026, 6, 12, 12, 50, 0)  # tz-naive
+
+    class _NaiveTimestampPool:
+        async def fetchval(self, query, *args):
+            return naive_dt
+
+    result = asyncio.run(_v2_latest_import_ts(_NaiveTimestampPool()))
+    assert result is not None
+    assert result.tzinfo is not None, (
+        "_v2_latest_import_ts must return tz-aware datetime so downstream "
+        "lag-seconds subtraction against tz-aware chat_ai_export_ts works"
+    )
+    assert result.tzinfo == timezone.utc
+    # Same wall clock, just with offset added — not shifted.
+    assert result.replace(tzinfo=None) == naive_dt
+
+
+def test_chat_ai_counts_helper_returns_tz_aware_on_verified_at_fallback():
+    """Same 2026-06-12 tz-mismatch regression but for the chat-ai side.
+
+    When `snapshot_iso` is absent and the fallback path uses the
+    `verified_at` column (TIMESTAMP, naive), the helper must still
+    return a tz-aware datetime — otherwise reconciliation's
+    `(now - chat_ai_export_ts).total_seconds()` blows up the same
+    way."""
+    from services.etl_drain import _chat_ai_counts_from_hourly_payload
+
+    naive_dt = datetime(2026, 6, 12, 12, 50, 0)
+
+    class _FallbackPool:
+        async def fetchrow(self, query, *args):
+            # row carrying only verified_at (naive) — no snapshot_iso
+            return FakeRow(
+                {
+                    "details": {"chat_ai_counts": {"messages": 100}},
+                    "snapshot_iso": None,
+                    "verified_at": naive_dt,
+                }
+            )
+
+    counts, ts = asyncio.run(_chat_ai_counts_from_hourly_payload(_FallbackPool()))
+    assert ts is not None
+    assert ts.tzinfo is not None, (
+        "_chat_ai_counts_from_hourly_payload must return tz-aware ts on the "
+        "verified_at fallback path — naive returns break downstream lag math"
+    )
+    assert ts.tzinfo == timezone.utc

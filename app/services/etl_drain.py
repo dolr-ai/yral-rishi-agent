@@ -375,12 +375,23 @@ async def _chat_ai_counts_from_hourly_payload(
     # return a datetime, not a raw string. (asyncpg returns ISO-string
     # timestamps from the JSONB payload; the lag-seconds arithmetic
     # downstream needs a datetime.)
+    #
+    # `verified_at` is `TIMESTAMP` (no tz, migration 020) — asyncpg
+    # returns tz-naive. The downstream lag-seconds subtraction does
+    # `v2_latest_import - chat_ai_export_ts` and `now - chat_ai_export_ts`
+    # where the other operands are tz-aware UTC. Mixing raises
+    # `TypeError: can't subtract offset-naive and offset-aware datetimes`
+    # (caught in prod 2026-06-12 on /admin/etl/reconciliation).
+    # Tag tzinfo=UTC on the fallback path so every consumer sees a
+    # tz-aware datetime regardless of which branch we exited.
     ts = row["snapshot_iso"] or row["verified_at"]
     if isinstance(ts, str):
         try:
             ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
         except ValueError:
             ts = row["verified_at"]
+    if isinstance(ts, datetime) and ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
     # The hourly payload stores chat-ai counts under "chat_ai_counts" or
     # nested under "per_table" depending on the version. Try both for
     # forward/backward compatibility.
@@ -492,17 +503,34 @@ async def _integrity_summary_24h(pool) -> dict:
 
 async def _v2_latest_import_ts(pool) -> datetime | None:
     """When did V2 last successfully ingest an S3 file? Used as the
-    `v2_latest_import_ts` field + lag computation."""
+    `v2_latest_import_ts` field + lag computation.
+
+    `etl_processed_files.processed_at` is `TIMESTAMP` (no tz, migration
+    019), so asyncpg returns a tz-naive datetime. Downstream code
+    subtracts this from `chat_ai_export_ts` (tz-aware UTC from the
+    JSONB payload path) and from `now` (tz-aware UTC). Mixing
+    tz-aware + tz-naive raises `TypeError: can't subtract offset-naive
+    and offset-aware datetimes` — caught in prod 2026-06-12 when both
+    drain and reconciliation 500'd.
+
+    Conceptually `processed_at` is always UTC (the importer writes
+    `datetime.now(timezone.utc)` to it), the column just doesn't store
+    the offset. Tag the tzinfo on the way out so every consumer sees
+    a tz-aware UTC datetime."""
     val = await pool.fetchval(
         """
         SELECT MAX(processed_at) FROM etl_processed_files
         """
     )
+    if val is None:
+        return None
     if isinstance(val, str):
         try:
-            return datetime.fromisoformat(val.replace("Z", "+00:00"))
+            val = datetime.fromisoformat(val.replace("Z", "+00:00"))
         except ValueError:
             return None
+    if isinstance(val, datetime) and val.tzinfo is None:
+        val = val.replace(tzinfo=timezone.utc)
     return val
 
 
