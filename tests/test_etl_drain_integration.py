@@ -80,9 +80,23 @@ class FakePool:
                 }
             )
         if "MAX(CASE WHEN layer=" in q:
-            # The "are all 3 layers fresh past $1" query
+            # The "are all 3 layers fresh past $1" query.
+            # 2026-06-12: real asyncpg refuses string arguments on
+            # timestamptz parameters with `DataError: expected a
+            # datetime.date or datetime.datetime instance, got 'str'`,
+            # even when the SQL has `::timestamptz`. So this fake must
+            # mirror that constraint — without this guard the test
+            # silently passed in PR #344 while the prod endpoint
+            # 500'd on every call (caught 2026-06-12 by Rishi's drain
+            # test on the live deployment).
             since = args[0]
-            since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+            if not isinstance(since, datetime):
+                raise TypeError(
+                    f"FakePool.fetchrow expected a datetime for $1 on the "
+                    f"layer-freshness query, got {type(since).__name__}: "
+                    f"{since!r}. Real asyncpg raises DataError here."
+                )
+            since_dt = since
             by_layer = {}
             for layer, vt, *_ in self._integrity_rows:
                 if vt > since_dt:
@@ -304,3 +318,60 @@ def test_drain_report_includes_required_top_level_fields():
         "blocking_issues",
     ):
         assert key in result, f"reconciliation report missing required field {key!r}"
+
+
+# ─── regression: prod 500 caught 2026-06-12 ────────────────────────────
+
+
+def test_drain_report_started_at_is_wall_clock_not_monotonic(
+    fake_etl_services, monkeypatch
+):
+    """Regression for the 2026-06-12 prod drain 500.
+
+    The Phase-2 freshness watermark was built as
+    `datetime.fromtimestamp(time.monotonic(), tz=UTC).isoformat()` —
+    but `time.monotonic()` is seconds since an arbitrary boot-time
+    reference, NOT seconds since epoch. So the resulting datetime was
+    1970-relative (live prod showed `1970-01-05T07:07:56Z`). The same
+    value was stamped into `report["drain"]["started_at"]`, so this
+    test pins it to a recent wall-clock timestamp.
+
+    Without this guard a future refactor that re-introduces
+    `fromtimestamp(monotonic)` slips past CI silently — the Phase-2
+    loop terminates fine (1970 < every layer-row timestamp → "fresh")
+    so functional behavior looks normal."""
+    from datetime import datetime, timedelta, timezone
+
+    from services.etl_drain import drain
+
+    async def no_sleep(_):
+        return None
+
+    monkeypatch.setattr("services.etl_drain.asyncio.sleep", no_sleep)
+
+    pool = FakePool()
+    pool._integrity_rows.append(
+        (
+            "hourly",
+            _recent_utc(),
+            True,
+            {"chat_ai_counts": {"ai_influencers": 50, "conversations": 200, "messages": 1000}},
+        )
+    )
+
+    before = datetime.now(timezone.utc)
+    result = asyncio.run(drain(pool, deadline_sec=2.0))
+    after = datetime.now(timezone.utc)
+
+    started_at = result["drain"]["started_at"]
+    parsed = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+    # Must be wall-clock-relative, not 1970-relative.
+    assert parsed.year >= 2026, (
+        f"drain.started_at must be a real wall-clock timestamp, got {parsed!r} "
+        "(1970-relative means time.monotonic() got fed through fromtimestamp())"
+    )
+    # And must lie within the actual drain window (1 sec grace either side).
+    grace = timedelta(seconds=1)
+    assert before - grace <= parsed <= after + grace, (
+        f"drain.started_at {parsed!r} should land between {before!r} and {after!r}"
+    )

@@ -143,9 +143,30 @@ async def drain(pool, deadline_sec: float = DEFAULT_DRAIN_DEADLINE_SEC) -> dict:
 
     # ─── Phase 2: drive integrity verifier until layers fresh ──────
     # We want the latest hourly + sample + sentinel results in
-    # etl_integrity_results to be newer than `started_at` — that's
-    # what gives the reconciliation report 24h-fresh evidence.
-    started_iso = datetime.fromtimestamp(started_at, tz=timezone.utc).isoformat()
+    # etl_integrity_results to be newer than the drain-start wall
+    # clock — that's what gives the reconciliation report 24h-fresh
+    # evidence.
+    #
+    # Two prior bugs lived here (caught in prod 2026-06-12 when the
+    # drain endpoint started 500'ing under real Postgres):
+    #   1. The watermark was built as
+    #        datetime.fromtimestamp(started_at, tz=timezone.utc)
+    #      where `started_at = time.monotonic()`. monotonic() is NOT
+    #      epoch-relative — it's seconds since an arbitrary boot-time
+    #      reference. Feeding it through fromtimestamp() produces
+    #      a 1970-relative timestamp ("1970-01-05T07:07:56Z" in prod),
+    #      which then makes the freshness comparison match every row.
+    #   2. The watermark was passed to fetchrow() as an `.isoformat()`
+    #      STRING with `WHERE verified_at > $1::timestamptz`. asyncpg
+    #      enforces parameter type at protocol-level — `::timestamptz`
+    #      casting inside the SQL doesn't change that. asyncpg rejects
+    #      strings on timestamptz parameters with `DataError: expected
+    #      a datetime.date or datetime.datetime instance, got 'str'`.
+    #
+    # Fix: capture a real `datetime.now(tz=UTC)` once at drain-start
+    # (wall-clock; the right reference for "newer than" comparisons
+    # against `verified_at`) and pass it directly to asyncpg.
+    started_dt = datetime.now(timezone.utc)
     while True:
         if time.monotonic() >= deadline:
             integrity_hit_deadline = True
@@ -155,7 +176,7 @@ async def drain(pool, deadline_sec: float = DEFAULT_DRAIN_DEADLINE_SEC) -> dict:
         except Exception as e:
             logger.warning("drain: integrity run_once raised %s", e)
         integrity_ticks += 1
-        # Check if each required layer has a row newer than started_at.
+        # Check if each required layer has a row newer than drain-start.
         fresh = await pool.fetchrow(
             """
             SELECT
@@ -163,9 +184,9 @@ async def drain(pool, deadline_sec: float = DEFAULT_DRAIN_DEADLINE_SEC) -> dict:
                 MAX(CASE WHEN layer='sample'   THEN verified_at END) AS sample_at,
                 MAX(CASE WHEN layer='sentinel' THEN verified_at END) AS sentinel_at
             FROM etl_integrity_results
-            WHERE verified_at > $1::timestamptz
+            WHERE verified_at > $1
             """,
-            started_iso,
+            started_dt,
         )
         if fresh and all(
             fresh[c] is not None for c in ("hourly_at", "sample_at", "sentinel_at")
@@ -180,7 +201,7 @@ async def drain(pool, deadline_sec: float = DEFAULT_DRAIN_DEADLINE_SEC) -> dict:
     elapsed = round(time.monotonic() - started_at, 2)
     report = await reconciliation(pool)
     report["drain"] = {
-        "started_at": started_iso,
+        "started_at": started_dt.isoformat(),
         "elapsed_sec": elapsed,
         "importer_ticks": importer_ticks,
         "importer_total_files_processed": importer_total_files,
