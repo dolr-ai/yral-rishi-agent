@@ -16,6 +16,14 @@ import config
 
 logger = logging.getLogger(__name__)
 
+# Canonical idle threshold for the first-turn nudge. The actual threshold
+# ramps: this base value applies when the conversation has 1-2 messages;
+# `should_nudge()` doubles it once msg_count > 2. Surfaced as a module-
+# level constant so the /system-prompt-preview transparency view can
+# show bot owners the same value `should_nudge()` uses without
+# hardcoding a copy that would drift on tweak.
+DEFAULT_INITIAL_IDLE_MINUTES = 5
+
 NUDGE_PROMPT = """You are {display_name}. A user started chatting with you but went quiet.
 
 Last messages:
@@ -31,7 +39,9 @@ Generate a short, playful follow-up to re-engage them. Rules:
 Generate ONLY the nudge text."""
 
 
-async def should_nudge(pool, conversation_id: str, idle_minutes: int = 5) -> bool:
+async def should_nudge(
+    pool, conversation_id: str, idle_minutes: int = DEFAULT_INITIAL_IDLE_MINUTES
+) -> bool:
     """Check if a conversation qualifies for a nudge."""
     msg_count = await message_repo.count_by_conversation(pool, conversation_id)
     if msg_count < 1 or msg_count > 4:
