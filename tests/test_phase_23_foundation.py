@@ -136,8 +136,13 @@ def test_soul_file_compose_user_state_includes_setup_and_runtime():
     fn_start = src.find("def compose(")
     body = src[fn_start : fn_start + 5000]
     assert '"setup"' in body and '"runtime"' in body
-    # The plan layer is rendered as a bullet list
-    assert "Your current plan for this user" in body
+    # 2026-06-12 SSOT extraction: the literal "Your current plan…" text
+    # moved out of compose() into module-level USER_SEGMENT_PLAN_TEMPLATE
+    # so the preview endpoint can render the same wording. compose() now
+    # formats the constant with plan_lines. Pin BOTH halves so the
+    # extraction can't drift.
+    assert "Your current plan for this user" in src
+    assert "USER_SEGMENT_PLAN_TEMPLATE.format(plan_lines=" in body
 
 
 def test_soul_file_compose_skill_layer_no_global_rules_edit():

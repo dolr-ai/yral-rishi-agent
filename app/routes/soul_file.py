@@ -33,6 +33,7 @@ from fastapi import APIRouter, HTTPException, Request
 from auth import get_current_user
 from database import get_pool
 from repositories import influencer_repo
+from services.soul_file import USER_SEGMENT_PLAN_TEMPLATE
 
 logger = logging.getLogger(__name__)
 
@@ -353,10 +354,14 @@ async def put_soul_file(bot_id: str, body: dict, request: Request):
 # soul_file.compose() at chat time.
 
 
-_USER_SEGMENT_TEMPLATE = (
-    "**Your current plan for this user:**\n"
-    "- <user-specific plan keys appear here at chat time>\n\n"
-    "Reference these naturally — don't recite the whole plan back."
+# Render the L4 template with a placeholder string so the owner sees
+# the slot structure without any specific user's data. The TEMPLATE
+# itself lives in services/soul_file.py as the single source of truth —
+# compose() at chat time + this preview at owner-read time both render
+# from the same constant, so a future template tweak can't drift one
+# side from the other.
+_USER_SEGMENT_PREVIEW = USER_SEGMENT_PLAN_TEMPLATE.format(
+    plan_lines="- <user-specific plan keys appear here at chat time>"
 )
 
 
@@ -417,7 +422,7 @@ async def get_system_prompt_preview(bot_id: str, request: Request):
             "L3_flat_fallback": (inf.get("system_instructions") or "")
             if not sections
             else None,
-            "L4_user_segment_template": _USER_SEGMENT_TEMPLATE,
+            "L4_user_segment_template": _USER_SEGMENT_PREVIEW,
         },
         "skills_enabled": skills_enabled,
         "applied_overrides": overrides,

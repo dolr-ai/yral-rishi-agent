@@ -14,6 +14,21 @@ import config
 
 LAYER_SEPARATOR = "\n\n---\n\n"
 
+# Phase 23 L4 — per-user plan layer template. Single source of truth for
+# both chat-time render (compose() below) AND read-only preview
+# (routes/soul_file.py). `{plan_lines}` is the format hole the caller
+# fills: compose() renders real plan items joined with newlines; the
+# preview renders a fixed placeholder string showing the slot.
+#
+# Editing this constant changes both surfaces atomically — that's the
+# point. Pre-extraction (Day 14 pivot #374) the preview hardcoded a
+# copy and would silently drift when the chat-time wording moved.
+USER_SEGMENT_PLAN_TEMPLATE = (
+    "**Your current plan for this user:**\n"
+    "{plan_lines}\n\n"
+    "Reference these naturally — don't recite the whole plan back."
+)
+
 # Generalized 2026-06-04 (Rishi): language enumeration removed so the rule
 # works for any user-language pair (Hinglish stays handled; Spanglish,
 # Singlish, Arabish, etc. now equally handled). The "mirror exactly" wording
@@ -298,10 +313,7 @@ def compose(
                     plan_lines.append(f"- {k}: {v}")
         if plan_lines:
             layers.append(
-                "**Your current plan for this user:**\n"
-                + "\n".join(plan_lines)
-                + "\n\n"
-                "Reference these naturally — don't recite the whole plan back."
+                USER_SEGMENT_PLAN_TEMPLATE.format(plan_lines="\n".join(plan_lines))
             )
 
     if memories:
