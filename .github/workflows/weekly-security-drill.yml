@@ -104,7 +104,7 @@ jobs:
         id: trivy
         # ignore-unfixed=true filters CVEs with no upstream fix
         # (nothing actionable for us). exit-code=0 so we always report.
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: 'ghcr.io/dolr-ai/yral-rishi-agent:stable'
           format: 'json'
