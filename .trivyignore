@@ -1,0 +1,16 @@
+# Trivy allowlist — Phase 21αβ.H8 / 24.3
+#
+# One CVE per line; # for comments. Mirrors the pip-audit-ignore.txt
+# shape so the conventions are symmetric.
+#
+# Workflow: a CVE lands here ONLY when:
+#   1. The CVE applies to a transitive OS package we can't directly
+#      pin (e.g. a libpython CVE on the Debian base image)
+#   2. There's no upstream fix yet
+#   3. The justification is a one-line comment naming the package +
+#      reason (e.g. "# CVE-XXXX-NNNN: libssl3, no fix in bookworm")
+#
+# All entries should be reviewed quarterly. A CVE that gets fixed
+# upstream should be removed promptly so we catch the next batch.
+
+# (no entries — empty baseline as of 2026-06-13)

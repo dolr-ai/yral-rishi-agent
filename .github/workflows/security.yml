@@ -2,6 +2,7 @@ name: Security
 
 # Phase 21αβ.I-Sec1 — gitleaks secret scan on every PR + push to main.
 # Phase 21αβ.I-Sec2 — pip-audit dependency vuln scan, same triggers.
+# Phase 21αβ.H8 / 24.3 — Trivy container-image scan on every push to main.
 #
 # Findings policy:
 #   gitleaks  — any NEW finding fails CI. 4 baseline FPs allowlisted in
@@ -9,10 +10,14 @@ name: Security
 #   pip-audit — strict mode, fails on any finding not in ignore-list.
 #               The DEV-10 (2026-06-05) baseline of 14 known vulns is
 #               in `pip-audit-ignore.txt` with a justification per CVE.
+#   trivy     — container-image scan against the published GHCR :stable
+#               tag. HIGH + CRITICAL severity fail CI. Findings policy
+#               in `.trivyignore` — same shape as pip-audit-ignore.txt.
 #
 # We invoke the gitleaks BINARY directly (not gitleaks/gitleaks-action@v2
 # which requires a paid license for organizations). Same scan coverage,
-# zero $ cost. pip-audit is the official PyPA tool, free.
+# zero $ cost. pip-audit is the official PyPA tool, free. Trivy via the
+# aquasecurity/trivy-action@v0 (Apache 2.0, no license barrier).
 
 on:
   push:
@@ -106,4 +111,69 @@ jobs:
         with:
           name: pip-audit-report
           path: pip-audit-report.json
+          retention-days: 30
+
+  trivy:
+    # Phase 21αβ.H8 / 24.3 — container-image vulnerability scan against
+    # the published GHCR `:stable` tag. Catches OS-level CVEs (Debian
+    # libpython, openssl, libc) that pip-audit can't see — those land
+    # via the base image we don't control.
+    #
+    # Runs on push to main only (NOT pull_request) because:
+    #   - The :stable tag updates on deploy, not on PR open
+    #   - Trivy pulling a fresh image on every PR push adds ~3 min for
+    #     no signal (the image being scanned is the same one on main)
+    #   - PR-side OS-level CVE catches would require building the
+    #     image during CI, which is the job of the deploy workflow
+    #
+    # Findings policy: HIGH + CRITICAL severities fail CI. MEDIUM and
+    # below land in the report artifact for ops review without
+    # blocking. Findings can be allowlisted via `.trivyignore` with a
+    # CVE-per-line + comment format mirroring `pip-audit-ignore.txt`.
+    name: Trivy container scan
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Log in to GHCR (so trivy can pull the private image)
+        # GITHUB_TOKEN has packages:read on the same repo's GHCR
+        # registry by default. Same auth pattern as the deploy
+        # workflows.
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Trivy scan (HIGH + CRITICAL fails CI)
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: 'ghcr.io/dolr-ai/yral-rishi-agent:stable'
+          format: 'json'
+          output: 'trivy-report.json'
+          severity: 'HIGH,CRITICAL'
+          exit-code: '1'
+          ignore-unfixed: true
+          # `.trivyignore` is the allowlist file Trivy reads by
+          # convention. Format: one CVE ID per line, # for comments.
+          # Empty file is fine — nothing allowlisted yet.
+          trivyignores: '.trivyignore'
+      - name: Trivy scan (FULL report including MEDIUM + LOW)
+        if: always()
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: 'ghcr.io/dolr-ai/yral-rishi-agent:stable'
+          format: 'table'
+          output: 'trivy-report-full.txt'
+          severity: 'UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL'
+          exit-code: '0'
+          ignore-unfixed: true
+      - name: Upload Trivy reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report
+          path: |
+            trivy-report.json
+            trivy-report-full.txt
           retention-days: 30
