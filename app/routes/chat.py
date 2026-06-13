@@ -905,6 +905,14 @@ async def send_message_stream(
     if not inf:
         raise HTTPException(status_code=404, detail="Influencer not found")
 
+    # Phase 21αβ.H2 — paywall gate the SSE stream BEFORE we start it.
+    # Mobile expects 402 at the HTTP level (not an SSE `event: error`)
+    # so it can render the paywall CTA without inspecting the stream
+    # protocol. Same helper as the non-streaming route.
+    paywall = await _enforce_chat_access(user_id, influencer_id)
+    if paywall is not None:
+        return paywall
+
     content = body.get("content")
     message_type = body.get("message_type", "text")
     media_urls = body.get("media_urls")
@@ -1160,6 +1168,13 @@ async def generate_conversation_image(
             status_code=403,
             detail="This bot has been deleted and can no longer generate images.",
         )
+
+    # Phase 21αβ.H2 — paywall gate image generation BEFORE the Replicate
+    # call. Image gen is even more expensive than chat ($0.04+ per Flux
+    # image) so a bypass attempt here is the most expensive class of leak.
+    paywall = await _enforce_chat_access(user_id, influencer_id)
+    if paywall is not None:
+        return paywall
 
     final_prompt = (body.get("prompt") or "").strip()
     if not final_prompt:
