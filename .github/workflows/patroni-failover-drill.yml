@@ -1,0 +1,171 @@
+name: Patroni failover drill (21αβ.H4)
+
+# Manually triggered. Validates the V2 Patroni cluster's HA promotion
+# mechanism by gracefully failing over to the current sync replica,
+# then switching back to the original leader. Pre-drill pg_dump as
+# safety net; continuous /health probe to capture disruption window.
+#
+# DO NOT MERGE this workflow until Rishi green-lights drill execution
+# post rollout-stable (per autonomous-work brief 2026-06-13).
+#
+# Same shape as walg-restore-drill.yml.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_host_label:
+        description: 'Current leader host (where to SSH + run patronictl from)'
+        required: true
+        type: choice
+        default: 'rishi-4'
+        options:
+          - rishi-4
+          - rishi-5
+          - rishi-6
+      reason:
+        description: 'Why are you running the drill? (audit trail)'
+        required: true
+        default: 'H4 Patroni failover drill — '
+      i_understand:
+        description: 'Type RUN PATRONI DRILL to confirm this WILL flip the leader.'
+        required: true
+        default: ''
+
+env:
+  RISHI_4_IP: 138.201.128.108
+  RISHI_5_IP: 88.99.160.251
+  RISHI_6_IP: 162.55.88.112
+  SWARM_USER: rishi-deploy
+
+jobs:
+  drill:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+
+    steps:
+      - name: Confirm RUN PATRONI DRILL typed
+        run: |
+          if [ "${{ inputs.i_understand }}" != "RUN PATRONI DRILL" ]; then
+            echo "::error::Confirmation phrase mismatched (must be exactly 'RUN PATRONI DRILL'); aborting."
+            exit 1
+          fi
+          echo "─── Patroni failover drill initiated ───"
+          echo "Triggered by:  ${{ github.actor }}"
+          echo "Target host:   ${{ inputs.target_host_label }}"
+          echo "Reason:        ${{ inputs.reason }}"
+          echo "Timestamp:     $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+      - uses: actions/checkout@v4
+
+      - name: Resolve target host IP
+        id: resolve
+        run: |
+          case "${{ inputs.target_host_label }}" in
+            rishi-4) HOST="${{ env.RISHI_4_IP }}" ;;
+            rishi-5) HOST="${{ env.RISHI_5_IP }}" ;;
+            rishi-6) HOST="${{ env.RISHI_6_IP }}" ;;
+            *) echo "::error::Unknown target_host_label"; exit 1 ;;
+          esac
+          echo "host=$HOST" >> "$GITHUB_OUTPUT"
+
+      - name: Set up SSH key + known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -T 10 -H "${{ steps.resolve.outputs.host }}" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Stage drill script on target
+        id: stage
+        run: |
+          SSH_OPTS="-i ~/.ssh/deploy_key -o ConnectTimeout=15 -o BatchMode=yes -o StrictHostKeyChecking=yes"
+          STAGING="/tmp/patroni-drill-${{ github.run_id }}"
+          ssh $SSH_OPTS "${{ env.SWARM_USER }}@${{ steps.resolve.outputs.host }}" "mkdir -p $STAGING"
+          scp $SSH_OPTS -q scripts/patroni_failover_drill.sh "${{ env.SWARM_USER }}@${{ steps.resolve.outputs.host }}:$STAGING/patroni_failover_drill.sh"
+          ssh $SSH_OPTS "${{ env.SWARM_USER }}@${{ steps.resolve.outputs.host }}" "chmod +x $STAGING/patroni_failover_drill.sh"
+          echo "staging=$STAGING" >> "$GITHUB_OUTPUT"
+
+      - name: Run drill (inside patroni container via docker exec)
+        id: drill
+        run: |
+          SSH_OPTS="-i ~/.ssh/deploy_key -o ConnectTimeout=15 -o BatchMode=yes -o StrictHostKeyChecking=yes"
+          STAGING="${{ steps.stage.outputs.staging }}"
+
+          # Exit code map (see scripts/patroni_failover_drill.sh):
+          #   0 — PASS
+          #   1 — prereqs missing
+          #   2 — pre-drill pg_dump failed
+          #   3 — promotion never observed
+          #   4 — switchback failed
+          #   5 — PASS-with-note (mechanically OK but /health saw >30s 5xx)
+          DRILL_RC=0
+          REPORT_REMOTE="/tmp/patroni-drill-report-$(date -u +%Y%m%dT%H%M%SZ).txt"
+
+          ssh $SSH_OPTS "${{ env.SWARM_USER }}@${{ steps.resolve.outputs.host }}" "
+            # The patroni container has patronictl + pg_dump + jq mounted;
+            # the host generally has them too via apt. We try host-first
+            # for simpler ergonomics; fall through to docker-exec if host
+            # is missing patronictl.
+            if command -v patronictl >/dev/null 2>&1; then
+              REPORT_PATH=${REPORT_REMOTE} bash $STAGING/patroni_failover_drill.sh
+            else
+              PATRONI_CID=\$(docker ps --filter 'label=com.docker.swarm.service.name=yral-v2-patroni' --format '{{.ID}}' | head -n 1)
+              if [ -z \"\$PATRONI_CID\" ]; then
+                echo 'ERROR: no patroni service container on this host' >&2
+                exit 1
+              fi
+              docker cp $STAGING/patroni_failover_drill.sh \"\$PATRONI_CID\":/tmp/patroni_failover_drill.sh
+              docker exec -e REPORT_PATH=${REPORT_REMOTE} \"\$PATRONI_CID\" bash /tmp/patroni_failover_drill.sh
+            fi
+          " || DRILL_RC=$?
+
+          echo "drill exit code: $DRILL_RC"
+          echo "rc=$DRILL_RC" >> "$GITHUB_OUTPUT"
+          echo "report_path=$REPORT_REMOTE" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch report from target
+        if: always()
+        run: |
+          SSH_OPTS="-i ~/.ssh/deploy_key -o ConnectTimeout=15 -o BatchMode=yes -o StrictHostKeyChecking=yes"
+          mkdir -p drill-artifacts
+          REPORT="${{ steps.drill.outputs.report_path }}"
+          if [ -n "$REPORT" ]; then
+            scp $SSH_OPTS "${{ env.SWARM_USER }}@${{ steps.resolve.outputs.host }}:$REPORT" \
+                drill-artifacts/patroni-drill-report.txt 2>/dev/null || \
+                echo "(no report file found at $REPORT — drill may have failed before write)"
+            ls -la drill-artifacts/
+          fi
+          # Always clean up the staging script
+          ssh $SSH_OPTS "${{ env.SWARM_USER }}@${{ steps.resolve.outputs.host }}" \
+              "rm -rf ${{ steps.stage.outputs.staging }}" 2>/dev/null || true
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: patroni-drill-report-${{ github.run_id }}
+          path: drill-artifacts/
+          if-no-files-found: warn
+
+      - name: Drill summary
+        if: always()
+        run: |
+          echo "─── Patroni failover drill summary ───"
+          echo "Target:   ${{ inputs.target_host_label }} (${{ steps.resolve.outputs.host }})"
+          echo "Exit:     ${{ steps.drill.outputs.rc }}"
+          echo "Verdict:  $(
+            case '${{ steps.drill.outputs.rc }}' in
+              0) echo 'GREEN — failover + promotion + switchback all clean' ;;
+              5) echo 'GREEN-WITH-NOTE — drill OK but /health disruption >30s' ;;
+              1) echo 'BLOCKED — drill prereqs missing on target' ;;
+              2) echo 'FAIL — pre-drill pg_dump failed (no safety net, did not proceed)' ;;
+              3) echo 'FAIL — promotion never observed within 120s (cluster may be stuck mid-failover)' ;;
+              4) echo 'FAIL — switchback failed (cluster left with new leader; data intact)' ;;
+              *) echo 'UNKNOWN' ;;
+            esac
+          )"
+          echo ""
+          echo "If GREEN: record drill timestamp in DAILY-LOG.md + flip 21αβ.H4 → ✅ in PROGRESS.md"
+          echo "If FAIL: see docs/runbooks/patroni-failover-drill.md § Recovery"
