@@ -1,0 +1,161 @@
+name: Redis Sentinel failover drill (21αβ.H5)
+
+# Manually triggered. Validates the V2 Redis Sentinel topology by
+# killing the current primary, watching Sentinel promote a replica,
+# verifying pub/sub still works on the new primary, then watching the
+# killed node rejoin as a replica.
+#
+# DO NOT MERGE/EXECUTE until Rishi green-lights drill execution post
+# rollout-stable for 24h (per autonomous-work brief 2026-06-13).
+#
+# Phase B (WebSocket end-to-end smoke) is operator-driven — see runbook.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_host_label:
+        description: 'Host currently running the Redis primary container'
+        required: true
+        type: choice
+        default: 'rishi-4'
+        options:
+          - rishi-4
+          - rishi-5
+          - rishi-6
+      reason:
+        description: 'Why are you running the drill? (audit trail)'
+        required: true
+        default: 'H5 Redis Sentinel failover drill — '
+      i_understand:
+        description: 'Type RUN REDIS DRILL to confirm this WILL kill the primary.'
+        required: true
+        default: ''
+
+env:
+  RISHI_4_IP: 138.201.128.108
+  RISHI_5_IP: 88.99.160.251
+  RISHI_6_IP: 162.55.88.112
+  SWARM_USER: rishi-deploy
+
+jobs:
+  drill:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+
+    steps:
+      - name: Confirm RUN REDIS DRILL typed
+        run: |
+          if [ "${{ inputs.i_understand }}" != "RUN REDIS DRILL" ]; then
+            echo "::error::Confirmation phrase mismatched (must be exactly 'RUN REDIS DRILL'); aborting."
+            exit 1
+          fi
+          echo "─── Redis Sentinel failover drill initiated ───"
+          echo "Triggered by:  ${{ github.actor }}"
+          echo "Target host:   ${{ inputs.target_host_label }}"
+          echo "Reason:        ${{ inputs.reason }}"
+          echo "Timestamp:     $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+      - uses: actions/checkout@v4
+
+      - name: Resolve target host IP
+        id: resolve
+        run: |
+          case "${{ inputs.target_host_label }}" in
+            rishi-4) HOST="${{ env.RISHI_4_IP }}" ;;
+            rishi-5) HOST="${{ env.RISHI_5_IP }}" ;;
+            rishi-6) HOST="${{ env.RISHI_6_IP }}" ;;
+            *) echo "::error::Unknown target_host_label"; exit 1 ;;
+          esac
+          echo "host=$HOST" >> "$GITHUB_OUTPUT"
+
+      - name: Set up SSH key + known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -T 10 -H "${{ steps.resolve.outputs.host }}" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Stage drill script on target
+        id: stage
+        run: |
+          SSH_OPTS="-i ~/.ssh/deploy_key -o ConnectTimeout=15 -o BatchMode=yes -o StrictHostKeyChecking=yes"
+          STAGING="/tmp/redis-sentinel-drill-${{ github.run_id }}"
+          ssh $SSH_OPTS "${{ env.SWARM_USER }}@${{ steps.resolve.outputs.host }}" "mkdir -p $STAGING"
+          scp $SSH_OPTS -q scripts/redis_sentinel_failover_drill.sh "${{ env.SWARM_USER }}@${{ steps.resolve.outputs.host }}:$STAGING/redis_sentinel_failover_drill.sh"
+          ssh $SSH_OPTS "${{ env.SWARM_USER }}@${{ steps.resolve.outputs.host }}" "chmod +x $STAGING/redis_sentinel_failover_drill.sh"
+          echo "staging=$STAGING" >> "$GITHUB_OUTPUT"
+
+      - name: Run drill
+        id: drill
+        run: |
+          SSH_OPTS="-i ~/.ssh/deploy_key -o ConnectTimeout=15 -o BatchMode=yes -o StrictHostKeyChecking=yes"
+          STAGING="${{ steps.stage.outputs.staging }}"
+
+          # Exit code map (see scripts/redis_sentinel_failover_drill.sh):
+          #   0 — PASS
+          #   1 — prereqs missing
+          #   2 — pre-drill tracer never received (Sentinel broken pre-drill)
+          #   3 — docker stop on primary failed (wrong host?)
+          #   4 — Sentinel never promoted (60s timeout)
+          #   5 — CRITICAL: post-promotion tracer never arrived (pub/sub broken)
+          #   6 — killed node did not rejoin as replica (120s timeout)
+          DRILL_RC=0
+          REPORT_REMOTE="/tmp/redis-sentinel-drill-report-$(date -u +%Y%m%dT%H%M%SZ).txt"
+
+          ssh $SSH_OPTS "${{ env.SWARM_USER }}@${{ steps.resolve.outputs.host }}" \
+              "REPORT_PATH=${REPORT_REMOTE} bash $STAGING/redis_sentinel_failover_drill.sh" \
+              || DRILL_RC=$?
+
+          echo "drill exit code: $DRILL_RC"
+          echo "rc=$DRILL_RC" >> "$GITHUB_OUTPUT"
+          echo "report_path=$REPORT_REMOTE" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch report from target
+        if: always()
+        run: |
+          SSH_OPTS="-i ~/.ssh/deploy_key -o ConnectTimeout=15 -o BatchMode=yes -o StrictHostKeyChecking=yes"
+          mkdir -p drill-artifacts
+          REPORT="${{ steps.drill.outputs.report_path }}"
+          if [ -n "$REPORT" ]; then
+            scp $SSH_OPTS "${{ env.SWARM_USER }}@${{ steps.resolve.outputs.host }}:$REPORT" \
+                drill-artifacts/redis-sentinel-drill-report.txt 2>/dev/null || \
+                echo "(no report file at $REPORT — drill may have failed before write)"
+            ls -la drill-artifacts/
+          fi
+          ssh $SSH_OPTS "${{ env.SWARM_USER }}@${{ steps.resolve.outputs.host }}" \
+              "rm -rf ${{ steps.stage.outputs.staging }}" 2>/dev/null || true
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: redis-sentinel-drill-report-${{ github.run_id }}
+          path: drill-artifacts/
+          if-no-files-found: warn
+
+      - name: Drill summary
+        if: always()
+        run: |
+          echo "─── Redis Sentinel failover drill summary ───"
+          echo "Target:   ${{ inputs.target_host_label }} (${{ steps.resolve.outputs.host }})"
+          echo "Exit:     ${{ steps.drill.outputs.rc }}"
+          echo "Verdict:  $(
+            case '${{ steps.drill.outputs.rc }}' in
+              0) echo 'GREEN — Sentinel promotion + pub/sub recovery + rejoin all clean' ;;
+              1) echo 'BLOCKED — drill prereqs missing on target' ;;
+              2) echo 'BLOCKED — Sentinel cluster broken BEFORE drill (pre-drill tracer never received)' ;;
+              3) echo 'FAIL — docker stop on primary failed (wrong target host?)' ;;
+              4) echo 'FAIL — Sentinel never promoted (quorum loss?)' ;;
+              5) echo 'CRITICAL — pub/sub did NOT recover after promotion (app-side regression)' ;;
+              6) echo 'FAIL — killed node did not rejoin as replica (container or Sentinel config issue)' ;;
+              *) echo 'UNKNOWN' ;;
+            esac
+          )"
+          echo ""
+          echo "If GREEN: record drill timestamp in DAILY-LOG.md + flip 21αβ.H5 → ✅"
+          echo "If CRITICAL (5): pub/sub regression. File P0. See runbook § Recovery."
+          echo "Other FAIL: see scripts/redis_sentinel_failover_drill.sh exit-code map"
+          echo ""
+          echo "Phase B WebSocket smoke (3 tabs) is operator-driven — see runbook."
