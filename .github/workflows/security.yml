@@ -146,7 +146,7 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | \
             docker login ghcr.io -u "${{ github.actor }}" --password-stdin
       - name: Trivy scan (HIGH + CRITICAL fails CI)
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: 'ghcr.io/dolr-ai/yral-rishi-agent:stable'
           format: 'json'
@@ -160,7 +160,7 @@ jobs:
           trivyignores: '.trivyignore'
       - name: Trivy scan (FULL report including MEDIUM + LOW)
         if: always()
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: 'ghcr.io/dolr-ai/yral-rishi-agent:stable'
           format: 'table'
