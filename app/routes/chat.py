@@ -17,6 +17,7 @@ import httpx
 
 from services import (
     ai_client,
+    billing_client,
     content_safety,
     embeddings,
     memory,
@@ -29,11 +30,37 @@ from services import (
     storage,
     replicate,
 )
+from fastapi.responses import JSONResponse
 from models import SendMessageResponse, ChatMessage, AssistantError
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/chat", tags=["Chat v1 — AI"])
+
+
+# Phase 21αβ.H2 — server-side paywall enforcement. See
+# app/services/billing_client.py. Returns the same JSON envelope mobile
+# already renders for LLM-failure errors: top-level `error` with
+# `code` + `message`. Mobile maps `error.code == "no_chat_access"` to
+# the paywall CTA + the user is offered to subscribe.
+_NO_ACCESS_RESPONSE = {
+    "error": {
+        "code": "no_chat_access",
+        "message": "Subscription required to chat with this AI Influencer.",
+    }
+}
+
+
+async def _enforce_chat_access(user_id: str, influencer_id: str) -> JSONResponse | None:
+    """Run the billing check + return a 402 JSONResponse if denied.
+    Returns None (caller continues) on `has_access=True` — including
+    the fail-open path where billing.yral.com was unreachable. Fail-
+    open is INTENTIONAL (brief §7): a billing outage must NOT take
+    down chat; the cost circuit breaker is the safety net."""
+    result = await billing_client.check_chat_access(user_id, influencer_id)
+    if not result.has_access:
+        return JSONResponse(status_code=402, content=_NO_ACCESS_RESPONSE)
+    return None
 
 
 # Phase 23.5 — skill onboarding hook. Skill plumbing wraps the existing
@@ -541,6 +568,14 @@ async def send_message(
                 "user_message": _format_message(existing),
                 "assistant_message": _format_message(reply) if reply else None,
             }
+
+    # Phase 21αβ.H2 — server-side paywall enforcement. Must run AFTER
+    # dedup (a dup of an already-allowed message must replay the same
+    # cached assistant reply, no billing re-check needed) and BEFORE
+    # audio transcription (which itself triggers a Gemini call).
+    paywall = await _enforce_chat_access(user_id, influencer_id)
+    if paywall is not None:
+        return paywall
 
     # Audio transcription
     content = body.get("content")
