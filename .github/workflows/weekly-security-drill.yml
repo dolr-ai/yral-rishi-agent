@@ -1,0 +1,200 @@
+name: Weekly security drill (Phase 24.2)
+
+# Cron-driven full-spectrum security scan. Runs every Sunday at
+# 04:00 UTC (low-traffic window for V2). Output is a GitHub issue with
+# the consolidated findings — gitleaks (all history) + pip-audit
+# (Python deps) + Trivy (container image OS-level CVEs).
+#
+# Different from the per-PR `security.yml`:
+#   - Runs on a schedule (not on PR/push)
+#   - Does NOT fail the workflow on findings — reports them instead
+#     (operator triage cadence is weekly, not blocking)
+#   - Posts a consolidated issue so the ops surface is one click,
+#     not three separate workflow runs to inspect
+#
+# Manually triggerable via workflow_dispatch for ad-hoc drills (e.g.
+# after a public CVE drops, run the drill immediately without waiting
+# for the next Sunday).
+
+on:
+  schedule:
+    # Sundays at 04:00 UTC (09:30 IST). Off-peak for V2 alpha-soak
+    # traffic + far enough from the daily 08:00 IST email digest cron
+    # that the operator inbox isn't flooded.
+    - cron: '0 4 * * 0'
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Why an ad-hoc drill? (audit trail)'
+        required: true
+        default: 'Ad-hoc — '
+
+permissions:
+  contents: read
+  issues: write
+  packages: read
+
+jobs:
+  drill:
+    name: Weekly security drill
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so gitleaks's `--log-opts="--all"` works
+          fetch-depth: 0
+
+      # ─── gitleaks (all-history secret scan) ────────────────────────
+      - name: Install gitleaks
+        run: |
+          VERSION="8.30.1"
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" -o gitleaks.tar.gz
+          tar -xzf gitleaks.tar.gz
+          sudo mv gitleaks /usr/local/bin/
+
+      - name: gitleaks detect (all history)
+        id: gitleaks
+        # Note: || true to never fail the workflow — we report instead.
+        # The per-PR workflow is the gate; this is the audit cadence.
+        run: |
+          gitleaks detect \
+            --source . \
+            --config .gitleaks.toml \
+            --log-opts="--all" \
+            --redact \
+            --no-banner \
+            --report-format json \
+            --report-path gitleaks-report.json || true
+          # Count findings — jq is preinstalled on ubuntu-latest
+          FINDINGS=$(jq 'length' gitleaks-report.json 2>/dev/null || echo "0")
+          echo "findings=$FINDINGS" >> "$GITHUB_OUTPUT"
+          echo "gitleaks findings: $FINDINGS"
+
+      # ─── pip-audit (Python deps) ───────────────────────────────────
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: pip-audit (no ignore — see ALL findings for triage)
+        id: pip_audit
+        # The drill INTENTIONALLY does not honor pip-audit-ignore.txt
+        # so we see every finding (including the 14 DEV-10 baseline
+        # ones) — that surfaces the question quarterly: are these
+        # still "accepted-for-now" or have they aged out?
+        run: |
+          pip-audit \
+            -r requirements.txt \
+            --vulnerability-service osv \
+            --format json \
+            --output pip-audit-report.json || true
+          FINDINGS=$(jq '[.dependencies[].vulns[]?] | length' pip-audit-report.json 2>/dev/null || echo "0")
+          echo "findings=$FINDINGS" >> "$GITHUB_OUTPUT"
+          echo "pip-audit findings: $FINDINGS"
+
+      # ─── Trivy (container image OS-level CVEs) ────────────────────
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Trivy scan (all severities, no allowlist)
+        id: trivy
+        # ignore-unfixed=true filters CVEs with no upstream fix
+        # (nothing actionable for us). exit-code=0 so we always report.
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: 'ghcr.io/dolr-ai/yral-rishi-agent:stable'
+          format: 'json'
+          output: 'trivy-report.json'
+          severity: 'UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL'
+          exit-code: '0'
+          ignore-unfixed: true
+
+      - name: Trivy summarize counts
+        id: trivy_count
+        run: |
+          # Sum unique vulnerabilities across all targets in the report.
+          # Trivy JSON has `.Results[].Vulnerabilities[].VulnerabilityID`
+          # — dedupe by ID to avoid double-counting the same CVE that
+          # affects multiple packages.
+          if [ -s trivy-report.json ]; then
+            HIGH_CRIT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH" or .Severity == "CRITICAL") | .VulnerabilityID] | unique | length' trivy-report.json 2>/dev/null || echo "0")
+            TOTAL=$(jq '[.Results[]?.Vulnerabilities[]?.VulnerabilityID] | unique | length' trivy-report.json 2>/dev/null || echo "0")
+          else
+            HIGH_CRIT=0
+            TOTAL=0
+          fi
+          echo "high_crit=$HIGH_CRIT" >> "$GITHUB_OUTPUT"
+          echo "total=$TOTAL" >> "$GITHUB_OUTPUT"
+          echo "trivy: HIGH+CRITICAL=$HIGH_CRIT total=$TOTAL"
+
+      # ─── Upload raw reports as artifacts ──────────────────────────
+      - name: Upload drill reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-security-drill-${{ github.run_id }}
+          path: |
+            gitleaks-report.json
+            pip-audit-report.json
+            trivy-report.json
+          retention-days: 90
+
+      # ─── Build consolidated markdown summary ──────────────────────
+      - name: Build issue body
+        id: body
+        run: |
+          DATE="$(date -u +%Y-%m-%d)"
+          {
+            echo "## Weekly security drill — ${DATE}"
+            echo ""
+            echo "Triggered by: ${{ github.event_name }}"
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              echo "Reason: ${{ inputs.reason }}"
+            fi
+            echo "Workflow run: [#${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+            echo ""
+            echo "### Findings summary"
+            echo ""
+            echo "| Scanner | Findings | Severity gate (per-PR workflow) |"
+            echo "|---|---|---|"
+            echo "| gitleaks (all history) | ${{ steps.gitleaks.outputs.findings }} | Any finding fails per-PR CI |"
+            echo "| pip-audit (no allowlist) | ${{ steps.pip_audit.outputs.findings }} | \`--strict\` fails per-PR CI (allowlist applies) |"
+            echo "| Trivy (container :stable) | ${{ steps.trivy_count.outputs.total }} total / ${{ steps.trivy_count.outputs.high_crit }} HIGH+CRITICAL | HIGH+CRITICAL fail per-PR CI |"
+            echo ""
+            echo "### Triage actions"
+            echo ""
+            echo "- [ ] gitleaks findings: extend \`.gitleaks.toml\` allowlist with justification, OR remediate"
+            echo "- [ ] pip-audit findings: review \`pip-audit-ignore.txt\` — are the existing entries still 'accepted for now', or have fixes shipped upstream?"
+            echo "- [ ] Trivy HIGH+CRITICAL: bump base image, OR add to \`.trivyignore\` with justification (no upstream fix yet)"
+            echo "- [ ] Trivy MEDIUM+LOW: quarterly cleanup — not a per-PR gate but tracked here for trend"
+            echo ""
+            echo "### Reports"
+            echo ""
+            echo "Full JSON reports attached as workflow artifact \`weekly-security-drill-${{ github.run_id }}\` (90-day retention)."
+            echo ""
+            echo "### Reference"
+            echo ""
+            echo "- Rotation runbook: \`docs/runbooks/secret-rotation.md\` (Phase 24.4)"
+            echo "- Per-PR security gates: \`.github/workflows/security.yml\` (24.1 + 24.3)"
+            echo "- Allowlist files: \`.gitleaks.toml\`, \`pip-audit-ignore.txt\`, \`.trivyignore\`"
+          } > issue-body.md
+          echo "issue body written ($(wc -l < issue-body.md) lines)"
+
+      # ─── Open or update the weekly-drill tracking issue ─────────────
+      - name: Open / update tracking issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DATE="$(date -u +%Y-%m-%d)"
+          TITLE="Weekly security drill — ${DATE}"
+          # Each weekly drill gets its OWN issue (vs reopening the same
+          # one) — keeps the audit trail discoverable + lets the ops
+          # owner close them as triage completes.
+          gh issue create \
+            --title "$TITLE" \
+            --label security,weekly-drill \
+            --body-file issue-body.md
