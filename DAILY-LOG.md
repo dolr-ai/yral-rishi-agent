@@ -1,5 +1,122 @@
 # Daily Log
 
+## 2026-06-12 — Pre-rollout prep day: Coach Day-14 backend stack, ETL drain bug-fix cascade, Sentry audit, pg_dump baseline taken
+
+### What happened in one paragraph
+
+Day-14 prep for the 21β 10% rollout Sarvesh is about to do in the next 1-2 hours. Three threads ran in parallel. **Thread 1 — Coach Day-14 pivot backend:** shipped the read-only Soul File preview stack via #374 (`GET /api/v1/influencers/{bot_id}/system-prompt-preview` endpoint, 88 LOC strict + 14 source-pin tests, all 7 layers + skills + applied overrides + composed text), #375 (SSOT extraction of `USER_SEGMENT_PLAN_TEMPLATE` from routes/soul_file.py into services/soul_file.py — chat-time compose() and preview now both render from the same constant), and #376 (`engagement_schedule` block on the same endpoint with `inactivity_proactive` + `skill_checkins` + `first_turn_nudge` sub-blocks; new module-level `DEFAULT_INITIAL_IDLE_MINUTES = 5` in nudge.py so `should_nudge()` default and the preview read from the same source). Honest "what's configured today" — no bot-owner-configurable cadence columns added per Rishi's explicit drop. Mobile expert has the full spec for the read-only Soul File page UI + new "View full prompt" pill entry point in the Coach chat header; standing rule held — no PR until Rishi's Motorola pass. **Thread 2 — ETL drain bug-fix cascade:** when Rishi finally tested `POST /admin/etl/drain` end-to-end against the deployed service, three stacked bugs surfaced. #377 fixed the Phase-2 watermark — `datetime.fromtimestamp(time.monotonic())` was producing 1970-relative timestamps because `monotonic()` is seconds since boot not seconds since epoch, AND the resulting string was being passed to asyncpg as `$1` on a timestamptz parameter (asyncpg rejects strings even with `::timestamptz` cast in SQL). #378 fixed the residual — the new tz-aware `datetime.now(timezone.utc)` was tz-aware while `etl_integrity_results.verified_at` is `TIMESTAMP` (no tz), so asyncpg threw "can't subtract offset-naive and offset-aware datetimes"; strip tzinfo at the call site only, keep `started_dt.isoformat()` in the report so the JSON shape is unchanged. #379 fixed the parallel bug surfaced when `/admin/etl/reconciliation` 500'd post-#378 deploy — `_v2_latest_import_ts` and `_chat_ai_counts_from_hourly_payload` were silently returning tz-naive datetimes from TIMESTAMP columns while the rest of the file used tz-aware UTC, breaking every subtraction; tag tzinfo=UTC on the way out of both helpers. Three lessons learned, all source-pinned via behavioral regression tests + tightened FakePool to mirror asyncpg's protocol-level constraints. **Thread 3 — also today:** PR #373 unblocked CI on the Coach catch-all hygiene fix by tightening `_looks_like_truncated_proposal` (false-positiving on Anastasia's long English replies that mentioned JSON-y vocabulary), reverting #372's diagnostic try/except wrappers (mobile expert revealed the override-apply 500 was actually a mobile-side `kotlinx.serialization.MissingFieldException`, not backend), and as a bonus unblocker landing a 1-line ETL fix + wall-clock-stable test fixtures (`_recent_utc()` helper replacing hardcoded `2026-06-11 11:59:00` timestamps that were drifting past the 30-min HEARTBEAT_STALE_SEC threshold).
+
+### Why it matters for tomorrow
+
+Backend stack for the Day-14 Coach pivot is complete and live. ETL drain endpoint now actually works server-side (though Cloudflare/Caddy edge times out around 100s on the long Phase 2 wait — 21γ.P10 queued). Most importantly: today's live tests proved the ETL is healthy — sentinel canary is passing in **6 seconds end-to-end** (chat-ai write → v2 detection), heartbeat is 90s old, importer ran 2 min ago. The hard 5-min cutover requirement is comfortably met. Reconciliation verdict shows `INVESTIGATE` but that's a key-name bug in `_chat_ai_counts_from_hourly_payload` (looks for `chat_ai_count`, payload uses `chat_ai`) — 21γ.P12 queued as the first post-rollout fix. Sentry config audited: DSN points at `sentry.rishi.yral.com` per CLAUDE.md rule 5, `SENTRY_ENVIRONMENT=production`, traces 100% / profiles 5%, Principal ID auto-attached on every authenticated request via `auth.py:47` — full per-user traceability ready for the 10% rollout. Fresh pre-rollout pg_dump taken (547 MB, SHA `4613aa69da3e4a8399c843fa274163aa5de6c65a947c3ce4e93f43f98175d557`, at 13:57:32Z on rishi-4) — point-in-time rollback target if the 10% rollout goes sideways.
+
+### PRs merged today (8)
+
+| # | What |
+|---|---|
+| #373 | chore(coach): revert #372 diagnostic wrappers + tighten `_looks_like_truncated_proposal` catch-all (Anastasia reprompt loop) + add `response_text[:500]` to truncation warning. Bonus: 1-line `etl_drain._chat_ai_counts_from_hourly_payload` early-return fix + replaced 4 hardcoded `2026-06-11` test-fixture timestamps with `_recent_utc()` helper for wall-clock-stable tests. |
+| #374 | feat(soul-file): `GET /api/v1/influencers/{bot_id}/system-prompt-preview` — read-only transparency endpoint, 88 LOC + 14 source-pin tests. All 7 layers (L1 global rules, L2 archetype block, L3 personality sections, L3 flat fallback, L4 user-segment template) + skills_enabled + applied_overrides + composed_preview_text. Owner-gated. Cache-Control: no-store. |
+| #375 | refactor(soul-file): SSOT extract of `USER_SEGMENT_PLAN_TEMPLATE` to services/soul_file.py with `{plan_lines}` format hole. compose() at chat time + preview at owner-read time both render from the same constant; chat-time template tweak can never silently drift the preview. 7 new SSOT-pin tests. |
+| #376 | feat(soul-file): `engagement_schedule` block on `/system-prompt-preview`. Honest "what's configured today" view of inactivity proactive + skill check-ins + first-turn nudge defaults. Every sub-block carries `source` + `note` so the bot owner sees per-bot vs per-user vs global. New `DEFAULT_INITIAL_IDLE_MINUTES = 5` in nudge.py — should_nudge() default and preview both reference it. 13 new tests. |
+| #377 | fix(etl-drain): correct Phase-2 watermark — wall-clock datetime, not monotonic-as-epoch. Two stacked bugs: `datetime.fromtimestamp(time.monotonic())` produced 1970-relative timestamps (monotonic is seconds since boot, not seconds since epoch), and the resulting ISO string was being passed to asyncpg's typed parameter binding (asyncpg rejects strings on `timestamptz` even with `::timestamptz` cast in SQL). Behavioral regression test pins drain.started_at to a recent wall-clock timestamp. |
+| #378 | fix(etl-drain): strip tzinfo before asyncpg call — `etl_integrity_results.verified_at` is TIMESTAMP (no tz, per migration 020). After #377's tz-aware datetime, asyncpg raised "can't subtract offset-naive and offset-aware datetimes". Strip tzinfo at the call site only, keep `started_dt.isoformat()` for the report. Tightened FakePool to mirror asyncpg's tz-naive constraint. |
+| #379 | fix(etl-drain): normalize `_v2_latest_import_ts` + `_chat_ai_counts_from_hourly_payload` to tz-aware UTC. Both helpers were silently returning tz-naive datetimes from TIMESTAMP columns while the rest of the file used `datetime.now(tz=UTC)` — every subtraction/comparison broke. Tag tzinfo=UTC on the way out of both. 2 new regression tests pin tz-aware return on each helper. |
+| (Mobile expert) | Pending #1195 (Soul File page rewrite) — held until rollout window closes. |
+
+### ETL state confirmed live (2026-06-12 13:22 UTC)
+
+- **Heartbeat**: 9-92 seconds old across the day's checks. Stale threshold is 15 min. ✅
+- **Sentinel canary**: passed with **6-second end-to-end** lag (chat-ai write at 12:54:57 → v2 detection at 12:55:03). This is the strongest data-flow signal. ✅
+- **Importer runs**: tick every ~5 min. Last run at 13:19:54 pulled 6 new message rows. ✅
+- **24h totals**: 421 files processed, 5,936 rows applied, 9,415 deliberately skipped (3,474 conflict + 6,320 orphan — all expected per Option-A duplicate-conv + orphan-msg handling). ✅
+- **v2 row counts**: messages 3,469,816 / conversations 287,341 / ai_influencers 3,944. v2 has +64,287 messages vs chat-ai per the 12:20 hourly tick (~1.85%). Direction is "v2 has MORE not LESS" — re-bootstrap residual (~27K from PR #227) + v2-native flagged messages (16,601 — is_proactive 15,285 + is_nudge 1,284 + system role 26 + human_takeover 6) + watermark timing gap (~50) + unexplained ~20K (probably chat-ai TTL/soft-deletion + bot replies generated on v2 that weren't echoed back). NOT data loss; closed-books audit queued as 21γ.P11.
+- **Reconciliation endpoint**: returns INVESTIGATE verdict due to `_chat_ai_counts_from_hourly_payload` looking for `chat_ai_count` while payload uses `chat_ai` key — 3-line fix queued as 21γ.P12, first post-rollout PR. Sentinel + heartbeat are the actual cutover gate.
+- **Anastasia in DB**: category = `Culture & Arts`, NOT one of the 5 `ARCHETYPE_PROMPTS` keys (companion/advisor/entertainer/educator/creator) — that's why her L2 archetype block is empty in the new preview. Schema split queued as 21γ.P8.
+
+### Pre-rollout pg_dump
+
+```
+FILE:    /home/rishi-deploy/yral-backups/pre-cutover-21b-20260612-135637.dump
+SIZE:    573,336,692 bytes  (547 MB)
+SHA256:  4613aa69da3e4a8399c843fa274163aa5de6c65a947c3ce4e93f43f98175d557
+HOST:    rishi-4 (138.201.128.108)
+TAKEN:   2026-06-12T13:57:32Z
+FORMAT:  pg_dump -Fc -Z 6 (custom, compressed, restorable via pg_restore)
+```
+
+If 10% rollout goes sideways: this is the point-in-time rollback target.
+
+### Sentry audit (deployed config + code)
+
+**Code-side (`infra/sentry.py` + `app/auth.py`):**
+- `sentry_sdk.set_user({"id": user_id})` runs inside `get_current_user()` for every authenticated request (auth.py:47). `user_id` is the JWT `sub` claim = **Principal ID**. Every Sentry event automatically carries `user.id = <principal>`. ✅
+- `sentry_sdk.set_tag("request_id", request_id)` per request (middleware.py:17) — correlates Sentry ↔ Caddy logs ↔ Langfuse traces. ✅
+- URL secrets scrubbed via `before_breadcrumb` + `before_send` — covers `{key, api_key, apikey, token, access_token, auth, secret, password, signature}` query params. ✅
+- `send_default_pii=False` — does NOT auto-attach request headers, cookies, or IP. ✅
+- FastAPI + Starlette + logging integrations all loaded. ✅
+
+**Deployed env (verified via `docker service inspect yral-rishi-agent` on rishi-4):**
+- `SENTRY_DSN`: host = **sentry.rishi.yral.com** (matches CLAUDE.md rule 5 — your self-hosted Sentry, not apm.yral.com). ✅
+- `SENTRY_ENVIRONMENT=production` ✅
+- `SENTRY_TRACES_RATE=1.0` (100% transaction tracing) ✅
+- `SENTRY_PROFILES_RATE=0.05` (5% profiling — overhead-conscious tuning vs code default of 1.0) ✅
+
+Gaps queued as polish (NOT blocking rollout):
+- 21γ.P13 — add `bot_id` + `conversation_id` tags at chat-send / coach route entries (15-line change, 4 routes)
+- 21γ.P14 — wrap background-task iterations in `proactive.py` / `nudge.py` / ETL loops with `set_user` / `set_tag` per row (~50 lines)
+
+### 21γ items added to PROGRESS.md today
+
+| # | Item | Effort |
+|---|---|---|
+| 21γ.P8 | Split `ai_influencers.category` (display taxonomy) from a new `archetype` column | 1-2 days |
+| 21γ.P9 | TZ audit of `user_skill_state.preferred_times` → `next_event_at` conversion | 30 min |
+| 21γ.P10 | Drain endpoint async refactor (202 + job ID + poll endpoint) + `TIMESTAMPTZ` schema promotion | 1-2 days |
+| 21γ.P11 | Audit the +64K v2-vs-chat-ai message gap | 1-2 hr |
+| 21γ.P12 | Fix `_chat_ai_counts_from_hourly_payload` key-name bug (`chat_ai_count` → `chat_ai`) | 1 hr |
+| 21γ.P13 | Sentry `bot_id` + `conversation_id` tags on chat routes | 30 min |
+| 21γ.P14 | Sentry per-iteration context in background tasks | 4-6 hr |
+
+### Open PROD BLOCKERs entering rollout window
+
+| # | Status |
+|---|---|
+| H2 server-side billing paywall | NOT shipped. Decision: accept revenue leak for 10% cohort, ship within 48h post-rollout. Brief: `~/.claude/plans/h2-server-side-billing-paywall-brief-2026-06-11.md`. |
+| H8 Phase 24 security drills | NOT shipped. ~5 days work, scope-trim decision pending. Per 2026-06-08 model this is a PROD prereq — strict reading says we're not ready for 21β. Discussed with Rishi; he's proceeding anyway. |
+| H11 cost alerting | Status unclear from session memory. Worth verifying tomorrow morning before second rollout step. |
+| DEV-3 | Status unclear from session memory. Verify tomorrow morning. |
+
+### Pre-rollout checklist (handed to Rishi as the "1-hour list")
+
+| # | Item | Status at end of session |
+|---|---|---|
+| 1 | Fresh pg_dump | ✅ done (547 MB, SHA `4613aa69...`) |
+| 2 | ETL data flow verified | ✅ sentinel 6s, heartbeat fresh, live imports |
+| 3 | Reconciliation verdict | ⚠️ INVESTIGATE (tool bug — quote sentinel to Sarvesh instead) |
+| 4 | H2 paywall decision | ✅ accept leak, 48h follow-up |
+| 5 | Motorola smoke test | ⏳ Rishi to do before Sarvesh flips |
+| 6 | Sarvesh rollback plan confirmed | ⏳ Rishi to verbally confirm with Sarvesh |
+| 7 | Sentry configured correctly | ✅ DSN, env, Principal ID, 100% tracing — all confirmed |
+| 8 | Pause mobile + dev session | ⏳ Rishi has the drafted messages, plans to send when ready |
+| 9 | Tabs open during rollout | ⏳ Rishi sets up `/admin/etl-status` + Sentry dashboard |
+| 10 | Post-rollout PR queue documented | ✅ 21γ.P12 first, then H2, then 21γ.P13, then resumed mobile work |
+
+### Post-rollout PR queue (tomorrow's order)
+
+1. **21γ.P12** — 3-line reconciliation key-name fix. Lowest risk PR to validate the post-rollout pipeline.
+2. **H2 billing paywall** — PROD BLOCKER countdown starts at flip time. 48h target.
+3. **21γ.P13** — Sentry `bot_id` + `conversation_id` tags. 30-min polish, makes triage faster while watching the 10% cohort.
+4. **Mobile expert's queued work** — Soul File page UI (#1195) once paused work resumes. Standing rule: Motorola pass first.
+5. **21γ.P11** — read-only +64K gap audit.
+6. **21γ.P10** — drain endpoint async refactor + TIMESTAMPTZ migration.
+7. **21γ.P14** — Sentry per-iteration background-task context.
+
+### Deployed image
+
+- `ghcr.io/dolr-ai/yral-rishi-agent:cf79493` (post-#379) live on rishi-4 + rishi-5. Stack: yral-rishi-agent service replicated 2/2.
+
+---
+
 ## 2026-06-11 — H6 PROD BLOCKER cleared + Coach Bucket 1 mostly done + ETL drain shipped + runpod_vllm rotation + proactive cost-attribution fix
 
 ### What happened in one paragraph
