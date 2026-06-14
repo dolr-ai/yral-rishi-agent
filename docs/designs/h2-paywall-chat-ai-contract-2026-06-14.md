@@ -1,5 +1,7 @@
 # H2.2 Phase 1 — chat-ai paywall discovery doc
 
+> **DECISION 2026-06-14 (Rishi)**: Path A revert. Server-side paywall is OUT of scope until/unless H11 alert fires from an actual bypass user. Existing **21α.B6 cost circuit breaker** + **21αβ.H11 cost alerting** (#306, live since 2026-06-09) + **Phase 19.1 per-user rate limiter** cover the original PROD BLOCKER concern. Revert PR opened (link in this PR's description); discovery doc below stands as the source of truth for the decision.
+
 **Date**: 2026-06-14
 **Phase**: 21αβ.H2.2 Phase 1 (READ-ONLY discovery; STOP and surface before Phase 2)
 **Status**: ⚠️ Findings contradict the brief's premise — Rishi review required before Phase 2
