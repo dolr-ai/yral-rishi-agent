@@ -1,5 +1,36 @@
 # Daily Log
 
+## 2026-06-16 — overnight: Langfuse trace rollup fix (Task A) + safety-net drill plan doc (Task B), both DRAFT, no prod touch
+
+### What happened in one paragraph
+
+Two overnight items per Rishi's brief, both DRAFT/DOCS-ONLY per the 100%-prod safety rule (no SSH, no deploy, no merge, no DB writes). **Task A (21γ.P26) — Langfuse trace input/output rollup fix.** Diagnosed: `app/services/langfuse_tracing.py`'s `trace_generation()` helper builds a 2-entry batch (`trace-create` + `generation-create`). The `generation-create` body carried `input` + `output` correctly; the `trace-create` body did not. So the Langfuse UI's trace-summary rollup read `null/undefined` even though the child generation had the full data. Brief mentioned placing the fix in `chat.py` via `trace.update(input=..., output=...)`, but this codebase doesn't use the Langfuse Python SDK — `langfuse_tracing.py` uses raw HTTP batch ingestion (the SDK silently fails on self-hosted instances per the module's own docstring). The cleanest fix per the brief's "or wherever langfuse.trace() is called" clause: add `input: input_text[:2000]` + `output: output_text[:2000]` to the trace-create body. Same 2000-char truncation cap as the generation so a single chat turn can't double-bill the payload AND so the UI shows the same snippet at both levels (mismatched truncation would confuse triage). The call sites in `ai_client.py:259/427/443/481` already pass `input_text=user_message` + `output_text=total_text` — those values were just being dropped on the floor for the trace body. ~2 LOC of actual change + comment block. Shipped as PR #394 (DRAFT), stacked on #393 (where the P26 row lives in PROGRESS.md). 5 tests: 4 source-pin (all green locally) covering input/output field presence + truncation parity + metadata regression guard, plus 1 behavioural test via `monkeypatch` on `httpx.post` that asserts the actual payload shape Langfuse receives (skipped locally on missing httpx; runs in CI). **Task B (21γ.P29 prep) — safety-net drill plan doc.** Wrote `docs/safety-net-drill-plan-2026-06-16.md` — runbook for synthetically triggering all three layers Rishi's H2 WON'T FIX decision rests on: B6 cost circuit breaker, H11 cost alerting (Sentry alert + daily email digest), Phase 19.1 per-user rate limiter. For each: code-paths cited (file + line ranges), pre-condition read-only checks, exact synthetic trigger commands (e.g. "temporarily lower `COST_ALERT_HOURLY_GEMINI_USD` to 0.01 via admin endpoint, fire 5 Gemini calls, expect Sentry alert + email digest"), expected signals at each step, rollback if drill goes wrong, failure modes + what they tell you. **Doc only — runbook, not executed.** Rishi runs the drill himself this weekend. Shipped as PR #395 (DRAFT), stacked on #394 so PROGRESS.md state is consistent.
+
+### Why it matters
+
+Langfuse traces are now usable for product review (no more "drill into the child generation for every trace" friction). The safety-net drill doc gives Rishi a turnkey runbook + makes the H2 WON'T FIX decision auditable — the three nets it depends on get exercised end-to-end with real prod conditions, not just shipped-but-untested code.
+
+### PRs opened overnight (2 DRAFTS, both ready-for-review, neither merged)
+
+| # | What |
+|---|---|
+| #394 | fix(langfuse): 21γ.P26 — propagate input/output onto trace body, not just generation. ~2 LOC + 5 tests. Stacked on #393. |
+| #395 | docs(drill): 21γ.P29 — safety-net drill plan for B6 + H11 + 19.1. Pure runbook, not executed. Stacked on #394. |
+
+### Standing rules honoured
+
+- No SSH, no `docker service update`, no DB write, no merge to main, no production state change
+- Branch names dated + distinct; `git branch --show-current` ran after `checkout -b` AND before each commit
+- Both PRs sit as ready-for-review/DRAFT pending Rishi's morning review
+
+### Follow-ups queued from overnight
+
+- Confirm with Rishi tomorrow: PR #394's helper-module placement (vs the brief's `chat.py` suggestion) — flagged the deviation in the PR description so it's an explicit review point
+- PR #395 deliverable is the input for `21γ.P29` actual execution this weekend
+- No production state changed; no rollback paths needed
+
+---
+
 ## 2026-06-15 — Sarvesh hits 100% prod flip, analytics OAuth re-flipped on, Metabase migrated rishi-2 → rishi-6 onto v2 Postgres
 
 ### What happened in one paragraph
@@ -14,12 +45,22 @@ Three threads. **Thread 1 — Sarvesh's 100% prod flip:** real users are now ful
 
 After the bare-install was live, walked Rishi through Dashboard #1 (Conversation Quality — Best & Worst, 6 cards: 4-headline number + Top-20-best + Top-20-streaks + 50-dead-on-arrival + 50-silent-failures + drill-down with `{{conversation_id}}` Metabase variable) hand-built via the SQL editor. Then automated the rest via two Python scripts using Metabase's REST API + API-key auth (`mb_*` key minted by Rishi, never crossed chat). **Script 1 — `scripts/build_metabase_dashboards.py`** — created 6 more dashboards with ~40 cards: Founder Pulse (DAU/messages/new convos today vs yesterday + 30d trends + hour-of-day heatmap + D1 retention by cohort + cost-today + rejection-rate + cost-per-active-user), Users & Retention (new users/day + D1/D3/D7/D14/D30 cohort retention table — the crown jewel chart for an early product + per-user distribution histograms + power users + churn risk), Bots & Quality (top 20 by convo count + by message volume + latest quality scores per bot + 30d quality drift for top-10 + inactive bots + bot creator leaderboard), Money & Reliability (daily LLM cost real/synthetic + provider split + process split + per-process rejection rate + top 20 errors + cost-per-active-user trend), Safety & Moderation (NSFW vs SFW share over time + top NSFW bots + discontinued bots + new bots/day + bot population summary), System Health (etl_sync_state + etl_integrity_results + files processed + recent LLM failures + proactive messages + influencer creation). Two fixes mid-run: Metabase pivot-table needs GUI-builder so Native-SQL heatmap card uses bar-with-breakouts (`day_of_week` as series) instead; Cloudflare WAF blocks `Python-urllib/*` UA so added Chrome UA to the api() helper. **Script 2 — `scripts/metabase_grant_access.py`** — created collection `YRAL Team Dashboards`, moved all 7 dashboards + ~46 saved questions into it, created group `YRAL Team — Dashboard Viewers`, set collection permissions (All Users = No access on new collection, Viewer group = View, Admin unchanged), set database permissions (Viewer group: view-data unrestricted + create-queries no — can view dashboards but can't write arbitrary SQL or scan PII), pre-created Neha Tiwari (`neha@gobazzinga.io`) as a user pre-assigned to the viewer group. When she signs in via Google SSO using the same email, Metabase matches and applies permissions. Script is idempotent — Rishi edits the `INVITEES` list at the top and re-runs to add more people later. Three Metabase 100X follow-ups queued in PROGRESS.md as `21γ.P23/P24/P25` (Tier 1 alerts + email subs + filters + Models this week; Tier 2 Sentry/Langfuse data sources + domain dashboards + snippets + caching this month; Tier 3 Slack + embedded analytics + dbt + branding + audit + investor PDF at scale).
 
+### Thread 4 — Langfuse instrumentation audit (diagnostic)
+
+Walked Rishi through first Langfuse tour (`langfuse-agent.rishi.yral.com`, not `langfuse.rishi.yral.com` — saved to memory as `reference_langfuse_url.md`). Project `yral-rishi-agent` already exists + traces flowing. Discovered trace-level instrumentation gap: every `chat-response` trace shows `Input: null` + `Output: undefined` at the TRACE summary level even though the child generation (`openrouter/google/gemini-2.5-flash`) has FULL data — input = actual user message, output = actual AI reply, latency_ms 612.4 (sub-second, beats CLAUDE.md rule 6 latency target), provider, model, cost ($0.000488), tokens (1336→35) all populated correctly. User_id (Internet Computer Principal) on trace + conversation_id in metadata also populated correctly. Only the rollup from generation → trace is missing. Langfuse itself surfaces this in plain English: "Looks like this trace didn't receive an input or output." Fix: in chat endpoint, after LLM call returns, `trace.update(input=user_message, output=ai_reply)`. ~15 LOC. Without this fix, Langfuse Traces table is unusable for product review since every row shows empty Input/Output columns — viewers have to drill into the child generation for every single trace. Queued as `21γ.P26`. Also queued `21γ.P27` — the full Langfuse onboarding stack (tag traces with bot_id/is_nsfw/user_segment, pipe bot_quality_scores into Langfuse scores, build Golden Set dataset, move Soul Files into Langfuse Prompts, daily annotation ritual, Langfuse alerts). Bonus product observation from the diagnostic trace: live NSFW Hindi/Hinglish chat in production via openrouter-fronted gemini-2.5-flash — multilingual + adult content pipeline working end-to-end on real users post Sarvesh's 100% prod flip.
+
 ### Follow-ups queued today
 
 - `21γ.P22` — Decommission old Metabase on rishi-2 (~1 week from now after dashboards rebuilt on new Metabase)
 - `21γ.P23` — Metabase 100X Tier 1 (alerts + daily email Founder Pulse + dashboard filters + 3 Models for self-serve)
 - `21γ.P24` — Metabase 100X Tier 2 (Sentry + Langfuse data sources + 3 domain dashboards + snippets + caching)
 - `21γ.P25` — Metabase 100X Tier 3 (Slack + embedded + dbt + anomaly + investor PDF + audit + branding)
+- `21γ.P26` — Langfuse trace-level input/output propagation fix (~15 LOC, 1 hr) — SMALL, do tomorrow morning
+- `21γ.P27` — Langfuse onboarding stack (tag/score/dataset/prompts/annotate/alerts, 3-5 days over 2-3 weeks)
+- `21γ.P28` — Kareena dogfood + nutrition_coach skill — RCA done (mobile create flow silent fail, server logs prove backend untouched); Path A retry on Motorola tomorrow morning, screen record for Sarvesh; if successful attach skill_slug via SQL on rishi-4
+- `21γ.P29` — Post-100%-prod safety net verification — H11 cost alert + B6 cost circuit breaker + 19.1 rate limit all need synthetic triggers since H2 closure depends on this trio actually firing under real conditions; 2-3 hr drill
+- `21γ.P30` — Daily founder rhythm setup (Founder Pulse email + Sentry digest + cost dashboard glance + Langfuse trace eyeball + Monday written self-review); 30-min setup + 5 min/day
+- `21γ.P31` — Mobile crash/error telemetry audit — ask Sarvesh if Crashlytics/Sentry-mobile is wired into prod-track APK; the Kareena silent fail today suggests there may be no mobile-side observability and we're operating with half the system dark
 - Coordinator PR #8 — Redis Sentinel auth fix (remove password from sentinel_kwargs)
 - Analytics refresher TimeoutError on 3.4M-row sessionize query — needs explicit asyncpg timeout bump or query rewrite
 - Continue passive monitoring of Sarvesh's 100% prod flip
