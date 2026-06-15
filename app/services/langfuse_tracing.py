@@ -55,6 +55,16 @@ def trace_generation(
     trace_id = str(uuid.uuid4())
     gen_id = str(uuid.uuid4())
 
+    # 21γ.P26 fix (2026-06-16): propagate input/output onto the trace
+    # body so the Langfuse UI's trace-summary rollup ("user message →
+    # AI reply") populates, not just the child generation. Pre-fix the
+    # generation carried full data while the trace summary showed
+    # "Looks like this trace didn't receive an input or output." Same
+    # 2000-char cap as the generation so a single chat turn can't
+    # double-bill the Langfuse payload. Truncation policy matches
+    # generation-side intentionally — both fields render the same
+    # snippet in the UI; mismatched truncation would show different
+    # text at the two levels and confuse triage.
     batch = [
         {
             "id": trace_id,
@@ -64,6 +74,8 @@ def trace_generation(
                 "id": trace_id,
                 "name": trace_name,
                 "userId": user_id,
+                "input": input_text[:2000],
+                "output": output_text[:2000],
                 "metadata": {
                     "conversation_id": conversation_id,
                     **(metadata or {}),
