@@ -25,8 +25,10 @@ from routes.wizard import router as wizard_router
 from routes.earnings import router as earnings_router
 from routes.admin_dashboard import router as admin_dashboard_router
 from routes.llm_routing_admin import router as llm_routing_admin_router
+from routes.admin_cost_breaker import router as admin_cost_breaker_router
 from routes.admin_discovery import router as admin_discovery_router
 from routes.backup_health_admin import router as backup_health_admin_router
+from services.cost_breaker import CostCircuitBreakerOpen
 from routes.health import router as health_router
 from routes.human_chat import router as human_chat_router
 from routes.influencers import router as influencers_router
@@ -448,6 +450,42 @@ async def capture_validation_error(request: Request, exc: RequestValidationError
     return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
 
+# Phase 21α.B6 — cost circuit breaker open. Raised from
+# `llm_registry._do_complete` when B6 is in ENFORCE mode AND a
+# threshold trip fires. Translated here to the mobile-safe shape:
+# 503 + Retry-After + the same `{"detail": "..."}` envelope mobile
+# already renders for any 503. NOT 402 (H2's 2026-06-14 mistake;
+# mobile has no 402 parser) + NOT 429 (Phase 19.1's owned status;
+# wrong semantic for cost). Gated on Sarvesh-mobile-503-confirmation
+# before enforce-flip per 2026-06-16 brief Q2.
+@app.exception_handler(CostCircuitBreakerOpen)
+async def capture_cost_breaker_open(request: Request, exc: CostCircuitBreakerOpen):
+    with sentry_sdk.new_scope() as scope:
+        scope.set_tag("http.status_code", "503")
+        scope.set_tag("http.method", request.method)
+        scope.set_tag("http.route", request.url.path)
+        scope.set_tag("cost_breaker.scope", exc.scope)
+        scope.fingerprint = ["503", "cost_breaker", exc.scope]
+        scope.set_context(
+            "cost_breaker",
+            {
+                "scope": exc.scope,
+                "cost_seen_usd": exc.cost_seen_usd,
+                "threshold_usd": exc.threshold_usd,
+                "retry_after_sec": exc.retry_after_sec,
+            },
+        )
+        sentry_sdk.capture_message(
+            f"B6 enforce-block {exc.scope}: ${exc.cost_seen_usd:.4f} >= ${exc.threshold_usd:.4f}",
+            level="warning",
+        )
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "Service temporarily unavailable. Please try again later."},
+        headers={"Retry-After": str(exc.retry_after_sec)},
+    )
+
+
 @app.get("/api/v1/auth/me", tags=["Auth"])
 async def auth_me(request: Request):
     user_id = get_current_user(request)
@@ -482,6 +520,7 @@ app.include_router(health_router)
 app.include_router(admin_dashboard_router)
 app.include_router(llm_routing_admin_router)
 app.include_router(backup_health_admin_router)
+app.include_router(admin_cost_breaker_router)
 app.include_router(admin_discovery_router)
 app.include_router(influencers_router)
 app.include_router(soul_file_router)
