@@ -23,7 +23,7 @@ SET statement_timeout = '60s';
 CREATE TABLE IF NOT EXISTS trending_overrides (
     influencer_id  VARCHAR(255) PRIMARY KEY
                    REFERENCES ai_influencers(id) ON DELETE CASCADE,
-    pinned_rank    SMALLINT     NOT NULL
+    pinned_rank    BIGINT       NOT NULL
                    CHECK (pinned_rank >= 1 AND pinned_rank <= 1000),
     note           TEXT,
     expires_at     TIMESTAMPTZ,
