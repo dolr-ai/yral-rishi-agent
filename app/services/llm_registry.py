@@ -791,6 +791,25 @@ async def _do_complete(
             f"llm_registry._do_complete: provider={provider!r} does not support chat (process={process!r})"
         )
 
+    # Phase 21α.B6 — cost circuit breaker check. Runs BEFORE the
+    # provider semaphore + the actual call. In SHADOW mode logs but
+    # doesn't block; in ENFORCE mode raises CostCircuitBreakerOpen
+    # which the FastAPI exception handler (app/main.py) translates
+    # to 503 + Retry-After. FAIL OPEN: `cost_breaker.check()` swallows
+    # every exception internally + returns allowed=True on any error.
+    # See app/services/cost_breaker.py docstring + design doc
+    # docs/b6-cost-circuit-breaker-design-2026-06-16.md.
+    from services import cost_breaker as _cb
+
+    _cb_result = await _cb.check(user_id=user_id, process=process, provider=provider)
+    if not _cb_result.allowed:
+        # Read the retry-after value from config (default 3600 if
+        # config missing / malformed). One extra config read on the
+        # blocked path is fine — blocks are rare by definition.
+        _cb_cfg = await _cb.get_config()
+        _retry_after = _cb._parse_int(_cb_cfg.get("b6_response_retry_after_sec"), 3600)
+        _cb.raise_if_blocked(_cb_result, retry_after_sec=_retry_after)
+
     merged_extra = dict(provider_meta.get("default_extra_body") or {})
     if extra_body:
         merged_extra.update(extra_body)
