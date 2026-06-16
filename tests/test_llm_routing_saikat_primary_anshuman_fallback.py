@@ -39,9 +39,22 @@ def test_async_processes_primary_is_runpod_vllm():
 
 def test_async_processes_have_internal_vllm_fallback():
     """Anshuman's pod (internal_vllm) is the documented fallback per
-    Rishi 2026-06-08. Never gemini in the chain."""
+    Rishi 2026-06-08. Never gemini in the chain.
+
+    Exception: `influencer_classification` (Phase 21γ.P34.M1) is
+    vision-bearing — `internal_vllm` is text-only, so an automatic
+    fallback would silently drop the avatar image and produce
+    garbage labels. Mirrors the rationale for
+    `user_chat_main_multimodal` having no fallback."""
+    no_fallback_by_design = {"influencer_classification"}
     for p in ASYNC_PROCESSES_NEVER_GEMINI:
         d = LLM_DEFAULTS[p]
+        if p in no_fallback_by_design:
+            assert "fallback_provider" not in d, (
+                f"{p}: documented as no-fallback (vision-bearing); "
+                f"got {d.get('fallback_provider')!r}"
+            )
+            continue
         assert d.get("fallback_provider") == "internal_vllm", (
             f"{p}: fallback_provider must be internal_vllm; "
             f"got {d.get('fallback_provider')!r}"
@@ -103,6 +116,10 @@ def test_async_never_gemini_set_covers_known_async_processes():
         "memory_consolidation",
         "nudge_generation",
         "video_idea_generation",
+        # Phase 21γ.P34.M1 — Discovery Feed bot classification.
+        # Vision-bearing; no fallback (see test_async_processes_have_internal_vllm_fallback
+        # exception list).
+        "influencer_classification",
     }
     assert ASYNC_PROCESSES_NEVER_GEMINI == expected, (
         "ASYNC_PROCESSES_NEVER_GEMINI drifted from the canonical set. "

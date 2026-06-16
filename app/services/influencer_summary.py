@@ -106,6 +106,7 @@ async def generate_for_influencer(inf: dict) -> dict:
     effective_prompt = soul_file.compose(
         system_instructions=inf.get("system_instructions") or "",
         category=inf.get("category"),
+        archetype=inf.get("archetype"),
         global_rule_overrides=inf.get("global_rule_overrides"),
         sections=inf.get("system_instructions_sections"),
     )

@@ -60,6 +60,11 @@ _PER_LOOP_KEYS = {
     # provider calls — gated symmetric with the rest so ops can mute
     # alerting independently of the loops that produce the spend.
     "cost_alerts": "ENABLE_COST_ALERTS",
+    # Phase 21γ.P34.M1 — Discovery Feed bot classification loop. One
+    # LLM call per bot (backfill + on-create), defaults OFF so the
+    # operator opts the backfill sweep in deliberately (avoids
+    # surprise burn-through on first deploy).
+    "influencer_classification": "ENABLE_INFLUENCER_CLASSIFICATION_LOOP",
 }
 
 
@@ -72,6 +77,21 @@ def _env_true(key: str, default: bool = True) -> bool:
     return raw.strip().lower() in ("true", "1", "yes")
 
 
+# Per-loop defaults. Most loops default ON (opt-in-OFF kill switch).
+# A loop that defaults OFF requires the operator to deliberately
+# enable it — used for new background processes where Rishi reviews
+# sample output before unleashing a full sweep.
+_DEFAULT_OFF_LOOPS: frozenset[str] = frozenset(
+    {
+        # Phase 21γ.P34.M1 — classification loop ships dormant. Rishi
+        # reviews `POST /admin/discovery/classify-sample` output for 5
+        # bots, then sets ENABLE_INFLUENCER_CLASSIFICATION_LOOP=true to
+        # activate the full backfill.
+        "influencer_classification",
+    }
+)
+
+
 def is_enabled(loop_name: str) -> bool:
     """Both master AND per-loop must be on for the caller to proceed.
     Unknown loop_name = enabled (forward-compat — new caller without
@@ -81,7 +101,8 @@ def is_enabled(loop_name: str) -> bool:
     per_loop_key = _PER_LOOP_KEYS.get(loop_name)
     if per_loop_key is None:
         return True
-    return _env_true(per_loop_key, default=True)
+    per_loop_default = loop_name not in _DEFAULT_OFF_LOOPS
+    return _env_true(per_loop_key, default=per_loop_default)
 
 
 def current_state() -> dict:
@@ -95,8 +116,12 @@ def current_state() -> dict:
         "loops": {
             name: {
                 "env": env_key,
-                "enabled": _env_true(env_key, default=True),
+                "enabled": _env_true(
+                    env_key,
+                    default=(name not in _DEFAULT_OFF_LOOPS),
+                ),
                 "effective": is_enabled(name),
+                "default": "off" if name in _DEFAULT_OFF_LOOPS else "on",
             }
             for name, env_key in _PER_LOOP_KEYS.items()
         },

@@ -339,6 +339,7 @@ async def generate_skill_checkin(
     system_instructions = soul_file.compose(
         system_instructions=inf.get("system_instructions", "") or "",
         category=inf.get("category"),
+        archetype=inf.get("archetype"),
         memories=memories,
         skill_slug=inf.get("skill_slug"),
         user_skill_state=state_row.get("state") or {},
@@ -369,7 +370,9 @@ async def generate_skill_checkin(
         is_nsfw=inf.get("is_nsfw", False),
         user_id=user_id,
         conversation_id=None,
-        archetype=inf.get("category"),
+        # Phase 21γ.P34.M1 — new archetype column wins; category fallback
+        # for pre-classify rows.
+        archetype=inf.get("archetype") or inf.get("category"),
         process_override="proactive_generation",
     )
 

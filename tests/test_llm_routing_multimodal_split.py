@@ -36,7 +36,11 @@ def test_supports_vision_flag_set_on_all_providers():
         "gemini": True,
         "openai": True,
         "openrouter": True,
-        "runpod_vllm": False,
+        # Phase 21γ.P34.M1 (2026-06-16) — Saikat verified vision on
+        # Qwen/Qwen3.6-35B-A3B-FP8. Flipped False → True so the H12
+        # capability guard permits the new influencer_classification
+        # process to send avatar images.
+        "runpod_vllm": True,
         "internal_vllm": False,
         "ollama": False,
     }
