@@ -298,6 +298,42 @@ async def _email_digest_tile(pool) -> dict:
         }
 
 
+async def _discovery_pins_tile(pool) -> dict:
+    """Phase 21γ.P34.M0 — count of currently-pinned influencers in
+    `trending_overrides`, with the next-to-expire pin if any. Until M2
+    composer ships, the count is informational only — pins don't yet
+    affect any user-visible feed."""
+    try:
+        row = await pool.fetchrow(
+            """
+            SELECT COUNT(*)::int AS total,
+                   MIN(expires_at) FILTER (WHERE expires_at IS NOT NULL)
+                       AS next_expiry
+            FROM trending_overrides
+            """
+        )
+        total = int(row["total"]) if row else 0
+        next_expiry = row["next_expiry"] if row else None
+        details = "Pinned via POST /api/v2/admin/discovery/pin (X-Admin-Key)"
+        if next_expiry is not None:
+            details += f" · next expiry: {next_expiry.isoformat()}"
+        return {
+            "title": "Discovery pins (Phase 21γ.P34.M0)",
+            "status": "ok" if total >= 0 else "off",
+            "primary": f"{total} pinned",
+            "details": details,
+            "link": None,
+        }
+    except Exception as e:
+        return {
+            "title": "Discovery pins (Phase 21γ.P34.M0)",
+            "status": "off",
+            "primary": "table not yet applied",
+            "details": str(e)[:200],
+            "link": None,
+        }
+
+
 def _placeholder_tile(title: str, planned_pr: str, why: str) -> dict:
     """Future-wiring stub. Visible empty-state so Rishi knows what's
     coming and where it'll land. The 'off' grey color flags
@@ -384,6 +420,7 @@ async def admin_dashboard(request: Request):
         await _llm_routing_tile(pool),
         await _email_digest_tile(pool),
         await _rate_limit_tile(pool),
+        await _discovery_pins_tile(pool),
         # Placeholder tiles — each later PR replaces its placeholder with
         # a real status read. The Wired-in-PR-#N text gives Rishi a clear
         # forward roadmap from the dashboard itself.
