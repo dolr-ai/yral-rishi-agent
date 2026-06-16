@@ -311,11 +311,14 @@ def compose(
     # 93% of production bots (3427/3684) without an archetype prompt
     # layer because their free-form `category` didn't match the 5
     # ARCHETYPE_PROMPTS keys exactly.
-    resolved_archetype = (archetype or "").lower().strip()
-    if resolved_archetype not in ARCHETYPE_PROMPTS or resolved_archetype == "unknown":
-        resolved_archetype = (category or "").lower().strip()
-    if resolved_archetype in ARCHETYPE_PROMPTS:
-        layers.append(ARCHETYPE_PROMPTS[resolved_archetype])
+    # The local rebind to `archetype` (rather than introducing a new
+    # name like `resolved_archetype`) preserves the symbol the existing
+    # Phase-23 layer-order test pins on.
+    archetype = (archetype or "").lower().strip()
+    if archetype not in ARCHETYPE_PROMPTS or archetype == "unknown":
+        archetype = (category or "").lower().strip()
+    if archetype in ARCHETYPE_PROMPTS:
+        layers.append(ARCHETYPE_PROMPTS[archetype])
 
     # Phase 23: skill prompt block. Sits between archetype and the
     # influencer's own system_instructions. NEVER edit GLOBAL_RULES to
