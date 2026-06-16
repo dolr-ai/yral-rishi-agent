@@ -27,6 +27,7 @@ from routes.admin_dashboard import router as admin_dashboard_router
 from routes.llm_routing_admin import router as llm_routing_admin_router
 from routes.admin_cost_breaker import router as admin_cost_breaker_router
 from routes.admin_discovery import router as admin_discovery_router
+from routes.admin_classification import router as admin_classification_router
 from routes.backup_health_admin import router as backup_health_admin_router
 from services.cost_breaker import CostCircuitBreakerOpen
 from routes.health import router as health_router
@@ -121,6 +122,14 @@ async def lifespan(app: FastAPI):
 
     cost_alerts_task = asyncio.create_task(cost_alerts_loop())
 
+    # Phase 21γ.P34.M1 — Discovery Feed bot classification. Default OFF
+    # (kill_switch ships dormant); Rishi reviews 5 sample labels via
+    # POST /admin/discovery/classify-sample then flips
+    # ENABLE_INFLUENCER_CLASSIFICATION_LOOP=true to start the backfill.
+    from services.influencer_classification import classification_loop
+
+    classification_task = asyncio.create_task(classification_loop())
+
     # Hydrate rate-limit config from DB into Redis so the middleware
     # reads the operator-tuned values, not just the defaults. Idempotent.
     try:
@@ -143,6 +152,7 @@ async def lifespan(app: FastAPI):
     digest_task.cancel()
     video_ideas_task.cancel()
     cost_alerts_task.cancel()
+    classification_task.cancel()
     llm_routing_pubsub_task.cancel()
     try:
         await trending_refresher_task
@@ -190,6 +200,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await cost_alerts_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await classification_task
     except asyncio.CancelledError:
         pass
     try:
@@ -522,6 +536,7 @@ app.include_router(llm_routing_admin_router)
 app.include_router(backup_health_admin_router)
 app.include_router(admin_cost_breaker_router)
 app.include_router(admin_discovery_router)
+app.include_router(admin_classification_router)
 app.include_router(influencers_router)
 app.include_router(soul_file_router)
 app.include_router(chat_router)

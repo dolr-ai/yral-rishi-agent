@@ -687,6 +687,7 @@ async def send_message(
     system_instructions = soul_file.compose(
         system_instructions=chosen_instructions + skill_ctx["instructions_addendum"],
         category=inf.get("category"),
+        archetype=inf.get("archetype"),
         memories=memories,
         skill_slug=skill_ctx["skill_slug"],
         user_skill_state=(
@@ -715,7 +716,7 @@ async def send_message(
         media_urls=media_urls,
         user_id=user_id,
         conversation_id=conversation_id,
-        archetype=inf.get("category"),
+        archetype=inf.get("archetype") or inf.get("category"),
     )
 
     # Typing indicator STOP
@@ -936,6 +937,7 @@ async def send_message_stream(
                 system_instructions=inf.get("system_instructions", "")
                 + skill_ctx["instructions_addendum"],
                 category=inf.get("category"),
+                archetype=inf.get("archetype"),
                 memories=memories,
                 skill_slug=skill_ctx["skill_slug"],
                 user_skill_state=(
@@ -957,7 +959,7 @@ async def send_message_stream(
                 media_urls=media_urls,
                 user_id=user_id,
                 conversation_id=conversation_id,
-                archetype=inf.get("category"),
+                archetype=inf.get("archetype") or inf.get("category"),
             ):
                 if kind == "text":
                     full_text += value

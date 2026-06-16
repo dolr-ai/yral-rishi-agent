@@ -179,8 +179,38 @@ ARCHETYPE_TUNING = {
 }
 
 
+def resolve_archetype(inf: dict | None) -> str | None:
+    """Phase 21γ.P34.M1 — single source of truth for "which archetype
+    does this bot have." Prefer the new `archetype` column when set +
+    valid; fall back to the historical `category` derivation when the
+    column is missing or 'unknown' (i.e. pre-classify rows).
+
+    Returns the lowercased archetype string (one of ARCHETYPE_PROMPTS
+    keys) or None if neither side resolved. Callers pass the resolved
+    value as the `archetype=` kwarg to `compose()` or as the legacy
+    `category=` arg to `tuning_for()` / `ai_client.generate_response()`.
+    """
+    if not inf:
+        return None
+    a = (inf.get("archetype") or "").lower().strip()
+    if a and a != "unknown" and a in ARCHETYPE_PROMPTS:
+        return a
+    c = (inf.get("category") or "").lower().strip()
+    if c in ARCHETYPE_PROMPTS:
+        return c
+    return None
+
+
 def tuning_for(category: str | None) -> dict | None:
-    """Return per-archetype tuning overrides, or None to use config defaults."""
+    """Return per-archetype tuning overrides, or None to use config
+    defaults.
+
+    The arg-name `category` is legacy — accepts either the real
+    `category` value (historical case-insensitive match) OR the new
+    `archetype` column value (5-value enum). Phase 21γ.P34.M1 callers
+    pass `inf.get("archetype") or inf.get("category")` so the new
+    column wins when set; pre-classify bots fall back to the old
+    derivation."""
     if not category:
         return None
     return ARCHETYPE_TUNING.get(category.lower().strip())
@@ -242,6 +272,7 @@ def compose(
     user_skill_state: dict | None = None,
     global_rule_overrides: dict | None = None,
     sections: list[dict] | str | None = None,
+    archetype: str | None = None,
 ) -> str:
     """Compose a Soul File prompt.
 
@@ -271,7 +302,21 @@ def compose(
     """
     layers = [_render_global_rules(global_rule_overrides)]
 
-    archetype = (category or "").lower().strip()
+    # Phase 21γ.P34.M1 (2026-06-16) — prefer the new `archetype` column
+    # when set + valid. Backward-compat fallback: derive from `category`
+    # (the historical path) when archetype is missing or 'unknown'.
+    # During backfill window many rows will still be on the fallback;
+    # once classification completes, ~100% of bots resolve via the column.
+    # Side effect of the column: fixes the silent-skip bug that left
+    # 93% of production bots (3427/3684) without an archetype prompt
+    # layer because their free-form `category` didn't match the 5
+    # ARCHETYPE_PROMPTS keys exactly.
+    # The local rebind to `archetype` (rather than introducing a new
+    # name like `resolved_archetype`) preserves the symbol the existing
+    # Phase-23 layer-order test pins on.
+    archetype = (archetype or "").lower().strip()
+    if archetype not in ARCHETYPE_PROMPTS or archetype == "unknown":
+        archetype = (category or "").lower().strip()
     if archetype in ARCHETYPE_PROMPTS:
         layers.append(ARCHETYPE_PROMPTS[archetype])
 

@@ -65,6 +65,13 @@ PROCESS_NAMES: tuple[str, ...] = (
     # memory_extraction). Rishi can flip via /admin/llm-routing if quality
     # ever needs gemini.
     "video_idea_generation",
+    # Phase 21γ.P34.M1 (2026-06-16) — Discovery Feed bot classification.
+    # One LLM call per influencer (backfill + on-create), tags `gender`
+    # + `bot_type` from {profile photo, name, system prompt, description}
+    # in a single multimodal pass. Vision-enabled runpod_vllm primary;
+    # NEVER gemini (in ASYNC_PROCESSES_NEVER_GEMINI below). The only
+    # LLM call in the whole Discovery Feed pipeline.
+    "influencer_classification",
 )
 # Phase 23 note: skilled influencers (Kareena with nutrition_coach,
 # future english_coach / daily_briefing / travel_advisor / etc.) do
@@ -182,10 +189,16 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "supports_chat": True,
         "supports_stream": True,
         "supports_transcribe": False,
-        # Saikat's pod is the same Qwen family — text-only. This is the
-        # provider the H12 bug surfaced on (Rishi's 2026-06-08 flip
-        # silently broke image chats).
-        "supports_vision": False,
+        # Phase 21γ.P34.M1 (2026-06-16) — Session 6 verified empirically
+        # via 5 curls (see memory feedback_empirical_first_then_ping):
+        # GET /v1/models returned Qwen/Qwen3.6-35B-A3B-FP8 + multimodal
+        # smoke (prompt_tokens=341 with image vs ~100 text-only) both
+        # green + 3.4 sec/bot with enable_thinking disabled. Flipping
+        # False → True so the H12 capability guard permits the new
+        # `influencer_classification` process to send avatar images.
+        # The runpod_vllm default_extra_body already disables thinking
+        # mode, so classification inherits the 10× latency win.
+        "supports_vision": True,
     },
     "ollama": {
         "concurrency_cap": 2,
@@ -320,6 +333,16 @@ LLM_DEFAULTS: dict[str, dict[str, Any]] = {
         "fallback_model": "Qwen/Qwen3.6-27B-FP8",
         "timeout_sec": 120.0,
     },
+    # Phase 21γ.P34.M1 — multimodal classification of AI influencers.
+    # NO fallback: internal_vllm is text-only (supports_vision=False),
+    # so an automatic fallback would silently drop the avatar image and
+    # produce garbage labels. If runpod_vllm is down the job just queues
+    # for the next backfill sweep — no rush, this is purely offline.
+    "influencer_classification": {
+        "provider": "runpod_vllm",
+        "model": "Qwen/Qwen3.6-35B-A3B-FP8",
+        "timeout_sec": 60.0,
+    },
 }
 
 
@@ -335,6 +358,11 @@ ASYNC_PROCESSES_NEVER_GEMINI: frozenset[str] = frozenset(
         "memory_consolidation",
         "nudge_generation",
         "video_idea_generation",
+        # Phase 21γ.P34.M1 — Discovery Feed classification. Excluded from
+        # gemini even though it's "synthetic offline" — the cost rule that
+        # motivated this set says any new background LLM defaults to vLLM
+        # unless there's a sync user waiting (there isn't here).
+        "influencer_classification",
     }
 )
 
