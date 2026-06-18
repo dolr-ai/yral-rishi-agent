@@ -72,6 +72,32 @@ async def complete(
                 )
             response.raise_for_status()
             data = response.json()
+            # Sentry issue YRAL-RISHI-AGENT-4J (2026-06-18): OpenRouter
+            # returns 2xx with `{"error":{"message":"...","code":"..."}}`
+            # on rate-limit + some safety-block paths — body shape lacks
+            # `choices`. Previously the bare `data["choices"][0]` raised
+            # `KeyError: 'choices'` which leaked to mobile as a TRANSIENT
+            # fallback with no hint of the real reason. Surface the
+            # provider's `error.message` through the existing httpx
+            # raise path so the retry loop + the ai_client error mapper
+            # see the actual cause.
+            if "choices" not in data or not data.get("choices"):
+                err = data.get("error") or {}
+                msg = err.get("message") if isinstance(err, dict) else None
+                code = err.get("code") if isinstance(err, dict) else None
+                detail = (
+                    msg
+                    or f"upstream returned no choices (body keys: {list(data.keys())[:5]})"
+                )
+                # Re-raise as HTTPStatusError so the existing retry
+                # ladder treats provider errors uniformly with 5xx /
+                # network errors. Synthesize a 502 to signal "upstream
+                # gave us a malformed response."
+                raise httpx.HTTPStatusError(
+                    f"{provider} returned error body (code={code}): {detail}",
+                    request=response.request,
+                    response=response,
+                )
             choice = data["choices"][0]
             content = choice["message"]["content"] or ""
             usage = data.get("usage") or {}

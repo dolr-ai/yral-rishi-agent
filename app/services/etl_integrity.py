@@ -489,8 +489,67 @@ async def _record(
     )
 
 
-def _capture_sentry(layer: str, filename: str, drift_count: int, details: dict):
-    """Soft Sentry capture — if Sentry isn't wired up, no-op."""
+# Coarse buckets for drift-count NX-dedup. The hourly verifier produces
+# ~30-50 drifts per tick at steady state; without dedup that's ~12k
+# Sentry events / week (Issue YRAL-RISHI-AGENT-1T + 1S, 2026-06-18
+# triage). The buckets are coarse enough that a steady drift count
+# collapses to ONE event per hour but a real jump (e.g. 30 → 500)
+# fires a fresh event so ops still notices the escalation.
+_DRIFT_BUCKETS = (1, 10, 50, 100, 500, 5000)
+
+
+def _drift_bucket(count: int) -> str:
+    """Map a raw drift count to a bucket label for the dedup key."""
+    if count <= 0:
+        return "0"
+    for upper in _DRIFT_BUCKETS:
+        if count <= upper:
+            return f"1-{upper}" if upper == 1 else f"{_prev_bucket(upper)}-{upper}"
+    return f"{_DRIFT_BUCKETS[-1]}+"
+
+
+def _prev_bucket(upper: int) -> int:
+    """Lower bound for a bucket whose upper bound is `upper`."""
+    idx = _DRIFT_BUCKETS.index(upper)
+    return 1 if idx == 0 else _DRIFT_BUCKETS[idx - 1] + 1
+
+
+_SENTRY_DEDUP_TTL_SEC = 60 * 60  # 1h — one event per (layer, bucket) per hour
+
+
+async def _try_set_nx(key: str, ttl_sec: int) -> bool:
+    """Acquire a Redis NX key so only ONE replica fires the Sentry
+    event in any given window. Returns True if THIS process owns the
+    capture; False if another replica already fired OR Redis is down.
+    Fail-closed-on-alert (mirrors cost_alerts._try_set_nx pattern —
+    better to drop an alert than fire 5 of them during an outage)."""
+    try:
+        from services.session_memory import _get_redis
+
+        redis = await _get_redis()
+        if redis is None:
+            return False
+        result = await redis.set(key, "1", nx=True, ex=ttl_sec)
+        return bool(result)
+    except Exception as e:
+        logger.warning(
+            "etl_integrity: Sentry NX dedupe failed (treating as not-acquired): %s",
+            e,
+        )
+        return False
+
+
+async def _capture_sentry(layer: str, filename: str, drift_count: int, details: dict):
+    """Soft Sentry capture, NX-deduped on (layer, drift_bucket) with
+    1-hour TTL. Without dedup the hourly verifier produced ~12k events
+    / week of essentially the same "etl_integrity tick FAILED" alert
+    (YRAL-RISHI-AGENT-1T + 1S, 2026-06-18). Bucketing the count means
+    a steady drift collapses to one event per hour but a real jump
+    crosses bucket boundary and re-fires."""
+    bucket = _drift_bucket(drift_count)
+    nx_key = f"sentry:etl_integrity:{layer}:bucket={bucket}"
+    if not await _try_set_nx(nx_key, ttl_sec=_SENTRY_DEDUP_TTL_SEC):
+        return  # another replica or window already covered this fingerprint
     try:
         import sentry_sdk
 
@@ -501,6 +560,7 @@ def _capture_sentry(layer: str, filename: str, drift_count: int, details: dict):
                 "layer": layer,
                 "filename": filename,
                 "drift_count": drift_count,
+                "drift_bucket": bucket,
                 "details": details,
             },
         )
@@ -547,14 +607,22 @@ async def run_once(v2_pool) -> dict:
             counts["verified"] += 1
             counts["passed" if passed else "failed"] += 1
             if not passed:
-                logger.error(
+                # Downgrade to WARNING (was ERROR) so Sentry's logging
+                # integration doesn't auto-capture in addition to the
+                # explicit _capture_sentry call below. Without this,
+                # every failed tick produced TWO Sentry events (the log
+                # line + the explicit message) which doubled the noise
+                # YRAL-RISHI-AGENT-1T + 1S were generating.
+                logger.warning(
                     "etl_integrity %s FAILED file=%s drift=%d details=%s",
                     obj["layer"],
                     obj["filename"],
                     drift_count,
                     details,
                 )
-                _capture_sentry(obj["layer"], obj["filename"], drift_count, details)
+                await _capture_sentry(
+                    obj["layer"], obj["filename"], drift_count, details
+                )
             else:
                 logger.info(
                     "etl_integrity %s passed file=%s runtime_ms=%d",
