@@ -106,6 +106,10 @@ async def influencer_feed(
             limit=limit,
             with_metadata=with_metadata,
             session_id=sid,
+            # Phase 21γ.P34.M2b — feed user_id to the composer so it
+            # can resolve cold-start vs warm. None when JWT absent /
+            # malformed; the composer treats that as cold-start.
+            user_id=user_id,
         )
     except Exception as e:
         # Final belt-and-braces. Postgres pool issue is the only thing
