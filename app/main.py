@@ -27,6 +27,7 @@ from routes.admin_dashboard import router as admin_dashboard_router
 from routes.llm_routing_admin import router as llm_routing_admin_router
 from routes.admin_cost_breaker import router as admin_cost_breaker_router
 from routes.admin_discovery import router as admin_discovery_router
+from routes.admin_discovery_shadow import router as admin_discovery_shadow_router
 from routes.admin_classification import router as admin_classification_router
 from routes.discovery import router as discovery_router
 from routes.backup_health_admin import router as backup_health_admin_router
@@ -549,6 +550,7 @@ app.include_router(llm_routing_admin_router)
 app.include_router(backup_health_admin_router)
 app.include_router(admin_cost_breaker_router)
 app.include_router(admin_discovery_router)
+app.include_router(admin_discovery_shadow_router)
 app.include_router(admin_classification_router)
 app.include_router(discovery_router)
 app.include_router(influencers_router)

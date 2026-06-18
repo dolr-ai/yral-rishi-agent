@@ -83,6 +83,7 @@ async def influencer_feed(
     limit: int = Query(20, ge=1, le=50),
     with_metadata: bool = Query(False),
     session_id: str | None = Query(None),
+    debug_source: bool = Query(False),
 ):
     """Return a paginated, deduplicated, per-session-shuffled feed.
 
@@ -111,6 +112,13 @@ async def influencer_feed(
             # malformed; the composer treats that as cold-start.
             user_id=user_id,
         )
+        # Phase 21γ.P34.M7 — cutover-prep debug marker. When the
+        # client passes ?debug_source=true, echo "debug_source": "v2"
+        # at the top of the envelope so Rishi/Sarvesh can curl-confirm
+        # the Motorola is hitting v2 (vs Anshuman's chat-ai-backed
+        # recsys). Mobile contract treats the field as optional.
+        if debug_source:
+            payload["debug_source"] = "v2"
     except Exception as e:
         # Final belt-and-braces. Postgres pool issue is the only thing
         # that should ever reach here — the inner module fail-opens on
