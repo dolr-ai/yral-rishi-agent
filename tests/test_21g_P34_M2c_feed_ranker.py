@@ -120,11 +120,14 @@ def test_main_wires_feed_ranker_loop():
 
 
 def test_signals_sql_uses_only_select_no_writes():
-    """Replica safety: the signal-fetching SQL must be pure SELECT.
-    No INSERT/UPDATE/DELETE/MERGE/REFRESH on the primary path."""
+    """Replica safety: every signal-fetching SQL chunk must be pure
+    SELECT. No INSERT/UPDATE/DELETE/MERGE/REFRESH on the primary path.
+
+    2026-06-18: the original mega-CTE was split into 4 chunks to fix
+    the DiskFullError. Each chunk needs the same pure-SELECT property
+    — pin them collectively by scanning all `_SQL_*` constants."""
     src = (REPO / "app" / "services" / "feed_ranker.py").read_text()
-    # The SQL constant should only contain read keywords.
-    sql_start = src.index("_SIGNALS_SQL")
+    sql_start = src.index("_SQL_BOTS")
     sql_end = src.index("async def _fetch_signals")
     sql_block = src[sql_start:sql_end]
     for forbidden in (
@@ -143,22 +146,44 @@ def test_signals_sql_uses_only_select_no_writes():
         )
 
 
+def test_signals_sql_chunked_into_four_constants():
+    """2026-06-18 fix for DiskFullError: the mega-CTE was split into
+    4 separate queries (bots / recent_msgs / quality_latest / streaks)
+    that get JOINed in Python. Pin the chunked shape so a future
+    "let's combine these again" refactor has to consciously edit this
+    test — and re-verify against the prod DiskFullError that motivated
+    the split."""
+    src = (REPO / "app" / "services" / "feed_ranker.py").read_text()
+    for name in (
+        "_SQL_BOTS",
+        "_SQL_RECENT_MSGS",
+        "_SQL_QUALITY_LATEST",
+        "_SQL_STREAKS",
+    ):
+        assert name in src, f"missing chunked SQL constant: {name}"
+
+
 def test_signals_sql_filters_to_active_bots():
-    """The SELECT must filter on is_active='active' so deleted /
+    """The bots SELECT must filter on is_active='active' so deleted /
     inactive bots don't pollute the ranking."""
     src = (REPO / "app" / "services" / "feed_ranker.py").read_text()
     assert "i.is_active = 'active'" in src
 
 
-def test_signals_sql_joins_required_signal_sources():
-    """One JOIN per signal source. If a future PR drops a JOIN, the
-    corresponding signal will silently default to 0/0.5 and the
-    ranking degrades."""
+def test_signals_sql_references_required_signal_sources():
+    """Each of the 4 signal-source tables must appear in exactly one
+    chunk. If a future PR drops a chunk, the corresponding signal
+    silently defaults to 0/0.5 and the ranking degrades."""
     src = (REPO / "app" / "services" / "feed_ranker.py").read_text()
-    assert "influencer_trending_stats stats" in src
-    assert "recent_msgs    rm" in src or "recent_msgs rm" in src
-    assert "quality_latest ql" in src
-    assert "streaks_bot    sb" in src or "streaks_bot sb" in src
+    # bots chunk references the matview
+    assert "influencer_trending_stats" in src
+    # recent_msgs chunk reads from messages + conversations
+    assert "FROM messages m" in src
+    assert "JOIN conversations c ON c.id = m.conversation_id" in src
+    # quality_latest chunk reads from bot_quality_scores
+    assert "FROM bot_quality_scores" in src
+    # streaks chunk reads from conversations
+    assert "FROM conversations" in src
 
 
 def test_feed_global_key_matches_m2a_consumer():
@@ -378,6 +403,15 @@ def test_compute_scores_single_bot_emits_05_signals():
 
 
 class _StubPool:
+    """SQL-aware stub.
+
+    2026-06-18: feed_ranker._fetch_signals split into 4 chunked
+    queries. The stub dispatches by SQL substring + serves each
+    chunk from the same `rows` list (one fixture row per bot
+    carrying all signal fields). Quality/streaks/recent rows are
+    derived per-bot so the merge produces the same shape as the
+    original mega-CTE returned."""
+
     def __init__(self, rows, raises=False):
         self.rows = rows
         self.raises = raises
@@ -385,7 +419,41 @@ class _StubPool:
     async def fetch(self, sql, *args):
         if self.raises:
             raise Exception("simulated DB error")
-        return self.rows
+        # Empty catalog: same empty payload regardless of which chunk.
+        if not self.rows:
+            return []
+        if "FROM ai_influencers" in sql and "is_active" in sql:
+            # Bots chunk — id/age_sec/conv_count/msg_count
+            return [
+                {
+                    "id": r["id"],
+                    "age_sec": r["age_sec"],
+                    "conv_count": r["conv_count"],
+                    "msg_count": r["msg_count"],
+                }
+                for r in self.rows
+            ]
+        if "FROM messages m" in sql:
+            return [
+                {
+                    "bot_id": r["id"],
+                    "msgs_recent": r["msgs_recent"],
+                    "msgs_prior": r["msgs_prior"],
+                }
+                for r in self.rows
+            ]
+        if "FROM bot_quality_scores" in sql:
+            return [{"bot_id": r["id"], "quality": r["quality"]} for r in self.rows]
+        if "FROM conversations" in sql:
+            return [
+                {
+                    "bot_id": r["id"],
+                    "streak": r["streak"],
+                    "unique_users": r["unique_users"],
+                }
+                for r in self.rows
+            ]
+        return []
 
 
 class _StubRedis:
@@ -471,6 +539,94 @@ def test_rank_once_empty_catalog_writes_empty_list(monkeypatch):
     assert stats["ok"] is True
     assert stats["bots"] == 0
     assert json.loads(redis.written["feed:global"]) == []
+
+
+def test_fetch_signals_dispatches_four_chunked_queries():
+    """2026-06-18 DiskFullError fix: `_fetch_signals` must execute
+    the 4 chunked queries separately (bots / recent_msgs / quality /
+    streaks) instead of one mega-CTE. Pin the dispatch shape so a
+    future refactor that recombines them has to update this test
+    AND re-verify against the prod DiskFullError that motivated
+    the split."""
+    from services import feed_ranker
+
+    captured: list[str] = []
+
+    class _CapturingPool:
+        async def fetch(self, sql, *args):
+            captured.append(sql.strip().split("\n")[0])
+            return []
+
+    asyncio.run(feed_ranker._fetch_signals(_CapturingPool()))
+    # 4 separate fetch() calls, one per chunk.
+    assert len(captured) == 4
+
+
+def test_fetch_signals_merges_chunks_by_bot_id():
+    """End-to-end on the SQL-aware stub: the chunked queries return
+    independent payloads keyed by bot_id; `_fetch_signals` merges
+    them into one row per bot with all 9 signal fields. Pin the
+    output shape so the Python merge can't silently drop a signal."""
+    from services import feed_ranker
+
+    rows = [
+        _signal_row(
+            "a",
+            age_sec=3600,
+            conv_count=10,
+            msg_count=100,
+            msgs_recent=20,
+            msgs_prior=5,
+            quality=0.8,
+            streak=3,
+            unique_users=7,
+        ),
+    ]
+    pool = _StubPool(rows)
+    merged = asyncio.run(feed_ranker._fetch_signals(pool))
+    assert len(merged) == 1
+    m = merged[0]
+    assert m["id"] == "a"
+    assert m["age_sec"] == 3600
+    assert m["conv_count"] == 10
+    assert m["msg_count"] == 100
+    assert m["msgs_recent"] == 20
+    assert m["msgs_prior"] == 5
+    assert m["quality"] == 0.8
+    assert m["streak"] == 3
+    assert m["unique_users"] == 7
+
+
+def test_fetch_signals_handles_bot_with_no_messages():
+    """A brand-new bot has no rows in `messages` / `bot_quality_scores`
+    / `conversations`. The chunk queries return empty for it; the
+    Python merge must default those signals to 0 / 0.5 (matching the
+    old COALESCE) so compute_scores still ranks it."""
+    from services import feed_ranker
+
+    class _SparsePool:
+        async def fetch(self, sql, *args):
+            if "FROM ai_influencers" in sql and "is_active" in sql:
+                return [
+                    {
+                        "id": "newbot",
+                        "age_sec": 60.0,
+                        "conv_count": 0.0,
+                        "msg_count": 0.0,
+                    }
+                ]
+            # Other 3 chunks return empty — newbot has no rows there.
+            return []
+
+    merged = asyncio.run(feed_ranker._fetch_signals(_SparsePool()))
+    assert len(merged) == 1
+    m = merged[0]
+    assert m["id"] == "newbot"
+    # Quality defaults to 0.5 (mid-range, matching the old SQL COALESCE)
+    assert m["quality"] == 0.5
+    # All count-shaped signals default to 0.0
+    for k in ("msgs_recent", "msgs_prior", "streak", "unique_users"):
+        assert m[k] == 0.0, f"{k} did not default to 0.0"
 
 
 def test_rank_once_respects_max_ranked_cap(monkeypatch):
