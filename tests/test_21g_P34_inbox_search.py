@@ -126,22 +126,41 @@ def test_sql_concat_matches_brief():
     assert "description" not in concat
 
 
-def test_envelope_keys_match_brief():
-    """Per-row brief spec: conversation_id, influencer_id,
-    influencer_display_name, influencer_avatar_url,
-    influencer_subtitle, last_message_at, message_count, subtitle."""
-    src = (REPO / "app" / "services" / "inbox_search.py").read_text()
-    for k in (
-        '"conversation_id"',
-        '"influencer_id"',
-        '"influencer_display_name"',
-        '"influencer_avatar_url"',
-        '"influencer_subtitle"',
-        '"last_message_at"',
-        '"message_count"',
-        '"subtitle"',
-    ):
-        assert k in src, f"envelope key missing: {k}"
+def test_envelope_keys_symmetric_with_discovery_search():
+    """Per-row envelope mirrors `/api/v2/discovery/search` exactly so
+    mobile parses all three search-bar surfaces (discovery feed,
+    discovery search, inbox search) through one DTO. PR #1197
+    mobile review caught the original `influencer_*`-prefixed spec
+    as an asymmetry — inbox rows rendered blank because the mobile
+    parser only knew the unprefixed shape.
+
+    Invoke `_shape_result` directly so we inspect the actual returned
+    dict-key set, not the source text (the SQL alias reads are
+    legit `row.get("influencer_display_name")` calls — they're
+    row-dict keys, not wire keys)."""
+    from services.inbox_search import _shape_result
+
+    shaped = _shape_result(
+        {
+            "conversation_id": "c1",
+            "influencer_id": "bot1",
+            "influencer_display_name": "Tara",
+            "influencer_avatar_url": "https://x/t.jpg",
+            "archetype": "companion",
+            "category": "Lifestyle",
+            "last_message_at": datetime(2026, 6, 18, tzinfo=timezone.utc),
+            "message_count": 1,
+        }
+    )
+    assert set(shaped.keys()) == {
+        "conversation_id",
+        "influencer_id",
+        "display_name",
+        "avatar_url",
+        "subtitle",
+        "last_message_at",
+        "message_count",
+    }
 
 
 def test_order_by_similarity_then_recency_then_volume():
@@ -195,6 +214,9 @@ def test_build_subtitle_none_archetype_falls_back():
 
 
 def test_shape_result_full_row():
+    """SQL row uses prefixed aliases (`influencer_display_name`) as
+    asyncpg row-dict keys; wire shape exposes the unprefixed
+    discovery-search-symmetric names (`display_name`)."""
     from services.inbox_search import _shape_result
 
     row = {
@@ -210,11 +232,15 @@ def test_shape_result_full_row():
     shaped = _shape_result(row)
     assert shaped["conversation_id"] == "c1"
     assert shaped["influencer_id"] == "bot1"
-    assert shaped["influencer_display_name"] == "Tara"
-    assert shaped["influencer_subtitle"] == "companion · Lifestyle"
+    assert shaped["display_name"] == "Tara"
+    assert shaped["avatar_url"] == "https://x/t.jpg"
     assert shaped["subtitle"] == "companion · Lifestyle"
     assert shaped["last_message_at"].startswith("2026-06-18")
     assert shaped["message_count"] == 42
+    # Prefixed keys MUST NOT appear in the wire shape.
+    assert "influencer_display_name" not in shaped
+    assert "influencer_avatar_url" not in shaped
+    assert "influencer_subtitle" not in shaped
 
 
 def test_shape_result_handles_missing_aggregates():
@@ -349,9 +375,14 @@ def test_search_happy_path_shapes_envelope():
     assert out["count"] == 2
     first = out["results"][0]
     assert first["conversation_id"] == "c1"
+    assert first["display_name"] == "Tara"
+    assert first["avatar_url"] == "https://x/t.jpg"
     assert first["subtitle"] == "companion · Lifestyle"
-    assert first["influencer_subtitle"] == "companion · Lifestyle"
     assert first["message_count"] == 42
+    # Prefixed keys must not leak into the wire shape (PR #1197 fix).
+    assert "influencer_subtitle" not in first
+    assert "influencer_display_name" not in first
+    assert "influencer_avatar_url" not in first
 
 
 def test_search_no_results_returns_empty_envelope():
