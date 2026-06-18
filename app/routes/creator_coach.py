@@ -8,6 +8,7 @@ conversation tied to the bot).
 import logging
 from datetime import datetime
 
+import sentry_sdk
 from fastapi import APIRouter, HTTPException, Request
 
 from auth import get_current_user
@@ -181,6 +182,7 @@ async def create_coach_session(bot_id: str, request: Request):
     + 3 short tappable suggestion chips. Persisted as the first coach
     message with `suggestions` populated.
     """
+    sentry_sdk.set_tag("bot_id", bot_id)
     user_id = get_current_user(request)
     pool = await get_pool()
     inf = await _load_owned_bot(pool, user_id, bot_id)
@@ -268,6 +270,7 @@ async def create_coach_session(bot_id: str, request: Request):
 async def send_coach_message(coach_conversation_id: str, body: dict, request: Request):
     """Creator sends a message; coach replies with text and optionally a
     structured proposal (proposed_changes + reasoning)."""
+    sentry_sdk.set_tag("coach_conversation_id", coach_conversation_id)
     user_id = get_current_user(request)
     pool = await get_pool()
     session = await _load_owned_session(pool, user_id, coach_conversation_id)
@@ -279,6 +282,7 @@ async def send_coach_message(coach_conversation_id: str, body: dict, request: Re
     inf = await influencer_repo.get_by_id(pool, session["bot_id"])
     if not inf:
         raise HTTPException(status_code=410, detail="Underlying bot was deleted")
+    sentry_sdk.set_tag("bot_id", session["bot_id"])
 
     # Save the creator's message first so the coach can see it in history
     creator_msg = await coach_repo.add_message(
@@ -433,9 +437,11 @@ async def apply_coach_proposal(
         the bot-side change (system_instructions or override merge).
         After return, the session has exactly 1 'applied' + 0 'pending'.
     """
+    sentry_sdk.set_tag("coach_conversation_id", coach_conversation_id)
     user_id = get_current_user(request)
     pool = await get_pool()
     session = await _load_owned_session(pool, user_id, coach_conversation_id)
+    sentry_sdk.set_tag("bot_id", session["bot_id"])
 
     proposal_id = (body or {}).get("proposal_id")
     if not isinstance(proposal_id, str) or not proposal_id.strip():

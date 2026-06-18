@@ -3,6 +3,7 @@ import json
 import logging
 from datetime import datetime
 
+import sentry_sdk
 from fastapi import APIRouter, HTTPException, Request, Query
 
 from database import get_pool
@@ -512,6 +513,10 @@ async def send_message(
     body: dict,
     request: Request,
 ):
+    # P13 — Sentry context tags. auth.py sets user.id; without
+    # bot_id + conversation_id, filtering "all the errors for
+    # Anastasia today" requires grepping stack traces.
+    sentry_sdk.set_tag("conversation_id", conversation_id)
     user_id = get_current_user(request)
     pool = await get_pool()
 
@@ -524,6 +529,7 @@ async def send_message(
     influencer_id = conv.get("influencer_id")
     if not influencer_id:
         raise HTTPException(status_code=400, detail="Not an AI chat conversation")
+    sentry_sdk.set_tag("bot_id", influencer_id)
 
     inf = await influencer_repo.get_by_id(pool, influencer_id)
     if not inf:
@@ -853,6 +859,7 @@ async def send_message_stream(
     if not cfg.ENABLE_SSE_STREAMING:
         raise HTTPException(status_code=404, detail="SSE streaming disabled")
 
+    sentry_sdk.set_tag("conversation_id", conversation_id)
     user_id = get_current_user(request)
     pool = await get_pool()
 
@@ -867,6 +874,7 @@ async def send_message_stream(
         raise HTTPException(
             status_code=400, detail="Streaming requires AI conversation"
         )
+    sentry_sdk.set_tag("bot_id", influencer_id)
     inf = await influencer_repo.get_by_id(pool, influencer_id)
     if not inf:
         raise HTTPException(status_code=404, detail="Influencer not found")
@@ -1102,6 +1110,7 @@ async def generate_conversation_image(
 ):
     import config
 
+    sentry_sdk.set_tag("conversation_id", conversation_id)
     user_id = get_current_user(request)
     pool = await get_pool()
 
@@ -1119,6 +1128,7 @@ async def generate_conversation_image(
     influencer_id = conv.get("influencer_id")
     if not influencer_id:
         raise HTTPException(status_code=404, detail="Influencer not found")
+    sentry_sdk.set_tag("bot_id", influencer_id)
     inf = await influencer_repo.get_by_id(pool, influencer_id)
     if not inf:
         raise HTTPException(status_code=404, detail="Influencer not found")
