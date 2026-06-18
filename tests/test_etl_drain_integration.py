@@ -63,7 +63,10 @@ class FakePool:
 
     async def fetchrow(self, query, *args):
         q = query.strip()
-        if "FROM etl_integrity_results" in q and "ORDER BY verified_at DESC LIMIT 1" in q:
+        if (
+            "FROM etl_integrity_results" in q
+            and "ORDER BY verified_at DESC LIMIT 1" in q
+        ):
             # Latest hourly payload
             if not self._integrity_rows:
                 return None
@@ -129,9 +132,7 @@ class FakePool:
     async def fetch(self, query, *args):
         q = query.strip()
         if "FROM ai_influencers" in q and "UNION ALL" in q:
-            return [
-                FakeRow({"name": k, "n": v}) for k, v in self._v2_counts.items()
-            ]
+            return [FakeRow({"name": k, "n": v}) for k, v in self._v2_counts.items()]
         if "FROM etl_skipped_rows" in q and "GROUP BY table_name, reason" in q:
             return [
                 FakeRow({"table_name": t, "reason": r, "n": n})
@@ -243,7 +244,13 @@ def test_drain_calls_importer_until_steady_state(fake_etl_services, monkeypatch)
             "hourly",
             _recent_utc(),
             True,
-            {"chat_ai_counts": {"ai_influencers": 50, "conversations": 200, "messages": 1000}},
+            {
+                "chat_ai_counts": {
+                    "ai_influencers": 50,
+                    "conversations": 200,
+                    "messages": 1000,
+                }
+            },
         )
     )
 
@@ -285,15 +292,17 @@ def test_drain_hits_deadline_when_run_once_never_settles(monkeypatch):
             "hourly",
             _recent_utc(),
             True,
-            {"chat_ai_counts": {"ai_influencers": 50, "conversations": 200, "messages": 1000}},
+            {
+                "chat_ai_counts": {
+                    "ai_influencers": 50,
+                    "conversations": 200,
+                    "messages": 1000,
+                }
+            },
         )
     )
-    pool._integrity_rows.append(
-        ("sample", _recent_utc(), True, {})
-    )
-    pool._integrity_rows.append(
-        ("sentinel", _recent_utc(), True, {})
-    )
+    pool._integrity_rows.append(("sample", _recent_utc(), True, {}))
+    pool._integrity_rows.append(("sentinel", _recent_utc(), True, {}))
 
     # Very small deadline to force the timeout path.
     result = asyncio.run(drain(pool, deadline_sec=0.01))
@@ -315,7 +324,13 @@ def test_drain_report_includes_required_top_level_fields():
             "hourly",
             _recent_utc(),
             True,
-            {"chat_ai_counts": {"ai_influencers": 50, "conversations": 200, "messages": 1000}},
+            {
+                "chat_ai_counts": {
+                    "ai_influencers": 50,
+                    "conversations": 200,
+                    "messages": 1000,
+                }
+            },
         )
     )
 
@@ -370,7 +385,13 @@ def test_drain_report_started_at_is_wall_clock_not_monotonic(
             "hourly",
             _recent_utc(),
             True,
-            {"chat_ai_counts": {"ai_influencers": 50, "conversations": 200, "messages": 1000}},
+            {
+                "chat_ai_counts": {
+                    "ai_influencers": 50,
+                    "conversations": 200,
+                    "messages": 1000,
+                }
+            },
         )
     )
 
@@ -455,3 +476,46 @@ def test_chat_ai_counts_helper_returns_tz_aware_on_verified_at_fallback():
         "verified_at fallback path — naive returns break downstream lag math"
     )
     assert ts.tzinfo == timezone.utc
+
+
+def test_chat_ai_counts_helper_reads_chat_ai_key_from_per_table_dict():
+    """P12 (2026-06-18) — services/etl_integrity.py:_verify_hourly
+    writes per-table drifts as `{"chat_ai": expected, "v2": actual,
+    "diff": diff}`. The reader was missing the `chat_ai` key — only
+    checked legacy `chat_ai_count` + super-legacy `count`. Symptom in
+    prod: /admin/etl/reconciliation returned INVESTIGATE forever
+    because every per-table value resolved to None despite the writer
+    populating real chat-ai counts.
+
+    Pin all three key shapes (current writer + two legacy fallbacks)
+    so a future writer migration can't silently regress."""
+    from services.etl_drain import _chat_ai_counts_from_hourly_payload
+
+    class _Pool:
+        async def fetchrow(self, query, *args):
+            return FakeRow(
+                {
+                    "details": {
+                        "per_table": {
+                            # current writer shape (etl_integrity._verify_hourly)
+                            "messages": {"chat_ai": 1000, "v2": 980, "diff": -20},
+                            # legacy chat_ai_count shape (kept for backward compat)
+                            "conversations": {"chat_ai_count": 200},
+                            # super-legacy count shape
+                            "ai_influencers": {"count": 50},
+                            # bare int (also supported)
+                            "memories": 75,
+                        },
+                    },
+                    "snapshot_iso": "2026-06-18T12:00:00+00:00",
+                    "verified_at": datetime(2026, 6, 18, 12, 0, 0),
+                }
+            )
+
+    counts, _ = asyncio.run(_chat_ai_counts_from_hourly_payload(_Pool()))
+    assert counts == {
+        "messages": 1000,  # current `chat_ai` key — the P12 fix
+        "conversations": 200,  # legacy `chat_ai_count` fallback
+        "ai_influencers": 50,  # super-legacy `count` fallback
+        "memories": 75,  # bare int
+    }
