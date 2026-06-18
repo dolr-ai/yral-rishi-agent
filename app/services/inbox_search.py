@@ -118,21 +118,24 @@ def _build_subtitle(archetype: str | None, category: str | None) -> str:
 
 
 def _shape_result(row: dict) -> dict:
-    """Per-row inbox-search envelope per brief — conversation_id +
-    the bot identity fields the inbox UI renders, plus the
-    `subtitle`/`influencer_subtitle` strings. The two subtitle
-    fields are the same value (brief lists both; mobile may render
-    differently across the two contexts)."""
+    """Per-row inbox-search envelope.
+
+    Field names mirror `/api/v2/discovery/search` exactly
+    (`display_name`, `avatar_url`, `subtitle`) so mobile parses the
+    three search-bar surfaces (discovery feed, discovery search,
+    inbox search) through one DTO. Symmetric shape across all v2
+    endpoints — see PR #1197 mobile-review correction; the original
+    `influencer_*`-prefixed spec was an asymmetry that broke inbox
+    row rendering."""
     subtitle = _build_subtitle(row.get("archetype"), row.get("category"))
     return {
         "conversation_id": row["conversation_id"],
         "influencer_id": row["influencer_id"],
-        "influencer_display_name": row.get("influencer_display_name") or "",
-        "influencer_avatar_url": row.get("influencer_avatar_url") or "",
-        "influencer_subtitle": subtitle,
+        "display_name": row.get("influencer_display_name") or "",
+        "avatar_url": row.get("influencer_avatar_url") or "",
+        "subtitle": subtitle,
         "last_message_at": _isoformat(row.get("last_message_at")),
         "message_count": int(row.get("message_count") or 0),
-        "subtitle": subtitle,
     }
 
 
