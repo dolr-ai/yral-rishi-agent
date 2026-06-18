@@ -1,4 +1,4 @@
-"""Phase 21γ.P34.M2a — Discovery Feed: endpoint shell.
+"""Phase 21γ.P34.M2a + M2b — Discovery Feed: endpoint shell + composer.
 
 Reads precomputed `feed:global` from Redis when present; falls back to
 a simple `SELECT` from `ai_influencers` when the blob doesn't exist
@@ -19,6 +19,13 @@ Per design doc §6 (Composer):
   4. **Per-session shuffle** — deterministic (seeded by session_id)
      so a single user gets a stable order across pagination calls
      within the same session.
+  5. **M2b composer** — reorders the shuffled tail for archetype
+     diversity, ≥3-skilled-bots-on-page-1 guarantee, and cold-start
+     gender guardrail (soft; only fires for users below the
+     5-conversation / 1-deep-chat threshold per design §4 + §5).
+     Composer fails open to the M2a shuffled order if metadata can't
+     load (pre-M1-classification bots still have archetype='unknown'
+     so the composer naturally degrades to a no-op there).
 
 ## Latency budget — p95 < 100ms
 
@@ -48,6 +55,7 @@ import hashlib
 import json
 import logging
 import os
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -198,6 +206,217 @@ def _shuffle_for_session(bot_ids: list[str], session_id: str) -> list[str]:
     return sorted(bot_ids, key=_key)
 
 
+# ─── M2b composer ───────────────────────────────────────────────────────
+
+
+# Cold-start threshold per design §4: a user is "warm" (eligible for
+# personalization, no gender guardrail) once they cross 5 conversations
+# OR 1 in-depth chat (≥10 user messages in one conversation). M2b
+# implements the conversation-count side; the in-depth-chat refinement
+# stays for a follow-up (it requires a more expensive subquery, and
+# convs ≥ 5 already covers the bulk of warm users).
+COLD_START_CONV_THRESHOLD = 5
+
+# Composer applies a soft gender guardrail to the FIRST N slots of a
+# cold-start user's feed: no single gender may exceed `GENDER_MAX_SHARE`
+# of the prefix. 0.6 = at most 60% any one gender in the first 10 cards
+# (~6/10 — leaves room for 2 of the dominant gender to still appear
+# while breaking the "all-female" or "all-male" first-screen impression
+# that triggered the design call).
+GENDER_GUARDRAIL_PREFIX_LEN = 10
+GENDER_MAX_SHARE = 0.6
+
+# Skill guarantee per design §5: ≥3 skilled influencers on page 1
+# (cold-start exploration prefers introducing the breadth of YRAL's
+# skill bots — nutrition, coach, etc. — early). Applied across the
+# top N slots regardless of personalization state.
+SKILL_GUARANTEE_TOP_N = 3
+
+
+async def _is_cold_start_user(pool, user_id: str | None) -> bool:
+    """Return True if the user should get cold-start composition
+    (gender guardrail + breadth-first diversity). No JWT = cold-start
+    by definition. JWT-bearing users are looked up by conversation
+    count; any DB failure fails open to cold-start (the safer default
+    for the gender guardrail — we'd rather over-apply than under-apply
+    on a fresh user)."""
+    if not user_id:
+        return True
+    try:
+        n = await pool.fetchval(
+            "SELECT COUNT(*) FROM conversations WHERE user_id = $1",
+            user_id,
+        )
+        return (n or 0) < COLD_START_CONV_THRESHOLD
+    except Exception as e:
+        logger.warning(
+            "discovery_feed: cold-start lookup failed (fail-open to cold-start): %s",
+            e,
+        )
+        return True
+
+
+async def _read_composer_metadata(pool, bot_ids: list[str]) -> dict[str, dict]:
+    """Bulk-read the four metadata columns the composer cares about.
+    Cheap on the ANY($1) path — narrow columns, single SELECT. Returns
+    a dict keyed by bot_id; missing rows mean the bot was deleted /
+    inactive (caller treats as if metadata was empty)."""
+    if not bot_ids:
+        return {}
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT id, archetype, gender, category, skill_slug
+            FROM ai_influencers
+            WHERE id = ANY($1::text[])
+              AND is_active = 'active'
+            """,
+            bot_ids,
+        )
+        return {r["id"]: dict(r) for r in rows}
+    except Exception as e:
+        # Metadata SELECT failure ⇒ composer fails open (M2a shuffled
+        # order). The route still serves a feed; just no diversity pass.
+        logger.warning(
+            "discovery_feed: composer metadata read failed (fail-open): %s", e
+        )
+        return {}
+
+
+def _apply_skill_guarantee(
+    ids: list[str], meta: dict[str, dict], top_n: int
+) -> list[str]:
+    """Reorder so the first `top_n` slots contain as many skilled bots
+    as possible (up to top_n). Preserves relative order within the
+    skilled + non-skilled groups so the upstream shuffle order is
+    respected as a tiebreaker."""
+    if not ids or top_n <= 0:
+        return ids
+    skilled = [b for b in ids if (meta.get(b) or {}).get("skill_slug")]
+    if len(skilled) == 0:
+        return ids
+    unskilled = [b for b in ids if not (meta.get(b) or {}).get("skill_slug")]
+    take = min(top_n, len(skilled))
+    prefix = skilled[:take]
+    rest = skilled[take:] + unskilled
+    return prefix + rest
+
+
+def _interleave_by_archetype(ids: list[str], meta: dict[str, dict]) -> list[str]:
+    """Round-robin across archetype groups so the page doesn't end
+    up "5 companions, then 5 advisors." Within each archetype the
+    upstream order is preserved as a tiebreaker."""
+    if not ids:
+        return ids
+    by_arch: dict[str, list[str]] = defaultdict(list)
+    for b in ids:
+        arch = (meta.get(b) or {}).get("archetype") or "unknown"
+        by_arch[arch].append(b)
+    # If everything maps to the same bucket (e.g. pre-M1-backfill catalog
+    # where everyone is 'unknown'), the interleave is a no-op and we
+    # return the input order untouched.
+    if len(by_arch) <= 1:
+        return ids
+    interleaved: list[str] = []
+    # Cycle through buckets in a stable order so the diversity pattern
+    # is reproducible — sorted() over archetype names.
+    bucket_order = sorted(by_arch.keys())
+    while any(by_arch[a] for a in bucket_order):
+        for arch in bucket_order:
+            if by_arch[arch]:
+                interleaved.append(by_arch[arch].pop(0))
+    return interleaved
+
+
+def _apply_gender_guardrail(
+    ids: list[str],
+    meta: dict[str, dict],
+    *,
+    prefix_len: int,
+    max_share: float,
+) -> list[str]:
+    """Soft constraint: in the first `prefix_len` slots, no single
+    gender may exceed `max_share` of the slots. When violated, swap a
+    dominant-gender bot from the prefix with a non-dominant bot from
+    the tail until the constraint is satisfied or no swap candidate
+    remains. 'unknown' is never counted as dominant (we don't want to
+    swap pre-classification bots out of the prefix)."""
+    if len(ids) <= prefix_len:
+        return ids
+    prefix = list(ids[:prefix_len])
+    tail = list(ids[prefix_len:])
+    # Cap iterations so a degenerate catalog (e.g. ALL one gender)
+    # can't infinite-loop.
+    for _ in range(prefix_len):
+        counts = Counter((meta.get(b) or {}).get("gender") or "unknown" for b in prefix)
+        # Drop 'unknown' from dominance comparison.
+        scoreable = {g: c for g, c in counts.items() if g != "unknown"}
+        if not scoreable:
+            break
+        dominant_gender, dominant_count = max(scoreable.items(), key=lambda kv: kv[1])
+        if dominant_count / prefix_len <= max_share:
+            break
+        # Find a non-dominant, non-unknown bot in the tail to swap in.
+        swap_in = None
+        for i, b in enumerate(tail):
+            g = (meta.get(b) or {}).get("gender")
+            if g and g not in (dominant_gender, "unknown"):
+                swap_in = i
+                break
+        if swap_in is None:
+            break  # no candidate; give up gracefully
+        # Find a dominant-gender bot in the prefix (prefer later
+        # positions so the very-top is least disrupted).
+        swap_out = None
+        for j in range(len(prefix) - 1, -1, -1):
+            if (meta.get(prefix[j]) or {}).get("gender") == dominant_gender:
+                swap_out = j
+                break
+        if swap_out is None:
+            break
+        prefix[swap_out], tail[swap_in] = tail[swap_in], prefix[swap_out]
+    return prefix + tail
+
+
+def compose_diverse_order(
+    ids: list[str],
+    meta: dict[str, dict],
+    *,
+    is_cold_start: bool,
+) -> list[str]:
+    """The M2b composer entry point. Reorders `ids` for:
+      1. ≥3-skilled-bots prefix (always applied)
+      2. Round-robin archetype interleave (always applied)
+      3. Soft cold-start gender guardrail (cold-start users only)
+
+    `meta` is the dict returned by `_read_composer_metadata`. Bots with
+    missing metadata stay in their input position implicitly because
+    `.get(...) or {}` makes them indistinguishable from rows where
+    every classifier output is 'unknown'.
+
+    DORMANT-FIRST: if `meta` is empty (read failure or pre-M1 catalog)
+    the function returns `ids` unchanged — the M2a shuffle remains
+    in effect."""
+    if not ids or not meta:
+        return ids
+    with_skill = _apply_skill_guarantee(ids, meta, SKILL_GUARANTEE_TOP_N)
+    # Skill prefix stays fixed; interleave the rest by archetype so
+    # the "first 3 skilled" promise isn't broken by the diversity pass.
+    skill_prefix_len = min(SKILL_GUARANTEE_TOP_N, len(with_skill))
+    head = with_skill[:skill_prefix_len]
+    tail = with_skill[skill_prefix_len:]
+    interleaved_tail = _interleave_by_archetype(tail, meta)
+    combined = head + interleaved_tail
+    if is_cold_start:
+        combined = _apply_gender_guardrail(
+            combined,
+            meta,
+            prefix_len=GENDER_GUARDRAIL_PREFIX_LEN,
+            max_share=GENDER_MAX_SHARE,
+        )
+    return combined
+
+
 # ─── trending_overrides pin overlay (M0) ────────────────────────────────
 
 
@@ -305,11 +524,18 @@ def _isoformat(v) -> str | None:
     return str(v)
 
 
-def _shape_bot(row: dict, *, with_metadata: bool, rank_source: str) -> dict:
+def _shape_bot(
+    row: dict,
+    *,
+    with_metadata: bool,
+    rank_source: str,
+    composer_state: str = "none",
+) -> dict:
     """Per-bot envelope. Byte-compatible with Anshuman's response per
     design doc §8 (id, name, display_name, avatar_url, description,
     category, created_at). When `with_metadata=True`, surface the M1
-    archetype + gender + the rank_source tag for debugging."""
+    archetype + gender + the rank_source tag + the M2b composer_state
+    for debugging."""
     base = {
         "id": row["id"],
         "name": row.get("name") or "",
@@ -328,6 +554,11 @@ def _shape_bot(row: dict, *, with_metadata: bool, rank_source: str) -> dict:
         base["momentum"] = None
         base["live"] = None
         base["rank_source"] = rank_source
+        # composer_state: "cold_start" | "warm" | "none". None when the
+        # composer no-op'd (empty metadata, single-archetype catalog).
+        # Lets Rishi confirm the cold-start path fired by curling with
+        # / without a JWT.
+        base["composer_state"] = composer_state
     return base
 
 
@@ -341,9 +572,15 @@ async def build_feed_page(
     limit: int,
     with_metadata: bool,
     session_id: str,
+    user_id: str | None = None,
 ) -> dict:
     """Single entry point used by the route. Returns the Anshuman-shaped
-    FeedResponse dict. Latency bound: see module docstring (p95 < 100ms)."""
+    FeedResponse dict. Latency bound: see module docstring (p95 < 100ms).
+
+    `user_id` (when present) drives the M2b cold-start gating — users
+    below the 5-conversation threshold get the gender guardrail applied
+    to their first-screen composition; warmer users skip it. None ⇒
+    cold-start (the safe default)."""
     # 1. Base ranked list — Redis-first, fallback to SELECT.
     rank_source = "feed_global"
     ranked = await _read_feed_global()
@@ -373,7 +610,26 @@ async def build_feed_page(
     pinned_head = [b for b in after_dedup if b in set(pinned_ids)]
     unpinned_tail = [b for b in after_dedup if b not in set(pinned_ids)]
     shuffled_tail = _shuffle_for_session(unpinned_tail, session_id)
-    composed = pinned_head + shuffled_tail
+
+    # 4b. M2b composer — reorder the shuffled tail for diversity + skill
+    #     guarantee + cold-start gender guardrail. Pins stay above the
+    #     composer's reach (operator intent wins over algorithmic
+    #     diversity). The composer needs metadata; we bulk-read it for
+    #     the WHOLE tail before pagination so the diversity pass spans
+    #     the full slate, not just the visible page.
+    is_cold_start = await _is_cold_start_user(pool, user_id)
+    composer_meta = await _read_composer_metadata(pool, shuffled_tail)
+    composed_tail = compose_diverse_order(
+        shuffled_tail, composer_meta, is_cold_start=is_cold_start
+    )
+    composed = pinned_head + composed_tail
+    # composer_state surfaces in `with_metadata=true` responses so
+    # Rishi can confirm the cold-start path fired by curling with /
+    # without a JWT. "none" means metadata empty ⇒ composer was a no-op.
+    if not composer_meta:
+        composer_state = "none"
+    else:
+        composer_state = "cold_start" if is_cold_start else "warm"
 
     # 5. Pagination — slice + compute total_count + has_more.
     total_count = len(composed)
@@ -382,7 +638,12 @@ async def build_feed_page(
     # 6. Hydrate from DB (single SELECT).
     bot_rows = await _hydrate_bot_rows(pool, page_ids)
     influencers = [
-        _shape_bot(r, with_metadata=with_metadata, rank_source=rank_source)
+        _shape_bot(
+            r,
+            with_metadata=with_metadata,
+            rank_source=rank_source,
+            composer_state=composer_state,
+        )
         for r in bot_rows
     ]
 
