@@ -3,6 +3,7 @@ import json
 import logging
 from datetime import datetime
 
+import asyncpg
 import sentry_sdk
 from fastapi import APIRouter, HTTPException, Request, Query
 
@@ -561,19 +562,28 @@ async def send_message(
         else:
             content = "[Audio message - transcription unavailable]"
 
-    # Save user message
-    user_msg = await message_repo.create(
-        pool,
-        conversation_id=conversation_id,
-        role="user",
-        content=content,
-        message_type=message_type,
-        media_urls=media_urls,
-        audio_url=audio_url,
-        audio_duration_seconds=body.get("audio_duration_seconds"),
-        client_message_id=client_message_id,
-        sender_id=user_id,
-    )
+    # Save user message. FK guard catches the race where the
+    # conversation was deleted (likely by the same user on a different
+    # device) between the `_can_access_conversation` check above and
+    # this INSERT. Without the guard the user gets a 500 with no clue
+    # what went wrong; with it they get 410 Gone which mobile already
+    # handles cleanly on the other conversation endpoints.
+    # Sentry: YRAL-RISHI-AGENT-4H + 22 (2026-06-18 triage).
+    try:
+        user_msg = await message_repo.create(
+            pool,
+            conversation_id=conversation_id,
+            role="user",
+            content=content,
+            message_type=message_type,
+            media_urls=media_urls,
+            audio_url=audio_url,
+            audio_duration_seconds=body.get("audio_duration_seconds"),
+            client_message_id=client_message_id,
+            sender_id=user_id,
+        )
+    except asyncpg.ForeignKeyViolationError:
+        raise HTTPException(status_code=410, detail="Conversation deleted")
 
     # Chat-as-Human early exit: if creator has taken over, skip the LLM entirely.
     # The takeover state was already fetched in the conversation lookup above (no extra DB hit).
@@ -883,15 +893,23 @@ async def send_message_stream(
     message_type = body.get("message_type", "text")
     media_urls = body.get("media_urls")
 
-    user_msg = await message_repo.create(
-        pool,
-        conversation_id=conversation_id,
-        role="user",
-        content=content,
-        message_type=message_type,
-        media_urls=media_urls,
-        sender_id=user_id,
-    )
+    # FK guard — same race as the non-stream path (conversation deleted
+    # between the `_can_access_conversation` check + this INSERT).
+    # Raise 410 BEFORE the StreamingResponse is constructed so mobile
+    # sees a clean HTTP-status error rather than an SSE error event
+    # mid-stream. Sentry: YRAL-RISHI-AGENT-4H + 22 (2026-06-18 triage).
+    try:
+        user_msg = await message_repo.create(
+            pool,
+            conversation_id=conversation_id,
+            role="user",
+            content=content,
+            message_type=message_type,
+            media_urls=media_urls,
+            sender_id=user_id,
+        )
+    except asyncpg.ForeignKeyViolationError:
+        raise HTTPException(status_code=410, detail="Conversation deleted")
 
     # Content safety pre-check — if blocked, stream the override as a single
     # token event then done. Same shape mobile expects.
@@ -1024,15 +1042,33 @@ async def send_message_stream(
                 )
                 return
 
-            assistant_msg = await message_repo.create(
-                pool,
-                conversation_id=conversation_id,
-                role="assistant",
-                content=full_text,
-                message_type="text",
-                token_count=llm_result_obj.output_tokens,
-                sender_id=influencer_id,
-            )
+            # FK guard mid-stream: the conversation may have been
+            # deleted between the user_msg INSERT above and this
+            # assistant_msg INSERT. Pre-stream guards catch the
+            # common case; this catches the narrow stream-window race.
+            # Yield a structured error event (mobile already handles
+            # the {code, message, retryable} SSE shape) instead of a
+            # 500 mid-stream. Sentry: YRAL-RISHI-AGENT-4H + 22.
+            try:
+                assistant_msg = await message_repo.create(
+                    pool,
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=full_text,
+                    message_type="text",
+                    token_count=llm_result_obj.output_tokens,
+                    sender_id=influencer_id,
+                )
+            except asyncpg.ForeignKeyViolationError:
+                yield _sse_event(
+                    "error",
+                    {
+                        "code": "CONVERSATION_DELETED",
+                        "message": "This conversation was deleted.",
+                        "retryable": False,
+                    },
+                )
+                return
 
             # Background side-effects mirror the non-streaming path
             asyncio.create_task(
