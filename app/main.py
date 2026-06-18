@@ -131,6 +131,13 @@ async def lifespan(app: FastAPI):
 
     classification_task = asyncio.create_task(classification_loop())
 
+    # Phase 21γ.P34.M2c — Stage A scoring + feed:global Redis blob.
+    # 15-min cadence; consumed by M2a's discovery endpoint. Gated by
+    # kill_switch "feed_ranker" → ENABLE_FEED_RANKER_LOOP (defaults ON).
+    from services.feed_ranker import feed_ranker_loop
+
+    feed_ranker_task = asyncio.create_task(feed_ranker_loop())
+
     # Hydrate rate-limit config from DB into Redis so the middleware
     # reads the operator-tuned values, not just the defaults. Idempotent.
     try:
@@ -154,6 +161,7 @@ async def lifespan(app: FastAPI):
     video_ideas_task.cancel()
     cost_alerts_task.cancel()
     classification_task.cancel()
+    feed_ranker_task.cancel()
     llm_routing_pubsub_task.cancel()
     try:
         await trending_refresher_task
@@ -205,6 +213,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await classification_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await feed_ranker_task
     except asyncio.CancelledError:
         pass
     try:
