@@ -401,7 +401,14 @@ async def _chat_ai_counts_from_hourly_payload(
     out: dict[str, int] = {}
     for tbl, val in per_table.items():
         if isinstance(val, dict):
-            ca = val.get("chat_ai_count") or val.get("count")
+            # P12 fix (2026-06-18): the hourly verifier writes per-table
+            # drifts as `{"chat_ai": int(expected), "v2": int(actual),
+            # "diff": diff}` (see services/etl_integrity.py:_verify_hourly).
+            # Reader was missing the `chat_ai` key — only checked the
+            # legacy `chat_ai_count` + super-legacy `count`. Symptom:
+            # /admin/etl/reconciliation returned INVESTIGATE forever
+            # because every per-table value resolved to None.
+            ca = val.get("chat_ai") or val.get("chat_ai_count") or val.get("count")
             if isinstance(ca, (int, float)):
                 out[tbl] = int(ca)
         elif isinstance(val, (int, float)):
