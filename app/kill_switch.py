@@ -65,6 +65,11 @@ _PER_LOOP_KEYS = {
     # operator opts the backfill sweep in deliberately (avoids
     # surprise burn-through on first deploy).
     "influencer_classification": "ENABLE_INFLUENCER_CLASSIFICATION_LOOP",
+    # Phase 21γ.P34.M2c — Stage A scoring + feed:global Redis blob.
+    # Pure SELECT background job at 15-min cadence; defaults ON.
+    # Disabling the loop drops the M2a endpoint back to its
+    # fallback_select path (no mobile-visible failure).
+    "feed_ranker": "ENABLE_FEED_RANKER_LOOP",
 }
 
 
