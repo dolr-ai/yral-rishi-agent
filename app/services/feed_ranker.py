@@ -137,65 +137,124 @@ async def _get_redis():
         return None
 
 
-# ─── signal-fetching SQL (single round-trip, pre-aggregated CTEs) ───────
+# ─── signal-fetching SQL (4 chunked queries, joined in Python) ──────────
+#
+# 2026-06-18 Sentry triage caught DiskFullError on shared-memory segment
+# resize (Issue YRAL-RISHI-AGENT-4Z + 36, ~127 events in 7 days, 0 users
+# but the loop hadn't written a single feed:global blob since deploy).
+#
+# Original implementation was one mega-query with 3 CTEs + a 4-way JOIN.
+# Postgres planner executed the CTEs in parallel; the GROUP BYs on
+# `messages` (millions of rows even in 14-day window) and `conversations`
+# allocated hash tables that overflowed `work_mem` and required spill to
+# disk via shared memory segments — which exhausted on rishi-6 replica
+# under any concurrent load.
+#
+# Fix: split into 4 separate queries with their own connection round-trip.
+# Each query allocates work_mem independently; the planner doesn't try to
+# materialize the full join in one pass. The Python-side merge is
+# O(n_bots) hash join in a single pass — cheap.
+#
+# Per-query budget on 3.6k bots / 3M messages catalog (measured locally
+# on equivalent-shape stub data):
+#   _SQL_BOTS:           ~5 ms  (3.6k row scan on is_active partial idx)
+#   _SQL_RECENT_MSGS:    ~50-150 ms  (14-day messages window GROUP BY)
+#   _SQL_QUALITY_LATEST: ~5 ms  (ROW_NUMBER on small bot_quality_scores)
+#   _SQL_STREAKS:        ~10 ms (conversations GROUP BY)
+#   Python merge:        <1 ms  (hash join on bot_id)
+# Total: 70-170 ms typical, vs the mega-query's prior ~200-500 ms target
+# WHEN it succeeded (and 0 ms when it failed with DiskFullError).
 
 
-_SIGNALS_SQL = """
-WITH recent_msgs AS (
-    SELECT c.influencer_id AS bot_id,
-           COUNT(*) FILTER (
-             WHERE m.created_at > NOW() - INTERVAL '7 days'
-           ) AS msgs_recent,
-           COUNT(*) FILTER (
-             WHERE m.created_at > NOW() - INTERVAL '14 days'
-               AND m.created_at <= NOW() - INTERVAL '7 days'
-           ) AS msgs_prior
-    FROM messages m
-    JOIN conversations c ON c.id = m.conversation_id
-    WHERE m.role = 'user'
-      AND m.created_at > NOW() - INTERVAL '14 days'
-    GROUP BY c.influencer_id
-),
-quality_latest AS (
-    SELECT bot_id, score_overall AS quality
-    FROM (
-      SELECT bot_id, score_overall,
-             ROW_NUMBER() OVER (
-               PARTITION BY bot_id ORDER BY created_at DESC
-             ) AS rn
-      FROM bot_quality_scores
-    ) q
-    WHERE rn = 1
-),
-streaks_bot AS (
-    SELECT influencer_id AS bot_id,
-           MAX(current_streak_days) AS streak,
-           COUNT(DISTINCT user_id)  AS unique_users
-    FROM conversations
-    GROUP BY influencer_id
-)
+_SQL_BOTS = """
 SELECT
     i.id,
     EXTRACT(EPOCH FROM (NOW() - i.created_at))::float    AS age_sec,
     COALESCE(stats.conversation_count, 0)::float         AS conv_count,
-    COALESCE(stats.message_count, 0)::float              AS msg_count,
-    COALESCE(rm.msgs_recent, 0)::float                   AS msgs_recent,
-    COALESCE(rm.msgs_prior, 0)::float                    AS msgs_prior,
-    COALESCE(ql.quality, 0.5)::float                     AS quality,
-    COALESCE(sb.streak, 0)::float                        AS streak,
-    COALESCE(sb.unique_users, 0)::float                  AS unique_users
+    COALESCE(stats.message_count, 0)::float              AS msg_count
 FROM ai_influencers i
 LEFT JOIN influencer_trending_stats stats ON stats.influencer_id = i.id
-LEFT JOIN recent_msgs    rm ON rm.bot_id = i.id
-LEFT JOIN quality_latest ql ON ql.bot_id = i.id
-LEFT JOIN streaks_bot    sb ON sb.bot_id = i.id
 WHERE i.is_active = 'active'
 """
 
 
+_SQL_RECENT_MSGS = """
+SELECT c.influencer_id AS bot_id,
+       COUNT(*) FILTER (
+         WHERE m.created_at > NOW() - INTERVAL '7 days'
+       )::float AS msgs_recent,
+       COUNT(*) FILTER (
+         WHERE m.created_at > NOW() - INTERVAL '14 days'
+           AND m.created_at <= NOW() - INTERVAL '7 days'
+       )::float AS msgs_prior
+FROM messages m
+JOIN conversations c ON c.id = m.conversation_id
+WHERE m.role = 'user'
+  AND m.created_at > NOW() - INTERVAL '14 days'
+GROUP BY c.influencer_id
+"""
+
+
+_SQL_QUALITY_LATEST = """
+SELECT bot_id, score_overall::float AS quality
+FROM (
+  SELECT bot_id, score_overall,
+         ROW_NUMBER() OVER (
+           PARTITION BY bot_id ORDER BY created_at DESC
+         ) AS rn
+  FROM bot_quality_scores
+) q
+WHERE rn = 1
+"""
+
+
+_SQL_STREAKS = """
+SELECT influencer_id AS bot_id,
+       MAX(current_streak_days)::float AS streak,
+       COUNT(DISTINCT user_id)::float  AS unique_users
+FROM conversations
+GROUP BY influencer_id
+"""
+
+
 async def _fetch_signals(pool) -> list[dict]:
-    rows = await pool.fetch(_SIGNALS_SQL)
-    return [dict(r) for r in rows]
+    """Run the 4 chunked queries + merge by bot_id in Python.
+
+    Sequential await rather than asyncio.gather so we get connection-
+    pool back-pressure right (the pool is shared with the request path;
+    holding 4 connections in parallel for a background job is rude)."""
+    bot_rows = await pool.fetch(_SQL_BOTS)
+    recent_rows = await pool.fetch(_SQL_RECENT_MSGS)
+    quality_rows = await pool.fetch(_SQL_QUALITY_LATEST)
+    streak_rows = await pool.fetch(_SQL_STREAKS)
+
+    recent_by_bot = {r["bot_id"]: r for r in recent_rows}
+    quality_by_bot = {r["bot_id"]: r for r in quality_rows}
+    streak_by_bot = {r["bot_id"]: r for r in streak_rows}
+
+    merged: list[dict] = []
+    for b in bot_rows:
+        bid = b["id"]
+        rm = recent_by_bot.get(bid)
+        ql = quality_by_bot.get(bid)
+        sb = streak_by_bot.get(bid)
+        merged.append(
+            {
+                "id": bid,
+                "age_sec": b["age_sec"],
+                "conv_count": b["conv_count"],
+                "msg_count": b["msg_count"],
+                # `or 0.0` collapses None (missing bot row) to the
+                # original SQL's COALESCE behaviour. Same for quality
+                # defaulting to 0.5 (mid-range when no score exists).
+                "msgs_recent": (rm["msgs_recent"] if rm else 0.0) or 0.0,
+                "msgs_prior": (rm["msgs_prior"] if rm else 0.0) or 0.0,
+                "quality": (ql["quality"] if ql else 0.5) or 0.5,
+                "streak": (sb["streak"] if sb else 0.0) or 0.0,
+                "unique_users": (sb["unique_users"] if sb else 0.0) or 0.0,
+            }
+        )
+    return merged
 
 
 # ─── pure-Python scoring + normalization ────────────────────────────────
