@@ -167,14 +167,19 @@ PROVIDERS: dict[str, dict[str, Any]] = {
     "runpod_vllm": {
         # Saikat's vLLM serving. Originally a runpod proxy URL (hence the
         # `runpod_vllm` provider key — kept stable so LLM_DEFAULTS,
-        # dashboards, and the leak-guard allow-list don't churn). On
-        # 2026-06-10 Saikat moved the serving behind
-        # saikat-llm-medium-fast.yral.com with dynamic scaling + load
-        # balancing. The bearer token rotation flow is now:
+        # dashboards, and the leak-guard allow-list don't churn). URL
+        # history (vendor moved, provider key stable across moves):
+        #   2026-06-10 → saikat-llm-medium-fast.yral.com (dynamic scaling)
+        #   2026-06-19 → saikat-llm-mixture-of-experts.yral.com (current,
+        #               MoE architecture; Session 6 verified empirically
+        #               2026-06-19 via GET /v1/models + vision smoke —
+        #               same Qwen/Qwen3.6-35B-A3B-FP8, same auth, ~1.3s
+        #               classification call vs ~3.4s on the prior URL).
+        # The bearer token rotation flow is unchanged:
         # GitHub Secret RUNPOD_VLLM_API_KEY → rotate-runpod-vllm-key
         # workflow → swarm secret → /run/secrets/RUNPOD_VLLM_API_KEY.
         "concurrency_cap": 5,
-        "base_url": "https://saikat-llm-medium-fast.yral.com/v1",
+        "base_url": "https://saikat-llm-mixture-of-experts.yral.com/v1",
         "secret_path": "/run/secrets/RUNPOD_VLLM_API_KEY",
         "env_fallback": "RUNPOD_VLLM_API_KEY",
         "cost_basis": "synthetic",
