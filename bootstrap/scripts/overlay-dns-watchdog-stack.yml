@@ -1,0 +1,31 @@
+# Overlay DNS watchdog — alerts Sentry when a Swarm service alias goes
+# NXDOMAIN or recovers. Caches the bug we hit 2026-06-22: rishi-4
+# services restarted (likely Saikat's weekly Monday cluster update),
+# and patroni-rishi-4 lost its overlay DNS alias for 8 hours.
+
+version: "3.9"
+
+services:
+
+  overlay-dns-watchdog:
+    image: ghcr.io/dolr-ai/yral-overlay-dns-watchdog:latest
+    networks:
+      - yral-v2-data-plane
+    environment:
+      WATCHDOG_INTERVAL_SEC: "300"
+      SENTRY_DSN: ${SENTRY_DSN:?SENTRY_DSN must be set}
+      SENTRY_ENVIRONMENT: production
+    deploy:
+      mode: replicated
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 10s
+        window: 60s
+      resources:
+        limits:    { cpus: "0.1", memory: 64M }
+        reservations: { cpus: "0.01", memory: 16M }
+
+networks:
+  yral-v2-data-plane:
+    external: true
