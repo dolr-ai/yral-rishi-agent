@@ -623,8 +623,10 @@ async def send_message(
         )
 
     # Phase 4.7: piggyback session-memory update on the post-save async slot.
-    # Fire-and-forget so the hot path doesn't wait on Redis.
-    asyncio.create_task(
+    # Fire-and-forget so the hot path doesn't wait on Redis. Use
+    # websocket_manager.spawn (not bare create_task) for strong-reference
+    # retention — see _BACKGROUND_TASKS docstring (Sentry #40 et al).
+    websocket_manager.spawn(
         session_memory.update_from_user_message(user_id, conversation_id, content or "")
     )
 
@@ -792,8 +794,12 @@ async def send_message(
         variant_label=chosen_variant_label,
     )
 
-    # Background tasks: memory extraction + push notification + WS broadcast
-    asyncio.create_task(
+    # Background tasks: memory extraction + WS broadcast + push notification.
+    # Use websocket_manager.spawn (not bare create_task) so the GC can't
+    # destroy these mid-flight when the request handler returns and the
+    # local task reference drops. Sentry #40/42/46/48/53/61/91/229/242/243
+    # were all fingerprints of that GC race on these exact sites.
+    websocket_manager.spawn(
         memory.extract_and_store(
             pool,
             user_id=user_id,
@@ -806,7 +812,7 @@ async def send_message(
     )
 
     unread_count = await message_repo.count_unread(pool, conversation_id, user_id)
-    asyncio.create_task(
+    websocket_manager.spawn(
         websocket_manager.broadcast_new_message(
             user_id=user_id,
             conversation_id=conversation_id,
@@ -821,7 +827,7 @@ async def send_message(
         )
     )
 
-    asyncio.create_task(
+    websocket_manager.spawn(
         push_notifications.send_new_message_notification(
             user_id=user_id,
             influencer_name=inf.get("display_name", "AI"),
@@ -1070,8 +1076,10 @@ async def send_message_stream(
                 )
                 return
 
-            # Background side-effects mirror the non-streaming path
-            asyncio.create_task(
+            # Background side-effects mirror the non-streaming path.
+            # spawn() instead of bare create_task — see _BACKGROUND_TASKS
+            # docstring in websocket_manager.
+            websocket_manager.spawn(
                 memory.extract_and_store(
                     pool,
                     user_id=user_id,
