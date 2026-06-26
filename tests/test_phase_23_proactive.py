@@ -72,10 +72,17 @@ def test_send_skill_checkin_advances_schedule():
 def test_send_skill_checkin_handles_no_conversation():
     """User_skill_state can exist without a conversation row (if it
     were ever pre-seeded). The loop must skip + still advance the
-    schedule so we don't hot-loop. Pin both branches."""
+    schedule so we don't hot-loop. Pin both branches.
+
+    2026-06-26: slice the FULL function body (start → next `async def`)
+    instead of a fixed 4500-char window. PR #422's backoff comment
+    block pushed the happy-path mark_event_fired call past 4500 chars
+    while leaving both call sites intact — the brittle fixed window
+    masked that. Function-end slicing is robust to future doc growth."""
     src = _read("app/services/proactive.py")
     pos = src.find("async def send_skill_checkin(")
-    body = src[pos : pos + 4500]
+    end = src.find("\nasync def ", pos + 1)
+    body = src[pos:end] if end != -1 else src[pos:]
     # Skip-when-no-conversation branch + still-advance call
     assert "no conversation yet" in body
     # mark_event_fired must appear at LEAST twice (no-conv path
