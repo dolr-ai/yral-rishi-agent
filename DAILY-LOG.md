@@ -1,5 +1,95 @@
 # Daily Log
 
+## 2026-06-26 — Sentry sweep (7 PRs), watchdog deployed, observability tasks 1+2 shipped, codex trigger bug discovered
+
+### What happened
+
+Big sweep day. Started from a Sentry triage that found ~190 of the last-24h's 300 prod errors collapsed into ONE bug (a fire-and-forget WebSocket `broadcast_new_message` task with no retention — GC'd mid-flight). Dispatched dev session through 5 fix-PRs in parallel, then 2 more from the observability brief. Plus the watchdog from PR #415 is now live on the swarm.
+
+**7 PRs merged + auto-deployed (all in one day):**
+
+| # | What | Closes |
+|---|---|---|
+| #416 | etl_integrity rule asymmetric (`diff < -tol` instead of `abs(diff) > tol`) + tick verifier deleted. Why: v2 ⊇ ETL(chat-ai) by design — v2 ahead is healthy, not a drift signal. | Sentry #208 (~80 events/24h) |
+| #417 | CI workflow to build + push `ghcr.io/dolr-ai/yral-overlay-dns-watchdog` to GHCR | Unblocked PR #415 deploy |
+| #418 | WebSocket task retention — module-level `_BACKGROUND_TASKS: set` + `add_done_callback`. Class-of-bug fix; 9 different Sentry fingerprints all the same root cause. | Sentry #40 + 8 siblings (~190 events/24h) |
+| #419 | streak_tracker chunked + `ORDER BY principal_id` + `FOR UPDATE SKIP LOCKED` | Sentry #124 + #246 (timeout + new deadlock regression) |
+| #420 | feed_ranker `_fetch_signals` (different path than PR #410 chunked) + video_ideas `_list_active_bots` chunked to avoid Postgres shmem exhaustion | Sentry #144 + #220 (DiskFullError) |
+| #421 | Langfuse trace body carries `sessionId = conversation_id` when present — chats now group in Sessions tab | Observability brief task 2 |
+| #422 | Skill check-in backoff — 6h → 12h → 24h → 48h → 96h → 168h (capped weekly, never hard-stop, resets on user reply) | Observability brief task 1 + skill-checkin firehose |
+
+**Watchdog deployed to Swarm.** PR #417's CI workflow auto-built the image at 08:03 UTC after #417 merge; `docker stack deploy -c bootstrap/scripts/overlay-dns-watchdog-stack.yml yral-v2-watchdog` from rishi-4 brought it up on rishi-5 at 08:10 UTC. Startup log shows all 11 aliases (patroni × 3, etcd × 3, redis-sentinel × 3, redis-primary, pgbouncer) resolving cleanly. Silence-on-healthy; Sentry alert only on NXDOMAIN ↔ resolved state transitions. Next Saikat-Monday window (2026-06-29) is the first real test.
+
+### What we learned — 3 findings
+
+**1. codex-review.yml has a trigger bug** that bites every draft PR. The workflow only triggers on `pull_request: types: [opened, synchronize]` with `if: draft == false`. So when a PR opens as DRAFT, the workflow runs once, skips, and never re-runs even after `gh pr ready` flips draft → false. Workaround used today: push an empty commit on each branch to force a `synchronize` event. Long-term fix is to add `ready_for_review` to the trigger types — deferred to a separate small PR (not piling on more workflow churn right now).
+
+**2. ETL integrity rule was structurally wrong, not data-wrong.** Sentry #208 wasn't an A4 violation — `_verify_hourly` assumed `v2 == chat-ai`, but the live architecture is `v2 ⊇ ETL(chat-ai)`: Caddy on rishi-1/2 routes `agent.rishi.yral.com` directly to v2, plus proactive + nudge + takeover loops produce thousands of v2-native messages/day. The diff is always positive and always growing — by design. PR #416 makes the rule one-sided (only fire when v2 is BEHIND chat-ai = the real A4 risk signal) and deletes the tick verifier (sentinel canary + hourly cover the freshness gap). Memory: `feedback_v2_supseteq_etl_chatai` should be considered if we ever rewire this.
+
+**3. Discovery classifier baseline established — `~40 calls/day = healthy new-bot intake rate.`** Dev session's read-only diagnostic confirmed loop is ON, catalog is 100% classified (0 stuck-unknown out of 3723 active bots), and the ~40/day drip exactly matches the new-bot creation rate. Saved as `project_classifier_baseline_healthy.md` in memory so future sessions don't re-diagnose this. The "retry stuck-unknown forever" quirk that Part B was scoped to fix has zero prod incidence — Part B not shipped per "don't add code for problems that haven't happened."
+
+### Patroni `/dev/shm` is at Docker default 64 MiB on all three nodes
+
+Brief 4 Part A ops report from dev session: rishi-4/5/6 Patroni containers run at default 64 MiB `/dev/shm` while hosts have 16-32 GiB tmpfs free. PR #420's code chunking mitigates the root cause (DiskFullError on big aggregations); shm bump deferred until we observe whether code fix holds. If Sentry #144 + #220 don't drop to zero within 24-48h, the shm bump becomes a separate ops PR with explicit Rishi go + rolling Patroni restart on a low-traffic window.
+
+### Prod writes today
+
+| Where | What | Authorization |
+|---|---|---|
+| Swarm (rishi-4) | `docker service update --force yral-v2-patroni_patroni-rishi-4` — re-registered overlay alias (residual from 2026-06-24 incident) | Explicit "yes" with command quoted |
+| Swarm (rishi-4) | `docker stack deploy -c bootstrap/scripts/overlay-dns-watchdog-stack.yml yral-v2-watchdog` | Explicit "deploy watchdog" |
+| Swarm | 5x auto-deploys via deploy.yml (PRs #416-#420) | Via merge — auto-deploy is the standing pipeline |
+
+### What's on deck for tomorrow
+
+- **Observability brief task 3** (L0 deterministic eval + per-reply storage + new kill switch + new migration). Requires pg_dump first per Rule 9. Big-ish lift; budget ~half a day.
+- **Observability brief task 4** (alerting on `runpod_vllm` primary failures). Gates task 9 (fallback removal). Independent of task 3.
+- **Sentry verification**: confirm #40 family + #124 + #144 + #208 + #220 dropped after deploys settled. Wait for ~24h of post-deploy data before declaring victory.
+- **Patroni shm bump** if DiskFullError keeps firing.
+- **codex-review.yml ready_for_review trigger fix** — small follow-up PR.
+
+## 2026-06-24 — Metabase outage fix, overlay-DNS watchdog shipped, nutrition_coach to Neha's bot, name split-brain bug discovered
+
+### What happened
+
+Started with `metabase.rishi.yral.com` returning broken dashboards. Diagnosis: Metabase container on rishi-6 returning NXDOMAIN for `patroni-rishi-4`, while `-5` and `-6` resolved fine. Patroni cluster itself was healthy (rishi-5 leader, rishi-4 replica, rishi-6 sync_standby) — only the overlay-DNS alias was missing. Root cause: 8 hrs prior, all three rishi-4 services (`patroni`, `etcd`, `redis-sentinel`) had failed simultaneously with the Swarm "No such container" bug; `etcd` and `redis-sentinel` recovered their aliases cleanly on restart but `patroni-rishi-4` didn't. Likely trigger: Saikat's weekly Monday k3s cluster update. v2 prod was unaffected the whole time because the app DSN is multi-host (`patroni-rishi-{4,5,6}` + `target_session_attrs=read-write`) — libpq just skipped the unresolvable host. Metabase, talking to a single hostname, went silently dark.
+
+Three things shipped to close the loop:
+1. **Metabase data source UI fix** — Rishi flipped Host from `patroni-rishi-4` to `patroni-rishi-5` (the current leader). Dashboards back up; verified via `/api/dataset` trivial query returning `current_database()` = `yral_agent_db` on `10.0.3.17` (Patroni leader's overlay IP).
+2. **Patroni-rishi-4 alias re-registered** — `docker service update --force yral-v2-patroni_patroni-rishi-4` recreated the task. Post-fix: alias resolves to 10.0.3.35 from inside the Metabase container; cluster on timeline 34 with lag=0 across all 3 members.
+3. **Overlay-DNS watchdog merged** — PR #415 (`agent/overlay-dns-watchdog-2026-06-24` → main). 50-line Python loop that resolves 11 rishi-N service aliases every 5 min and Sentry-warns on state transition (NXDOMAIN ↔ resolved). Alert-only in v1; auto-heal deferred until we observe one Saikat-Monday cycle. Image build + first deploy is a follow-up PR. We have 6 days until next Monday to ship that.
+
+Also: applied `nutrition_coach` skill to Neha's AI Influencer (`fcpty-wwmlu-…-sqe`, archetype `advisor` — compatible) via single-row UPDATE on the leader. Next chat turn triggers the first-turn onboarding (asks goal + diet + check-in times).
+
+### New bug discovered + tracked as 21γ.P22
+
+While checking the bot, the v2 DB showed `display_name = "Dr. Anya Sharma"` but the mobile profile screen Neha shared displays "Nutritionist." Confirmed via the mobile codebase: `AccountInfo.displayName` is a computed property off `username`, fetched from **yral-metadata-server** (`metadata.yral.com`) — it never touches v2. Chat header + system prompt read from v2's `ai_influencers.display_name` instead. So each AI Influencer has TWO names sourced from TWO services with no sync, and they can drift cleanly. Not a sync bug — by current design — but bad UX. Cosmetic-only today (skill + chat work fine against v2). Tracked as 21γ.P22 in PROGRESS.md + memory `project_ai_influencer_name_split_brain.md`. Fix options on the table:
+1. Mobile sends `username` to v2 at create time, v2 keeps `display_name` in sync going forward
+2. Mobile reads v2's `display_name` everywhere (drop the metadata dependency for AI Influencer screens)
+3. v2 fetches `username` from metadata at chat time
+
+Pick when we have bandwidth + a product call on which name wins.
+
+### PRs merged today (1)
+
+| # | What |
+|---|---|
+| #415 | feat(watchdog): overlay DNS alias watchdog — Sentry-alert on Swarm gossip loss. Triggered by 2026-06-22 metabase outage. Alert-only v1. Image build + first deploy land in a follow-up PR before next Monday. |
+
+### Prod writes today
+
+| Where | What | Authorization |
+|---|---|---|
+| Swarm (rishi-4) | `docker service update --force yral-v2-patroni_patroni-rishi-4` — re-registered overlay alias | Explicit "yes" with exact command quoted back |
+| Postgres (leader) | `UPDATE ai_influencers SET skill_slug='nutrition_coach' WHERE id='fcpty-…-sqe'` — applied skill to Neha's bot | Explicit "okay" with exact SQL quoted back |
+| Metabase (via UI) | Data source #2 Host: `patroni-rishi-4` → `patroni-rishi-5` | Rishi did it in the admin UI directly |
+
+### Open / queued
+
+- **Image-build CI for watchdog** — separate PR. Needs to land + first deploy before next Monday's Saikat update.
+- **Saikat ping** — confirm whether rishi-4/5/6 are on his weekly k3s update schedule + ask for advance notice. Open whether the cluster is actually isolated or sharing infra.
+- **21γ.P22 (AI Influencer name split-brain)** — note + decide; not blocking.
+
 ## 2026-06-12 — Pre-rollout prep day: Coach Day-14 backend stack, ETL drain bug-fix cascade, Sentry audit, pg_dump baseline taken
 
 ### What happened in one paragraph
