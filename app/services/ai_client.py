@@ -177,29 +177,14 @@ async def generate_response_stream(
     error_code=BLOCKED_CONTENT (same shape as the non-streaming path).
     On other errors, yields ('error', LlmResponse) with error_code=TRANSIENT.
 
-    NSFW influencers are NOT streamed today (OpenRouter SDK streaming would
-    require a separate code path). The route falls back to the non-streaming
-    endpoint for is_nsfw=True conversations.
+    NSFW influencers route through the non-streaming `user_chat_main_nsfw`
+    process (OpenRouter today) and the full reply is wrapped in one
+    synthetic ('text', content) event so mobile sees a normal stream
+    shape — no contract change. Pre-2026-06-26 this branch yielded
+    NO_PROVIDER outright; mobile rendered "Bot is not available to
+    chat right now" on every NSFW send (Rishi could not talk to Tara
+    in prod 2026-06-25).
     """
-    # NSFW streaming intentionally not supported — yield NO_PROVIDER so
-    # the route falls back to non-streaming generate_response (which
-    # handles NSFW via user_chat_main_nsfw / OpenRouter).
-    if is_nsfw:
-        yield (
-            "error",
-            LlmResponse(
-                content=ERROR_MESSAGES["NO_PROVIDER"],
-                provider="none",
-                model="none",
-                input_tokens=0,
-                output_tokens=0,
-                latency_ms=0,
-                is_fallback=True,
-                error_code="NO_PROVIDER",
-            ),
-        )
-        return
-
     from services import llm_registry
     from services.soul_file import tuning_for
 
@@ -210,11 +195,59 @@ async def generate_response_stream(
     t0 = time.monotonic()
     total_text = ""
     token_count = 0
+    # Defensive init so the LlmBlockedError / Exception except blocks
+    # below have something to reference if a failure happens before
+    # the provider/model is resolved (e.g. _build_chat_messages raises).
+    final_provider = "unknown"
+    final_model = "unknown"
 
     try:
         messages = await _build_chat_messages(
             system_instructions, conversation_history, user_message, media_urls
         )
+
+        if is_nsfw:
+            # NSFW providers (OpenRouter today) don't share the streaming
+            # wire path that user_chat_main uses — serve non-streaming
+            # server-side and synthesize a single ('text', full_content)
+            # event so mobile reads it like any other stream. The 'done'
+            # event terminates cleanly with the normal LlmResponse shape.
+            result = await llm_registry.call(
+                process="user_chat_main_nsfw",
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            final_provider = result.provider
+            final_model = result.model
+            latency_ms = (time.monotonic() - t0) * 1000
+            langfuse_tracing.trace_generation(
+                trace_name="chat-response-stream",
+                user_id=user_id,
+                model=final_model,
+                provider=final_provider,
+                input_text=user_message,
+                output_text=result.content,
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
+                latency_ms=latency_ms,
+                conversation_id=conversation_id,
+            )
+            if result.content:
+                yield ("text", result.content)
+            yield (
+                "done",
+                LlmResponse(
+                    content=result.content,
+                    provider=final_provider,
+                    model=final_model,
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    latency_ms=latency_ms,
+                ),
+            )
+            return
+
         # Phase 21αβ.H12 — vision-bearing chat routes via the dedicated
         # multimodal process so flipping user_chat_main to a text-only
         # provider (e.g. runpod_vllm for cost) doesn't silently break
