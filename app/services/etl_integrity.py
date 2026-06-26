@@ -39,8 +39,11 @@ INITIAL_DELAY_SEC = 10 * 60  # ETL warms first, then integrity starts
 # bands let us distinguish "tolerable lag from in-flight inserts" from
 # "actual divergence". rishi-1 already excludes the last 10-15 min via
 # its watermarks, so legitimate drift should be near-zero.
-TICK_DRIFT_TOLERANCE = 5  # ±5 rows per tick — accounts for tx commit timing
-HOURLY_DRIFT_TOLERANCE = 50  # ±50 rows per hour
+# Tick verifier removed 2026-06-26 — see _verify_hourly docstring for the
+# architectural rationale. The 5-min window is too narrow to distinguish
+# "chat-ai hasn't ETL'd yet" from "v2 wrote net-new" once `agent.rishi.yral.com`
+# became a peer writer. Sentinel canary covers the freshness signal.
+HOURLY_DRIFT_TOLERANCE = 50  # 50-row tolerance per hour
 SAMPLE_MISMATCH_TOLERANCE = 0  # any hash mismatch = real divergence
 SENTINEL_STALENESS_LIMIT_SEC = 15 * 60  # latest message must arrive in 15 min
 
@@ -240,43 +243,33 @@ def _to_aware_utc(dt_or_iso) -> datetime:
 # ─── verifiers ────────────────────────────────────────────────────────────
 
 
-async def _verify_tick(v2_pool, payload: dict) -> tuple[bool, int, dict]:
-    """Per-table rows in V2 over the same window must match rows_in_tick.
-
-    The "same window" is (previous watermark, this watermark] — but
-    rishi-1 doesn't ship the previous watermark. Workaround: count V2
-    rows where created_at is within (watermark - tick_interval - 5s, watermark].
-    The 5s grace handles clock drift between rishi-1 and rishi-4.
-    """
-    from datetime import timedelta
-
-    watermark_iso = payload["watermark_iso"]
-    # created_at on conversations/messages is TIMESTAMP (no tz). Use the
-    # naive-UTC adapter so asyncpg's codec accepts the param.
-    watermark_dt = _to_naive_utc(watermark_iso)
-    grace = timedelta(seconds=INTEGRITY_INTERVAL_SEC + 5)
-    window_start = watermark_dt - grace
-
-    drifts = {}
-    total_drift = 0
-    for table, info in payload["tables"].items():
-        expected = int(info["rows_in_tick"])
-        actual = await v2_pool.fetchval(
-            f"SELECT COUNT(*) FROM {table} WHERE created_at > $1 AND created_at <= $2",
-            window_start,
-            watermark_dt,
-        )
-        diff = int(actual) - expected
-        if abs(diff) > TICK_DRIFT_TOLERANCE:
-            drifts[table] = {"expected": expected, "actual": int(actual), "diff": diff}
-            total_drift += abs(diff)
-    passed = not drifts
-    return passed, total_drift, {"per_table": drifts, "watermark_iso": watermark_iso}
-
-
 async def _verify_hourly(v2_pool, payload: dict) -> tuple[bool, int, dict]:
     """V2 runs the same COUNT(*) WHERE created_at < watermark and
-    compares each table to the chat-ai count rishi-1 reported."""
+    compares each table to the chat-ai count rishi-1 reported.
+
+    ## Architecture: v2 ⊇ ETL(chat_ai), NOT v2 == chat_ai
+
+    Chat-ai is a peer of v2, not its source of truth. V2 receives
+    chat-ai's rows via ETL AND independently accepts its own writes
+    from `agent.rishi.yral.com` (Caddy routes the public hostname
+    directly to v2/rishi-4-5). Once that v2-native traffic exists,
+    `v2_count >= chat_ai_count + N` for N>0 is by-design — proactive
+    loops, nudge loops, takeover system messages, plus real user
+    chats that originated on v2 with no chat-ai ancestor. The
+    `messages` table grew by +30K rows above chat-ai over the 8 days
+    leading up to 2026-06-26 (Sentry issue YRAL-RISHI-AGENT-56);
+    that's healthy growth, not a data loss.
+
+    The ONE meaningful A4-violation signal is `v2_count <
+    chat_ai_count`: chat-ai shipped rows that V2 didn't apply.
+    That's what this verifier fires on — a one-sided assertion
+    using a negative tolerance bound. The +diff side is silent by
+    design.
+
+    A future PR that restores the symmetric `abs(diff) > tol` check
+    will re-introduce 600+ Sentry events per week of false-positive
+    drift alerts. Don't.
+    """
     watermark_iso = payload["watermark_iso"]
     # created_at columns are TIMESTAMP (naive). See _to_naive_utc.
     watermark_dt = _to_naive_utc(watermark_iso)
@@ -290,7 +283,11 @@ async def _verify_hourly(v2_pool, payload: dict) -> tuple[bool, int, dict]:
             watermark_dt,
         )
         diff = int(actual) - int(expected)
-        if abs(diff) > HOURLY_DRIFT_TOLERANCE:
+        # One-sided: only fire when v2 is BEHIND chat-ai
+        # (i.e. ETL dropped rows). v2 ahead = v2-native growth, expected.
+        # Threshold unchanged at 50 rows — the direction was wrong, not
+        # the magnitude.
+        if diff < -HOURLY_DRIFT_TOLERANCE:
             drifts[table] = {"chat_ai": int(expected), "v2": int(actual), "diff": diff}
             total_drift += abs(diff)
     passed = not drifts
@@ -435,8 +432,13 @@ async def _verify_sentinel(v2_pool, payload: dict) -> tuple[bool, int, dict]:
     )
 
 
+# Tick layer is no longer dispatched (2026-06-26). The 5-min window
+# is too narrow to distinguish ETL-not-yet-arrived from v2-native-write
+# once `agent.rishi.yral.com` became a peer writer. Sentinel canary
+# (15-min staleness check) covers the data-flow signal that tick
+# previously claimed. Tick files keep arriving from rishi-1's exporter;
+# the dispatch loop skips them via the `verifier is None` guard below.
 _VERIFIERS = {
-    "tick": _verify_tick,
     "hourly": _verify_hourly,
     "sample": _verify_sample,
     "sentinel": _verify_sentinel,
@@ -585,7 +587,11 @@ async def run_once(v2_pool) -> dict:
     for obj in files:
         if await _is_processed(v2_pool, obj["filename"]):
             continue
-        verifier = _VERIFIERS[obj["layer"]]
+        verifier = _VERIFIERS.get(obj["layer"])
+        if verifier is None:
+            # tick files keep arriving from rishi-1; the verifier was
+            # dropped 2026-06-26. Skip silently.
+            continue
         t0 = time.monotonic()
         try:
             payload = await asyncio.to_thread(_download_json_sync, s3, obj["key"])

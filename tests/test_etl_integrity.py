@@ -73,23 +73,30 @@ def test_record_does_not_pass_string_to_timestamptz_column():
     assert "_to_aware_utc(snapshot_iso)" in src
 
 
-def test_verify_tick_uses_naive_utc():
-    """Regression for tick-verifier crash: created_at is TIMESTAMP (no
-    tz). _to_naive_utc keeps asyncpg happy."""
-    import inspect
-    from services.etl_integrity import _verify_tick
-
-    src = inspect.getsource(_verify_tick)
-    assert "_to_naive_utc" in src
-
-
 def test_verify_hourly_uses_naive_utc():
-    """Same pattern as _verify_tick for the hourly variant."""
+    """`created_at` columns are TIMESTAMP (no tz); _to_naive_utc keeps
+    asyncpg's codec happy. (The sister `_verify_tick` test was dropped
+    along with the tick verifier itself on 2026-06-26 — see
+    `_verify_hourly` docstring.)"""
     import inspect
     from services.etl_integrity import _verify_hourly
 
     src = inspect.getsource(_verify_hourly)
     assert "_to_naive_utc" in src
+
+
+def test_tick_verifier_no_longer_exposed():
+    """Tick verifier dropped 2026-06-26 (Sentry YRAL-RISHI-AGENT-56).
+    A future PR that re-introduces it without re-reading the
+    `_verify_hourly` architectural comment will trip this test."""
+    from services import etl_integrity
+
+    assert not hasattr(etl_integrity, "_verify_tick"), (
+        "tick verifier was deliberately removed — its 5-min window can't "
+        "distinguish ETL-not-arrived from v2-native-write. Re-add only "
+        "after solving that problem."
+    )
+    assert not hasattr(etl_integrity, "TICK_DRIFT_TOLERANCE")
 
 
 def test_canonicalize_for_compare_microsecond_precision():
@@ -153,7 +160,8 @@ def test_canonicalize_tz_aware_vs_naive_yield_same_string():
 
 def test_filename_regex_recognizes_all_four_layers():
     """The exporter emits four families of files into _integrity/.
-    Drift here = the verifier silently ignores a layer."""
+    Regex still accepts `tick` so the dispatch loop can recognize +
+    skip-silently (tick files keep arriving from rishi-1)."""
     from services.etl_integrity import _FILENAME_RE
 
     for layer in ("tick", "hourly", "sample", "sentinel"):
@@ -167,15 +175,26 @@ def test_filename_regex_recognizes_all_four_layers():
     assert _FILENAME_RE.match("tick.json") is None
 
 
-def test_dispatch_table_covers_all_layers():
-    """The dispatch table is what routes a downloaded file to its
-    verifier. A missing entry = silently-uncovered layer."""
+def test_dispatch_table_excludes_tick_layer():
+    """Tick verifier dropped 2026-06-26. The dispatch table covers
+    hourly + sample + sentinel only; `run_once` skips tick files via
+    the `verifier is None` guard."""
     from services.etl_integrity import _VERIFIERS
 
-    # Layers in the regex must match layers in the dispatch table
-    # (cheap consistency invariant).
-    regex_layers = {"tick", "hourly", "sample", "sentinel"}
-    assert set(_VERIFIERS.keys()) == regex_layers
+    assert set(_VERIFIERS.keys()) == {"hourly", "sample", "sentinel"}
+    assert "tick" not in _VERIFIERS
+
+
+def test_dispatch_loop_skips_unknown_layer():
+    """Belt-and-braces for the tick-skip path: `verifier is None` →
+    `continue` instead of `KeyError`. Pin the guard so a future
+    refactor can't accidentally raise on tick files."""
+    import inspect
+    from services.etl_integrity import run_once
+
+    src = inspect.getsource(run_once)
+    assert '_VERIFIERS.get(obj["layer"])' in src
+    assert "if verifier is None:" in src
 
 
 def test_intervals_and_thresholds_sensible():
@@ -184,7 +203,6 @@ def test_intervals_and_thresholds_sensible():
     from services.etl_integrity import (
         INTEGRITY_INTERVAL_SEC,
         INITIAL_DELAY_SEC,
-        TICK_DRIFT_TOLERANCE,
         HOURLY_DRIFT_TOLERANCE,
         SAMPLE_MISMATCH_TOLERANCE,
         SENTINEL_STALENESS_LIMIT_SEC,
@@ -193,8 +211,9 @@ def test_intervals_and_thresholds_sensible():
 
     assert INTEGRITY_INTERVAL_SEC <= 5 * 60
     assert INITIAL_DELAY_SEC >= ETL_DELAY
-    # tolerance bands ordered: any drift > tick is concerning, > hourly is failure
-    assert 0 <= TICK_DRIFT_TOLERANCE < HOURLY_DRIFT_TOLERANCE
+    # hourly threshold preserved at 50 — the magnitude was correct; the
+    # direction was the bug (fixed by the one-sided check in _verify_hourly).
+    assert HOURLY_DRIFT_TOLERANCE == 50
     # sample is strict — any content hash mismatch counts
     assert SAMPLE_MISMATCH_TOLERANCE == 0
     # sentinel staleness limit must be > one sync interval to avoid
@@ -236,3 +255,87 @@ def test_s3_layout_constants():
 
     assert S3_BUCKET == "rishi-yral"
     assert S3_INTEGRITY_PREFIX == "yral-chat-ai/incremental-sync/_integrity"
+
+
+# ─── 2026-06-26 asymmetric-rule regression tests ──────────────────────────
+#
+# Sentry issue YRAL-RISHI-AGENT-56: the previous symmetric `abs(diff)`
+# rule fired 600+ false positives in 8 days because v2 is a peer writer
+# (agent.rishi.yral.com routes directly to v2). The rule is now
+# one-sided: v2 BEHIND chat-ai = fire (real A4 risk), v2 AHEAD =
+# silent (by-design v2-native growth). These two tests pin both ends.
+
+
+class _StubPoolWithCount:
+    """asyncpg-pool-shaped stub. `count` is what fetchval returns —
+    we set it per-test to drive both sides of the asymmetry."""
+
+    def __init__(self, count):
+        self._count = count
+
+    async def fetchval(self, query, *args):
+        return self._count
+
+
+def test_verify_hourly_silent_when_v2_ahead_by_50000():
+    """v2_native traffic grows v2's row count above chat-ai's. The
+    rule MUST stay silent — this is the architectural expectation
+    documented in `_verify_hourly`'s docstring."""
+    import asyncio
+
+    from services.etl_integrity import _verify_hourly
+
+    # chat_ai says 100K rows; v2 has 150K (alpha-team + 100%-prod-flip
+    # native traffic). diff = +50_000, way above the 50-row tolerance
+    # on the +diff side — but the one-sided rule should NOT fire.
+    payload = {
+        "watermark_iso": "2026-06-26T03:45:00+00:00",
+        "layer_1_row_counts": {"messages": 100_000},
+    }
+    pool = _StubPoolWithCount(150_000)
+    passed, total_drift, details = asyncio.run(_verify_hourly(pool, payload))
+    assert passed is True, (
+        "v2 ahead of chat-ai is by-design growth, not drift — the rule must stay silent"
+    )
+    assert total_drift == 0
+    assert details["per_table"] == {}
+
+
+def test_verify_hourly_fires_when_v2_behind_by_51():
+    """The one direction the rule cares about: v2 BEHIND chat-ai by
+    more than the 50-row tolerance. This is the real A4 signal
+    (chat-ai shipped rows that the ETL didn't apply to v2)."""
+    import asyncio
+
+    from services.etl_integrity import _verify_hourly
+
+    # chat_ai says 100,051; v2 has 100,000. diff = -51, just past
+    # the tolerance — fire.
+    payload = {
+        "watermark_iso": "2026-06-26T03:45:00+00:00",
+        "layer_1_row_counts": {"messages": 100_051},
+    }
+    pool = _StubPoolWithCount(100_000)
+    passed, total_drift, details = asyncio.run(_verify_hourly(pool, payload))
+    assert passed is False, (
+        "v2 behind chat-ai = real ETL dropped-row risk — the rule must fire"
+    )
+    assert total_drift == 51
+    assert details["per_table"]["messages"]["diff"] == -51
+
+
+def test_verify_hourly_silent_at_negative_tolerance_boundary():
+    """diff = -50 is exactly at the tolerance — must NOT fire (strict
+    inequality `< -50` in the new code; equality stays silent)."""
+    import asyncio
+
+    from services.etl_integrity import _verify_hourly
+
+    payload = {
+        "watermark_iso": "2026-06-26T03:45:00+00:00",
+        "layer_1_row_counts": {"messages": 100_050},
+    }
+    pool = _StubPoolWithCount(100_000)
+    passed, total_drift, details = asyncio.run(_verify_hourly(pool, payload))
+    assert passed is True
+    assert total_drift == 0
