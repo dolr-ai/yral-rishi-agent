@@ -1,0 +1,54 @@
+name: Build watchdog image
+
+# Mirrors the build-and-push job shape in .github/workflows/ci.yml for
+# symmetry — same login-action, same build-push-action, same registry +
+# permission model. Image is tiny + dependency-free so we skip the
+# lint/test prerequisites the main CI has.
+#
+# Triggers:
+#   - push to main when watchdog/** changes (the normal rebuild path)
+#   - workflow_dispatch (manual button) for the first deploy + ad-hoc
+#     rebuilds when ops needs a fresh image without touching code
+#
+# No deploy step. First deploy of the watchdog touches the Swarm and
+# requires Rishi's explicit go (see PR #415 body for the manual steps).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "watchdog/**"
+      - ".github/workflows/build-watchdog.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Short SHA tag so operators can pin a specific build without
+      # carrying a 40-char SHA in compose files. Same convention the
+      # main image will adopt when we tighten that side (see PR #415
+      # follow-up).
+      - id: shortsha
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: watchdog
+          file: watchdog/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/dolr-ai/yral-overlay-dns-watchdog:latest
+            ghcr.io/dolr-ai/yral-overlay-dns-watchdog:${{ steps.shortsha.outputs.short }}
