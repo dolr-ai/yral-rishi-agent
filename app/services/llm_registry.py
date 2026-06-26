@@ -28,11 +28,61 @@ What's NOT here yet (deferred to follow-up PRs):
 import asyncio
 import logging
 import os
+import time
+from collections import deque
+from threading import Lock
 from typing import Any
 
 from services.llm_types import LlmResponse
 
 logger = logging.getLogger(__name__)
+
+
+# Brief task 4 (2026-06-26) — per-process primary-provider failure
+# counter. Records each time call()'s primary attempt raises and we
+# fall back to the secondary provider. Read by the admin dashboard
+# tile + paired with a Sentry warning at the same site, so a runpod_vllm
+# brown-out shows up in three places (Sentry alert, dashboard, logs)
+# instead of being silently masked by the fallback. Gates task 9
+# (fallback removal): once these counters are routinely zero AND the
+# Sentry alert has fired on a real outage at least once, the soft-
+# failure silence pattern is safe to drop.
+#
+# In-memory + per-replica by design — cross-replica aggregation lives
+# in Sentry (the canonical view). This counter is the "right now, on
+# this worker" signal for the dashboard. Bounded per key so a runaway
+# outage can't grow the deque unbounded.
+_PRIMARY_FAILURE_WINDOW_SEC = 60 * 60
+_PRIMARY_FAILURE_MAX_PER_KEY = 1000
+_PRIMARY_FAILURES: dict[tuple[str, str], deque[float]] = {}
+_PRIMARY_FAILURES_LOCK = Lock()
+
+
+def _record_primary_failure(process: str, primary_provider: str) -> None:
+    """Append the current time to the per-(process, primary_provider)
+    deque so the dashboard tile can report a 1h count."""
+    key = (process, primary_provider)
+    with _PRIMARY_FAILURES_LOCK:
+        dq = _PRIMARY_FAILURES.get(key)
+        if dq is None:
+            dq = deque(maxlen=_PRIMARY_FAILURE_MAX_PER_KEY)
+            _PRIMARY_FAILURES[key] = dq
+        dq.append(time.time())
+
+
+def primary_failure_counts_last_hour() -> dict[tuple[str, str], int]:
+    """Snapshot of primary-failure counts in the last hour, keyed by
+    (process, primary_provider). Trims stale entries lazily on read so
+    a quiet period naturally drains the counter."""
+    cutoff = time.time() - _PRIMARY_FAILURE_WINDOW_SEC
+    out: dict[tuple[str, str], int] = {}
+    with _PRIMARY_FAILURES_LOCK:
+        for key, dq in _PRIMARY_FAILURES.items():
+            while dq and dq[0] < cutoff:
+                dq.popleft()
+            if dq:
+                out[key] = len(dq)
+    return out
 
 
 PROCESS_NAMES: tuple[str, ...] = (
@@ -954,6 +1004,13 @@ async def call(
         # Fallback path. Leak guard runs again so a misconfigured
         # async-process → gemini fallback still alerts.
         _check_async_gemini_leak(process, fallback_provider)
+
+        # Brief task 4 (2026-06-26) — record + alert before the fallback
+        # attempt. The counter feeds the admin dashboard tile; the Sentry
+        # warning carries structured tags so a Sentry alert rule
+        # (>10 events / 5 min across any process) can page on a
+        # systemic primary brown-out. Gates task 9 (fallback removal).
+        _record_primary_failure(process, provider)
         logger.warning(
             "llm_registry: primary %s failed for process=%s; trying fallback %s. "
             "Primary error: %s",
@@ -965,11 +1022,23 @@ async def call(
         try:
             import sentry_sdk
 
-            sentry_sdk.capture_message(
-                f"LLM fallback activated: {process} {provider}→{fallback_provider}",
-                level="warning",
-            )
+            error_type = _classify_outcome(primary_exc)
+            with sentry_sdk.push_scope() as scope:
+                scope.set_tag("process", process)
+                scope.set_tag("primary_provider", provider)
+                scope.set_tag("fallback_provider", fallback_provider)
+                scope.set_tag("error_type", error_type)
+                # Full str(exc) can be long (stack-like traces from httpx);
+                # 200 chars is enough to triage and keeps the Sentry
+                # event small.
+                scope.set_extra("error_summary", str(primary_exc)[:200])
+                sentry_sdk.capture_message(
+                    f"LLM fallback activated: {process} "
+                    f"{provider}→{fallback_provider} (error_type={error_type})",
+                    level="warning",
+                )
         except Exception:
+            # Never let Sentry-side failure break the dispatch path.
             pass
 
         return await _do_complete(
