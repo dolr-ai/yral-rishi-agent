@@ -65,22 +65,30 @@ def trace_generation(
     # generation-side intentionally — both fields render the same
     # snippet in the UI; mismatched truncation would show different
     # text at the two levels and confuse triage.
+    # sessionId groups traces by chat in the Langfuse Sessions tab so a
+    # full user↔bot conversation reads as one thread. Conditional on
+    # conversation_id so non-chat traces (e.g. background generations)
+    # stay session-less and don't pollute the tab.
+    trace_body: dict = {
+        "id": trace_id,
+        "name": trace_name,
+        "userId": user_id,
+        "input": input_text[:2000],
+        "output": output_text[:2000],
+        "metadata": {
+            "conversation_id": conversation_id,
+            **(metadata or {}),
+        },
+    }
+    if conversation_id:
+        trace_body["sessionId"] = conversation_id
+
     batch = [
         {
             "id": trace_id,
             "type": "trace-create",
             "timestamp": now,
-            "body": {
-                "id": trace_id,
-                "name": trace_name,
-                "userId": user_id,
-                "input": input_text[:2000],
-                "output": output_text[:2000],
-                "metadata": {
-                    "conversation_id": conversation_id,
-                    **(metadata or {}),
-                },
-            },
+            "body": trace_body,
         },
         {
             "id": gen_id,
