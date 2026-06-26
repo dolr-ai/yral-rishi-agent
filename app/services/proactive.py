@@ -46,6 +46,30 @@ logger = logging.getLogger(__name__)
 # same after a few rotations.
 PROACTIVE_MESSAGE_TYPES = ("question", "observation", "story", "light_topic")
 
+
+# 2026-06-26 — skill check-in cadence backoff. Locked decision from the
+# chat-quality brief: when a user isn't responding to skill check-ins,
+# slow down — never hard-stop. Each consecutive unanswered check-in
+# doubles the wait until SKILL_CHECKIN_BACKOFF_CAP_HOURS (~weekly); a
+# user reply resets the count automatically (the unanswered count is
+# "since the last user reply", so the next reply zeroes it). Cap is a
+# ceiling on the *cadence*, not a stop — check-ins continue at the cap
+# until either the user replies or the influencer is discontinued.
+SKILL_CHECKIN_BACKOFF_CAP_HOURS = 24 * 7  # ~weekly
+
+
+def _backoff_cadence(base_hours: int, unanswered_count: int) -> int:
+    """Double the wait for each consecutive unanswered skill check-in,
+    capped at SKILL_CHECKIN_BACKOFF_CAP_HOURS. With base_hours=6 this is
+    6 → 12 → 24 → 48 → 96 → 168 (capped). unanswered_count<=1 means the
+    user replied recently (or this is the first send) — use the base."""
+    if unanswered_count <= 1:
+        return base_hours
+    # 2^(n-1): n=2 doubles, n=3 quadruples, …
+    multiplier = 1 << (unanswered_count - 1)
+    return min(base_hours * multiplier, SKILL_CHECKIN_BACKOFF_CAP_HOURS)
+
+
 TYPE_HINTS = {
     "question": "Ask the user a curious, specific question — something you "
     "genuinely want to know about them or their day.",
@@ -500,14 +524,22 @@ async def send_skill_checkin(pool, *, state_row: dict) -> dict | None:
         )
     )
 
-    # Advance the schedule. V1: NOW() + default_cadence_hours.
-    # Refinement (using preferred_times to clock-align the next fire)
-    # lands when the V1 rhythm is validated by Rishi's Motorola test.
+    # Advance the schedule with backoff: each consecutive unanswered
+    # check-in doubles the wait until SKILL_CHECKIN_BACKOFF_CAP_HOURS.
+    # The unanswered count is "proactive messages since the last user
+    # reply" — a user reply zeroes it, automatically resetting cadence
+    # to base. NEVER hard-stops (locked brief decision 2026-06-26).
+    # The message we just inserted IS included in the count, so the
+    # first consecutive unanswered round uses base, the second doubles,
+    # etc. — matching the brief's 6h → 12h → 24h → 48h ladder for the
+    # default cadence.
     from datetime import datetime as _dt
     from datetime import timedelta as _td
     from datetime import timezone as _tz
 
-    cadence = int(skill_def.get("default_cadence_hours") or 6)
+    base_cadence = int(skill_def.get("default_cadence_hours") or 6)
+    unanswered = await message_repo.count_unanswered_proactive(pool, conv["id"])
+    cadence = _backoff_cadence(base_cadence, unanswered)
     await skill_state_repo.mark_event_fired(
         pool,
         user_id=user_id,
