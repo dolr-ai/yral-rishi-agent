@@ -31,14 +31,17 @@ def _read(rel: str) -> str:
 
 
 def test_trace_body_includes_input_field():
-    """The 'trace-create' batch entry's body MUST include `input`. Pin
-    the literal so a future refactor that drops it (intentional or not)
-    fails CI."""
+    """The trace body dict MUST include `input`. Pin the literal so a
+    future refactor that drops it (intentional or not) fails CI.
+
+    2026-06-26 PR #421: the trace body was extracted to a local
+    `trace_body = {...}` so the sessionId can be set conditionally.
+    Anchor the search on `trace_body =` and scan to the closing `}`
+    so the literal still resolves to the same dict as before."""
     src = MODULE.read_text()
-    pos = src.find('"type": "trace-create"')
-    assert pos != -1, "trace-create batch entry not found"
-    # Find the body block for the trace-create entry
-    end = src.find('"type": "generation-create"', pos)
+    pos = src.find("trace_body: dict = {")
+    assert pos != -1, "trace_body assignment not found"
+    end = src.find("\n    if conversation_id:", pos)
     trace_block = src[pos:end] if end != -1 else src[pos : pos + 2000]
     assert '"input": input_text[:2000]' in trace_block
 
@@ -47,8 +50,8 @@ def test_trace_body_includes_output_field():
     """Same as above for `output`. Both fields together drive the
     Langfuse UI's trace-summary rollup."""
     src = MODULE.read_text()
-    pos = src.find('"type": "trace-create"')
-    end = src.find('"type": "generation-create"', pos)
+    pos = src.find("trace_body: dict = {")
+    end = src.find("\n    if conversation_id:", pos)
     trace_block = src[pos:end] if end != -1 else src[pos : pos + 2000]
     assert '"output": output_text[:2000]' in trace_block
 
@@ -73,8 +76,8 @@ def test_trace_body_metadata_field_unchanged():
     refactor that reshuffled the trace body could accidentally drop
     metadata (which carries conversation_id) — pin it stays."""
     src = MODULE.read_text()
-    pos = src.find('"type": "trace-create"')
-    end = src.find('"type": "generation-create"', pos)
+    pos = src.find("trace_body: dict = {")
+    end = src.find("\n    if conversation_id:", pos)
     trace_block = src[pos:end] if end != -1 else src[pos : pos + 2000]
     assert '"metadata":' in trace_block
     assert "conversation_id" in trace_block
