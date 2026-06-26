@@ -139,14 +139,35 @@ def test_generate_all_skips_bots_with_existing_batch():
 
 def test_active_bots_filter_recent_traffic():
     """ACTIVE_BOT_WINDOW_DAYS gate must be present and the SELECT
-    must join messages so we exclude dormant bots."""
+    must consult messages so we exclude dormant bots, and must filter
+    is_active='active' so deleted bots don't leak in.
+
+    2026-06-26 (Sentry #144 DiskFullError fix): the old shape was a
+    single 3-way JOIN with DISTINCT ON + ORDER BY that materialized
+    the join and sorted it → spilled past the Patroni container's
+    64 MiB /dev/shm cap. New shape: two sequential probes — Step 1
+    gets distinct active influencer_ids from the messages window
+    (no DISTINCT-after-join sort), Step 2 hydrates ai_influencers
+    fields by IN-list. Pin both probes are present."""
     src = _read("app/services/video_ideas.py")
     assert "ACTIVE_BOT_WINDOW_DAYS" in src
     pos = src.find("async def _list_active_bots(")
-    body = src[pos : pos + 1500]
-    assert "JOIN conversations c ON c.influencer_id = i.id" in body
-    assert "JOIN messages m ON m.conversation_id = c.id" in body
+    body = src[pos : pos + 1800]
+    # Step 1: active-id probe touches messages + conversations only —
+    # no ai_influencers in this probe (that's what removed the spill).
+    assert "SELECT DISTINCT c.influencer_id" in body
+    assert "FROM messages m" in body
+    assert "JOIN conversations c ON c.id = m.conversation_id" in body
+    # Step 2: ai_influencers hydration is restricted by IN-list to the
+    # ids we discovered, and still filters out inactive bots.
+    assert "FROM ai_influencers i" in body
+    assert "i.id = ANY($1" in body
     assert "is_active = 'active'" in body
+    # Regression guard: the old DISTINCT-ON + 3-way-JOIN shape must
+    # NOT come back — that's the exact pattern that hit DiskFullError.
+    assert "DISTINCT ON (i.id)" not in body, (
+        "old DISTINCT-ON-after-3-way-JOIN shape regressed — that spills"
+    )
 
 
 def test_max_tokens_sized_for_multi_byte_scripts():

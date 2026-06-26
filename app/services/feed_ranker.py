@@ -166,6 +166,19 @@ async def _get_redis():
 # WHEN it succeeded (and 0 ms when it failed with DiskFullError).
 
 
+# 2026-06-26 follow-up: PR #410 split the mega-CTE into 4 chunks, but
+# Sentry #220 kept firing — the 14-day messages GROUP BY in
+# `_SQL_RECENT_MSGS` and the full `conversations` GROUP BY in
+# `_SQL_STREAKS` still allocated hash aggregates that overflowed
+# work_mem on rishi-6 (Patroni container is pinned to Docker's default
+# 64 MiB /dev/shm). Fix: further chunk the 3 heavy queries by bot_id —
+# fetch `_SQL_BOTS` first, then fan the bot_id list out in batches of
+# CHUNK_SIZE. Each chunk's hash agg stays small enough to live in
+# work_mem; the Python-side merge collapses chunks back into one row
+# per bot.
+CHUNK_SIZE = 500
+
+
 _SQL_BOTS = """
 SELECT
     i.id,
@@ -191,6 +204,7 @@ FROM messages m
 JOIN conversations c ON c.id = m.conversation_id
 WHERE m.role = 'user'
   AND m.created_at > NOW() - INTERVAL '14 days'
+  AND c.influencer_id = ANY($1::varchar[])
 GROUP BY c.influencer_id
 """
 
@@ -203,6 +217,7 @@ FROM (
            PARTITION BY bot_id ORDER BY created_at DESC
          ) AS rn
   FROM bot_quality_scores
+  WHERE bot_id = ANY($1::varchar[])
 ) q
 WHERE rn = 1
 """
@@ -213,24 +228,35 @@ SELECT influencer_id AS bot_id,
        MAX(current_streak_days)::float AS streak,
        COUNT(DISTINCT user_id)::float  AS unique_users
 FROM conversations
+WHERE influencer_id = ANY($1::varchar[])
 GROUP BY influencer_id
 """
 
 
 async def _fetch_signals(pool) -> list[dict]:
-    """Run the 4 chunked queries + merge by bot_id in Python.
+    """Fetch the 4 signal sources + merge by bot_id in Python.
 
     Sequential await rather than asyncio.gather so we get connection-
     pool back-pressure right (the pool is shared with the request path;
-    holding 4 connections in parallel for a background job is rude)."""
-    bot_rows = await pool.fetch(_SQL_BOTS)
-    recent_rows = await pool.fetch(_SQL_RECENT_MSGS)
-    quality_rows = await pool.fetch(_SQL_QUALITY_LATEST)
-    streak_rows = await pool.fetch(_SQL_STREAKS)
+    holding many connections in parallel for a background job is rude).
 
-    recent_by_bot = {r["bot_id"]: r for r in recent_rows}
-    quality_by_bot = {r["bot_id"]: r for r in quality_rows}
-    streak_by_bot = {r["bot_id"]: r for r in streak_rows}
+    The 3 heavy queries (recent_msgs / quality_latest / streaks) are
+    further chunked by bot_id under CHUNK_SIZE to keep each hash agg
+    inside work_mem — see the comment block above for context."""
+    bot_rows = await pool.fetch(_SQL_BOTS)
+    bot_ids = [b["id"] for b in bot_rows]
+
+    recent_by_bot: dict = {}
+    quality_by_bot: dict = {}
+    streak_by_bot: dict = {}
+    for i in range(0, len(bot_ids), CHUNK_SIZE):
+        chunk = bot_ids[i : i + CHUNK_SIZE]
+        for r in await pool.fetch(_SQL_RECENT_MSGS, chunk):
+            recent_by_bot[r["bot_id"]] = r
+        for r in await pool.fetch(_SQL_QUALITY_LATEST, chunk):
+            quality_by_bot[r["bot_id"]] = r
+        for r in await pool.fetch(_SQL_STREAKS, chunk):
+            streak_by_bot[r["bot_id"]] = r
 
     merged: list[dict] = []
     for b in bot_rows:
