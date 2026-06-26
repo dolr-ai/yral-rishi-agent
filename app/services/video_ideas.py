@@ -224,20 +224,40 @@ async def generate_for_one_bot(pool, bot: dict) -> list[dict]:
 async def _list_active_bots(pool) -> list[dict]:
     """Influencers with ≥1 message in the last ACTIVE_BOT_WINDOW_DAYS
     days. Skips discontinued bots. Returns the minimal columns the
-    prompt needs."""
-    rows = await pool.fetch(
+    prompt needs.
+
+    2026-06-26: split the original DISTINCT-ON-after-3-way-JOIN into
+    two index-friendly probes. The old query materialized
+    `ai_influencers ⋈ conversations ⋈ messages` then sorted it for the
+    DISTINCT ON — the sort exceeded work_mem and spilled, hitting the
+    Patroni container's 64 MiB /dev/shm cap (Sentry #144 DiskFullError).
+
+    Step 1 fetches distinct active influencer_ids from the recent
+    messages window — pure index traversal, no DISTINCT sort over the
+    full join. Step 2 hydrates the bot fields for that small id list."""
+    id_rows = await pool.fetch(
         """
-        SELECT DISTINCT ON (i.id)
-               i.id, i.name, i.display_name, i.category,
-               i.system_instructions
-        FROM ai_influencers i
-        JOIN conversations c ON c.influencer_id = i.id
-        JOIN messages m ON m.conversation_id = c.id
-        WHERE i.is_active = 'active'
-          AND m.created_at > NOW() - INTERVAL '%d days'
-        ORDER BY i.id
+        SELECT DISTINCT c.influencer_id AS id
+        FROM messages m
+        JOIN conversations c ON c.id = m.conversation_id
+        WHERE m.created_at > NOW() - INTERVAL '%d days'
+          AND c.influencer_id IS NOT NULL
         """
         % ACTIVE_BOT_WINDOW_DAYS,
+    )
+    if not id_rows:
+        return []
+    ids = [r["id"] for r in id_rows]
+    rows = await pool.fetch(
+        """
+        SELECT i.id, i.name, i.display_name, i.category,
+               i.system_instructions
+        FROM ai_influencers i
+        WHERE i.is_active = 'active'
+          AND i.id = ANY($1::varchar[])
+        ORDER BY i.id
+        """,
+        ids,
     )
     return [dict(r) for r in rows]
 

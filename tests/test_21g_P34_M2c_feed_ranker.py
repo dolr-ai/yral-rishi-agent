@@ -542,24 +542,62 @@ def test_rank_once_empty_catalog_writes_empty_list(monkeypatch):
 
 
 def test_fetch_signals_dispatches_four_chunked_queries():
-    """2026-06-18 DiskFullError fix: `_fetch_signals` must execute
-    the 4 chunked queries separately (bots / recent_msgs / quality /
-    streaks) instead of one mega-CTE. Pin the dispatch shape so a
-    future refactor that recombines them has to update this test
-    AND re-verify against the prod DiskFullError that motivated
-    the split."""
+    """`_fetch_signals` must execute the 4 chunked queries separately
+    (bots / recent_msgs / quality / streaks) instead of one mega-CTE.
+
+    2026-06-18: PR #410 first split the mega-CTE into 4 chunks.
+    2026-06-26: PR #420 further chunks the 3 heavy queries by bot_id
+    under CHUNK_SIZE because Sentry #220 kept firing — Postgres's
+    hash agg over the 14-day messages window was still spilling. With
+    chunking, dispatch is 1 fetch (bots) + 3 fetches per bot_id chunk.
+
+    Pin both invariants: (a) all 4 SQL constants are still in play,
+    (b) the per-chunk batching IS happening (we see 3 fetches per
+    chunk after the initial bots fetch). A "combine them again"
+    refactor must edit this test AND re-verify against the prod
+    DiskFullError that motivated each split."""
     from services import feed_ranker
 
-    captured: list[str] = []
+    captured: list[tuple[str, tuple]] = []
 
     class _CapturingPool:
+        def __init__(self, bot_count):
+            self.bot_count = bot_count
+
         async def fetch(self, sql, *args):
-            captured.append(sql.strip().split("\n")[0])
+            first = sql.strip().split("\n")[0]
+            captured.append((first, args))
+            if "FROM ai_influencers" in sql and "is_active" in sql:
+                return [
+                    {
+                        "id": f"bot{i}",
+                        "age_sec": 0.0,
+                        "conv_count": 0.0,
+                        "msg_count": 0.0,
+                    }
+                    for i in range(self.bot_count)
+                ]
             return []
 
-    asyncio.run(feed_ranker._fetch_signals(_CapturingPool()))
-    # 4 separate fetch() calls, one per chunk.
+    # 1 bot ⇒ 1 chunk ⇒ 1 + 3 = 4 fetches; chunk args carry the bot_id
+    # list so the SQL's ANY($1) clause has something to bind to.
+    captured.clear()
+    asyncio.run(feed_ranker._fetch_signals(_CapturingPool(1)))
     assert len(captured) == 4
+    # The 3 chunk fetches must have been parameterized (no $1-less call
+    # would hit the SQL's WHERE ... = ANY($1) clause).
+    chunk_calls = [c for c in captured[1:]]
+    for _sql, args in chunk_calls:
+        assert args and isinstance(args[0], list)
+
+    # CHUNK_SIZE+1 bots ⇒ 2 chunks ⇒ 1 + 2*3 = 7 fetches.
+    captured.clear()
+    asyncio.run(
+        feed_ranker._fetch_signals(
+            _CapturingPool(feed_ranker.CHUNK_SIZE + 1)
+        )
+    )
+    assert len(captured) == 1 + 2 * 3
 
 
 def test_fetch_signals_merges_chunks_by_bot_id():
