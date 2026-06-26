@@ -15,6 +15,34 @@ _redis_pubsub_task: asyncio.Task | None = None
 REDIS_CHANNEL = "ws_events"
 
 
+# Background-task retention set. asyncio holds only a WEAK reference to
+# tasks created via `create_task`; if the local strong reference goes
+# out of scope before the coroutine completes, the GC kills the task
+# mid-flight and Python emits "Task was destroyed but it is pending!"
+# (Sentry issues #40/42/46/48/53/61/91/229/242/243 — ~190 events / 24h
+# pre-fix). The mobile user silently misses the broadcast.
+#
+# Fix per the Python docs' own recommendation
+# (https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task):
+# keep a strong reference in a set + auto-discard via a done-callback.
+# Use `spawn()` below at every fire-and-forget site instead of bare
+# `asyncio.create_task(...)`.
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+
+def spawn(coro) -> asyncio.Task:
+    """Fire-and-forget task wrapper with strong-reference retention.
+
+    Replaces `asyncio.create_task(coro)` at every site where the caller
+    doesn't await the result. Keeps the task alive against the GC so
+    broadcasts + push notifications + memory-extract jobs actually
+    finish."""
+    task = asyncio.create_task(coro)
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+    return task
+
+
 async def connect(user_id: str, websocket: WebSocket):
     async with _lock:
         if user_id not in _connections:
