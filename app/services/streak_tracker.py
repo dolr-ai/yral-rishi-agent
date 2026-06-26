@@ -24,77 +24,133 @@ logger = logging.getLogger(__name__)
 STREAK_UPDATE_INTERVAL_SEC = 24 * 60 * 60  # daily
 INITIAL_DELAY_SEC = 5 * 60  # 5 min after startup
 
+# Chunk + per-statement timeout. 2026-06-26: a single big UPDATE locked
+# enough conversation rows to deadlock with concurrent send_message
+# inserts (which fire the on-message trigger that updates
+# conversations.updated_at) — Sentry #246 DeadlockDetectedError + #124
+# TimeoutError. Fix: process in deterministically-ordered chunks under
+# FOR UPDATE SKIP LOCKED, with a 10s per-statement cap so a single hot
+# row never stalls the whole pass. Rows we can't lock this tick get
+# picked up next tick — daily cadence, the lag is invisible.
+CHUNK_SIZE = 500
+STATEMENT_TIMEOUT_MS = 10_000
+
+# Single source of truth for the streak math. Used by both update + reset
+# passes via string formatting so the SQL stays readable and the CASE
+# doesn't drift between the two columns it feeds (current + longest).
+_NEW_STREAK_CASE = """
+        CASE
+            WHEN input.last_user_date IS NULL THEN 0
+            WHEN c.last_streak_date IS NULL THEN 1
+            WHEN input.last_user_date = c.last_streak_date THEN c.current_streak_days
+            WHEN input.last_user_date = c.last_streak_date + INTERVAL '1 day' THEN c.current_streak_days + 1
+            WHEN input.last_user_date > c.last_streak_date + INTERVAL '1 day' THEN 1
+            ELSE c.current_streak_days
+        END
+"""
+
+_UPDATE_CHUNK_SQL = f"""
+    WITH locked AS (
+        SELECT id FROM conversations
+        WHERE id = ANY($1::varchar[])
+        ORDER BY id
+        FOR UPDATE SKIP LOCKED
+    ),
+    input AS (
+        SELECT id, last_user_date
+        FROM unnest($1::varchar[], $2::date[]) AS t(id, last_user_date)
+    )
+    UPDATE conversations c
+    SET current_streak_days = {_NEW_STREAK_CASE},
+        longest_streak_days = GREATEST(c.longest_streak_days, {_NEW_STREAK_CASE}),
+        last_streak_date = COALESCE(input.last_user_date, c.last_streak_date)
+    FROM input
+    JOIN locked ON locked.id = input.id
+    WHERE c.id = locked.id
+"""
+
+_RESET_CHUNK_SQL = """
+    WITH locked AS (
+        SELECT id FROM conversations
+        WHERE id = ANY($1::varchar[])
+        ORDER BY id
+        FOR UPDATE SKIP LOCKED
+    )
+    UPDATE conversations c
+    SET current_streak_days = 0
+    FROM locked
+    WHERE c.id = locked.id
+      AND c.current_streak_days > 0
+"""
+
+
+def _parse_count(result: str) -> int:
+    """asyncpg's execute() returns the command tag, e.g. 'UPDATE 42'."""
+    try:
+        return int(result.split()[-1])
+    except (ValueError, IndexError):
+        logger.warning("streak_tracker: could not parse asyncpg result %r", result)
+        return 0
+
 
 async def update_all_streaks_once(pool) -> dict:
     """One pass: for every conversation with any user activity in the last
     365 days, recompute streak fields from the messages history.
 
-    Returns a stats dict (used by the loop + smoke tests).
+    Returns {"updated": N, "reset_to_zero": M}. With SKIP LOCKED, N/M
+    count rows we successfully locked + touched this pass; rows held by
+    a concurrent writer roll forward to the next pass.
     """
-    # We do this in one big SQL pass — cheap, atomic, no cross-row Python loop.
-    # The CTE `latest` computes the latest user-message DATE per conversation;
-    # the UPDATE rolls the streak forward / resets / keeps based on the gap.
-    result = await pool.execute(
+    # Step 1: snapshot per-conversation last user-message date. Pure read
+    # on messages — no conversations lock held, no deadlock surface.
+    rows = await pool.fetch(
         """
-        WITH latest AS (
-            SELECT
-                m.conversation_id,
-                MAX(m.created_at::date) AS last_user_date
-            FROM messages m
-            WHERE m.role = 'user'
-              AND m.created_at > NOW() - INTERVAL '365 days'
-            GROUP BY m.conversation_id
-        )
-        UPDATE conversations c
-        SET
-            current_streak_days = CASE
-                WHEN latest.last_user_date IS NULL THEN 0
-                WHEN c.last_streak_date IS NULL THEN 1
-                WHEN latest.last_user_date = c.last_streak_date THEN c.current_streak_days
-                WHEN latest.last_user_date = c.last_streak_date + INTERVAL '1 day' THEN c.current_streak_days + 1
-                WHEN latest.last_user_date > c.last_streak_date + INTERVAL '1 day' THEN 1
-                ELSE c.current_streak_days
-            END,
-            longest_streak_days = GREATEST(
-                c.longest_streak_days,
-                CASE
-                    WHEN latest.last_user_date IS NULL THEN 0
-                    WHEN c.last_streak_date IS NULL THEN 1
-                    WHEN latest.last_user_date = c.last_streak_date THEN c.current_streak_days
-                    WHEN latest.last_user_date = c.last_streak_date + INTERVAL '1 day' THEN c.current_streak_days + 1
-                    WHEN latest.last_user_date > c.last_streak_date + INTERVAL '1 day' THEN 1
-                    ELSE c.current_streak_days
-                END
-            ),
-            last_streak_date = COALESCE(latest.last_user_date, c.last_streak_date)
-        FROM latest
-        WHERE c.id = latest.conversation_id
+        SELECT m.conversation_id AS id,
+               MAX(m.created_at::date) AS last_user_date
+        FROM messages m
+        WHERE m.role = 'user'
+          AND m.created_at > NOW() - INTERVAL '365 days'
+        GROUP BY m.conversation_id
+        ORDER BY m.conversation_id
         """
     )
-    # result is "UPDATE N"
-    try:
-        updated = int(result.split()[-1])
-    except (ValueError, IndexError):
-        logger.warning("streak_tracker: could not parse asyncpg result %r", result)
-        updated = -1
 
-    # Reset streaks for conversations whose user hasn't sent in > 1 day —
-    # the JOIN above only touches rows in `latest`, so dormant conversations
-    # need a second pass.
-    result2 = await pool.execute(
+    updated = 0
+    for i in range(0, len(rows), CHUNK_SIZE):
+        chunk = rows[i : i + CHUNK_SIZE]
+        ids = [r["id"] for r in chunk]
+        dates = [r["last_user_date"] for r in chunk]
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    f"SET LOCAL statement_timeout = {STATEMENT_TIMEOUT_MS}"
+                )
+                updated += _parse_count(
+                    await conn.execute(_UPDATE_CHUNK_SQL, ids, dates)
+                )
+
+    # Step 2: reset streaks for dormant conversations (last_streak_date
+    # older than 1 day, or NULL). Snapshot the candidate IDs first, then
+    # chunk + SKIP LOCKED same as the forward pass.
+    stale_rows = await pool.fetch(
         """
-        UPDATE conversations
-        SET current_streak_days = 0
+        SELECT id FROM conversations
         WHERE current_streak_days > 0
           AND (last_streak_date IS NULL
                OR last_streak_date < CURRENT_DATE - INTERVAL '1 day')
+        ORDER BY id
         """
     )
-    try:
-        reset = int(result2.split()[-1])
-    except (ValueError, IndexError):
-        logger.warning("streak_tracker: could not parse asyncpg result %r", result2)
-        reset = -1
+    reset = 0
+    for i in range(0, len(stale_rows), CHUNK_SIZE):
+        chunk = stale_rows[i : i + CHUNK_SIZE]
+        ids = [r["id"] for r in chunk]
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    f"SET LOCAL statement_timeout = {STATEMENT_TIMEOUT_MS}"
+                )
+                reset += _parse_count(await conn.execute(_RESET_CHUNK_SQL, ids))
 
     return {"updated": updated, "reset_to_zero": reset}
 

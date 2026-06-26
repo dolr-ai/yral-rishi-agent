@@ -82,10 +82,82 @@ def test_streak_loop_logs_exception_type_and_repr():
 
 def test_asyncpg_result_parse_failure_is_logged():
     """When pool.execute returns something we can't parse as 'UPDATE N',
-    don't silently fall through to -1 — log the raw result so we can
-    see what asyncpg actually sent."""
+    don't silently fall through — log the raw result so we can see what
+    asyncpg actually sent.
+
+    2026-06-26: the two parse sites were folded into _parse_count() as
+    part of the deadlock-fix refactor; same safety property, one site."""
     src = _read_streak_source()
-    # Both parse sites (updated + reset) must warn.
-    assert src.count("could not parse asyncpg result") >= 2, (
-        "both result/result2 parse fallbacks must log the raw value"
+    assert "could not parse asyncpg result" in src
+    assert "def _parse_count" in src, (
+        "the shared parse helper must exist so both update + reset paths "
+        "get the same logging on parse failure"
+    )
+
+
+# ─── 2026-06-26 — deadlock-fix invariants (Sentry #124 + #246) ──────────
+
+
+def test_chunked_under_500_to_avoid_lock_storm():
+    """The whole point of the deadlock fix is bounding the lock set per
+    transaction. If CHUNK_SIZE drifts up to thousands, the deadlock
+    pattern returns."""
+    from services.streak_tracker import CHUNK_SIZE
+
+    assert 0 < CHUNK_SIZE <= 500, (
+        "CHUNK_SIZE must stay ≤500 — larger batches recreate the lock "
+        "storm that caused Sentry #124 (TimeoutError) + #246 "
+        "(DeadlockDetectedError) on 2026-06-24"
+    )
+
+
+def test_per_statement_timeout_caps_a_hot_row():
+    """A 10s ceiling per statement prevents a single hot conversation
+    row from stalling the whole pass for the original 5-minute
+    statement-timeout window."""
+    from services.streak_tracker import STATEMENT_TIMEOUT_MS
+
+    assert STATEMENT_TIMEOUT_MS <= 30_000, (
+        "STATEMENT_TIMEOUT_MS must stay ≤30s — bigger windows lose the "
+        "guarantee that a hot lock can't stall the whole streak pass"
+    )
+    assert STATEMENT_TIMEOUT_MS >= 1_000, (
+        "and ≥1s so normal-case chunks don't trip the cap"
+    )
+
+
+def test_update_sql_uses_skip_locked_with_deterministic_order():
+    """ORDER BY id + FOR UPDATE SKIP LOCKED is the deadlock-avoidance
+    contract. Deterministic order = all writers take locks in the same
+    sequence, so no cycle. SKIP LOCKED = we yield to concurrent writers
+    instead of waiting (those rows roll forward to the next 24h pass)."""
+    from services.streak_tracker import _UPDATE_CHUNK_SQL, _RESET_CHUNK_SQL
+
+    for sql in (_UPDATE_CHUNK_SQL, _RESET_CHUNK_SQL):
+        normalized = " ".join(sql.split()).lower()
+        assert "order by id" in normalized
+        assert "for update skip locked" in normalized
+
+
+def test_chunk_runs_inside_transaction_with_local_timeout():
+    """SET LOCAL only takes effect inside a transaction; outside one it
+    becomes a no-op session setting that could leak across pool checkouts.
+    Pin both."""
+    src = _read_streak_source()
+    assert "async with conn.transaction():" in src
+    assert "SET LOCAL statement_timeout" in src
+
+
+def test_snapshot_pass_is_read_only_no_lock():
+    """The Step-1 fetch on `messages` must not hold any conversations
+    lock — that's the whole reason we split it out from the big UPDATE.
+    Pin that the snapshot query is a pure SELECT against `messages`."""
+    src = _read_streak_source()
+    # Look for the fetch that reads from messages without FOR UPDATE.
+    idx = src.find("FROM messages m")
+    assert idx > 0, "the messages snapshot read must be a plain SELECT"
+    window = src[idx : idx + 400].upper()
+    assert "FOR UPDATE" not in window, (
+        "the messages snapshot read must NOT hold a lock — that brings "
+        "the deadlock back"
     )
