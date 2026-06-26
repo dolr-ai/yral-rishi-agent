@@ -70,6 +70,14 @@ _PER_LOOP_KEYS = {
     # Disabling the loop drops the M2a endpoint back to its
     # fallback_select path (no mobile-visible failure).
     "feed_ranker": "ENABLE_FEED_RANKER_LOOP",
+    # Brief task 3 (2026-06-26) — L0 deterministic per-reply eval +
+    # storage. Pure-Python (no LLM calls), fire-and-forget after each
+    # assistant reply lands. Defaults OFF — Rishi flips it on post-
+    # deploy once migration 044 has been applied and sample rows look
+    # sane. "_l0" suffix in the slug leaves room for future tiers (L1
+    # LLM judge, L2 strong-judge calibration, L3 golden-set ritual)
+    # without slug collision.
+    "reply_eval_l0": "ENABLE_REPLY_EVAL_L0",
 }
 
 
@@ -93,6 +101,11 @@ _DEFAULT_OFF_LOOPS: frozenset[str] = frozenset(
         # bots, then sets ENABLE_INFLUENCER_CLASSIFICATION_LOOP=true to
         # activate the full backfill.
         "influencer_classification",
+        # Brief task 3 (2026-06-26) — L0 eval ships dormant so the
+        # deploy can land before migration 044 is applied. Rishi flips
+        # ENABLE_REPLY_EVAL_L0=true once the table exists AND the first
+        # sample rows look sane on /admin/dashboard.
+        "reply_eval_l0",
     }
 )
 

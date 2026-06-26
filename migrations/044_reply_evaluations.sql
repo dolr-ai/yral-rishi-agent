@@ -1,0 +1,57 @@
+-- Brief task 3 (2026-06-26 chat-quality observability) — L0 deterministic
+-- per-reply eval storage.
+--
+-- One row per assistant reply, written fire-and-forget by services/reply_eval
+-- after chat-send returns. No LLM calls in the eval; pure regex / counting.
+-- The point is "see problems automatically" — leak flags (scaffolding bleed-
+-- through), 4-gram repetition vs the bot's last K=5 replies, emoji count,
+-- length, ends-in-question. C-L1+L2+L3 (LLM judges, golden set) build on
+-- top of this.
+--
+-- Pg_dump taken before this migration runs:
+--   pre_obs_task3_l0_eval_20260626T102624Z.pgdump
+--   626 MB on rishi-5, SHA 37e8ff3e…
+--   Per CLAUDE.md rule 9 before any schema change.
+--
+-- Additive only: new table, no ALTER on existing tables. Migration is
+-- applied MANUALLY post-merge — the deploy does NOT auto-run it.
+
+CREATE TABLE IF NOT EXISTS reply_evaluations (
+    id              BIGSERIAL PRIMARY KEY,
+    message_id      VARCHAR(255) NOT NULL
+                     REFERENCES messages(id) ON DELETE CASCADE,
+    bot_id          VARCHAR(255) NOT NULL,
+    user_id         VARCHAR(255) NOT NULL,
+    text            TEXT NOT NULL,
+    -- Per-leak-pattern booleans as a flat jsonb so adding a new pattern
+    -- in a later PR is a write-side change only, no ALTER COLUMN.
+    leak_flags      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    -- 4-gram Jaccard overlap with the bot's last K=5 replies, [0..1].
+    -- 0 = no overlap; 1 = identical n-gram sets.
+    repetition_score DOUBLE PRECISION NOT NULL DEFAULT 0,
+    emoji_count     INTEGER NOT NULL DEFAULT 0,
+    char_length     INTEGER NOT NULL DEFAULT 0,
+    ends_in_question BOOLEAN NOT NULL DEFAULT false,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    -- One row per assistant message — fire-and-forget retries (route
+    -- restart, etc.) collapse to a no-op via ON CONFLICT DO NOTHING.
+    UNIQUE (message_id)
+);
+
+-- Per-bot recent: feeds the repetition_score query (look up bot's
+-- last K replies for n-gram comparison) and the "show me this bot's
+-- recent L0 flags" admin drill-down.
+CREATE INDEX IF NOT EXISTS idx_reply_evaluations_bot_recent
+    ON reply_evaluations (bot_id, created_at DESC);
+
+-- Cross-bot daily aggregation for the dashboard tile (24h leak count
+-- + repetition histogram). A simple created_at DESC index is enough
+-- — the daily window is ~1k-10k rows.
+CREATE INDEX IF NOT EXISTS idx_reply_evaluations_created
+    ON reply_evaluations (created_at DESC);
+
+-- Retention: 90 days. The cheapest implementation is a daily
+-- `DELETE FROM reply_evaluations WHERE created_at < NOW() - INTERVAL '90 days'`
+-- run by a future cron/background loop (NOT in this PR — explicitly
+-- listed as a follow-up in the PR body). Until that lands, the table
+-- grows ~5-10MB/day on current traffic, which is fine for months.

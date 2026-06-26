@@ -254,6 +254,73 @@ async def _llm_routing_tile(pool) -> dict:
         }
 
 
+async def _l0_eval_tile(pool) -> dict:
+    """Brief task 3 (2026-06-26) — L0 deterministic eval summary over
+    the last 24h. Shows total replies evaluated, count with any leak
+    flag (scaffolding / "as an AI" / planning bleed), and the median
+    repetition score across the window. Empty until Rishi flips
+    ENABLE_REPLY_EVAL_L0=true post-migration."""
+    try:
+        from kill_switch import is_enabled
+        from repositories import reply_eval_repo
+
+        if not is_enabled("reply_eval_l0"):
+            return {
+                "title": "L0 reply eval (24h)",
+                "status": "off",
+                "primary": "Loop dormant",
+                "details": (
+                    "ENABLE_REPLY_EVAL_L0=false. Apply migration 044, "
+                    "then flip ON to start collecting per-reply records."
+                ),
+                "link": "/admin/dashboard",
+            }
+        s = await reply_eval_repo.summary_24h(pool)
+        if s["total"] == 0:
+            return {
+                "title": "L0 reply eval (24h)",
+                "status": "off",
+                "primary": "0 replies evaluated",
+                "details": (
+                    "Loop is on but no rows yet — check the next reply "
+                    "lands within ~1m. Migration 044 must be applied."
+                ),
+                "link": "/admin/dashboard",
+            }
+        leak_pct = (s["with_any_leak"] / s["total"] * 100) if s["total"] else 0.0
+        # Status: ok if no leaks, warn if a few, fail if >5% of replies
+        # carry a leak (the bot is bleeding scaffolding into prod text).
+        if s["with_any_leak"] == 0:
+            status = "ok"
+        elif leak_pct < 5.0:
+            status = "warn"
+        else:
+            status = "fail"
+        primary = (
+            f"{s['total']} evaluated · {s['with_any_leak']} with leak ({leak_pct:.1f}%)"
+        )
+        details = (
+            f"median 4-gram overlap {s['median_repetition']:.2f}; "
+            f"avg {s['avg_repetition']:.2f}; latest "
+            f"{reply_eval_repo.humanize_age_seconds(s['most_recent'])}"
+        )
+        return {
+            "title": "L0 reply eval (24h)",
+            "status": status,
+            "primary": primary,
+            "details": details,
+            "link": "/admin/dashboard",
+        }
+    except Exception as e:
+        return {
+            "title": "L0 reply eval (24h)",
+            "status": "fail",
+            "primary": "tile error",
+            "details": str(e)[:200],
+            "link": "/admin/dashboard",
+        }
+
+
 async def _email_digest_tile(pool) -> dict:
     """Last digest run summary — tells Rishi at a glance whether
     today's 02:30 UTC cron fired AND whether SMTP delivered."""
@@ -418,6 +485,7 @@ async def admin_dashboard(request: Request):
         await _etl_tile(pool),
         await _integrity_tile(pool),
         await _llm_routing_tile(pool),
+        await _l0_eval_tile(pool),
         await _email_digest_tile(pool),
         await _rate_limit_tile(pool),
         await _discovery_pins_tile(pool),

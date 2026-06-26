@@ -837,6 +837,22 @@ async def send_message(
         )
     )
 
+    # Brief task 3 (2026-06-26) — L0 eval fire-and-forget. Gated by
+    # kill_switch reply_eval_l0 (defaults OFF until Rishi flips it
+    # post-migration). spawn() retains the task so the GC can't kill
+    # it mid-flight (same fix as the WS/memory/push tasks above).
+    from services import reply_eval
+
+    websocket_manager.spawn(
+        reply_eval.run_and_persist(
+            pool,
+            message_id=assistant_msg["id"],
+            bot_id=influencer_id,
+            user_id=user_id,
+            text=llm_result.content,
+        )
+    )
+
     return SendMessageResponse(
         user_message=ChatMessage(**_format_message(user_msg)),
         assistant_message=ChatMessage(**_format_message(assistant_msg)),
@@ -1088,6 +1104,21 @@ async def send_message_stream(
                     assistant_response=full_text,
                     message_id=user_msg["id"],
                     is_nsfw=is_nsfw,
+                )
+            )
+
+            # Brief task 3 (2026-06-26) — L0 eval fire-and-forget.
+            # Symmetric with the non-streaming path's eval call so
+            # both reply routes feed the same dashboard tile.
+            from services import reply_eval as _reply_eval
+
+            websocket_manager.spawn(
+                _reply_eval.run_and_persist(
+                    pool,
+                    message_id=assistant_msg["id"],
+                    bot_id=influencer_id,
+                    user_id=user_id,
+                    text=full_text,
                 )
             )
 
