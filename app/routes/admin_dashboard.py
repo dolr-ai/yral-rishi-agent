@@ -254,6 +254,60 @@ async def _llm_routing_tile(pool) -> dict:
         }
 
 
+async def _llm_primary_failures_tile(pool) -> dict:
+    """Brief task 4 (2026-06-26) — per-process primary-provider failure
+    counts over the last hour (Sentry holds the cross-replica view; this
+    tile is the at-a-glance per-replica signal). Gates task 9 fallback
+    removal: once these counts are routinely zero AND a real Sentry
+    alert has fired at least once, dropping the soft-failure fallback
+    is safe.
+
+    Per-replica caveat: each worker maintains its own in-memory counter,
+    so the dashboard shows the count from whichever replica served the
+    request. The Sentry alert rule
+      (level:warning AND message:'LLM fallback activated' > 10 / 5 min)
+    is the cross-replica page-Rishi signal."""
+    try:
+        from services import llm_registry
+
+        counts = llm_registry.primary_failure_counts_last_hour()
+        if not counts:
+            return {
+                "title": "LLM primary-provider failures (1h, this replica)",
+                "status": "ok",
+                "primary": "0 fallback activations",
+                "details": (
+                    "No primary→fallback transitions on this replica in the "
+                    "last hour. Sentry holds the cross-replica view."
+                ),
+                "link": "/admin/dashboard",
+            }
+        total = sum(counts.values())
+        # Show top offenders so the operator can identify the failing
+        # process at a glance without leaving the dashboard.
+        lines = sorted(
+            ((f"{p} ({prov})", n) for (p, prov), n in counts.items()),
+            key=lambda kv: kv[1],
+            reverse=True,
+        )
+        details = " · ".join(f"{label}: {n}" for label, n in lines[:6])[:400]
+        return {
+            "title": "LLM primary-provider failures (1h, this replica)",
+            "status": "warn" if total <= 5 else "fail",
+            "primary": f"{total} fallback activation(s)",
+            "details": details,
+            "link": "/admin/dashboard",
+        }
+    except Exception as e:
+        return {
+            "title": "LLM primary-provider failures (1h, this replica)",
+            "status": "fail",
+            "primary": "tile error",
+            "details": str(e)[:200],
+            "link": "/admin/dashboard",
+        }
+
+
 async def _email_digest_tile(pool) -> dict:
     """Last digest run summary — tells Rishi at a glance whether
     today's 02:30 UTC cron fired AND whether SMTP delivered."""
@@ -418,6 +472,7 @@ async def admin_dashboard(request: Request):
         await _etl_tile(pool),
         await _integrity_tile(pool),
         await _llm_routing_tile(pool),
+        await _llm_primary_failures_tile(pool),
         await _email_digest_tile(pool),
         await _rate_limit_tile(pool),
         await _discovery_pins_tile(pool),
