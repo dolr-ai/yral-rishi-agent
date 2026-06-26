@@ -69,6 +69,7 @@ def _backoff_cadence(base_hours: int, unanswered_count: int) -> int:
     multiplier = 1 << (unanswered_count - 1)
     return min(base_hours * multiplier, SKILL_CHECKIN_BACKOFF_CAP_HOURS)
 
+
 TYPE_HINTS = {
     "question": "Ask the user a curious, specific question — something you "
     "genuinely want to know about them or their day.",
