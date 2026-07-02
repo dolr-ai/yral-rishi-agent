@@ -38,6 +38,29 @@ async def get_by_name(pool, name: str) -> dict | None:
     return _row_to_dict(row) if row else None
 
 
+async def get_active_nsfw_id_by_name(pool, name: str) -> str | None:
+    """Return the influencer_id for a name filtered to `is_active='active'`
+    AND `is_nsfw=TRUE`. Used by track 2b's /spicy/context to resolve
+    amorae's `bot_handle` URL param.
+
+    The catalog has multiple "Tara" rows today — only ONE is the
+    amorae-facing NSFW Tara (`taaarraaah`). The is_nsfw filter picks
+    the right row regardless of which "tara" comes through the URL,
+    and documents the invariant that amorae only ever sees is_nsfw
+    bots. Deterministic ORDER BY created_at ASC LIMIT 1 breaks any
+    future duplicate deterministically."""
+    row = await pool.fetchrow(
+        """
+        SELECT id FROM ai_influencers
+        WHERE name = $1 AND is_active = 'active' AND is_nsfw = TRUE
+        ORDER BY created_at ASC
+        LIMIT 1
+        """,
+        name,
+    )
+    return row["id"] if row else None
+
+
 async def get_by_id_or_name(pool, id_or_name: str) -> dict | None:
     row = await pool.fetchrow(
         """

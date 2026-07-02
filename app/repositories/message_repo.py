@@ -208,6 +208,44 @@ async def list_by_conversation(
     return [_row_to_dict(r) for r in rows]
 
 
+async def list_recent_for_spicy_context(
+    pool, conversation_id: str, limit: int
+) -> list[dict]:
+    """Track 2b — return the last `limit` (role, content) rows for the
+    conversation, oldest-first, filtered to real text messages the web
+    surface can seed context from.
+
+    Filter: role IN ('user','assistant') AND content IS NOT NULL AND
+    content <> '' — strips system rows + empty/media-only rows that
+    would be useless context. Content-level SFW tightening lands with
+    track 2c; for pre-2c messages this is a spicy-going-to-spicy read
+    within the same user↔bot relationship (Level 2 concern is WRITE
+    isolation, not READ), so no user-facing risk.
+
+    Oldest-first matches typical chat-history ordering — amorae feeds
+    the list straight into its own context builder without reversing.
+    """
+    # SELECT with limit N off the newest end, then reverse for oldest-
+    # first. Same shape as get_recent_for_context but with the
+    # role/content filter baked in so amorae never sees rows it can't
+    # use.
+    rows = await pool.fetch(
+        """
+        SELECT role, content
+        FROM messages
+        WHERE conversation_id = $1
+          AND role IN ('user', 'assistant')
+          AND content IS NOT NULL
+          AND content <> ''
+        ORDER BY created_at DESC
+        LIMIT $2
+        """,
+        conversation_id,
+        limit,
+    )
+    return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
+
+
 async def get_recent_for_context(
     pool, conversation_id: str, limit: int = 11
 ) -> list[dict]:
