@@ -27,14 +27,21 @@
 -- Migration is applied MANUALLY post-merge — the deploy does NOT
 -- auto-run it. Command in the PR body.
 --
--- Squawk compliance notes (follow the PR #426 conventions):
---   - statement_timeout cap on the DDL.
+-- Squawk compliance notes:
+--   - BOTH lock_timeout AND statement_timeout must be set before any
+--     potentially-slow statement (CREATE INDEX included, per the
+--     migration 041 pattern — trending_overrides used the same pair).
+--     PR #427 first-round squawk failure caught the missing
+--     lock_timeout: migration 044 didn't hit this because its indexes
+--     were inline in the CREATE TABLE, but 045 has a separate CREATE
+--     INDEX for expires_at which triggers the rule.
 --   - PK is text (user_id) so IDENTITY syntax doesn't apply — user_id
 --     is the natural key from the JWT `sub` claim, mirrors every
 --     other v2 table.
 --   - No INTEGER columns to widen: only text, timestamptz, inet.
 
-SET statement_timeout = '5s';
+SET lock_timeout = '3s';
+SET statement_timeout = '60s';
 
 CREATE TABLE IF NOT EXISTS user_nsfw_consent (
     user_id       text        PRIMARY KEY,
