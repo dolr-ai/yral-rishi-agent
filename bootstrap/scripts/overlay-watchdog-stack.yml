@@ -1,0 +1,65 @@
+# Overlay watchdog — two independent checks in one Swarm service:
+#
+#   1. DNS-alias watchdog. Alerts Sentry when a Swarm service alias
+#      goes NXDOMAIN or recovers. Catches the bug we hit 2026-06-22:
+#      rishi-4 services restarted (likely Saikat's weekly Monday
+#      cluster update), and patroni-rishi-4 lost its overlay DNS alias
+#      for 8 hours.
+#
+#   2. Replica-drift watchdog (2026-07-03 extension). Reads Docker
+#      Swarm services via /var/run/docker.sock and alerts when a
+#      service stays below its desired replica count past the
+#      threshold. Catches the 2026-06-29 langfuse-web wedged-task
+#      class of failure — 0 replicas = no alias to lose = the DNS
+#      check misses it.
+#
+# The docker.sock mount widens the trust boundary: this container
+# gets read access to every service, task, container, and secret spec
+# on the node. Mitigations: (a) mount is :ro; (b) placement pins to
+# manager nodes so worker escalation still needs a manager compromise;
+# (c) the watchdog is our own small + reviewable code, no third-party
+# containers; (d) SENTRY_DSN is the only outbound path — no shell,
+# no exec, no writeback.
+
+version: "3.9"
+
+services:
+
+  overlay-watchdog:
+    image: ghcr.io/dolr-ai/yral-overlay-dns-watchdog:latest
+    networks:
+      - yral-v2-data-plane
+    volumes:
+      # RO Docker socket — needed for the replica-drift check to list
+      # services + inspect task states. See docstring above.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      # DNS check (unchanged from the pre-2026-07-03 shape)
+      WATCHDOG_INTERVAL_SEC: "300"
+      # Replica-drift check
+      WATCHDOG_REPLICA_INTERVAL_SEC: "60"
+      WATCHDOG_REPLICA_DRIFT_ALERT_SEC: "300"
+      WATCHDOG_REPLICA_SERVICES_FILTER: "yral-"
+      SENTRY_DSN: ${SENTRY_DSN:?SENTRY_DSN must be set}
+      SENTRY_ENVIRONMENT: production
+    deploy:
+      mode: replicated
+      replicas: 1
+      # docker.sock is only present on manager nodes AND we're
+      # specifically reading service/task state, which requires
+      # manager access. Pin the placement so the scheduler doesn't
+      # try to land this on a worker.
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: any
+        delay: 10s
+        window: 60s
+      resources:
+        limits:    { cpus: "0.1", memory: 128M }
+        reservations: { cpus: "0.01", memory: 32M }
+
+networks:
+  yral-v2-data-plane:
+    external: true
