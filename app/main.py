@@ -39,6 +39,7 @@ from routes.media import router as media_router
 from routes.soul_file import router as soul_file_router
 from routes.memories import router as memories_router
 from routes.skills import router as skills_router
+from routes.spicy_context import router as spicy_context_router
 from routes.spicy_handoff import router as spicy_handoff_router
 from routes.user_nsfw_consent import router as user_nsfw_consent_router
 from routes.websocket import router as ws_router
@@ -569,6 +570,7 @@ app.include_router(wizard_router)
 app.include_router(earnings_router)
 app.include_router(memories_router)
 app.include_router(skills_router)
+app.include_router(spicy_context_router)
 app.include_router(spicy_handoff_router)
 app.include_router(user_nsfw_consent_router)
 app.include_router(ws_router)
