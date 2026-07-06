@@ -53,9 +53,12 @@ def test_generate_batch_routes_replicate_ref_to_the_model_itself():
     assert '"/" in lora_weights_url' in body, (
         "model-ref detection removed — the ostris-LoRA path will regress"
     )
-    # The model-ref branch assigns `model = lora_weights_url` — the LoRA
-    # ref itself becomes the target model, no `lora_weights` param sent
-    assert "model = lora_weights_url" in body
+    # The model-ref branch parses the model ref into (model, version)
+    # via .partition(":") so both parts route to _run_prediction. This
+    # replaced the earlier `model = lora_weights_url` line (see the
+    # 2026-07-06 second-pass fix — custom LoRAs need the versioned
+    # endpoint, not the shorthand).
+    assert 'lora_weights_url.partition(":")' in body
 
 
 def test_generate_batch_falls_back_to_nano_banana_pro_when_no_lora():
@@ -79,4 +82,38 @@ def test_generate_batch_documents_the_smoke_test_history():
     )
     assert "2026-07-06" in body, (
         "date anchor missing — history of the fix should stay findable"
+    )
+
+
+def test_generate_batch_splits_version_off_model_ref():
+    """The Replicate model ref for a trained LoRA has the shape
+    `owner/name:VERSION`. Custom-trained models can only be invoked via
+    the VERSIONED endpoint, so generate_batch must split the version
+    out and pass both to _run_prediction. Verified 2026-07-06:
+    seven smoke-test attempts all failed with 404 when the shorthand
+    endpoint was used for a custom LoRA."""
+    body = _slice_generate_batch()
+    assert 'lora_weights_url.partition(":")' in body, (
+        "version split missing — the shorthand endpoint returns 404 "
+        "for user-owned models"
+    )
+    # generate_batch must forward the parsed version to _run_prediction
+    assert "version=version" in body, (
+        "version arg not forwarded — _run_prediction won't know to "
+        "hit the versioned endpoint"
+    )
+
+
+def test_run_prediction_uses_versioned_endpoint_when_version_given():
+    """_run_prediction must route to /v1/models/{model}/versions/{ver}
+    /predictions when a version is provided. Fallback (unversioned) is
+    the shorthand endpoint reserved for official Replicate models."""
+    src = MODULE.read_text()
+    assert "/versions/{version}/predictions" in src, (
+        "versioned endpoint URL missing — custom LoRAs will 404"
+    )
+    # Backwards compat: shorthand endpoint retained for official models
+    assert "/v1/models/{model}/predictions" in src, (
+        "official-model shorthand removed — flux-dev + other official "
+        "callers will break"
     )
