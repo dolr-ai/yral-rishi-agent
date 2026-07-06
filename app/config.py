@@ -88,6 +88,32 @@ MAX_AUDIO_SIZE_BYTES = MAX_AUDIO_SIZE_MB * 1024 * 1024
 REPLICATE_API_TOKEN = _env("REPLICATE_API_TOKEN")
 REPLICATE_MODEL = _env("REPLICATE_MODEL", "black-forest-labs/flux-dev")
 
+# Phase 0 Request Images track B — all knobs hot-editable via env override,
+# Rishi's ADHD-observability rule (§design). LoRA URL is null in Phase 0
+# until Tara's training completes; nano-banana-pro fallback lets the
+# pipeline serve immediately.
+COLLAGE_IMAGE_COUNT = _env_int("COLLAGE_IMAGE_COUNT", 6)
+COLLAGE_THEME_TARA = _env(
+    "COLLAGE_THEME_TARA",
+    "Tara at Capri beach volleyball at golden hour, "
+    "editorial fashion photography, 85mm lens",
+)
+COLLAGE_LORA_WEIGHTS_URL = _env("COLLAGE_LORA_WEIGHTS_URL") or None
+# Estimated marginal cost per generation. Real cost lives in the
+# provider bill; this is what we book into influencer_collages.cost_usd
+# for the daily-budget guard. Nano-banana-pro is ~$0.04, flux-dev-lora
+# is ~$0.03; splits the difference conservatively.
+COLLAGE_COST_PER_IMAGE_USD = _env_float("COLLAGE_COST_PER_IMAGE_USD", 0.04)
+COLLAGE_DAILY_BUDGET_SOFT_USD = _env_float("COLLAGE_DAILY_BUDGET_SOFT_USD", 50.0)
+COLLAGE_DAILY_BUDGET_HARD_USD = _env_float("COLLAGE_DAILY_BUDGET_HARD_USD", 100.0)
+COLLAGE_POLL_TIMEOUT_SEC = _env_int("COLLAGE_POLL_TIMEOUT_SEC", 90)
+COLLAGE_POLL_INTERVAL_SEC = _env_int("COLLAGE_POLL_INTERVAL_SEC", 2)
+# Comma-separated YRAL-team principals who get clear (unblurred)
+# collages during Phase 0. Real billing.yral.com integration is Phase 1.
+YRAL_TEAM_PRINCIPALS = frozenset(
+    p.strip() for p in _env("YRAL_TEAM_PRINCIPALS", "").split(",") if p.strip()
+)
+
 # Push notifications
 METADATA_URL = _env("METADATA_URL", "https://metadata.yral.com")
 METADATA_AUTH_TOKEN = _env("YRAL_METADATA_NOTIFICATION_API_KEY")

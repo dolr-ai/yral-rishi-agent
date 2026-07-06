@@ -47,6 +47,47 @@ async def generate_image_with_reference(
     )
 
 
+async def generate_batch(
+    prompt: str,
+    n: int,
+    lora_weights_url: str | None = None,
+) -> list[str]:
+    """Phase 0 Request Images track B — fire N image generations in
+    parallel for a single collage. Returns the successful URLs; a
+    caller comparing len(result) < n knows the batch was partially
+    blocked (Replicate safety refusal manifests as None → filtered
+    here). image_collage.orchestrate uses that shortfall as the
+    "batch failed content safety" signal per design §2.5.
+
+    When `lora_weights_url` is set, routes through the flux-dev LoRA
+    path for face/body consistency (design §2). Absent = fallback to
+    `nano-banana-pro` (fine-tune-less, useful for CI + first-boot
+    without a trained LoRA yet)."""
+    if not config.REPLICATE_API_TOKEN:
+        return []
+    if lora_weights_url:
+        model = "black-forest-labs/flux-dev"
+        input_data = {
+            "prompt": prompt,
+            "lora_weights": lora_weights_url,
+            "megapixels": "1",
+            "num_inference_steps": 28,
+            "output_format": "jpg",
+            "output_quality": 85,
+        }
+    else:
+        model = "google/nano-banana-pro"
+        input_data = {"prompt": prompt}
+
+    tasks = [_run_prediction(model, input_data) for _ in range(n)]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    urls: list[str] = []
+    for r in results:
+        if isinstance(r, str) and r:
+            urls.append(r)
+    return urls
+
+
 async def _run_prediction(model: str, input_data: dict) -> str | None:
     url = f"https://api.replicate.com/v1/models/{model}/predictions"
 
