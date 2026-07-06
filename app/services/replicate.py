@@ -66,15 +66,43 @@ async def generate_batch(
     if not config.REPLICATE_API_TOKEN:
         return []
     if lora_weights_url:
-        model = "black-forest-labs/flux-dev"
-        input_data = {
-            "prompt": prompt,
-            "lora_weights": lora_weights_url,
-            "megapixels": "1",
-            "num_inference_steps": 28,
-            "output_format": "jpg",
-            "output_quality": 85,
-        }
+        # Two flavors of LoRA reference are both supported:
+        #   1. Replicate model ref (owner/name[:version]) — call the
+        #      trained model DIRECTLY. This is the pattern for
+        #      ostris/flux-dev-lora-trainer outputs (e.g.
+        #      `yral/tara-lora-v1:1004422b…`). Passing them as
+        #      `lora_weights` on base flux-dev silently produces
+        #      wrong-identity outputs (verified 2026-07-06 smoke test
+        #      series v1-v4 — all returned generic western women when
+        #      the Tara LoRA was passed via lora_weights).
+        #   2. HuggingFace/CivitAI repo or a raw safetensors URL —
+        #      pass as `lora_weights` to base flux-dev, the standard
+        #      pattern documented at
+        #      https://replicate.com/black-forest-labs/flux-dev.
+        if lora_weights_url.startswith(("http://", "https://")):
+            _lora_is_model_ref = False
+        else:
+            # owner/name or owner/name:version — treat as model ref
+            _lora_is_model_ref = "/" in lora_weights_url
+        if _lora_is_model_ref:
+            model = lora_weights_url
+            input_data = {
+                "prompt": prompt,
+                "num_inference_steps": 28,
+                "aspect_ratio": "9:16",
+                "output_format": "jpg",
+                "output_quality": 85,
+            }
+        else:
+            model = "black-forest-labs/flux-dev"
+            input_data = {
+                "prompt": prompt,
+                "lora_weights": lora_weights_url,
+                "megapixels": "1",
+                "num_inference_steps": 28,
+                "output_format": "jpg",
+                "output_quality": 85,
+            }
     else:
         model = "google/nano-banana-pro"
         input_data = {"prompt": prompt}
