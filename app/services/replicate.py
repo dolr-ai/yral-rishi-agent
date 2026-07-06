@@ -85,7 +85,21 @@ async def generate_batch(
             # owner/name or owner/name:version — treat as model ref
             _lora_is_model_ref = "/" in lora_weights_url
         if _lora_is_model_ref:
-            model = lora_weights_url
+            # ostris-trained models need the VERSIONED endpoint:
+            # POST /v1/models/{owner}/{name}/predictions is only for
+            # official Replicate models (flux-dev etc.). Custom trained
+            # models get 404 there — the shorthand doesn't exist for
+            # user-owned models. The versioned endpoint
+            # POST /v1/models/{owner}/{name}/versions/{VERSION}/predictions
+            # is the working form. Verified 2026-07-06: same LoRA + same
+            # token, `replicate.run("yral/tara-lora-v1:V", ...)` succeeds
+            # (Python client picks the versioned URL) but our raw httpx
+            # call to the shorthand returned 404 six smoke-test attempts
+            # in a row. This split preserves the shorthand path for
+            # official-model callers and only branches when a colon
+            # (i.e. an explicit version pin) is present.
+            model, _, version = lora_weights_url.partition(":")
+            version = version or None
             input_data = {
                 "prompt": prompt,
                 "num_inference_steps": 28,
@@ -95,6 +109,7 @@ async def generate_batch(
             }
         else:
             model = "black-forest-labs/flux-dev"
+            version = None
             input_data = {
                 "prompt": prompt,
                 "lora_weights": lora_weights_url,
@@ -105,9 +120,10 @@ async def generate_batch(
             }
     else:
         model = "google/nano-banana-pro"
+        version = None
         input_data = {"prompt": prompt}
 
-    tasks = [_run_prediction(model, input_data) for _ in range(n)]
+    tasks = [_run_prediction(model, input_data, version=version) for _ in range(n)]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     urls: list[str] = []
     for r in results:
@@ -116,8 +132,19 @@ async def generate_batch(
     return urls
 
 
-async def _run_prediction(model: str, input_data: dict) -> str | None:
-    url = f"https://api.replicate.com/v1/models/{model}/predictions"
+async def _run_prediction(
+    model: str, input_data: dict, version: str | None = None
+) -> str | None:
+    # Custom trained (user-owned) models require the versioned endpoint.
+    # Official Replicate models get the shorthand /v1/models/{model}/predictions
+    # form, which auto-picks their latest published version.
+    if version:
+        url = (
+            f"https://api.replicate.com/v1/models/{model}"
+            f"/versions/{version}/predictions"
+        )
+    else:
+        url = f"https://api.replicate.com/v1/models/{model}/predictions"
 
     try:
         async with httpx.AsyncClient(timeout=120) as client:
