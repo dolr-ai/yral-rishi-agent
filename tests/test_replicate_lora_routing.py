@@ -47,18 +47,57 @@ def test_generate_batch_routes_replicate_ref_to_the_model_itself():
     """A Replicate model ref (owner/name or owner/name:version) becomes
     the model itself. This is the ostris-trained-LoRA pattern — flux-dev
     is invoked implicitly by the LoRA model, and the LoRA weights are
-    already attached at model-build time."""
+    already attached at model-build time.
+
+    Post-2026-07-07 (Option C hybrid): this path now branches on
+    COLLAGE_HYBRID_MODE. Hybrid=true routes through
+    LoRA-anchor-then-nano-banana-pro; hybrid=false keeps the pure-LoRA
+    behavior. Both branches still parse the ref into (model, version)."""
     body = _slice_generate_batch()
     # Model-ref detection: "/" in value AND not a URL
     assert '"/" in lora_weights_url' in body, (
         "model-ref detection removed — the ostris-LoRA path will regress"
     )
     # The model-ref branch parses the model ref into (model, version)
-    # via .partition(":") so both parts route to _run_prediction. This
-    # replaced the earlier `model = lora_weights_url` line (see the
-    # 2026-07-06 second-pass fix — custom LoRAs need the versioned
-    # endpoint, not the shorthand).
+    # via .partition(":") so both parts route to _run_prediction.
     assert 'lora_weights_url.partition(":")' in body
+
+
+def test_generate_batch_hybrid_uses_lora_anchor_then_nano_banana_pro():
+    """Option C hybrid (Rishi choice 2026-07-07): LoRA generates a
+    per-batch anchor, then nano-banana-pro produces N variations with
+    the anchor as `image_input`. Anchor gives identity durability
+    (LoRA "knows Tara"); nano-banana-pro gives scene quality (Rishi:
+    "best model"). Verified nano-banana-pro schema 2026-07-07:
+    `image_input: array` accepts up to 14 reference images."""
+    body = _slice_generate_batch()
+    # Hybrid mode is gated by config, not hardcoded — so it can be
+    # flipped off as an escape lever if the pipeline regresses.
+    assert "COLLAGE_HYBRID_MODE" in body, (
+        "hybrid-mode config flag removed — no escape lever if the "
+        "pipeline regresses in production"
+    )
+    # Anchor call MUST happen before the batch call and MUST route
+    # through the versioned LoRA endpoint (see _run_prediction test).
+    assert "anchor_url" in body, (
+        "anchor variable name removed — the hybrid pipeline's identity "
+        "lock relies on the anchor being explicit + testable"
+    )
+    # Nano-banana-pro is the batch model in hybrid mode
+    assert '"google/nano-banana-pro"' in body
+    # The anchor MUST be passed via image_input (Replicate schema
+    # 2026-07-07 — up to 14 ref images accepted)
+    assert '"image_input": [anchor_url]' in body, (
+        "anchor is not being passed to nano-banana-pro as image_input "
+        "— hybrid pipeline degenerates to identityless nano-banana-pro"
+    )
+    # Guard: if anchor generation fails, we MUST NOT produce
+    # identity-drifted nano-banana-pro outputs — return empty and let
+    # image_collage mark the batch failed
+    assert "if not anchor_url" in body, (
+        "anchor failure guard removed — a failed anchor would produce "
+        "identity-drifted outputs that ship to users"
+    )
 
 
 def test_generate_batch_falls_back_to_nano_banana_pro_when_no_lora():

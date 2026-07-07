@@ -95,15 +95,36 @@ REPLICATE_MODEL = _env("REPLICATE_MODEL", "black-forest-labs/flux-dev")
 COLLAGE_IMAGE_COUNT = _env_int("COLLAGE_IMAGE_COUNT", 6)
 COLLAGE_THEME_TARA = _env(
     "COLLAGE_THEME_TARA",
-    "Tara at Capri beach volleyball at golden hour, "
-    "editorial fashion photography, 85mm lens",
+    # Suggestive-but-clothed per design §2.5 (in-app collage store
+    # rules — explicit belongs on amorae.ai). Filter-safe vocabulary
+    # per reference_tara_lora_v1.md: nano-banana-pro refuses
+    # lingerie/sheer/boudoir triggers but accepts
+    # "high-fashion swimwear" + "editorial" reliably.
+    "TAARA on a Santorini clifftop infinity pool at blue hour, "
+    "wearing a designer cutout bikini, cinematic sultry pose "
+    "with wind-swept hair, editorial Vogue swimwear photography, "
+    "dramatic Aegean ocean backdrop, 85mm cinematic lens, "
+    "shallow depth of field",
 )
 COLLAGE_LORA_WEIGHTS_URL = _env("COLLAGE_LORA_WEIGHTS_URL") or None
+# Hybrid pipeline (Rishi choice 2026-07-07): when the bot has a LoRA,
+# use it as an IDENTITY ANCHOR — generate one anchor image with the
+# LoRA per batch, then generate the actual N outputs with
+# nano-banana-pro passing the anchor as `image_input`. Rationale:
+# nano-banana-pro produces higher-quality scenes, LoRA guarantees
+# Tara-identity durability. Anchor per batch (not per theme) so
+# today's anchor matches today's theme, giving nano-banana-pro a
+# scene-appropriate reference to preserve identity against.
+# Set false to fall back to the pure-LoRA path (services/replicate.py
+# generate_batch treats it as the pre-hybrid behavior — flux-dev +
+# LoRA for all N).
+COLLAGE_HYBRID_MODE = _env("COLLAGE_HYBRID_MODE", "true").lower() == "true"
 # Estimated marginal cost per generation. Real cost lives in the
 # provider bill; this is what we book into influencer_collages.cost_usd
-# for the daily-budget guard. Nano-banana-pro is ~$0.04, flux-dev-lora
-# is ~$0.03; splits the difference conservatively.
-COLLAGE_COST_PER_IMAGE_USD = _env_float("COLLAGE_COST_PER_IMAGE_USD", 0.04)
+# for the daily-budget guard. Hybrid = 1 flux-dev-lora anchor (~$0.03)
+# + N nano-banana-pro (~$0.04 each), so amortized per-image is ~$0.045
+# for a 6-image batch. Pure LoRA is ~$0.03/img; pure nano is ~$0.04.
+COLLAGE_COST_PER_IMAGE_USD = _env_float("COLLAGE_COST_PER_IMAGE_USD", 0.045)
 COLLAGE_DAILY_BUDGET_SOFT_USD = _env_float("COLLAGE_DAILY_BUDGET_SOFT_USD", 50.0)
 COLLAGE_DAILY_BUDGET_HARD_USD = _env_float("COLLAGE_DAILY_BUDGET_HARD_USD", 100.0)
 COLLAGE_POLL_TIMEOUT_SEC = _env_int("COLLAGE_POLL_TIMEOUT_SEC", 90)
