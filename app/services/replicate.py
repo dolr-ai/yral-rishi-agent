@@ -59,45 +59,78 @@ async def generate_batch(
     here). image_collage.orchestrate uses that shortfall as the
     "batch failed content safety" signal per design §2.5.
 
-    When `lora_weights_url` is set, routes through the flux-dev LoRA
-    path for face/body consistency (design §2). Absent = fallback to
-    `nano-banana-pro` (fine-tune-less, useful for CI + first-boot
-    without a trained LoRA yet)."""
+    Routing (Rishi choice 2026-07-07 — Option C hybrid):
+      1. LoRA model ref + COLLAGE_HYBRID_MODE=true (default): generate
+         ONE anchor image via LoRA versioned endpoint (identity lock)
+         then N nano-banana-pro calls with the anchor as `image_input`
+         (best-model scene quality + identity durability).
+      2. LoRA model ref + hybrid off: fall back to N × flux-dev-LoRA
+         (pre-hybrid behavior, retained as a hot-editable escape).
+      3. LoRA URL (HF/CivitAI/safetensors): N × flux-dev + lora_weights.
+      4. No LoRA: N × nano-banana-pro (pre-LoRA fallback for bots
+         without a trained LoRA yet)."""
     if not config.REPLICATE_API_TOKEN:
         return []
     if lora_weights_url:
-        # Two flavors of LoRA reference are both supported:
-        #   1. Replicate model ref (owner/name[:version]) — call the
-        #      trained model DIRECTLY. This is the pattern for
-        #      ostris/flux-dev-lora-trainer outputs (e.g.
-        #      `yral/tara-lora-v1:1004422b…`). Passing them as
-        #      `lora_weights` on base flux-dev silently produces
-        #      wrong-identity outputs (verified 2026-07-06 smoke test
-        #      series v1-v4 — all returned generic western women when
-        #      the Tara LoRA was passed via lora_weights).
-        #   2. HuggingFace/CivitAI repo or a raw safetensors URL —
-        #      pass as `lora_weights` to base flux-dev, the standard
-        #      pattern documented at
-        #      https://replicate.com/black-forest-labs/flux-dev.
         if lora_weights_url.startswith(("http://", "https://")):
             _lora_is_model_ref = False
         else:
-            # owner/name or owner/name:version — treat as model ref
             _lora_is_model_ref = "/" in lora_weights_url
-        if _lora_is_model_ref:
-            # ostris-trained models need the VERSIONED endpoint:
-            # POST /v1/models/{owner}/{name}/predictions is only for
-            # official Replicate models (flux-dev etc.). Custom trained
-            # models get 404 there — the shorthand doesn't exist for
-            # user-owned models. The versioned endpoint
-            # POST /v1/models/{owner}/{name}/versions/{VERSION}/predictions
-            # is the working form. Verified 2026-07-06: same LoRA + same
-            # token, `replicate.run("yral/tara-lora-v1:V", ...)` succeeds
-            # (Python client picks the versioned URL) but our raw httpx
-            # call to the shorthand returned 404 six smoke-test attempts
-            # in a row. This split preserves the shorthand path for
-            # official-model callers and only branches when a colon
-            # (i.e. an explicit version pin) is present.
+
+        if _lora_is_model_ref and config.COLLAGE_HYBRID_MODE:
+            # OPTION C HYBRID (Rishi choice 2026-07-07, superseding the
+            # 2026-07-06 pure-LoRA smoke-test outcome that first proved
+            # identity durability): LoRA anchor + nano-banana-pro
+            # batch. The LoRA (ostris-trained, e.g. `yral/tara-lora-v1:V`)
+            # guarantees identity — it "knows Tara". Nano-banana-pro is
+            # the highest-quality general scene model but zero-shot
+            # identity drifts on named characters. Solution: generate
+            # ONE anchor via the LoRA with today's theme prompt, then
+            # feed the anchor into nano-banana-pro N times as
+            # `image_input` — nano-banana-pro then preserves the
+            # anchor's identity while producing high-quality variations.
+            # Verified schema 2026-07-07:
+            # google/nano-banana-pro accepts up to 14 reference images
+            # via `image_input: array`. Anchor is prompt-specific
+            # (regenerated per batch) so it always matches today's
+            # theme; caching the anchor across batches would lock us
+            # to yesterday's scene shape.
+            model, _, version = lora_weights_url.partition(":")
+            version = version or None
+            anchor_url = await _run_prediction(
+                model,
+                {
+                    "prompt": prompt,
+                    "num_inference_steps": 28,
+                    "aspect_ratio": "9:16",
+                    "output_format": "jpg",
+                    "output_quality": 85,
+                },
+                version=version,
+            )
+            if not anchor_url:
+                # Anchor generation failed → don't produce identityless
+                # nano-banana-pro outputs; return empty and let
+                # image_collage.orchestrate mark the batch failed
+                # (design §2.5).
+                logger.error(
+                    "Hybrid pipeline: LoRA anchor generation returned None; "
+                    "aborting batch to avoid identity-drifted outputs"
+                )
+                return []
+            model = "google/nano-banana-pro"
+            version = None
+            input_data = {
+                "prompt": prompt,
+                "image_input": [anchor_url],
+                "aspect_ratio": "9:16",
+                "output_format": "jpg",
+            }
+        elif _lora_is_model_ref:
+            # Pure-LoRA fallback (COLLAGE_HYBRID_MODE=false). Same as
+            # the pre-hybrid behavior — N × flux-dev-LoRA via the
+            # versioned endpoint. Kept as a hot-editable escape lever
+            # in case hybrid regresses.
             model, _, version = lora_weights_url.partition(":")
             version = version or None
             input_data = {
@@ -108,6 +141,9 @@ async def generate_batch(
                 "output_quality": 85,
             }
         else:
+            # HF/CivitAI/safetensors URL — pass to flux-dev's
+            # lora_weights param (documented pattern at
+            # https://replicate.com/black-forest-labs/flux-dev).
             model = "black-forest-labs/flux-dev"
             version = None
             input_data = {
