@@ -102,3 +102,20 @@ async def get(pool, bot_id: str, generation_date: date) -> dict | None:
         generation_date,
     )
     return dict(row) if row else None
+
+
+async def recent_themes(pool, bot_id: str, days: int = 7) -> list[str]:
+    """Themes used for this bot in the last N days, newest first.
+    Feeds the LLM theme generator's "don't repeat" constraint so
+    users don't see the same scene twice in a week."""
+    rows = await pool.fetch(
+        """
+        SELECT theme FROM influencer_collages
+        WHERE bot_id = $1
+          AND generation_date > (CURRENT_DATE - ($2::int * INTERVAL '1 day'))
+        ORDER BY generation_date DESC
+        """,
+        bot_id,
+        days,
+    )
+    return [r["theme"] for r in rows if r["theme"]]

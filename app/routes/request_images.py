@@ -28,17 +28,19 @@ from fastapi import APIRouter, HTTPException, Request
 import config
 from auth import get_current_user
 from database import get_pool
-from services import image_collage, subscription_stub
+from services import image_collage, subscription_stub, theme_generator
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Chat v1 — Request Images"])
 
 
-def _resolve_theme(influencer_id: str) -> str:
-    """Phase 0: single hardcoded theme for Tara. Phase 1 reads from
-    influencer_collage_themes (see design §1b)."""
-    return config.COLLAGE_THEME_TARA
+async def _resolve_theme(pool, influencer_id: str) -> str:
+    """LLM-generated fresh theme per batch (Rishi choice 2026-07-07,
+    superseding the design's §1b DB-rotation plan). Falls back to
+    config.COLLAGE_THEME_TARA if theme_generator can't produce a
+    valid theme — never blocks the user path on LLM outages."""
+    return await theme_generator.generate_daily_theme(pool, influencer_id)
 
 
 def _resolve_lora(pool_result_row) -> str | None:
@@ -66,7 +68,7 @@ async def request_images(influencer_id: str, request: Request) -> dict:
     quota + resolves via image_collage.orchestrate."""
     user_id = get_current_user(request)
     pool = await get_pool()
-    theme = _resolve_theme(influencer_id)
+    theme = await _resolve_theme(pool, influencer_id)
     lora = _resolve_lora(None)
 
     result = await image_collage.orchestrate(
