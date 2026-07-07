@@ -27,6 +27,27 @@ services:
 
   overlay-watchdog:
     image: ghcr.io/dolr-ai/yral-overlay-dns-watchdog:latest
+    # Run as root inside the container. /var/run/docker.sock is owned by
+    # root:docker on the host (mode 660). The container's default
+    # UID 1000 (set in the Dockerfile) has no docker-group membership
+    # and therefore gets EACCES on the socket, silently disabling the
+    # replica-drift check — verified by the WARNING it logged on the
+    # 2026-07-03 deploy: "replica-drift check disabled — docker client
+    # init failed ... PermissionError(13, 'Permission denied')".
+    #
+    # Because replica-drift was inert, it missed:
+    #   - langfuse-web 0/1 replicas from 2026-07-03 05:00 UTC to 2026-07-07 05:00 UTC (~4 days)
+    #   - langfuse-web 0/1 replicas AGAIN from 2026-07-06 05:00 UTC (24h before human noticed)
+    # Both were the Saikat-Monday k3s update signature.
+    #
+    # Running as root inside a container that already has the docker
+    # socket mounted is functionally the same threat model as the
+    # socket mount itself (either grants full-node control). Adding
+    # user=0 is not a widening — it's making the existing threat model
+    # actually work. Alternative would be group_add with the host's
+    # docker gid (999 on Ubuntu 24.04), but that varies per host and
+    # is more fragile than just picking root.
+    user: "0:0"
     networks:
       - yral-v2-data-plane
     volumes:
