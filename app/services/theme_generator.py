@@ -163,9 +163,7 @@ async def generate_daily_theme(pool, bot_id: str) -> str:
         return config.COLLAGE_THEME_TARA
 
     recent = await influencer_collage_repo.recent_themes(pool, bot_id, days=7)
-    recent_block = (
-        "\n".join(f"- {t}" for t in recent) if recent else "(none — go bold)"
-    )
+    recent_block = "\n".join(f"- {t}" for t in recent) if recent else "(none — go bold)"
     prompt = _LLM_PROMPT_TEMPLATE.format(
         trigger=trigger,
         allowed_clothing_hint=", ".join(_ALLOWED_CLOTHING),
