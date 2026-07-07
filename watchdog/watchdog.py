@@ -28,10 +28,13 @@ import time
 
 import sentry_sdk
 
+import autoheal
 from replica_drift import (
     DRIFT_ALERT_SEC,
     INTERVAL_SEC as REPLICA_INTERVAL_SEC,
     DriftState,
+    _desired_replica_count as _replica_desired,
+    _running_replica_count as _replica_running,
     check_once as replica_check_once,
 )
 
@@ -116,19 +119,137 @@ def _emit_replica_alert(alert_ev) -> None:
         sentry_sdk.capture_message(msg)
 
 
+_docker_client = None
+_docker_client_lock = threading.Lock()
+
+
+def _get_docker_client():
+    """Lazy singleton across the DNS + drift + autoheal call sites.
+    None when docker.sock isn't mounted — every caller gracefully
+    degrades to detect-only behavior in that case (autoheal skips,
+    drift loop exits, DNS loop keeps running)."""
+    global _docker_client
+    with _docker_client_lock:
+        if _docker_client is not None:
+            return _docker_client
+        try:
+            import docker  # imported lazily so DNS-only deploys still boot
+
+            _docker_client = docker.from_env()
+        except Exception as e:
+            log.warning(
+                "docker client init failed — autoheal + replica-drift "
+                "disabled (is /var/run/docker.sock mounted?): %s",
+                e,
+            )
+            return None
+    return _docker_client
+
+
+def _emit_autoheal_result(result) -> None:
+    """One log line + Sentry event per HealResult. Kept out of
+    autoheal.py so that module stays Sentry-free (easier to test)."""
+    kind = result.kind
+    if kind == "skipped":
+        return  # not-allowlisted / disabled globally — deliberate silence
+    if kind == "started":
+        msg = (
+            f"auto-heal fired for {result.service_name}: ran "
+            f"`docker service update --force` — signature={result.signature}"
+        )
+        level = "warning"
+    elif kind == "verified":
+        msg = (
+            f"auto-heal verified for {result.service_name} after "
+            f"force-update (signature={result.signature})"
+        )
+        level = "info"
+    elif kind == "verify_failed":
+        msg = (
+            f"auto-heal VERIFY FAILED for {result.service_name}: "
+            f"{result.detail} (signature={result.signature})"
+        )
+        level = "error"
+    elif kind == "rate_limited":
+        msg = (
+            f"heal cap exhausted for {result.service_name}: "
+            f"{result.detail} — leaving service unhealed until window rolls"
+        )
+        level = "error"
+    elif kind == "global_rate_limited":
+        msg = (
+            f"GLOBAL heal cap exhausted — cluster-wide failure? "
+            f"{result.detail}; service={result.service_name} unhealed"
+        )
+        level = "error"
+    elif kind == "docker_error":
+        msg = f"auto-heal DOCKER ERROR for {result.service_name}: {result.detail}"
+        level = "error"
+    elif kind == "disabled":
+        # Post-verify cooldown — not the initial verify_failed event,
+        # this fires on subsequent attempts against the same service
+        # inside the cooldown window. Info-level so we see it but
+        # don't page.
+        msg = f"auto-heal SKIPPED for {result.service_name}: {result.detail}"
+        level = "info"
+    else:
+        log.warning(
+            "autoheal: unknown result kind %r for %s", kind, result.service_name
+        )
+        return
+
+    if level == "warning":
+        log.warning(msg)
+    elif level == "error":
+        log.error(msg)
+    else:
+        log.info(msg)
+    with sentry_sdk.push_scope() as scope:
+        scope.set_tag("service", result.service_name)
+        scope.set_tag("check", "autoheal")
+        scope.set_tag("kind", kind)
+        scope.set_tag("signature", result.signature)
+        scope.set_level(level)
+        sentry_sdk.capture_message(msg)
+
+
+def _verify_drift_still(client, service_name: str) -> bool:
+    """True iff the service is STILL below its desired replica count
+    (heal didn't work). Any exception is treated as "still failing"
+    so we err toward disabling rather than silently declaring victory."""
+    try:
+        svc = client.services.get(service_name)
+        desired = _replica_desired(svc)
+        if desired is None:
+            return False  # global-mode → drift is meaningless
+        return _replica_running(svc) < desired
+    except Exception:
+        return True
+
+
+def _try_autoheal_for_dns(client, alias: str) -> None:
+    """Handler for DNS-alias transition to MISSING. Resolves the
+    alias to a Swarm service and runs the heal; Sentry emit lives
+    in _emit_autoheal_result."""
+    if client is None:
+        return
+    svc = autoheal.resolve_service_by_dns_alias(client, alias)
+    if svc is None:
+        log.info("autoheal: no swarm service matches alias=%s", alias)
+        return
+
+    def _verify_dns(_service_name: str) -> bool:
+        return resolve(alias) is None
+
+    result = autoheal.try_heal(client, svc.name, "dns", verify_fn=_verify_dns)
+    _emit_autoheal_result(result)
+
+
 def _replica_check_loop() -> None:
     """Runs in a daemon thread. If docker.sock isn't mounted, log
     once + exit — the DNS loop keeps running on the main thread."""
-    try:
-        import docker  # imported lazily so DNS-only deploys still boot
-
-        client = docker.from_env()
-    except Exception as e:
-        log.warning(
-            "replica-drift check disabled — docker client init failed "
-            "(is /var/run/docker.sock mounted?): %s",
-            e,
-        )
+    client = _get_docker_client()
+    if client is None:
         return
 
     log.info(
@@ -142,6 +263,15 @@ def _replica_check_loop() -> None:
             alerts = replica_check_once(client, state)
             for a in alerts:
                 _emit_replica_alert(a)
+                if a.kind == "drift":
+                    # Only heal on transition INTO drift, not on recovery.
+                    result = autoheal.try_heal(
+                        client,
+                        a.service_name,
+                        "drift",
+                        verify_fn=lambda name, _c=client: _verify_drift_still(_c, name),
+                    )
+                    _emit_autoheal_result(result)
         except Exception as e:
             # Docker API blips must not kill the thread — the DNS loop
             # is our fallback signal but ideally both stay up.
@@ -166,6 +296,9 @@ def main() -> None:
         log.info("startup %s -> %s", a, ip or "NXDOMAIN")
         if ip is None:
             alert(a, was="unknown", now=None)
+    # We deliberately do NOT auto-heal on the startup discovery of a
+    # missing alias — startup often catches services still initializing;
+    # the transition path below is the reliable "something broke" signal.
     while True:
         time.sleep(INTERVAL_SEC)
         for a in ALIASES:
@@ -173,6 +306,9 @@ def main() -> None:
             was = last[a]
             if (was is None) != (now is None):
                 alert(a, was=was, now=now)
+                if now is None:
+                    # Transitioned INTO MISSING — try the standard fix.
+                    _try_autoheal_for_dns(_get_docker_client(), a)
             last[a] = now
 
 
