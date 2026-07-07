@@ -174,6 +174,20 @@ services:
       PATRONI_SYNCHRONOUS_MODE: "true"
       PATRONI_SYNCHRONOUS_MODE_STRICT: "false"
       PATRONI_MAXIMUM_LAG_ON_FAILOVER: "1048576"
+      # ── Anti-timeline-drift (2026-07-07 post-mortem) ────────────────
+      # Overnight overlay-DNS collapse triggered a leader race
+      # (rishi-6 → TL 40, rishi-4 back → TL 41). Both replicas'
+      # streaming replication silently broke and they logged "Exception
+      # when working with leader" every 10s for 22h without triggering
+      # re-bootstrap because the DCS lock never showed a demotion event.
+      # These two settings make Patroni actively recover in that
+      # scenario: on a diverged-timeline detection or a failed pg_rewind,
+      # WIPE the replica's data dir and re-basebackup from the current
+      # leader. Applied at runtime via REST PATCH /config 2026-07-07;
+      # duplicated here so a clean rebootstrap picks them up. Values
+      # confirmed present in DCS via `curl :8008/config`.
+      PATRONI_POSTGRESQL_REMOVE_DATA_DIRECTORY_ON_DIVERGED_TIMELINES: "true"
+      PATRONI_POSTGRESQL_REMOVE_DATA_DIRECTORY_ON_REWIND_FAILURE: "true"
       PATRONI_SUPERUSER_USERNAME: postgres
       PATRONI_REPLICATION_USERNAME: standby
       PATRONI_admin_USERNAME: admin
@@ -233,6 +247,11 @@ services:
       PATRONI_POSTGRESQL_BIN_DIR: /usr/lib/postgresql/15/bin
       PATRONI_SYNCHRONOUS_MODE: "true"
       PATRONI_SYNCHRONOUS_MODE_STRICT: "false"
+      # Anti-timeline-drift 2026-07-07 — see patroni-rishi-4 block above
+      # for the incident post-mortem. Runtime PATCH already applied;
+      # env vars persist through a clean rebootstrap.
+      PATRONI_POSTGRESQL_REMOVE_DATA_DIRECTORY_ON_DIVERGED_TIMELINES: "true"
+      PATRONI_POSTGRESQL_REMOVE_DATA_DIRECTORY_ON_REWIND_FAILURE: "true"
       PATRONI_SUPERUSER_USERNAME: postgres
       PATRONI_REPLICATION_USERNAME: standby
       PATRONI_admin_USERNAME: admin
@@ -289,6 +308,11 @@ services:
       PATRONI_TAGS_NOSYNC: "true"
       PATRONI_TAGS_NOLOADBALANCE: "false"
       PATRONI_TAGS_CLONEFROM: "false"
+      # Anti-timeline-drift 2026-07-07 — see patroni-rishi-4 block above
+      # for the incident post-mortem. Runtime PATCH already applied;
+      # env vars persist through a clean rebootstrap.
+      PATRONI_POSTGRESQL_REMOVE_DATA_DIRECTORY_ON_DIVERGED_TIMELINES: "true"
+      PATRONI_POSTGRESQL_REMOVE_DATA_DIRECTORY_ON_REWIND_FAILURE: "true"
       PATRONI_SUPERUSER_USERNAME: postgres
       PATRONI_REPLICATION_USERNAME: standby
       PATRONI_admin_USERNAME: admin
