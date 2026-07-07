@@ -109,6 +109,12 @@ PROCESS_NAMES: tuple[str, ...] = (
     "character_generator",
     "ai_influencer_wizard_simulation",
     "soul_file_recommendations",
+    # Phase 0 Request Images track B — daily collage theme generation.
+    # Fires from both on-demand user path AND nightly pre-gen loop;
+    # gemini covers both without a sync/async split. One call per
+    # bot per UTC day, tiny prompt (~500 tokens) → negligible cost
+    # next to the ~$0.27 batch it feeds.
+    "collage_theme_generator",
     # Phase 22.3 — nightly video ideas generation per active AI influencer.
     # Background cron + cold-start one-shot, not user-facing → defaults to
     # internal_vllm for $0 marginal cost (same category as quality_scorer +
@@ -344,6 +350,11 @@ LLM_DEFAULTS: dict[str, dict[str, Any]] = {
         "provider": "gemini",
         "model": "gemini-2.5-flash",
         "timeout_sec": 120.0,
+    },
+    "collage_theme_generator": {
+        "provider": "gemini",
+        "model": "gemini-2.5-flash",
+        "timeout_sec": 30.0,
     },
     # ─── Async background — Saikat primary + Anshuman fallback ──────
     "proactive_generation": {
