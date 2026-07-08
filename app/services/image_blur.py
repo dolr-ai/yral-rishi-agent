@@ -19,12 +19,19 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# 30 px is enough to make faces + fashion details unrecognizable at
-# any mobile-screen zoom (empirical from 2026-07-08 test on Tara
-# Dubai batch). Bumped from a lower default because 20 px still left
-# outlines visible. Env-tunable via COLLAGE_BLUR_RADIUS if the
-# product team wants a stronger or weaker tease.
-_DEFAULT_BLUR_RADIUS_PX = 30
+# 15 px chosen 2026-07-08 by Rishi after eyeballing 10/15/20/30
+# radii on the Tara Dubai smoke batch. Reasoning:
+#   - Faces are unreadable (paywall integrity preserved) — even
+#     zoomed on a mobile screen, eyes/mouth aren't distinguishable
+#   - Body silhouette + pose + location vibe are visible — the
+#     tease that makes a non-subscriber want to unblur
+#   - Scene composition + color palette stay intact so the "premium
+#     editorial magazine" aesthetic still reads
+# 30 px was too aggressive (looked like a generic color blob);
+# 10 px was too permissive (face + fashion detail still readable).
+# Env-tunable via COLLAGE_BLUR_RADIUS_PX for hot-editing without a
+# redeploy per Rishi's ADHD-observability rule.
+_DEFAULT_BLUR_RADIUS_PX = 15
 
 # JPEG quality after re-encoding. Blurred images have almost no
 # high-frequency detail to preserve → 60 is plenty and cuts file
