@@ -205,6 +205,33 @@ async def update_system_prompt(pool, influencer_id: str, instructions: str):
     )
 
 
+async def get_lora_trigger_word(pool, influencer_id: str) -> str | None:
+    """Return the LoRA trigger word for a bot from
+    `ai_influencers.metadata.lora_trigger_word`, else None.
+
+    Used by services.theme_generator: without a trigger word, the LoRA
+    can't lock identity → generic-lookalike outputs ship (2026-07-06
+    bug). Per-bot metadata beats a hardcoded Python dict — new bots
+    don't need a code push, and Rishi can rename triggers hot-editably.
+
+    Value is expected to match the exact-case trigger baked into the
+    LoRA training (e.g. `TAARA` for Tara's v1 model). Case matters."""
+    row = await pool.fetchrow(
+        """
+        SELECT metadata->>'lora_trigger_word' AS trigger_word
+        FROM ai_influencers
+        WHERE id = $1
+        """,
+        influencer_id,
+    )
+    if not row:
+        return None
+    tw = row["trigger_word"]
+    if not isinstance(tw, str) or not tw.strip():
+        return None
+    return tw.strip()
+
+
 async def cache_plain_english_summary(pool, influencer_id: str, summary: dict) -> None:
     """Coach Fix 2 backend — persist the LLM-generated bullet summary
     into `metadata.plain_english_summary` + a parallel

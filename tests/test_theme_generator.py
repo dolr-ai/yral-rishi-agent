@@ -230,10 +230,17 @@ def test_generate_daily_theme_falls_back_on_llm_exception():
         raise RuntimeError("LLM outage")
 
     with patch.object(tg.llm_registry, "call", new=AsyncMock(side_effect=_boom)):
-        with patch.object(
-            tg.influencer_collage_repo,
-            "recent_themes",
-            new=AsyncMock(return_value=[]),
+        with (
+            patch.object(
+                tg.influencer_collage_repo,
+                "recent_themes",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch.object(
+                tg.influencer_repo,
+                "get_lora_trigger_word",
+                new=AsyncMock(return_value=None),  # test fallback path
+            ),
         ):
             result = asyncio.run(
                 tg.generate_daily_theme(
@@ -272,10 +279,17 @@ def test_generate_daily_theme_falls_back_after_two_invalid_llm_outputs():
         "call",
         new=AsyncMock(side_effect=bad_responses),
     ):
-        with patch.object(
-            tg.influencer_collage_repo,
-            "recent_themes",
-            new=AsyncMock(return_value=[]),
+        with (
+            patch.object(
+                tg.influencer_collage_repo,
+                "recent_themes",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch.object(
+                tg.influencer_repo,
+                "get_lora_trigger_word",
+                new=AsyncMock(return_value=None),  # exercise fallback map
+            ),
         ):
             result = asyncio.run(
                 tg.generate_daily_theme(
@@ -304,10 +318,17 @@ def test_bot_without_trigger_word_falls_back_immediately():
 
     call_mock = AsyncMock()
     with patch.object(tg.llm_registry, "call", new=call_mock):
-        with patch.object(
-            tg.influencer_collage_repo,
-            "recent_themes",
-            new=AsyncMock(return_value=[]),
+        with (
+            patch.object(
+                tg.influencer_collage_repo,
+                "recent_themes",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch.object(
+                tg.influencer_repo,
+                "get_lora_trigger_word",
+                new=AsyncMock(return_value=None),  # no DB entry either
+            ),
         ):
             result = asyncio.run(
                 tg.generate_daily_theme(object(), "some-unknown-bot-id-not-tara")
@@ -318,6 +339,87 @@ def test_bot_without_trigger_word_falls_back_immediately():
     assert not call_mock.called, (
         "LLM was called for an unconfigured bot — wasted spend + risky "
         "output for a bot without LoRA identity lock"
+    )
+
+
+def test_db_trigger_word_beats_hardcoded_fallback():
+    """When ai_influencers.metadata.lora_trigger_word is populated in
+    the DB, it MUST win over the hardcoded fallback map. This is the
+    whole point of the 2026-07-08 refactor: adding new LoRA-trained
+    bots (Neha, Kareena, etc.) should be a metadata UPDATE, not a code
+    push + deploy. Uses a bot_id NOT in the fallback map so the only
+    way `_resolve_trigger_word` can return a value is through the DB
+    path."""
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).parent.parent / "app"))
+    import importlib
+
+    tg = importlib.import_module("services.theme_generator")
+
+    class _Resp:
+        def __init__(self, content):
+            self.content = content
+
+    unknown_bot = "some-future-bot-not-in-fallback-dict"
+    valid_theme = (
+        "NEHA on a Bali cliffside villa infinity pool at golden hour, "
+        "wearing a designer cutout swimsuit, cinematic confident pose, "
+        "editorial swimwear photography, 85mm lens, shallow depth of field."
+    )
+
+    with patch.object(
+        tg.llm_registry,
+        "call",
+        new=AsyncMock(return_value=_Resp(valid_theme)),
+    ):
+        with (
+            patch.object(
+                tg.influencer_collage_repo,
+                "recent_themes",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch.object(
+                tg.influencer_repo,
+                "get_lora_trigger_word",
+                new=AsyncMock(return_value="NEHA"),
+            ),
+        ):
+            result = asyncio.run(tg.generate_daily_theme(object(), unknown_bot))
+
+    assert result == valid_theme, (
+        "DB-provided trigger word didn't take effect — LLM path either "
+        "wasn't called or the theme was rejected. Adding new bots via "
+        "metadata is broken."
+    )
+
+
+def test_fallback_map_still_used_when_db_empty():
+    """Behavior-preserving safety net: while operators roll out the DB
+    metadata update, the hardcoded fallback dict must still resolve
+    known bots (Tara) so nothing regresses mid-migration."""
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).parent.parent / "app"))
+    import importlib
+
+    tg = importlib.import_module("services.theme_generator")
+
+    tara = "qi6gd-esmrx-v2oyd-7fwhm-ibfs5-trflm-xm3iy-xq6d3-3hmwu-jb7tk-5qe"
+
+    async def _run():
+        return await tg._resolve_trigger_word(object(), tara)
+
+    with patch.object(
+        tg.influencer_repo,
+        "get_lora_trigger_word",
+        new=AsyncMock(return_value=None),
+    ):
+        result = asyncio.run(_run())
+
+    assert result == "TAARA", (
+        "Fallback map removed / broken — Tara's trigger word must "
+        "resolve even if the metadata field isn't populated in DB yet"
     )
 
 
