@@ -51,15 +51,23 @@ async def complete(
     generation_date: date,
     image_urls: list[str],
     cost_usd: float,
+    image_urls_blurred: list[str] | None = None,
 ) -> None:
     """Flip a reserved row to succeeded + record cost. Idempotent on
     the state guard: a duplicate complete against an already-succeeded
-    row is a no-op."""
+    row is a no-op.
+
+    `image_urls_blurred` is the parallel array of pre-blurred variants
+    (migration 047). Optional for backwards compat with any older
+    callers that don't produce blurred variants yet — passing None
+    stores an empty array, and the route falls back to `image_urls`
+    for non-subscribers in that case (design §5 rollout window)."""
     await pool.execute(
         """
         UPDATE influencer_collages
         SET state = 'succeeded',
             image_urls = $3,
+            image_urls_blurred = $5,
             cost_usd = $4,
             generated_at = NOW(),
             updated_at = NOW()
@@ -71,6 +79,7 @@ async def complete(
         generation_date,
         image_urls,
         cost_usd,
+        image_urls_blurred or [],
     )
 
 
@@ -93,7 +102,8 @@ async def mark_failed(pool, bot_id: str, generation_date: date) -> None:
 async def get(pool, bot_id: str, generation_date: date) -> dict | None:
     row = await pool.fetchrow(
         """
-        SELECT bot_id, generation_date, theme, image_urls, state,
+        SELECT bot_id, generation_date, theme, image_urls,
+               image_urls_blurred, state,
                cost_usd, generated_at, created_at, updated_at
         FROM influencer_collages
         WHERE bot_id = $1 AND generation_date = $2
