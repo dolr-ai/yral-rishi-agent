@@ -129,6 +129,11 @@ COLLAGE_DAILY_BUDGET_SOFT_USD = _env_float("COLLAGE_DAILY_BUDGET_SOFT_USD", 50.0
 COLLAGE_DAILY_BUDGET_HARD_USD = _env_float("COLLAGE_DAILY_BUDGET_HARD_USD", 100.0)
 COLLAGE_POLL_TIMEOUT_SEC = _env_int("COLLAGE_POLL_TIMEOUT_SEC", 90)
 COLLAGE_POLL_INTERVAL_SEC = _env_int("COLLAGE_POLL_INTERVAL_SEC", 2)
+# Gaussian blur radius applied to non-subscriber variants. 15 px is
+# the "teasy but face-unreadable" sweet spot Rishi picked after
+# eyeballing 10/15/20/30 radii on 2026-07-08. Hot-tunable so we
+# don't need a code push to shift the paywall aesthetic.
+COLLAGE_BLUR_RADIUS_PX = _env_int("COLLAGE_BLUR_RADIUS_PX", 15)
 # Comma-separated YRAL-team principals who get clear (unblurred)
 # collages during Phase 0. Real billing.yral.com integration is Phase 1.
 YRAL_TEAM_PRINCIPALS = frozenset(

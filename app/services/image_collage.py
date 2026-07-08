@@ -158,7 +158,9 @@ async def _download_and_blur_upload(
         # Pillow's blur is CPU-bound; offload to a worker so we
         # don't stall the event loop while 6 variants churn.
         blurred_bytes = await asyncio.to_thread(
-            image_blur.gaussian_blur_jpeg, clear_bytes
+            image_blur.gaussian_blur_jpeg,
+            clear_bytes,
+            config.COLLAGE_BLUR_RADIUS_PX,
         )
         key = f"collage-blurred/{bot_id}/{generation_date.isoformat()}/{index:02d}.jpg"
         await storage.upload_at_key(key, blurred_bytes, content_type="image/jpeg")
