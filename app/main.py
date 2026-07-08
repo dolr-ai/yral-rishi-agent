@@ -143,6 +143,15 @@ async def lifespan(app: FastAPI):
 
     feed_ranker_task = asyncio.create_task(feed_ranker_loop())
 
+    # Phase 0 Request Images — nightly 04:00 UTC collage pre-gen for
+    # LoRA-enabled active bots. Users tapping Request Images later in
+    # the day get an instant response instead of a 45-65s wait. Gated
+    # by kill_switch "collage_pregen" → ENABLE_COLLAGE_PREGEN_LOOP,
+    # defaults OFF so ops opt-in deliberately.
+    from services.collage_nightly_pregen import collage_pregen_loop
+
+    collage_pregen_task = asyncio.create_task(collage_pregen_loop())
+
     # Hydrate rate-limit config from DB into Redis so the middleware
     # reads the operator-tuned values, not just the defaults. Idempotent.
     try:
@@ -167,6 +176,7 @@ async def lifespan(app: FastAPI):
     cost_alerts_task.cancel()
     classification_task.cancel()
     feed_ranker_task.cancel()
+    collage_pregen_task.cancel()
     llm_routing_pubsub_task.cancel()
     try:
         await trending_refresher_task
@@ -222,6 +232,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await feed_ranker_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await collage_pregen_task
     except asyncio.CancelledError:
         pass
     try:
