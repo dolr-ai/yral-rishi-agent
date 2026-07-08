@@ -85,6 +85,29 @@ async def upload(
     return (key, size)
 
 
+async def upload_at_key(
+    key: str,
+    file_bytes: bytes,
+    content_type: str,
+) -> int:
+    """Upload to an exact S3 key (caller controls the prefix). Used
+    by collage pre-blur variants which need a deterministic prefix
+    like `collage-blurred/{bot_id}/{date}/{index}.jpg` — the default
+    `upload(user_id, ...)` helper is user-scoped and doesn't fit."""
+    client = _get_s3_client()
+    if not client:
+        raise RuntimeError("S3 not configured")
+    size = len(file_bytes)
+    client.put_object(
+        Bucket=config.AWS_S3_BUCKET,
+        Key=key,
+        Body=file_bytes,
+        ContentType=content_type,
+        ContentLength=size,
+    )
+    return size
+
+
 def generate_presigned_url(key: str) -> str:
     if not key:
         return ""

@@ -47,11 +47,20 @@ import asyncio
 import logging
 from datetime import date, datetime, timezone
 
+import httpx
+
 import config
 from repositories import influencer_collage_repo, user_image_request_repo
-from services import replicate
+from services import image_blur, replicate, storage
 
 logger = logging.getLogger(__name__)
+
+
+# Cap the concurrent blur uploads per collage so a slow S3 or a
+# CPU-bound Pillow spike doesn't monopolise the event loop when 6
+# variants land at once. Six is fine to run in parallel on modern
+# containers but leaving room for future N > 6 batches.
+_BLUR_UPLOAD_CONCURRENCY = 4
 
 
 def _today_utc() -> date:
@@ -103,6 +112,7 @@ def _ready_response(collage: dict) -> dict:
         "status": "ready",
         "theme": collage["theme"],
         "image_urls": list(collage["image_urls"] or []),
+        "image_urls_blurred": list(collage.get("image_urls_blurred") or []),
         "generated_at": (
             collage["generated_at"].isoformat() if collage.get("generated_at") else None
         ),
@@ -128,10 +138,65 @@ async def _poll_for_winner(pool, bot_id: str, generation_date: date) -> dict:
     return {"status": "pending"}
 
 
+async def _download_and_blur_upload(
+    http: httpx.AsyncClient,
+    clear_url: str,
+    bot_id: str,
+    generation_date: date,
+    index: int,
+) -> str | None:
+    """Fetch one Replicate output → Gaussian blur → upload to our S3
+    under a deterministic key. Returns the blurred variant's URL
+    (presigned or public). Best-effort: returns None on any error so
+    the route can fall back to serving `image_urls` when a variant
+    doesn't materialise (design §5 rollout — partial blur is not a
+    hard fail)."""
+    try:
+        r = await http.get(clear_url, timeout=30)
+        r.raise_for_status()
+        clear_bytes = r.content
+        # Pillow's blur is CPU-bound; offload to a worker so we
+        # don't stall the event loop while 6 variants churn.
+        blurred_bytes = await asyncio.to_thread(
+            image_blur.gaussian_blur_jpeg, clear_bytes
+        )
+        key = f"collage-blurred/{bot_id}/{generation_date.isoformat()}/{index:02d}.jpg"
+        await storage.upload_at_key(key, blurred_bytes, content_type="image/jpeg")
+        return storage.generate_presigned_url(key)
+    except Exception as e:
+        logger.warning(
+            "collage blur variant failed: bot=%s idx=%d %s",
+            bot_id,
+            index,
+            e,
+        )
+        return None
+
+
+async def _generate_blurred_variants(
+    clear_urls: list[str], bot_id: str, generation_date: date
+) -> list[str]:
+    """Fan out `_download_and_blur_upload` across the batch. Preserves
+    ordering so `image_urls_blurred[i]` corresponds to `image_urls[i]`
+    — the mobile side relies on parallel arrays for the grid layout."""
+    sem = asyncio.Semaphore(_BLUR_UPLOAD_CONCURRENCY)
+
+    async def _one(idx: int, url: str) -> str | None:
+        async with sem:
+            async with httpx.AsyncClient() as http:
+                return await _download_and_blur_upload(
+                    http, url, bot_id, generation_date, idx
+                )
+
+    results = await asyncio.gather(*[_one(i, u) for i, u in enumerate(clear_urls)])
+    return [r for r in results if r is not None]
+
+
 async def _run_generation(
     pool, bot_id: str, generation_date: date, theme: str, lora_weights_url: str | None
 ) -> dict:
-    """Elected-generator path: fire the batch, safety-filter, persist."""
+    """Elected-generator path: fire the batch, safety-filter,
+    pre-blur variants, persist."""
     n = config.COLLAGE_IMAGE_COUNT
     urls = await replicate.generate_batch(theme, n=n, lora_weights_url=lora_weights_url)
     if len(urls) < n:
@@ -147,12 +212,37 @@ async def _run_generation(
         await influencer_collage_repo.mark_failed(pool, bot_id, generation_date)
         return {"status": "failed", "reason": "content_safety_or_partial"}
 
+    # Server-side pre-blur (design §5, Rishi 2026-07-08). Fetches
+    # each clear URL, applies Pillow gaussian blur, uploads to our
+    # own S3 bucket. Non-subscribers never receive clear pixels; the
+    # blurred URLs are what get served to them, keyed by the same
+    # collage row so the parallel arrays stay index-aligned. Partial
+    # success is tolerated — if some variants fail to upload, the
+    # route falls back to serving the clear URLs for those indices
+    # (never worse than pre-blur behavior).
+    blurred_urls = await _generate_blurred_variants(urls, bot_id, generation_date)
+    if len(blurred_urls) < n:
+        logger.warning(
+            "collage blur partial: bot=%s got=%d/%d blurred; non-subs may see clear",
+            bot_id,
+            len(blurred_urls),
+            n,
+        )
+
     cost = config.COLLAGE_COST_PER_IMAGE_USD * n
     await influencer_collage_repo.complete(
-        pool, bot_id, generation_date, urls, cost_usd=cost
+        pool,
+        bot_id,
+        generation_date,
+        urls,
+        cost_usd=cost,
+        image_urls_blurred=blurred_urls,
     )
     fresh = await influencer_collage_repo.get(pool, bot_id, generation_date)
-    return _ready_response(fresh or {"theme": theme, "image_urls": urls})
+    return _ready_response(
+        fresh
+        or {"theme": theme, "image_urls": urls, "image_urls_blurred": blurred_urls}
+    )
 
 
 async def orchestrate(
