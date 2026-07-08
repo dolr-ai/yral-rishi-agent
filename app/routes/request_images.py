@@ -139,10 +139,6 @@ async def request_images(
         lora_weights_url=lora,
         consume_quota=True,
     )
-    # Ensure result carries bot_id + generation_date so the response
-    # envelope can echo them back for the mobile message reference.
-    if result.get("status") == "ready" and "bot_id" not in result:
-        result["bot_id"] = influencer_id
     return _map_result(result, user_id, is_subscribed)
 
 
