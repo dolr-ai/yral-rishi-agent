@@ -122,16 +122,31 @@ def _validate_theme(theme: str, trigger: str) -> str | None:
     """Return the normalized theme string if it passes, else None.
 
     Rejects on: missing trigger word, forbidden vocab, missing
-    clothing vocab, absurd length. Caller's regenerate-once policy
-    handles the recovery."""
+    clothing vocab, obviously-truncated output, no editorial anchor,
+    absurd length. Caller's regenerate-once policy handles recovery.
+
+    Quality checks added 2026-07-08 after Gemini's first prod call
+    returned "TAARA in a designer cutout swimsuit," — a 36-char
+    truncated string that passed the earlier permissive guardrails.
+    The trailing comma made it obvious it was cut mid-sentence, but
+    the validator had no way to detect that. New rules:
+      - Length raised to 60 (a real theme is 30-60 words)
+      - Must end with letter/period (not comma/dash/colon → truncation)
+      - Must contain the editorial photography qualifier (design intent
+        of the prompt template)
+      - Must contain a lens/depth qualifier (same reason)"""
     if not isinstance(theme, str):
         return None
     stripped = theme.strip().strip('"').strip("'")
     if not stripped:
         return None
-    if not (20 <= len(stripped) <= 500):
+    if not (60 <= len(stripped) <= 500):
         return None
     if not stripped.startswith(trigger):
+        return None
+    # Truncation guard — real sentences end with a letter/digit or
+    # a period. Comma, dash, semicolon, colon = the LLM was interrupted.
+    if stripped[-1] not in ".!?" and not stripped[-1].isalnum():
         return None
     lowered = stripped.lower()
     if any(bad in lowered for bad in _FORBIDDEN_WORDS):
@@ -139,6 +154,18 @@ def _validate_theme(theme: str, trigger: str) -> str | None:
     if not any(good in lowered for good in _ALLOWED_CLOTHING):
         # No clothing anchor → nano-banana-pro will choose something
         # random OR the filter will refuse. Reject.
+        return None
+    # Editorial qualifier — the whole product bet rests on "premium
+    # editorial magazine" aesthetic. Absent = the LLM skipped the
+    # prompt's Constraint 4.
+    if "editorial" not in lowered and "vogue" not in lowered:
+        return None
+    # Lens/depth qualifier — enforces prompt Constraint 5. Without it
+    # nano-banana-pro produces flat compositions.
+    if not any(
+        q in lowered
+        for q in ("lens", "depth of field", "cinematic", "35mm", "50mm", "85mm")
+    ):
         return None
     return stripped
 
@@ -186,8 +213,14 @@ async def generate_daily_theme(pool, bot_id: str) -> str:
                     },
                     {"role": "user", "content": prompt},
                 ],
-                temperature=0.9,  # Push for variety across days
-                max_tokens=200,
+                # 2026-07-08: bumped temp 0.9→0.7 (0.9 was making Gemini
+                # stop early with fragmentary output like "TAARA in a
+                # designer cutout swimsuit,"), max_tokens 200→800
+                # (Gemini 2.5-flash burns tokens on internal reasoning
+                # before actual output; 200 was starving the visible
+                # response).
+                temperature=0.7,
+                max_tokens=800,
             )
             candidate = response.content or ""
         except Exception as e:  # llm outage, timeout, provider error
