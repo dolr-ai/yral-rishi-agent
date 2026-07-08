@@ -10,4 +10,4 @@ sentry-sdk[fastapi]==2.22.0
 python-dateutil==2.9.0.post0
 langfuse==2.60.2
 redis==5.2.1
-Pillow==11.0.0
+Pillow==12.3.0

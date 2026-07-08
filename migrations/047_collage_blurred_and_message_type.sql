@@ -51,6 +51,18 @@ ALTER TABLE influencer_collages
 ALTER TABLE messages
     DROP CONSTRAINT IF EXISTS messages_message_type_check;
 
+-- Two-phase widening per squawk canon: ADD NOT VALID takes a fast
+-- lock without a table scan; the VALIDATE step scans under
+-- SHARE UPDATE EXCLUSIVE which does NOT block writers. Since the
+-- new predicate is a strict superset of the old (all existing
+-- rows must have message_type IN the original 4 values, all of
+-- which are in the new 5), VALIDATE is guaranteed to pass — no
+-- data-quality risk from the split.
+
 ALTER TABLE messages
     ADD CONSTRAINT messages_message_type_check
-    CHECK (message_type IN ('text', 'multimodal', 'image', 'audio', 'collage'));
+    CHECK (message_type IN ('text', 'multimodal', 'image', 'audio', 'collage'))
+    NOT VALID;
+
+ALTER TABLE messages
+    VALIDATE CONSTRAINT messages_message_type_check;
