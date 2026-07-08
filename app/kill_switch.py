@@ -70,6 +70,12 @@ _PER_LOOP_KEYS = {
     # Disabling the loop drops the M2a endpoint back to its
     # fallback_select path (no mobile-visible failure).
     "feed_ranker": "ENABLE_FEED_RANKER_LOOP",
+    # Phase 0 Request Images — nightly 04:00 UTC collage pre-gen for
+    # LoRA-enabled active bots. Each pass generates ~$0.27/bot at
+    # 6 images/collage; defaults OFF so operators explicitly opt-in
+    # (lesson from the 2026-05-29 Gemini burn — new background loops
+    # that spend money must never surprise on first deploy).
+    "collage_pregen": "ENABLE_COLLAGE_PREGEN_LOOP",
 }
 
 
@@ -93,6 +99,12 @@ _DEFAULT_OFF_LOOPS: frozenset[str] = frozenset(
         # bots, then sets ENABLE_INFLUENCER_CLASSIFICATION_LOOP=true to
         # activate the full backfill.
         "influencer_classification",
+        # Phase 0 Request Images — pre-gen loop ships dormant so
+        # operators explicitly enable it. Spend-per-day is bounded
+        # (one batch/bot/day at ~$0.27), but a stealth-on deploy
+        # would surprise-charge before Sarvesh's mobile integration
+        # is ready.
+        "collage_pregen",
     }
 )
 
