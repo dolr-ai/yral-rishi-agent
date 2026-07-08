@@ -45,21 +45,33 @@ Routing:
 import logging
 
 import config
-from repositories import influencer_collage_repo
+from repositories import influencer_collage_repo, influencer_repo
 from services import llm_registry
 
 logger = logging.getLogger(__name__)
 
 
-# LoRA trigger words per bot. Absent = fall back to config default.
-# When we add per-bot LoRAs (Phase 1), this maps ai_influencers.id →
-# the trigger word baked into that bot's training set. For now,
-# Tara-only. Rishi asked for auto-detection later; a fast-follow can
-# read the trigger from ai_influencers.metadata.
-_TRIGGER_WORDS_BY_BOT_ID = {
+# Fallback trigger-word map used only when `ai_influencers.metadata
+# ->>'lora_trigger_word'` is not populated for a bot. Prod SHOULD store
+# the trigger word in the DB per Rishi's hot-editable rule (2026-07-08);
+# this hardcoded map keeps behavior unchanged during rollout in case the
+# DB update hasn't happened yet. Once every LoRA-trained bot has its
+# metadata field set, this dict can be emptied.
+_FALLBACK_TRIGGER_WORDS_BY_BOT_ID = {
     # Tara's UUID (matches migration + DB seed)
     "qi6gd-esmrx-v2oyd-7fwhm-ibfs5-trflm-xm3iy-xq6d3-3hmwu-jb7tk-5qe": "TAARA",
 }
+
+
+async def _resolve_trigger_word(pool, bot_id: str) -> str | None:
+    """DB first, hardcoded fallback second. Returns None only when
+    neither source has a value — that's the "safe default" that skips
+    the LLM call and returns the config theme fallback."""
+    from_db = await influencer_repo.get_lora_trigger_word(pool, bot_id)
+    if from_db:
+        return from_db
+    return _FALLBACK_TRIGGER_WORDS_BY_BOT_ID.get(bot_id)
+
 
 # Filter-safe clothing vocab that nano-banana-pro accepts. Verified
 # 12/12 during the 2026-07-06 LoRA-training reference gen. Order is
@@ -177,7 +189,7 @@ async def generate_daily_theme(pool, bot_id: str) -> str:
 
     The fallback is intentional: an outage in the theme service
     must never block image generation, since users are waiting."""
-    trigger = _TRIGGER_WORDS_BY_BOT_ID.get(bot_id)
+    trigger = await _resolve_trigger_word(pool, bot_id)
     if not trigger:
         # Bot has no configured LoRA trigger. Without it the LoRA
         # anchor can't lock identity, so autonomous themes would ship
