@@ -181,6 +181,36 @@ def test_ready_response_carries_blurred_urls_through():
     )
 
 
+def test_ready_response_forwards_bot_id_and_generation_date():
+    """Regression: the initial 2026-07-08 ship of this envelope
+    dropped `generation_date`, leaving `collage_date: null` in the
+    response — Sarvesh would have hit that on first integration
+    (mobile can't store a null date as the chat-message reference).
+
+    Both `bot_id` and `generation_date` MUST make it from the DB row
+    into the envelope so the route's `_envelope_for_ready` can echo
+    them back."""
+    ic = _load("services.image_collage")
+    row = {
+        "bot_id": "tara-uuid",
+        "generation_date": date(2026, 7, 8),
+        "theme": "TAARA on Santorini",
+        "image_urls": ["https://clear/1.jpg"],
+        "image_urls_blurred": ["https://blurred/1.jpg"],
+        "generated_at": None,
+    }
+    env = ic._ready_response(row)
+    assert env["bot_id"] == "tara-uuid", (
+        "bot_id missing from _ready_response envelope — mobile has no "
+        "reference to store in the chat message"
+    )
+    assert env["generation_date"] == "2026-07-08", (
+        "generation_date missing or not ISO-formatted — mobile has no "
+        "date to store in the chat message, refetch on subscription "
+        "change is broken"
+    )
+
+
 def test_blur_variant_failure_returns_none_not_exception():
     """If S3 upload or Replicate download blows up for one variant,
     the pipeline MUST NOT crash the whole batch — the fallback is

@@ -108,8 +108,19 @@ async def _check_budget(pool) -> bool:
 
 
 def _ready_response(collage: dict) -> dict:
+    """Envelope carries `bot_id` + `generation_date` so the route
+    layer's response echoes back both fields — mobile stores JUST
+    those in the chat-message payload (design §5 self-healing
+    pattern). The 2026-07-08 initial ship missed forwarding
+    `generation_date` here, leaving the field `null` in the response;
+    Sarvesh would have hit that on first integration."""
+    gen_date = collage.get("generation_date")
     return {
         "status": "ready",
+        "bot_id": collage.get("bot_id"),
+        "generation_date": (
+            gen_date.isoformat() if hasattr(gen_date, "isoformat") else gen_date
+        ),
         "theme": collage["theme"],
         "image_urls": list(collage["image_urls"] or []),
         "image_urls_blurred": list(collage.get("image_urls_blurred") or []),
