@@ -166,6 +166,23 @@ def _install(monkeypatch, pool, batch_urls):
     monkeypatch.setattr(replicate, "generate_batch", fake_batch)
     monkeypatch.setattr(image_collage, "_today_utc", lambda: TODAY)
 
+    # Mock the S3 mirror step (2026-07-09 fix) so tests don't need
+    # httpx to Replicate + boto3 to Storj. Returns synthetic keys
+    # parallel to the input URLs — same shape as the real
+    # `_mirror_batch` output.
+    async def fake_mirror_batch(clear_urls, bot_id, generation_date):
+        clear_keys = [
+            f"collage-clear/{bot_id}/{generation_date.isoformat()}/{i:02d}.jpg"
+            for i, _ in enumerate(clear_urls)
+        ]
+        blurred_keys = [
+            f"collage-blurred/{bot_id}/{generation_date.isoformat()}/{i:02d}.jpg"
+            for i, _ in enumerate(clear_urls)
+        ]
+        return clear_keys, blurred_keys
+
+    monkeypatch.setattr(image_collage, "_mirror_batch", fake_mirror_batch)
+
     # Skip real sleep in poll loop so the "concurrent poll" test
     # doesn't take 90s to reach the timeout.
     async def _no_sleep(*a, **kw):
@@ -289,6 +306,17 @@ def test_race_lock_only_one_generates(monkeypatch):
 
     monkeypatch.setattr(replicate, "generate_batch", once_batch)
     monkeypatch.setattr(image_collage, "_today_utc", lambda: TODAY)
+
+    async def fake_mirror(clear_urls, bot_id, generation_date):
+        # Mock the 2026-07-09 S3 mirror pipeline — same synthetic
+        # keys shape as _install() uses.
+        keys = [
+            f"collage-clear/{bot_id}/{generation_date.isoformat()}/{i:02d}.jpg"
+            for i, _ in enumerate(clear_urls)
+        ]
+        return keys, keys
+
+    monkeypatch.setattr(image_collage, "_mirror_batch", fake_mirror)
 
     async def _no_sleep(*a, **kw):
         pass
