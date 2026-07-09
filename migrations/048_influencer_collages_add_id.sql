@@ -19,21 +19,27 @@
 --     &date=YYYY-MM-DD      — fallback: fetch by (bot_id, date)
 --     — neither: default to today's UTC date
 --
--- Zero-downtime pattern (squawk-approved: each statement is either
--- idempotent-guarded or in its own implicit transaction so a
--- partial-failure rerun succeeds cleanly, and NOT VALID + VALIDATE
--- run in SEPARATE transactions per squawk's `constraint-missing-not-
--- valid` rule so the validate step doesn't hold long ACCESS EXCLUSIVE):
---   1. ADD COLUMN IF NOT EXISTS (nullable, no default → no rewrite)
---   2. Backfill via UPDATE WHERE id IS NULL (rerun-safe)
---   3. SET DEFAULT (idempotent — replaces)
---   4. ADD CONSTRAINT via DO block IF NOT EXISTS (rerun-safe)
---   5. VALIDATE CONSTRAINT (implicit txn separate from #4; validate
---      of an already-validated constraint is a no-op)
---   6. CREATE UNIQUE INDEX IF NOT EXISTS
+-- Migration shape (satisfies two squawk rules that seem to conflict):
+--   * `prefer-robust-stmts` — every DDL must be inside a transaction
+--     so a partial failure rolls back cleanly on rerun.
+--   * `constraint-missing-not-valid` — the ADD CONSTRAINT NOT VALID
+--     and VALIDATE CONSTRAINT calls must be in DIFFERENT transactions
+--     so VALIDATE's SHARE UPDATE EXCLUSIVE lock is short-lived and
+--     independent of the ADD's ACCESS EXCLUSIVE.
+--
+-- Solution: TWO transactions.
+--   Txn 1: add column, backfill, default, ADD CONSTRAINT NOT VALID
+--   Txn 2: VALIDATE + UNIQUE INDEX
+--
+-- All statements are idempotent (IF NOT EXISTS / WHERE id IS NULL /
+-- DO block pg_constraint guard) so a rerun after partial failure
+-- succeeds cleanly — the CI's "re-apply all migrations" check
+-- verifies this.
 
 SET lock_timeout = '3s';
 SET statement_timeout = '60s';
+
+BEGIN;
 
 -- 1. Add the column (nullable → no rewrite path).
 ALTER TABLE influencer_collages
@@ -47,10 +53,10 @@ UPDATE influencer_collages SET id = gen_random_uuid() WHERE id IS NULL;
 -- 3. Default for future inserts (SET DEFAULT is idempotent — replaces).
 ALTER TABLE influencer_collages ALTER COLUMN id SET DEFAULT gen_random_uuid();
 
--- 4. NOT NULL invariant via CHECK NOT VALID — implicit txn 1.
---    The DO block wraps ADD CONSTRAINT with an IF NOT EXISTS check
---    against pg_constraint (Postgres 15 doesn't support IF NOT
---    EXISTS on ADD CONSTRAINT syntactically, hence the DO block).
+-- 4. NOT NULL invariant via CHECK NOT VALID. DO block wraps ADD
+--    CONSTRAINT with an IF NOT EXISTS check against pg_constraint —
+--    Postgres 15 doesn't support IF NOT EXISTS on ADD CONSTRAINT
+--    syntactically, hence the DO block.
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -63,10 +69,12 @@ BEGIN
     END IF;
 END $$;
 
--- 5. VALIDATE — implicit txn 2 (SEPARATE from step 4 to satisfy
---    squawk's zero-downtime rule and to keep the ACCESS EXCLUSIVE
---    lock window as short as possible). Validating an already-valid
---    constraint is a no-op.
+COMMIT;
+
+BEGIN;
+
+-- 5. VALIDATE — SEPARATE transaction from step 4. Validating an
+--    already-validated constraint is a no-op, so rerun is safe.
 ALTER TABLE influencer_collages VALIDATE CONSTRAINT influencer_collages_id_not_null;
 
 -- 6. UNIQUE index — the CHECK doesn't imply uniqueness; the separate
@@ -74,3 +82,5 @@ ALTER TABLE influencer_collages VALIDATE CONSTRAINT influencer_collages_id_not_n
 --    lookup uses it as the primary handle.
 CREATE UNIQUE INDEX IF NOT EXISTS influencer_collages_id_key
     ON influencer_collages (id);
+
+COMMIT;
