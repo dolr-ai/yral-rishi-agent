@@ -192,6 +192,7 @@ def test_ready_response_forwards_bot_id_and_generation_date():
     them back."""
     ic = _load("services.image_collage")
     row = {
+        "id": "some-uuid",
         "bot_id": "tara-uuid",
         "generation_date": date(2026, 7, 8),
         "theme": "TAARA on Santorini",
@@ -208,6 +209,78 @@ def test_ready_response_forwards_bot_id_and_generation_date():
         "generation_date missing or not ISO-formatted — mobile has no "
         "date to store in the chat message, refetch on subscription "
         "change is broken"
+    )
+
+
+def test_ready_response_forwards_collage_id_uuid():
+    """Migration 048 + 2026-07-09 refactor: mobile stores `collage_id`
+    (the opaque UUID) in the chat message so it can refetch via
+    ?collage_id=<uuid>. The envelope MUST forward the UUID from the DB
+    row; dropping it silently breaks the primary lookup path."""
+    ic = _load("services.image_collage")
+    row = {
+        "id": "abc-123-uuid",
+        "bot_id": "tara-uuid",
+        "generation_date": date(2026, 7, 9),
+        "theme": "TAARA Maldives",
+        "image_urls": ["https://clear/1.jpg"],
+        "image_urls_blurred": ["https://blurred/1.jpg"],
+        "generated_at": None,
+    }
+    env = ic._ready_response(row)
+    assert env["id"] == "abc-123-uuid", (
+        "collage id missing from _ready_response — mobile's preferred "
+        "chat-message reference (opaque UUID) breaks silently"
+    )
+
+
+def test_envelope_includes_collage_id_for_mobile_message_reference():
+    """The route-side envelope MUST include `collage_id` alongside
+    `collage_bot_id` + `collage_date`. Mobile prefers the UUID for
+    refetch (single opaque handle) but keeps the composite fields
+    for legacy compatibility + human debugging."""
+    ri = _load("routes.request_images")
+    collage = {
+        "id": "abc-123-uuid",
+        "bot_id": "tara-uuid",
+        "generation_date": date(2026, 7, 9),
+        "theme": "TAARA Maldives",
+        "image_urls": ["https://clear/1.jpg"],
+        "image_urls_blurred": ["https://blurred/1.jpg"],
+        "generated_at": None,
+    }
+    resp = ri._envelope_for_ready(collage, user_id="u", is_subscribed=True)
+    assert resp["collage_id"] == "abc-123-uuid", (
+        "collage_id missing from response envelope — Sarvesh can't "
+        "store the preferred UUID reference"
+    )
+    # legacy fields still present
+    assert resp["collage_bot_id"] == "tara-uuid"
+    assert resp["collage_date"] == "2026-07-09"
+
+
+def test_route_supports_collage_id_query_param():
+    """Source-pin the route signature so a future refactor can't
+    silently drop the query params that Sarvesh's mobile depends on."""
+    src = (
+        Path(__file__).parent.parent / "app" / "routes" / "request_images.py"
+    ).read_text()
+    assert "collage_id: str | None = None" in src, (
+        "route dropped the collage_id query param — mobile's primary "
+        "lookup path is broken"
+    )
+    assert "date: str | None = None" in src, (
+        "route dropped the date query param — mobile's fallback path "
+        "for legacy chat messages is broken"
+    )
+    # And the handler MUST actually branch on collage_id first
+    assert "if collage_id:" in src, (
+        "route no longer prefers collage_id over date — precedence bug"
+    )
+    # And the bot-id-mismatch guard MUST stay in place (security-adjacent)
+    assert 'row.get("bot_id") != influencer_id' in src, (
+        "the guard clearing the row when the UUID belongs to a different "
+        "bot was removed — one bot's UUID could peek at another bot's collage"
     )
 
 

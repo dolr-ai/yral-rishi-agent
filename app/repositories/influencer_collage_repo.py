@@ -102,7 +102,7 @@ async def mark_failed(pool, bot_id: str, generation_date: date) -> None:
 async def get(pool, bot_id: str, generation_date: date) -> dict | None:
     row = await pool.fetchrow(
         """
-        SELECT bot_id, generation_date, theme, image_urls,
+        SELECT id, bot_id, generation_date, theme, image_urls,
                image_urls_blurred, state,
                cost_usd, generated_at, created_at, updated_at
         FROM influencer_collages
@@ -110,6 +110,24 @@ async def get(pool, bot_id: str, generation_date: date) -> dict | None:
         """,
         bot_id,
         generation_date,
+    )
+    return dict(row) if row else None
+
+
+async def get_by_id(pool, collage_id: str) -> dict | None:
+    """Fetch a collage by its opaque UUID (migration 048). Preferred
+    lookup path for mobile: chat messages store `collage_id` in the
+    payload + refetch by it. Falls back to `get()` by (bot_id, date)
+    for legacy messages that predate the UUID field."""
+    row = await pool.fetchrow(
+        """
+        SELECT id, bot_id, generation_date, theme, image_urls,
+               image_urls_blurred, state,
+               cost_usd, generated_at, created_at, updated_at
+        FROM influencer_collages
+        WHERE id = $1
+        """,
+        collage_id,
     )
     return dict(row) if row else None
 

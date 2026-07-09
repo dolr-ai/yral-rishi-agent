@@ -73,20 +73,19 @@ def _envelope_for_ready(
     Blur decision (design §5 + 2026-07-08 Rishi choice):
       - `is_subscribed` provided by client → trust it
       - `is_subscribed` absent → fall back to subscription_stub
-        (Phase 0 YRAL-team allowlist)
 
     URL selection:
       - Subscribed → clear `image_urls`
       - Not subscribed → pre-blurred `image_urls_blurred` if present,
-        else fall back to `image_urls` (only happens for pre-blur-
-        migration collage rows — new rows always have both arrays).
+        else fall back to `image_urls` (rollout window only)
 
-    Response includes `collage_bot_id` + `collage_date` so the mobile
-    client can store JUST the reference in the chat message and
-    refetch on subscription transitions ("self-healing historical
-    messages" — design §5 discussion 2026-07-08). Never store the
-    URLs in the message payload; the client's cache key is
-    (collage_bot_id, collage_date, is_subscribed)."""
+    Response fields for mobile message payload (2026-07-09 refactor):
+      - `collage_id` (UUID) — preferred handle stored in the chat
+        message. Mobile refetches via GET ?collage_id=<uuid>.
+      - `collage_bot_id` + `collage_date` — kept for legacy clients
+        + human-debuggable identity. Also usable as a fallback
+        lookup via GET ?date=<YYYY-MM-DD>.
+    """
     resolved = (
         is_subscribed
         if is_subscribed is not None
@@ -99,11 +98,13 @@ def _envelope_for_ready(
     else:
         images = blurred if blurred else clear
     generation_date = collage.get("generation_date") or collage.get("collage_date")
+    collage_id_raw = collage.get("id") or collage.get("collage_id")
     return {
         "images": images,
         "is_blurred": not resolved,
         "theme": collage["theme"],
         "generated_at": collage.get("generated_at"),
+        "collage_id": str(collage_id_raw) if collage_id_raw is not None else None,
         "collage_bot_id": collage.get("bot_id"),
         "collage_date": (
             generation_date.isoformat()
@@ -147,30 +148,55 @@ async def get_collage(
     influencer_id: str,
     request: Request,
     is_subscribed: bool | None = None,
+    collage_id: str | None = None,
+    date: str | None = None,
 ) -> dict:
     """Idempotent read — used by mobile for polling + reload +
     render-time refetch (design §5 self-healing pattern). Never
-    consumes quota, never elects a generator: if today's collage
-    isn't ready yet, 404.
+    consumes quota, never elects a generator.
 
-    `is_subscribed` query param drives the blur decision so the same
-    collage row can serve subscribers (clear) and non-subscribers
-    (pre-blurred) without duplicating storage or state. Historical
-    messages that stored just `(collage_bot_id, collage_date)` fetch
-    via this endpoint with the CURRENT subscription state — after a
-    user subscribes, every historical collage message re-renders
-    clear."""
+    Lookup precedence (2026-07-09 refactor):
+      1. `?collage_id=<uuid>` — direct fetch by opaque handle.
+         Preferred: mobile stores the UUID in the chat message.
+      2. `?date=YYYY-MM-DD` — fetch by (bot_id, date). Fallback for
+         legacy chat messages that predate the UUID field.
+      3. Neither → today's UTC calendar date.
+
+    `is_subscribed` drives the blur decision so the same collage row
+    can serve subscribers (clear) + non-subscribers (pre-blurred).
+
+    Returns 404 if the requested collage doesn't exist (never
+    generated, or generation failed). Returns 400 if the date param
+    is malformed (must be ISO 8601 YYYY-MM-DD)."""
     user_id = get_current_user(request)
     pool = await get_pool()
 
-    from datetime import datetime, timezone
+    from datetime import date as date_cls, datetime, timezone
 
     from repositories import influencer_collage_repo
 
-    today = datetime.now(timezone.utc).date()
-    row = await influencer_collage_repo.get(pool, influencer_id, today)
-    if row is None or row["state"] != "succeeded":
-        raise HTTPException(status_code=404, detail="no collage yet today")
+    row = None
+    if collage_id:
+        row = await influencer_collage_repo.get_by_id(pool, collage_id)
+        # Guard against a UUID from bot A being used to peek at bot B's
+        # collages — the URL path pins the caller to influencer_id.
+        if row and row.get("bot_id") != influencer_id:
+            row = None
+    else:
+        if date:
+            try:
+                target = date_cls.fromisoformat(date)
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail="date must be ISO 8601 YYYY-MM-DD",
+                )
+        else:
+            target = datetime.now(timezone.utc).date()
+        row = await influencer_collage_repo.get(pool, influencer_id, target)
+
+    if row is None or row.get("state") != "succeeded":
+        raise HTTPException(status_code=404, detail="collage not found")
     return _envelope_for_ready(row, user_id, is_subscribed)
 
 
