@@ -107,13 +107,35 @@ async def _check_budget(pool) -> bool:
     return True
 
 
+def _sign_stored(stored: str) -> str:
+    """Turn a stored `image_urls`/`image_urls_blurred` entry into a
+    fresh URL. Post-2026-07-09 entries are S3 keys (relative paths
+    like `collage-clear/{bot}/{date}/{i}.jpg`) — `generate_presigned_url`
+    signs a 15-min URL from the key. Legacy entries (pre-fix rows)
+    are raw URLs — `generate_presigned_url` returns storjshare hosts
+    as-is (already-expired signatures — user sees a broken image on
+    the legacy row, but new rows work). Replicate URLs get rejected
+    by the storage helper (not in allowed_hosts), returning empty
+    string — the safest behavior for a legacy Replicate URL that has
+    almost certainly already been reaped by Replicate."""
+    return storage.generate_presigned_url(stored)
+
+
 def _ready_response(collage: dict) -> dict:
     """Envelope carries `id` + `bot_id` + `generation_date` so the
     route layer's response echoes back all three — mobile stores the
     opaque UUID `collage_id` in the chat-message payload (design §5
     self-healing pattern, 2026-07-09 refactor). `bot_id` +
     `generation_date` are also included for legacy clients and for
-    debugging (the UUID alone is opaque)."""
+    debugging (the UUID alone is opaque).
+
+    URL signing (2026-07-09 second fix): the stored `image_urls` +
+    `image_urls_blurred` arrays now hold S3 KEYS, not signed URLs.
+    Signing at read time means every response carries a fresh 15-min
+    signature — the earlier design baked the signature into the DB
+    row at generation time, which meant rows served hours after
+    generation returned already-expired URLs (real bug caught during
+    the 2026-07-09 Sarvesh integration verify)."""
     gen_date = collage.get("generation_date")
     return {
         "status": "ready",
@@ -123,8 +145,10 @@ def _ready_response(collage: dict) -> dict:
             gen_date.isoformat() if hasattr(gen_date, "isoformat") else gen_date
         ),
         "theme": collage["theme"],
-        "image_urls": list(collage["image_urls"] or []),
-        "image_urls_blurred": list(collage.get("image_urls_blurred") or []),
+        "image_urls": [_sign_stored(k) for k in (collage["image_urls"] or [])],
+        "image_urls_blurred": [
+            _sign_stored(k) for k in (collage.get("image_urls_blurred") or [])
+        ],
         "generated_at": (
             collage["generated_at"].isoformat() if collage.get("generated_at") else None
         ),
@@ -150,23 +174,41 @@ async def _poll_for_winner(pool, bot_id: str, generation_date: date) -> dict:
     return {"status": "pending"}
 
 
-async def _download_and_blur_upload(
+async def _mirror_and_blur_variant(
     http: httpx.AsyncClient,
-    clear_url: str,
+    replicate_url: str,
     bot_id: str,
     generation_date: date,
     index: int,
-) -> str | None:
-    """Fetch one Replicate output → Gaussian blur → upload to our S3
-    under a deterministic key. Returns the blurred variant's URL
-    (presigned or public). Best-effort: returns None on any error so
-    the route can fall back to serving `image_urls` when a variant
-    doesn't materialise (design §5 rollout — partial blur is not a
-    hard fail)."""
+) -> tuple[str | None, str | None]:
+    """Mirror one Replicate output to our S3 in both clear + blurred
+    variants. Downloads once, uploads twice. Returns (clear_key,
+    blurred_key) — both S3 relative paths that get signed at read
+    time via `_ready_response`. Returns (None, None) on any failure.
+
+    Why store keys, not URLs (2026-07-09 fix): the earlier design
+    stored presigned URLs directly in the DB, which meant the
+    signature baked in at generation time expired 15 min later. A
+    row served hours later returned already-dead URLs. Now we store
+    the KEY (which never expires) and sign fresh on each response.
+
+    Why also mirror clear (2026-07-09 fix, part 2): the earlier
+    design stored raw `https://replicate.delivery/...` URLs in
+    `image_urls`. Replicate reaps those after ~2 hours per their
+    retention policy, so subscribers received 404s on any collage
+    older than that. Now we own the pixel bytes end-to-end."""
     try:
-        r = await http.get(clear_url, timeout=30)
+        r = await http.get(replicate_url, timeout=30)
         r.raise_for_status()
         clear_bytes = r.content
+
+        # Upload the clear variant first so a downstream failure on
+        # the blur step doesn't cost us the mirror.
+        clear_key = (
+            f"collage-clear/{bot_id}/{generation_date.isoformat()}/{index:02d}.jpg"
+        )
+        await storage.upload_at_key(clear_key, clear_bytes, content_type="image/jpeg")
+
         # Pillow's blur is CPU-bound; offload to a worker so we
         # don't stall the event loop while 6 variants churn.
         blurred_bytes = await asyncio.to_thread(
@@ -174,36 +216,44 @@ async def _download_and_blur_upload(
             clear_bytes,
             config.COLLAGE_BLUR_RADIUS_PX,
         )
-        key = f"collage-blurred/{bot_id}/{generation_date.isoformat()}/{index:02d}.jpg"
-        await storage.upload_at_key(key, blurred_bytes, content_type="image/jpeg")
-        return storage.generate_presigned_url(key)
+        blurred_key = (
+            f"collage-blurred/{bot_id}/{generation_date.isoformat()}/{index:02d}.jpg"
+        )
+        await storage.upload_at_key(
+            blurred_key, blurred_bytes, content_type="image/jpeg"
+        )
+        return clear_key, blurred_key
     except Exception as e:
         logger.warning(
-            "collage blur variant failed: bot=%s idx=%d %s",
+            "collage variant mirror failed: bot=%s idx=%d %s",
             bot_id,
             index,
             e,
         )
-        return None
+        return None, None
 
 
-async def _generate_blurred_variants(
-    clear_urls: list[str], bot_id: str, generation_date: date
-) -> list[str]:
-    """Fan out `_download_and_blur_upload` across the batch. Preserves
-    ordering so `image_urls_blurred[i]` corresponds to `image_urls[i]`
-    — the mobile side relies on parallel arrays for the grid layout."""
+async def _mirror_batch(
+    replicate_urls: list[str], bot_id: str, generation_date: date
+) -> tuple[list[str], list[str]]:
+    """Fan out `_mirror_and_blur_variant` across the batch under a
+    concurrency cap. Preserves ordering so `image_urls_blurred[i]`
+    corresponds to `image_urls[i]` — mobile relies on parallel
+    arrays for the grid layout. Only variants that succeeded on BOTH
+    the clear + blurred upload count in the returned lists."""
     sem = asyncio.Semaphore(_BLUR_UPLOAD_CONCURRENCY)
 
-    async def _one(idx: int, url: str) -> str | None:
+    async def _one(idx: int, url: str) -> tuple[str | None, str | None]:
         async with sem:
             async with httpx.AsyncClient() as http:
-                return await _download_and_blur_upload(
+                return await _mirror_and_blur_variant(
                     http, url, bot_id, generation_date, idx
                 )
 
-    results = await asyncio.gather(*[_one(i, u) for i, u in enumerate(clear_urls)])
-    return [r for r in results if r is not None]
+    results = await asyncio.gather(*[_one(i, u) for i, u in enumerate(replicate_urls)])
+    clear_keys = [r[0] for r in results if r[0] is not None]
+    blurred_keys = [r[1] for r in results if r[1] is not None]
+    return clear_keys, blurred_keys
 
 
 async def _run_generation(
@@ -226,21 +276,33 @@ async def _run_generation(
         await influencer_collage_repo.mark_failed(pool, bot_id, generation_date)
         return {"status": "failed", "reason": "content_safety_or_partial"}
 
-    # Server-side pre-blur (design §5, Rishi 2026-07-08). Fetches
-    # each clear URL, applies Pillow gaussian blur, uploads to our
-    # own S3 bucket. Non-subscribers never receive clear pixels; the
-    # blurred URLs are what get served to them, keyed by the same
-    # collage row so the parallel arrays stay index-aligned. Partial
-    # success is tolerated — if some variants fail to upload, the
-    # route falls back to serving the clear URLs for those indices
-    # (never worse than pre-blur behavior).
-    blurred_urls = await _generate_blurred_variants(urls, bot_id, generation_date)
-    if len(blurred_urls) < n:
-        logger.warning(
-            "collage blur partial: bot=%s got=%d/%d blurred; non-subs may see clear",
+    # Mirror both variants to our S3 (2026-07-09 fix).
+    # Previously we stored raw Replicate URLs in `image_urls` (which
+    # Replicate reaps after ~2 h) and presigned Storj URLs in
+    # `image_urls_blurred` (whose 15-min signature was baked in at
+    # generation time, so rows served hours later returned dead
+    # URLs). Now we mirror the pixels end-to-end into our own S3
+    # under deterministic keys, store the KEYS in the DB, and sign
+    # fresh URLs on every response via `_ready_response`.
+    clear_keys, blurred_keys = await _mirror_batch(urls, bot_id, generation_date)
+    if len(clear_keys) < n:
+        # If we couldn't own the pixels, don't cache the row — the
+        # Replicate URLs will 404 in a few hours anyway. Fail loud
+        # and let a retry pick fresh pixels.
+        logger.error(
+            "collage mirror short: bot=%s clear=%d/%d — marking failed",
             bot_id,
-            len(blurred_urls),
+            len(clear_keys),
             n,
+        )
+        await influencer_collage_repo.mark_failed(pool, bot_id, generation_date)
+        return {"status": "failed", "reason": "s3_mirror_failed"}
+    if len(blurred_keys) < len(clear_keys):
+        logger.warning(
+            "collage blur partial: bot=%s blur=%d/%d clear; non-subs will see fewer",
+            bot_id,
+            len(blurred_keys),
+            len(clear_keys),
         )
 
     cost = config.COLLAGE_COST_PER_IMAGE_USD * n
@@ -248,14 +310,18 @@ async def _run_generation(
         pool,
         bot_id,
         generation_date,
-        urls,
+        clear_keys,
         cost_usd=cost,
-        image_urls_blurred=blurred_urls,
+        image_urls_blurred=blurred_keys,
     )
     fresh = await influencer_collage_repo.get(pool, bot_id, generation_date)
     return _ready_response(
         fresh
-        or {"theme": theme, "image_urls": urls, "image_urls_blurred": blurred_urls}
+        or {
+            "theme": theme,
+            "image_urls": clear_keys,
+            "image_urls_blurred": blurred_keys,
+        }
     )
 
 

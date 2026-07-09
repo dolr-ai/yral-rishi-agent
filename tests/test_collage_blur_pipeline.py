@@ -62,18 +62,26 @@ def test_gaussian_blur_roundtrip():
 
 
 def test_envelope_subscribed_returns_clear_urls():
-    """Trust the client flag when explicitly true → return clear URLs."""
+    """Trust the client flag when explicitly true → return clear URLs.
+    The envelope uses whatever the route's `image_urls` list contains
+    verbatim; per-entry signing happens upstream in _ready_response."""
     ri = _load("routes.request_images")
     collage = {
         "bot_id": "tara-uuid",
         "generation_date": date(2026, 7, 8),
         "theme": "TAARA on Santorini",
-        "image_urls": ["https://clear/1.jpg", "https://clear/2.jpg"],
-        "image_urls_blurred": ["https://blurred/1.jpg", "https://blurred/2.jpg"],
+        "image_urls": ["https://signed/clear/1.jpg", "https://signed/clear/2.jpg"],
+        "image_urls_blurred": [
+            "https://signed/blurred/1.jpg",
+            "https://signed/blurred/2.jpg",
+        ],
         "generated_at": None,
     }
     resp = ri._envelope_for_ready(collage, user_id="some-user", is_subscribed=True)
-    assert resp["images"] == ["https://clear/1.jpg", "https://clear/2.jpg"]
+    assert resp["images"] == [
+        "https://signed/clear/1.jpg",
+        "https://signed/clear/2.jpg",
+    ]
     assert resp["is_blurred"] is False
     assert resp["collage_bot_id"] == "tara-uuid"
     assert resp["collage_date"] == "2026-07-08"
@@ -86,12 +94,12 @@ def test_envelope_not_subscribed_returns_blurred_urls():
         "bot_id": "tara-uuid",
         "generation_date": date(2026, 7, 8),
         "theme": "TAARA on Santorini",
-        "image_urls": ["https://clear/1.jpg"],
-        "image_urls_blurred": ["https://blurred/1.jpg"],
+        "image_urls": ["https://signed/clear/1.jpg"],
+        "image_urls_blurred": ["https://signed/blurred/1.jpg"],
         "generated_at": None,
     }
     resp = ri._envelope_for_ready(collage, user_id="some-user", is_subscribed=False)
-    assert resp["images"] == ["https://blurred/1.jpg"], (
+    assert resp["images"] == ["https://signed/blurred/1.jpg"], (
         "non-subscriber received clear URLs — paywall bypassed via flag=False"
     )
     assert resp["is_blurred"] is True
@@ -108,12 +116,12 @@ def test_envelope_falls_back_to_clear_when_blurred_missing():
         "bot_id": "tara-uuid",
         "generation_date": date(2026, 7, 8),
         "theme": "TAARA on Santorini",
-        "image_urls": ["https://clear/1.jpg"],
+        "image_urls": ["https://signed/clear/1.jpg"],
         "image_urls_blurred": [],
         "generated_at": None,
     }
     resp = ri._envelope_for_ready(collage, user_id="some-user", is_subscribed=False)
-    assert resp["images"] == ["https://clear/1.jpg"]
+    assert resp["images"] == ["https://signed/clear/1.jpg"]
     # is_blurred still True so mobile still renders the CTA overlay
     assert resp["is_blurred"] is True
 
@@ -126,15 +134,83 @@ def test_envelope_missing_flag_uses_subscription_stub():
         "bot_id": "tara-uuid",
         "generation_date": date(2026, 7, 8),
         "theme": "TAARA on Santorini",
-        "image_urls": ["https://clear/1.jpg"],
-        "image_urls_blurred": ["https://blurred/1.jpg"],
+        "image_urls": ["https://signed/clear/1.jpg"],
+        "image_urls_blurred": ["https://signed/blurred/1.jpg"],
         "generated_at": None,
     }
     with patch.object(ri, "subscription_stub") as sub:
         sub.is_subscribed.return_value = True
         resp = ri._envelope_for_ready(collage, user_id="rishi", is_subscribed=None)
         sub.is_subscribed.assert_called_once_with("rishi")
-    assert resp["images"] == ["https://clear/1.jpg"]
+    assert resp["images"] == ["https://signed/clear/1.jpg"]
+
+
+def test_ready_response_signs_each_stored_key():
+    """2026-07-09 fix: DB now stores S3 KEYS in image_urls +
+    image_urls_blurred (not signed URLs). _ready_response MUST run
+    each stored entry through storage.generate_presigned_url so
+    every response ships fresh 15-min-valid URLs regardless of how
+    old the row is. The earlier bug: signatures baked in at
+    generation time expired 15 min later, so rows served hours
+    later returned dead URLs. Locking this test prevents regression."""
+    ic = _load("services.image_collage")
+
+    signed_calls: list[str] = []
+
+    def _fake_sign(k: str) -> str:
+        signed_calls.append(k)
+        return f"https://gateway.storjshare.io/signed/{k}?fresh_sig"
+
+    row = {
+        "id": "some-uuid",
+        "bot_id": "tara-uuid",
+        "generation_date": date(2026, 7, 9),
+        "theme": "TAARA Tokyo",
+        # These are S3 KEYS, not URLs — the new storage contract
+        "image_urls": ["collage-clear/tara/2026-07-09/00.jpg"],
+        "image_urls_blurred": ["collage-blurred/tara/2026-07-09/00.jpg"],
+        "generated_at": None,
+    }
+    with patch.object(ic.storage, "generate_presigned_url", side_effect=_fake_sign):
+        env = ic._ready_response(row)
+    assert signed_calls == [
+        "collage-clear/tara/2026-07-09/00.jpg",
+        "collage-blurred/tara/2026-07-09/00.jpg",
+    ], "_ready_response didn't sign each stored key — dead URLs will ship"
+    assert env["image_urls"] == [
+        "https://gateway.storjshare.io/signed/collage-clear/tara/2026-07-09/00.jpg?fresh_sig"
+    ]
+    assert env["image_urls_blurred"] == [
+        "https://gateway.storjshare.io/signed/collage-blurred/tara/2026-07-09/00.jpg?fresh_sig"
+    ]
+
+
+def test_mirror_batch_stores_keys_not_urls():
+    """Source-pin the mirror pipeline: `_mirror_batch` returns S3
+    KEYS (deterministic relative paths like
+    `collage-clear/{bot}/{date}/{i}.jpg`) — never the Replicate
+    delivery URL and never a presigned URL. Storing keys is the
+    invariant that makes fresh-signing on read possible."""
+    body = (
+        Path(__file__).parent.parent / "app" / "services" / "image_collage.py"
+    ).read_text()
+    # The clear-side key layout
+    assert (
+        'f"collage-clear/{bot_id}/{generation_date.isoformat()}/{index:02d}.jpg"'
+        in body
+    ), (
+        "clear S3 key template changed — mirror pipeline may store a "
+        "URL instead of a key, re-introducing the 2026-07-09 URL-expiry bug"
+    )
+    assert (
+        'f"collage-blurred/{bot_id}/{generation_date.isoformat()}/{index:02d}.jpg"'
+        in body
+    )
+    # `complete()` MUST be called with clear_keys, not the raw Replicate urls
+    assert "clear_keys," in body and "urls=urls" not in body, (
+        "complete() being called with raw Replicate urls instead of the "
+        "S3 keys we just uploaded — reverts the mirror fix"
+    )
 
 
 def test_response_includes_reference_fields_for_mobile_message():
@@ -165,17 +241,24 @@ def test_response_includes_reference_fields_for_mobile_message():
 def test_ready_response_carries_blurred_urls_through():
     """The `_ready_response` helper in image_collage must forward
     the `image_urls_blurred` array from the row into the envelope
-    so the route's _envelope_for_ready has both arrays to pick from."""
+    so the route's _envelope_for_ready has both arrays to pick from.
+    Signing behavior is tested separately in
+    test_ready_response_signs_each_stored_key."""
     ic = _load("services.image_collage")
     row = {
         "theme": "TAARA on Santorini",
-        "image_urls": ["https://clear/1.jpg"],
-        "image_urls_blurred": ["https://blurred/1.jpg"],
+        "image_urls": ["collage-clear/tara/2026-07-08/00.jpg"],
+        "image_urls_blurred": ["collage-blurred/tara/2026-07-08/00.jpg"],
         "generated_at": None,
     }
-    env = ic._ready_response(row)
-    assert env["image_urls"] == ["https://clear/1.jpg"]
-    assert env["image_urls_blurred"] == ["https://blurred/1.jpg"], (
+    with patch.object(
+        ic.storage, "generate_presigned_url", side_effect=lambda k: f"signed:{k}"
+    ):
+        env = ic._ready_response(row)
+    assert env["image_urls"] == ["signed:collage-clear/tara/2026-07-08/00.jpg"]
+    assert env["image_urls_blurred"] == [
+        "signed:collage-blurred/tara/2026-07-08/00.jpg"
+    ], (
         "image_urls_blurred dropped in _ready_response — non-subs won't "
         "see the blurred variants even when the row has them"
     )
@@ -284,11 +367,13 @@ def test_route_supports_collage_id_query_param():
     )
 
 
-def test_blur_variant_failure_returns_none_not_exception():
+def test_mirror_variant_failure_returns_none_pair_not_exception():
     """If S3 upload or Replicate download blows up for one variant,
-    the pipeline MUST NOT crash the whole batch — the fallback is
-    'serve the clear URL for that index' which is worse than pre-blur
-    but not worse than pre-2026-07-08 behavior."""
+    the pipeline MUST NOT crash the whole batch — `_mirror_batch`
+    silently drops the failed index from the returned arrays. The
+    caller `_run_generation` decides whether the resulting shortfall
+    is fatal (clear-side < N) or just a warning (blurred-side <
+    clear-side)."""
     ic = _load("services.image_collage")
 
     class _BoomClient:
@@ -296,7 +381,7 @@ def test_blur_variant_failure_returns_none_not_exception():
             raise RuntimeError("network dead")
 
     async def _run():
-        return await ic._download_and_blur_upload(
+        return await ic._mirror_and_blur_variant(
             _BoomClient(),
             "https://replicate.delivery/whatever.jpg",
             bot_id="tara-uuid",
@@ -305,7 +390,7 @@ def test_blur_variant_failure_returns_none_not_exception():
         )
 
     result = asyncio.run(_run())
-    assert result is None, (
-        "blur variant failure raised instead of returning None — the "
-        "route path can't tell 'clear-fallback' from 'system crash'"
+    assert result == (None, None), (
+        "mirror variant failure raised or returned a non-None pair — "
+        "the batch aggregator can't tell 'partial failure' from 'crash'"
     )
