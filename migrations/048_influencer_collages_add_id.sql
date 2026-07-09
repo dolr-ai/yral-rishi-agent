@@ -19,20 +19,25 @@
 --     &date=YYYY-MM-DD      — fallback: fetch by (bot_id, date)
 --     — neither: default to today's UTC date
 --
--- Rollout is additive:
---   1. Add nullable column (fast — no rewrite in PG15+)
---   2. Backfill every existing row with gen_random_uuid()
---   3. SET NOT NULL + DEFAULT + UNIQUE index
+-- Zero-downtime pattern (squawk-approved):
+--   1. ADD COLUMN (nullable, no default → no table rewrite)
+--   2. Backfill via UPDATE
+--   3. SET DEFAULT (only affects future inserts, no scan)
+--   4. ADD CONSTRAINT CHECK (id IS NOT NULL) NOT VALID (fast, no scan)
+--   5. VALIDATE CONSTRAINT (SHARE UPDATE EXCLUSIVE lock, doesn't
+--      block concurrent reads/writes)
+--   6. CREATE UNIQUE INDEX (locks writes briefly during scan; on
+--      our tiny row count this is milliseconds)
 --
--- Splitting the ADD from the NOT NULL avoids the "full table rewrite
--- on ADD COLUMN NOT NULL DEFAULT non_constant" pitfall. On our
--- current tiny row count each step is instantaneous; the split
--- pattern still matters for future scale.
+-- Everything runs in one transaction so a partial failure rolls back
+-- cleanly — squawk's `prefer-robust-stmts` rule.
 
 SET lock_timeout = '3s';
 SET statement_timeout = '60s';
 
--- 1. Add the column (nullable, no default → no rewrite path).
+BEGIN;
+
+-- 1. Add the column (nullable → no rewrite path).
 ALTER TABLE influencer_collages
     ADD COLUMN IF NOT EXISTS id UUID;
 
@@ -40,12 +45,21 @@ ALTER TABLE influencer_collages
 --    Postgres 13+ built-in; no pgcrypto extension needed.
 UPDATE influencer_collages SET id = gen_random_uuid() WHERE id IS NULL;
 
--- 3. Enforce NOT NULL + default going forward + UNIQUE.
---    ALTER … SET NOT NULL scans the table under an ACCESS EXCLUSIVE
---    lock; on a small table this is milliseconds. If this table ever
---    grows to millions of rows, this is the migration to break up.
-ALTER TABLE influencer_collages ALTER COLUMN id SET NOT NULL;
+-- 3. Default for future inserts.
 ALTER TABLE influencer_collages ALTER COLUMN id SET DEFAULT gen_random_uuid();
 
+-- 4-5. NOT NULL invariant via CHECK NOT VALID + VALIDATE — the
+--      zero-downtime alternative to `ALTER COLUMN … SET NOT NULL`
+--      (which takes ACCESS EXCLUSIVE + full table scan).
+ALTER TABLE influencer_collages
+    ADD CONSTRAINT influencer_collages_id_not_null CHECK (id IS NOT NULL) NOT VALID;
+
+ALTER TABLE influencer_collages VALIDATE CONSTRAINT influencer_collages_id_not_null;
+
+-- 6. UNIQUE index — the CHECK doesn't imply uniqueness; separate
+--    index enforces the "one row per UUID" invariant that lets the
+--    route's get_by_id lookup use it as the primary handle.
 CREATE UNIQUE INDEX IF NOT EXISTS influencer_collages_id_key
     ON influencer_collages (id);
+
+COMMIT;
