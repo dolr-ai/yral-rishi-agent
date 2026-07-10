@@ -45,6 +45,13 @@ def _format_influencer_response(inf: dict) -> dict:
         "description": inf.get("description") or "",
         "category": inf.get("category") or "",
         "is_active": inf.get("is_active", "active"),
+        # Spicy chat gate: mobile renders the "Chat with me →" profile
+        # link when is_nsfw AND spicy_landing_url is present. Old
+        # clients that don't know about these keys ignore them —
+        # nullable defaults preserve the pre-2026-07-10 contract per
+        # Rule 2 (mobile contract sacred).
+        "is_nsfw": bool(inf.get("is_nsfw", False)),
+        "spicy_landing_url": inf.get("spicy_landing_url"),
         "parent_principal_id": inf.get("parent_principal_id"),
         "source": inf.get("source"),
         "system_prompt": system_prompt_display,
@@ -94,6 +101,11 @@ def _format_influencer_detail(inf: dict) -> dict:
         "suggested_messages": suggested_messages,
         "is_active": inf.get("is_active", "active"),
         "is_nsfw": inf.get("is_nsfw", False),
+        # Spicy chat gate — landing URL for the per-bot "Chat with me →"
+        # / deflection CTA. Null for SFW bots + any is_nsfw bot without
+        # an amorae page configured yet (design decision #12: architecture
+        # is is_nsfw-driven, launch scope Tara only).
+        "spicy_landing_url": inf.get("spicy_landing_url"),
         "parent_principal_id": inf.get("parent_principal_id"),
         "source": inf.get("source"),
         "created_at": inf["created_at"].isoformat()

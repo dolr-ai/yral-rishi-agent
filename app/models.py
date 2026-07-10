@@ -134,6 +134,16 @@ class ConversationLastMessage(BaseModel):
     created_at: str
 
 
+class LinkCta(BaseModel):
+    """Spicy chat gate — CTA link the mobile client renders as a
+    tappable card on top of the assistant message. Empty by default,
+    populated only when native deflection swaps in the "chat with me
+    privately" reply. Sarvesh contract per design §5.4."""
+
+    ctaUrl: str
+    ctaLabel: str
+
+
 class ChatMessage(BaseModel):
     id: str
     conversation_id: Optional[str] = None
@@ -145,6 +155,7 @@ class ChatMessage(BaseModel):
     audio_duration_seconds: Optional[int] = None
     token_count: Optional[int] = None
     created_at: str
+    link_cta: Optional[LinkCta] = None
 
 
 class ConversationResponse(BaseModel):
@@ -186,6 +197,13 @@ class SendMessageRequest(BaseModel):
     audio_url: Optional[str] = Field(default=None, max_length=2000)
     audio_duration_seconds: Optional[int] = Field(default=None, ge=0, le=3600)
     client_message_id: Optional[str] = Field(default=None, max_length=255)
+    # Spicy chat gate: which surface is originating the request.
+    #   "app"        — native mobile app (default; preserves existing
+    #                  mobile behavior when unset)
+    #   "web_spicy"  — amorae-web server-to-server (requires the shared
+    #                  X-Amorae-Secret header; native clients cannot
+    #                  set this — server enforces 403)
+    surface: Literal["app", "web_spicy"] = "app"
 
 
 class AssistantError(BaseModel):

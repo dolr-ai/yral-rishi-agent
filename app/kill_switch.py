@@ -76,6 +76,16 @@ _PER_LOOP_KEYS = {
     # (lesson from the 2026-05-29 Gemini burn — new background loops
     # that spend money must never surprise on first deploy).
     "collage_pregen": "ENABLE_COLLAGE_PREGEN_LOOP",
+    # 2026-07-10 — Spicy chat gate native-deflection GLOBAL knob. When
+    # ON AND surface=='app' AND is_nsfw, chat.send_message re-enables
+    # content_safety on both directions, injects an SFW-constraint
+    # suffix, and swaps in a deflection reply + link_cta when the user
+    # or LLM crosses the explicit-content line. Defaults OFF so the
+    # existing NSFW-in-app path stays unchanged. Per-user test
+    # allowlist (NATIVE_DEFLECTION_TEST_USER_IDS) lets Rishi + a small
+    # cohort exercise the path before the global flip — see
+    # services.spicy_deflection.deflection_active_for.
+    "native_deflection": "NATIVE_DEFLECTION_ENABLED",
 }
 
 
@@ -105,6 +115,11 @@ _DEFAULT_OFF_LOOPS: frozenset[str] = frozenset(
         # would surprise-charge before Sarvesh's mobile integration
         # is ready.
         "collage_pregen",
+        # 2026-07-10 — Spicy chat gate: ships OFF so the existing
+        # is_nsfw NSFW-in-app path stays byte-identical until Rishi
+        # verifies the web brand + mobile end-to-end (design Risk 4:
+        # web live BEFORE native constraint flips on).
+        "native_deflection",
     }
 )
 

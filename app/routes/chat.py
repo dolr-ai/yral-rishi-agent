@@ -27,6 +27,7 @@ from services import (
     skill_parser,
     skills as skills_catalog,
     soul_file,
+    spicy_deflection,
     websocket_manager,
     storage,
     replicate,
@@ -36,6 +37,46 @@ from models import SendMessageResponse, ChatMessage, AssistantError
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/chat", tags=["Chat v1 — AI"])
+
+
+# ─── Spicy chat gate surface enforcement (2026-07-10) ──────────────────
+
+
+_ALLOWED_SURFACES = ("app", "web_spicy")
+
+
+def _parse_and_enforce_surface(body: dict, request: Request) -> str:
+    """Read `surface` from the chat body + enforce the auth requirement.
+
+      * "app" (default) — native mobile app; no extra auth.
+      * "web_spicy" — amorae-web calling server-to-server. Requires a
+        valid `X-Amorae-Secret` header (same shared secret amorae uses
+        on the handoff exchange). Native clients CANNOT set this and
+        get 403.
+
+    A malformed value falls through to 400 so a broken client sees a
+    real error rather than silently downgrading to "app"."""
+    raw = body.get("surface", "app")
+    if raw not in _ALLOWED_SURFACES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"surface must be one of {_ALLOWED_SURFACES}",
+        )
+    if raw == "web_spicy":
+        # Import here to avoid a boot-time cycle with routes that don't
+        # touch amorae auth.
+        from amorae_auth import require_amorae_secret
+
+        try:
+            require_amorae_secret(request)
+        except HTTPException as e:
+            # 401 from the middleware → 403 here (contract distinction:
+            # 403 = "you're not allowed to set web_spicy", not
+            # "credentials are invalid"). The route-facing error is
+            # what mobile / amorae see; the underlying cause stays in
+            # the middleware log.
+            raise HTTPException(status_code=403, detail=e.detail)
+    return raw
 
 
 # Phase 23.5 — skill onboarding hook. Skill plumbing wraps the existing
@@ -607,7 +648,22 @@ async def send_message(
 
     # Content safety check — runs before LLM call
     is_nsfw = inf.get("is_nsfw", False)
-    safety = content_safety.check_message(content or "", is_nsfw_influencer=is_nsfw)
+    surface = _parse_and_enforce_surface(body, request)
+
+    # Spicy chat gate (2026-07-10, design §4.1 + decision #19):
+    # when the two-knob rollout says this user should see the deflection
+    # AND the bot is is_nsfw AND the request came from the app surface,
+    # treat the bot as SFW for content_safety purposes (re-enable the
+    # NSFW filter) AND check the outbound reply post-generation. The
+    # web_spicy surface is unaffected — it passes through to
+    # user_chat_main_nsfw unchanged (the whole point of the surface flag).
+    apply_deflection = spicy_deflection.should_apply_app_deflection(
+        is_nsfw=is_nsfw, surface=surface, user_id=user_id
+    )
+    safety = content_safety.check_message(
+        content or "",
+        is_nsfw_influencer=(is_nsfw and not apply_deflection),
+    )
     if safety.blocked:
         assistant_msg = await message_repo.create(
             pool,
@@ -621,6 +677,29 @@ async def send_message(
             user_message=ChatMessage(**_format_message(user_msg)),
             assistant_message=ChatMessage(**_format_message(assistant_msg)),
         )
+
+    # Pre-generation deflection short-circuit — when the user is clearly
+    # pushing an is_nsfw bot for explicit content on the app surface,
+    # skip the LLM entirely and swap in the deflection copy + link_cta.
+    # Cheaper than a round-trip AND deterministic (design decision #19).
+    if apply_deflection:
+        landing_url = inf.get("spicy_landing_url")
+        pre = spicy_deflection.maybe_deflect_for_user_push(content, landing_url)
+        if pre is not None:
+            assistant_msg = await message_repo.create(
+                pool,
+                conversation_id=conversation_id,
+                role="assistant",
+                content=pre.content,
+                message_type="text",
+                sender_id=influencer_id,
+            )
+            formatted = _format_message(assistant_msg)
+            formatted["link_cta"] = pre.link_cta
+            return SendMessageResponse(
+                user_message=ChatMessage(**_format_message(user_msg)),
+                assistant_message=ChatMessage(**formatted),
+            )
 
     # Phase 4.7: piggyback session-memory update on the post-save async slot.
     # Fire-and-forget so the hot path doesn't wait on Redis. Use
@@ -717,6 +796,14 @@ async def send_message(
         sections=inf.get("system_instructions_sections"),
     )
 
+    # Spicy chat gate (design §4.1): on the app surface, append the
+    # SFW-constraint suffix so the LLM's own behavior stays clothed +
+    # flirty rather than depending only on the post-hoc filter.
+    if apply_deflection:
+        system_instructions = spicy_deflection.sfw_constrained_prompt(
+            system_instructions
+        )
+
     # Typing indicator START
     await websocket_manager.broadcast_typing_status(
         user_id=user_id,
@@ -782,12 +869,27 @@ async def send_message(
                     parsed_state=parsed_state,
                 )
 
+    # Spicy chat gate — post-generation backstop (decision #19). If the
+    # LLM's drafted reply would have tripped the NSFW filter, replace it
+    # with the deflection copy + link_cta BEFORE persisting. Guarantees
+    # "no explicit content on the app surface" is deterministic, not
+    # prompt-dependent. Never fires on the web_spicy surface (that path
+    # skips apply_deflection).
+    post_deflection = None
+    if apply_deflection:
+        post_deflection = spicy_deflection.deflect_generated_reply(
+            llm_result.content, inf.get("spicy_landing_url")
+        )
+    persisted_content = (
+        post_deflection.content if post_deflection is not None else llm_result.content
+    )
+
     # Save AI response
     assistant_msg = await message_repo.create(
         pool,
         conversation_id=conversation_id,
         role="assistant",
-        content=llm_result.content,
+        content=persisted_content,
         message_type="text",
         token_count=llm_result.output_tokens,
         sender_id=influencer_id,
@@ -805,18 +907,29 @@ async def send_message(
             user_id=user_id,
             influencer_id=influencer_id,
             user_message=content or "",
-            assistant_response=llm_result.content,
+            # Feed extract the PERSISTED text — matches what the user
+            # actually sees. If we swapped in the deflection, memory
+            # gets the deflection (not the drafted explicit reply);
+            # keeps yral_agent_db free of adult content (Level 2).
+            assistant_response=persisted_content,
             message_id=user_msg["id"],
             is_nsfw=is_nsfw,
         )
     )
+
+    # Build the wire payload once — WS broadcast, push preview, and
+    # HTTP response all need the same shape (with link_cta if the
+    # post-generation deflection fired).
+    assistant_payload = _format_message(assistant_msg)
+    if post_deflection is not None:
+        assistant_payload["link_cta"] = post_deflection.link_cta
 
     unread_count = await message_repo.count_unread(pool, conversation_id, user_id)
     websocket_manager.spawn(
         websocket_manager.broadcast_new_message(
             user_id=user_id,
             conversation_id=conversation_id,
-            message=_format_message(assistant_msg),
+            message=assistant_payload,
             influencer={
                 "id": influencer_id,
                 "display_name": inf.get("display_name", ""),
@@ -831,7 +944,9 @@ async def send_message(
         push_notifications.send_new_message_notification(
             user_id=user_id,
             influencer_name=inf.get("display_name", "AI"),
-            message_content=llm_result.content,
+            # Push preview mirrors the persisted content — a deflection
+            # push must not preview the drafted explicit text.
+            message_content=persisted_content,
             conversation_id=conversation_id,
             influencer_id=influencer_id,
         )
@@ -839,7 +954,7 @@ async def send_message(
 
     return SendMessageResponse(
         user_message=ChatMessage(**_format_message(user_msg)),
-        assistant_message=ChatMessage(**_format_message(assistant_msg)),
+        assistant_message=ChatMessage(**assistant_payload),
     )
 
 

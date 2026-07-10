@@ -254,6 +254,48 @@ async def _llm_routing_tile(pool) -> dict:
         }
 
 
+async def _native_deflection_tile(pool) -> dict:
+    """Spicy chat gate rollout status. Shows BOTH knobs — global +
+    per-user test allowlist size — because Rishi's rollout plan is
+    "solo Motorola test → cohort → global flip" and the dashboard is
+    where the ADHD-observability baseline says these knobs must
+    surface (feedback_adhd_observability_and_security_baseline)."""
+    try:
+        from services import spicy_deflection
+
+        state = spicy_deflection.rollout_state()
+        global_on = state["global_enabled"]
+        test_count = state["test_user_count"]
+        if global_on:
+            status, primary = "warn", "ON (global) — deflection active"
+        elif test_count > 0:
+            status, primary = "warn", f"test allowlist active ({test_count} user(s))"
+        else:
+            status, primary = (
+                "off",
+                "OFF — is_nsfw bots chat NSFW natively (pre-2026-07-10 behavior)",
+            )
+        return {
+            "title": "Spicy chat gate — native deflection",
+            "status": status,
+            "primary": primary,
+            "details": (
+                "Two knobs: NATIVE_DEFLECTION_ENABLED (global) OR "
+                f"{state['test_user_env']} (per-user allowlist). Rollout: "
+                "solo Motorola test → cohort → global flip. Design §4.1 + Risk 4."
+            ),
+            "link": "/admin/dashboard",
+        }
+    except Exception as e:
+        return {
+            "title": "Spicy chat gate — native deflection",
+            "status": "fail",
+            "primary": "tile error",
+            "details": str(e)[:200],
+            "link": "/admin/dashboard",
+        }
+
+
 async def _llm_primary_failures_tile(pool) -> dict:
     """Brief task 4 (2026-06-26) — per-process primary-provider failure
     counts over the last hour (Sentry holds the cross-replica view; this
@@ -473,6 +515,7 @@ async def admin_dashboard(request: Request):
         await _integrity_tile(pool),
         await _llm_routing_tile(pool),
         await _llm_primary_failures_tile(pool),
+        await _native_deflection_tile(pool),
         await _email_digest_tile(pool),
         await _rate_limit_tile(pool),
         await _discovery_pins_tile(pool),
