@@ -192,8 +192,7 @@ def test_nsfw_bot_kill_switch_global_on_activates(monkeypatch):
     from services import spicy_deflection as d
 
     assert (
-        d.should_apply_app_deflection(is_nsfw=True, surface="app", user_id="u1")
-        is True
+        d.should_apply_app_deflection(is_nsfw=True, surface="app", user_id="u1") is True
     )
 
 
@@ -342,6 +341,190 @@ def test_surface_parser_defaults_to_app(monkeypatch):
         client = None
 
     assert _parse_and_enforce_surface({}, _Req()) == "app"
+
+
+# ─── Amendment 2: streaming-path deflection parity ─────────────────────
+
+
+def _streaming_handler_source() -> str:
+    """Slice send_message_stream + its inner event_stream(). All the
+    following tests scan this substring so a future refactor that
+    accidentally rewrites the streaming path without preserving the
+    deflection wiring fires visibly in CI."""
+    src = _read("app/routes/chat.py")
+    start = src.find("async def send_message_stream(")
+    assert start != -1, "send_message_stream moved or was renamed"
+    end = src.find("\n@router.", start + 1)
+    if end == -1:
+        end = src.find("\nasync def _generate_image_prompt", start + 1)
+    assert end != -1
+    return src[start:end]
+
+
+def test_stream_wires_surface_and_apply_deflection_pre_stream():
+    """The 403 for native-with-web_spicy must land as HTTP status, not
+    a mid-stream SSE error — so surface parsing runs BEFORE
+    StreamingResponse construction, matching the non-streaming
+    handler's shape."""
+    body = _streaming_handler_source()
+    # Surface parsing outside event_stream so HTTPException surfaces
+    # as an HTTP status.
+    parse_pos = body.find("_parse_and_enforce_surface(body, request)")
+    stream_pos = body.find("async def event_stream():")
+    assert parse_pos != -1, "_parse_and_enforce_surface not wired into stream"
+    assert stream_pos != -1
+    assert parse_pos < stream_pos, (
+        "surface parsing must run BEFORE event_stream() is defined so a "
+        "403 raise lands as HTTP status, not an SSE error event"
+    )
+    assert "should_apply_app_deflection(" in body
+    # Safety check honors the reversal on the streaming path too.
+    assert "is_nsfw_influencer=(is_nsfw and not apply_deflection)" in body
+
+
+def test_stream_pre_gen_deflection_user_push_emits_link_cta():
+    """Brief scenario 1 — is_nsfw + surface=app + kill-switch on +
+    user is clearly pushing: skip the LLM entirely, persist one
+    message row (the deflection), emit one token event + one done
+    event with link_cta.cta_url + link_cta.cta_label present.
+
+    Verifies the control flow of the pre-gen short-circuit inside
+    event_stream() by scanning for the exact sequence of ops."""
+    body = _streaming_handler_source()
+
+    # The pre-gen check calls maybe_deflect_for_user_push against the
+    # user content + the bot's spicy_landing_url.
+    pre_call_pos = body.find("spicy_deflection.maybe_deflect_for_user_push(")
+    assert pre_call_pos != -1, "pre-gen deflection call missing from stream handler"
+    # The block guards on `if pre is not None:` (or `if pre:`).
+    guard = body[pre_call_pos : pre_call_pos + 400]
+    assert "if pre is not None:" in guard or "if pre:" in guard
+
+    # Locate the pre-gen success branch (roughly the 800 chars after
+    # the guard) and verify:
+    #   * message_repo.create called with content=pre.content
+    #   * link_cta added to the payload
+    #   * token event emitted with pre.content
+    #   * done event with provider="spicy_deflection_pre"
+    #   * return (early exit — no LLM call)
+    pre_branch = body[pre_call_pos : pre_call_pos + 1500]
+    assert "content=pre.content" in pre_branch, (
+        "pre-gen deflection must persist ONE row with the deflection "
+        "text — the LLM's drafted reply is never generated on this branch"
+    )
+    assert 'payload["link_cta"] = pre.link_cta' in pre_branch
+    assert '_sse_event("token", {"text": pre.content})' in pre_branch
+    assert '"provider": "spicy_deflection_pre"' in pre_branch
+    # Early return — no fall-through to the LLM loop.
+    assert "\n                    return\n" in pre_branch
+
+    # Ordering: the pre-gen block runs BEFORE the LLM async-for loop,
+    # so a triggered short-circuit skips the LLM entirely.
+    llm_call_pos = body.find(
+        "async for kind, value in ai_client.generate_response_stream("
+    )
+    assert llm_call_pos != -1
+    assert pre_call_pos < llm_call_pos, (
+        "pre-gen deflection must be checked BEFORE the LLM stream loop"
+    )
+
+
+def test_stream_post_gen_deflection_backstop_swaps_reply():
+    """Brief scenario 2 — is_nsfw + surface=app + kill-switch on +
+    innocent user text + LLM drafts explicit reply: the drafted text
+    is DISCARDED (never emitted, never persisted). Emitted `token`
+    event carries the deflection copy, NOT the LLM's explicit text;
+    persisted row's content is DEFLECTION_CONTENT.
+
+    Verified structurally: buffer-during-loop + post-gen check runs
+    BEFORE the persist + full_text swap BEFORE persist + done event
+    carries link_cta with snake_case keys."""
+    body = _streaming_handler_source()
+
+    # The token-emit branch inside the loop must be guarded so that
+    # apply_deflection buffers instead of emitting — otherwise the
+    # drafted explicit text would leak to mobile before the post-gen
+    # check runs.
+    loop_pos = body.find('if kind == "text":')
+    assert loop_pos != -1
+    loop_block = body[loop_pos : loop_pos + 800]
+    assert "if apply_deflection:" in loop_block, (
+        "streaming loop must buffer instead of emitting when "
+        "apply_deflection is on — no drafted explicit chunk can reach "
+        "mobile before the post-gen swap decision"
+    )
+    assert "continue" in loop_block
+
+    # Post-gen backstop runs after the loop exits (full_text
+    # accumulated) but BEFORE the message_repo.create persist.
+    post_call_pos = body.find("spicy_deflection.deflect_generated_reply(")
+    persist_pos = body.find("assistant_msg = await message_repo.create(", post_call_pos)
+    assert post_call_pos != -1, "post-gen deflection call missing from stream handler"
+    assert persist_pos != -1
+    assert post_call_pos < persist_pos, (
+        "post-gen deflection MUST run before the persist — otherwise "
+        "the drafted explicit text lands in yral_agent_db before the swap"
+    )
+
+    # Swap: full_text gets replaced with post_deflection.content
+    # BEFORE persist so the persisted row content is the deflection.
+    swap_pos = body.find("full_text = post_deflection.content")
+    assert swap_pos != -1
+    assert swap_pos < persist_pos, (
+        "full_text swap must land BEFORE the persist — persist uses "
+        "full_text so mid-persist swap ordering is what protects Level 2"
+    )
+
+    # Done event: link_cta rides on the done payload when
+    # post_deflection fired; provider label distinguishes the swap.
+    assert 'done_payload["link_cta"] = post_deflection.link_cta' in body
+    assert '"spicy_deflection_post"' in body
+
+    # The buffered content is emitted as ONE bundled token event only
+    # AFTER the post-gen swap decision — never mid-loop.
+    bundled_emit_pos = body.find('yield _sse_event("token", {"text": full_text})')
+    assert bundled_emit_pos != -1, (
+        "the buffered content must be emitted as one bundled token event "
+        "AFTER the post-gen swap check"
+    )
+    assert bundled_emit_pos > post_call_pos, (
+        "the bundled token emit must run AFTER the post-gen swap "
+        "check — otherwise a drafted explicit blob would emit before "
+        "the deflection replaces it"
+    )
+
+
+def test_stream_sfw_path_unchanged_by_deflection_wiring():
+    """Regression guard: SFW bots + non-deflection paths must keep
+    streaming token-by-token as before. The buffer-then-emit logic is
+    ONLY active when apply_deflection is True."""
+    body = _streaming_handler_source()
+
+    # The existing per-token emit (stream_filter path + else branch)
+    # must still be present — apply_deflection just intercepts BEFORE
+    # them via `continue`.
+    assert "emit = stream_filter.feed(value)" in body
+    assert 'yield _sse_event("token", {"text": value})' in body
+
+
+def test_stream_preserves_pr424_streaming_nsfw_routing():
+    """The Amendment must NOT re-introduce anything that touches
+    generate_response_stream's is_nsfw branch — PR #424 fixed that
+    path (single-yield bundled done) and this PR keeps it intact. The
+    deflection wiring lives entirely in send_message_stream, not in
+    generate_response_stream."""
+    ai_client_src = _read("app/services/ai_client.py")
+    fn_pos = ai_client_src.find("async def generate_response_stream(")
+    assert fn_pos != -1
+    fn_end = ai_client_src.find("\nasync def ", fn_pos + 1)
+    fn_body = ai_client_src[fn_pos:fn_end] if fn_end != -1 else ai_client_src[fn_pos:]
+    # Same guard from Amendment 1's test_streaming_gate_no_reintroduction:
+    # NO_PROVIDER yield textually preceding any registry call is the
+    # PR #424 regression shape.
+    no_provider_pos = fn_body.find('error_code="NO_PROVIDER"')
+    call_pos = fn_body.find("llm_registry.call(")
+    if no_provider_pos != -1 and call_pos != -1:
+        assert no_provider_pos > call_pos
 
 
 @requires_fastapi

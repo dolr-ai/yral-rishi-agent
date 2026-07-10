@@ -1035,7 +1035,21 @@ async def send_message_stream(
     # Content safety pre-check — if blocked, stream the override as a single
     # token event then done. Same shape mobile expects.
     is_nsfw = inf.get("is_nsfw", False)
-    safety = content_safety.check_message(content or "", is_nsfw_influencer=is_nsfw)
+    # Spicy chat gate parity with the non-streaming path (Amendment 2,
+    # 2026-07-10). Mobile's shouldStream() at ConversationViewModel:1485
+    # branches on the SseStreamingEnabled RC flag, NOT on is_nsfw — so
+    # Tara chats can land here too. Without this block, /stream would
+    # be a full bypass of the deflection gate. _parse_and_enforce_surface
+    # raises HTTPException so a native client mis-setting surface=web_spicy
+    # gets a real HTTP 403 rather than an SSE error event mid-stream.
+    surface = _parse_and_enforce_surface(body, request)
+    apply_deflection = spicy_deflection.should_apply_app_deflection(
+        is_nsfw=is_nsfw, surface=surface, user_id=user_id
+    )
+    safety = content_safety.check_message(
+        content or "",
+        is_nsfw_influencer=(is_nsfw and not apply_deflection),
+    )
 
     async def event_stream():
         try:
@@ -1096,6 +1110,51 @@ async def send_message_stream(
                 sections=inf.get("system_instructions_sections"),
             )
 
+            # Spicy chat gate parity (Amendment 2, 2026-07-10).
+            if apply_deflection:
+                system_instructions = spicy_deflection.sfw_constrained_prompt(
+                    system_instructions
+                )
+                # Pre-gen deflection: user is clearly pushing for explicit
+                # content — skip the LLM entirely and emit the deflection
+                # as one bundled token + done. Never touches the LLM
+                # (saves the round-trip AND guarantees no drafted
+                # explicit tokens ever exist).
+                pre = spicy_deflection.maybe_deflect_for_user_push(
+                    content, inf.get("spicy_landing_url")
+                )
+                if pre is not None:
+                    try:
+                        assistant_msg = await message_repo.create(
+                            pool,
+                            conversation_id=conversation_id,
+                            role="assistant",
+                            content=pre.content,
+                            message_type="text",
+                            sender_id=influencer_id,
+                        )
+                    except asyncpg.ForeignKeyViolationError:
+                        yield _sse_event(
+                            "error",
+                            {
+                                "code": "CONVERSATION_DELETED",
+                                "message": "This conversation was deleted.",
+                                "retryable": False,
+                            },
+                        )
+                        return
+                    payload = _format_message(assistant_msg)
+                    payload["link_cta"] = pre.link_cta
+                    yield _sse_event("token", {"text": pre.content})
+                    yield _sse_event(
+                        "done",
+                        {
+                            "assistant_message": payload,
+                            "provider": "spicy_deflection_pre",
+                        },
+                    )
+                    return
+
             full_text = ""
             llm_result_obj = None
             async for kind, value in ai_client.generate_response_stream(
@@ -1110,6 +1169,14 @@ async def send_message_stream(
             ):
                 if kind == "text":
                     full_text += value
+                    if apply_deflection:
+                        # Spicy chat gate parity: buffer only. The
+                        # post-gen backstop runs against full_text
+                        # BEFORE we emit anything, so a swapped-in
+                        # deflection reaches mobile as one clean
+                        # bundled token event — never a "leaked
+                        # explicit chunk then swap" UX.
+                        continue
                     if stream_filter is not None:
                         # Suppress the <skill_state> block + any tail bytes
                         # that could be its start. Mobile must never see
@@ -1163,6 +1230,23 @@ async def send_message_stream(
                 )
                 return
 
+            # Spicy chat gate — post-generation deterministic backstop
+            # (decision #19). When apply_deflection is on AND the LLM's
+            # drafted reply would trip the NSFW filter, replace it with
+            # the deflection copy + capture link_cta BEFORE persist +
+            # BEFORE any token event fires. The drafted explicit text
+            # is DISCARDED — never emitted, never persisted, never fed
+            # to memory-extract, never surfaced in the push preview.
+            # Preserves the Level-2-adjacent invariant on the app
+            # surface (no drafted adult content in yral_agent_db).
+            post_deflection = None
+            if apply_deflection:
+                post_deflection = spicy_deflection.deflect_generated_reply(
+                    full_text, inf.get("spicy_landing_url")
+                )
+                if post_deflection is not None:
+                    full_text = post_deflection.content
+
             # FK guard mid-stream: the conversation may have been
             # deleted between the user_msg INSERT above and this
             # assistant_msg INSERT. Pre-stream guards catch the
@@ -1206,11 +1290,25 @@ async def send_message_stream(
                 )
             )
 
+            # Spicy chat gate parity — on the deflection path we
+            # buffered tokens; emit the final (possibly swapped)
+            # content as one bundled token event now. SFW clients
+            # already streamed token-by-token above and skip this.
+            if apply_deflection:
+                yield _sse_event("token", {"text": full_text})
+
+            done_payload = _format_message(assistant_msg)
+            if post_deflection is not None:
+                done_payload["link_cta"] = post_deflection.link_cta
             yield _sse_event(
                 "done",
                 {
-                    "assistant_message": _format_message(assistant_msg),
-                    "provider": llm_result_obj.provider,
+                    "assistant_message": done_payload,
+                    "provider": (
+                        "spicy_deflection_post"
+                        if post_deflection is not None
+                        else llm_result_obj.provider
+                    ),
                     "model": llm_result_obj.model,
                     "tokens": llm_result_obj.output_tokens,
                 },
