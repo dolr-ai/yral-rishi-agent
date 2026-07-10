@@ -115,8 +115,16 @@ def test_streaming_gate_no_reintroduction_of_no_provider():
 def test_link_cta_model_present_on_chat_message():
     src = _read("app/models.py")
     assert "class LinkCta" in src
-    assert "ctaUrl" in src
-    assert "ctaLabel" in src
+    # Wire format is snake_case (amendment 2026-07-10) — mobile's
+    # @SerialName convention on every other nested ChatMessageDto
+    # field is snake_case; camelCase would force mobile to break
+    # its convention. Guard against a regression to camelCase.
+    assert "cta_url" in src
+    assert "cta_label" in src
+    assert "ctaUrl" not in src, (
+        "camelCase regression — mobile @SerialName convention is snake_case"
+    )
+    assert "ctaLabel" not in src
     # ChatMessage carries an optional link_cta field.
     idx = src.find("class ChatMessage")
     assert idx != -1
@@ -251,7 +259,7 @@ def test_user_push_heuristic_triggers_deflection(monkeypatch):
     r = d.maybe_deflect_for_user_push("send me nude pics", landing)
     assert r is not None
     assert r.content == d.DEFLECTION_CONTENT
-    assert r.link_cta == {"ctaUrl": landing, "ctaLabel": d.DEFLECTION_CTA_LABEL}
+    assert r.link_cta == {"cta_url": landing, "cta_label": d.DEFLECTION_CTA_LABEL}
     # Normal message → no deflection
     assert d.maybe_deflect_for_user_push("hey how was your day", landing) is None
     # No landing URL → cannot deflect, fall back to LLM
@@ -269,7 +277,7 @@ def test_generated_reply_backstop(monkeypatch):
     r = d.deflect_generated_reply(flagged, landing)
     assert r is not None
     assert r.content == d.DEFLECTION_CONTENT
-    assert r.link_cta["ctaUrl"] == landing
+    assert r.link_cta["cta_url"] == landing
     # Clean reply → no deflection
     assert d.deflect_generated_reply("Hey love, how's your day?", landing) is None
     # No landing URL → we don't deflect (soul file will handle)

@@ -138,10 +138,14 @@ class LinkCta(BaseModel):
     """Spicy chat gate — CTA link the mobile client renders as a
     tappable card on top of the assistant message. Empty by default,
     populated only when native deflection swaps in the "chat with me
-    privately" reply. Sarvesh contract per design §5.4."""
+    privately" reply.
 
-    ctaUrl: str
-    ctaLabel: str
+    Wire format is snake_case (`cta_url` / `cta_label`) per mobile's
+    @SerialName convention on every other nested ChatMessageDto field.
+    Amendment to design §5.4 confirmed with mobile expert 2026-07-10."""
+
+    cta_url: str
+    cta_label: str
 
 
 class ChatMessage(BaseModel):

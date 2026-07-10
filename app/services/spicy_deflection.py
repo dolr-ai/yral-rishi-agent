@@ -4,7 +4,9 @@ Design references (docs/spicy-chat-gate-design-2026-06-28.md):
   * §4.1  — Native path: SFW-constrain + deflect (the behavior reversal)
   * §5.3  — sample deflection copy ("I can't go there with you here 🙈 —
             but I'm a lot freer over here 🔥" + "chat with me privately")
-  * §5.4  — link_cta / ctaUrl / ctaLabel on ChatMessage (Sarvesh contract)
+  * §5.4  — link_cta / cta_url / cta_label on ChatMessage (Sarvesh contract,
+            amendment 2026-07-10 — snake_case on the wire to match every
+            other nested ChatMessageDto field's @SerialName convention)
   * §11   — decision #12: launch scope Tara only, keep is_nsfw-driven
   * §19   — decision #19: prompt-driven primary + content-safety filter
             as a deterministic backstop on the app surface
@@ -105,7 +107,7 @@ class Deflection:
 def _build(landing_url: str) -> Deflection:
     return Deflection(
         content=DEFLECTION_CONTENT,
-        link_cta={"ctaUrl": landing_url, "ctaLabel": DEFLECTION_CTA_LABEL},
+        link_cta={"cta_url": landing_url, "cta_label": DEFLECTION_CTA_LABEL},
     )
 
 
