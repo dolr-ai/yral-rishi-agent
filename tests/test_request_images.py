@@ -129,6 +129,21 @@ class _StubPool:
                 "generated_at": None,
             }
             return {"bot_id": args[0]}
+        # 2026-07-13 endpoint hardening (PR #455): the fallback-to-most-
+        # recent-succeeded path calls `get_latest_succeeded(bot_id,
+        # within_days)`, which shares the `FROM influencer_collages ...
+        # WHERE bot_id` prefix with `get(bot_id, generation_date)`. Match
+        # the fallback query FIRST + return None so every test in this
+        # file isolates to the "no fallback available" branch of
+        # `_fallback_or_failed` — that keeps `test_content_safety_refusal_
+        # marks_failed` + `test_budget_hard_cap_blocks_generation`
+        # verifying the real 'failed' contract they were written for. The
+        # positive fallback path is exercised in tests/test_collage_fallback.py.
+        if (
+            "state = 'succeeded'" in sql_norm
+            and "ORDER BY generation_date DESC" in sql_norm
+        ):
+            return None
         # SELECT bot_id ... FROM influencer_collages WHERE bot_id = $1 ...
         if "FROM influencer_collages" in sql_norm and "WHERE bot_id" in sql_norm:
             return self.collage.row

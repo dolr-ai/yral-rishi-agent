@@ -22,7 +22,9 @@ State machine (order matters — brief-locked):
   2. get() on today's collage:
        state='succeeded' → cache hit, return "ready"
        state='reserved'  → other requester is generating; poll
-       state='failed'    → return "failed" (retry-elect is Phase 1)
+       state='failed'    → serve most-recent succeeded (2026-07-13
+                           hardening — see _fallback_or_failed); only
+                           bubble "failed" if no recent success exists.
 
   3. If no row exists yet, reserve():
        True  → elected generator; run the batch, complete or fail.
@@ -155,10 +157,41 @@ def _ready_response(collage: dict) -> dict:
     }
 
 
+async def _fallback_or_failed(pool, bot_id: str, reason: str) -> dict:
+    """Shared fallback lookup for the two "today failed" branches:
+      1. orchestrate() reads an existing state='failed' row
+      2. _poll_for_winner() watches the elected generator flip to
+         state='failed'
+
+    Behavior: look up the bot's most-recent succeeded row within the
+    configured window; serve it as a ready response with a warning
+    log so the fallback firing shows up in ops. Fall back to the
+    original "failed" envelope only when no recent success exists —
+    that way a systemic outage still bubbles up visibly.
+
+    Set COLLAGE_FALLBACK_MAX_DAYS=0 to disable this behavior entirely
+    (paranoid switch — reverts to the pre-2026-07-13 behavior)."""
+    fallback = await influencer_collage_repo.get_latest_succeeded(
+        pool, bot_id, within_days=config.COLLAGE_FALLBACK_MAX_DAYS
+    )
+    if fallback is None:
+        return {"status": "failed", "reason": reason}
+    logger.warning(
+        "collage: today failed for bot=%s (reason=%s), serving fallback id=%s from %s",
+        bot_id,
+        reason,
+        fallback.get("id"),
+        fallback.get("generation_date"),
+    )
+    return _ready_response(fallback)
+
+
 async def _poll_for_winner(pool, bot_id: str, generation_date: date) -> dict:
     """Sleep-and-check until the elected generator flips the row to
     succeeded or the timeout fires. Returns a "ready" / "pending" /
-    "failed" envelope."""
+    "failed" envelope. A `state='failed'` from the winner triggers
+    the fallback path (see _fallback_or_failed) so a losing polling
+    requester gets the same graceful degrade as the elected one."""
     deadline = asyncio.get_event_loop().time() + config.COLLAGE_POLL_TIMEOUT_SEC
     while asyncio.get_event_loop().time() < deadline:
         await asyncio.sleep(config.COLLAGE_POLL_INTERVAL_SEC)
@@ -166,11 +199,11 @@ async def _poll_for_winner(pool, bot_id: str, generation_date: date) -> dict:
         if current is None:
             # Winner crashed hard enough to lose the row (shouldn't
             # happen — reservation rows survive rollbacks). Give up.
-            return {"status": "failed", "reason": "reservation_lost"}
+            return await _fallback_or_failed(pool, bot_id, "reservation_lost")
         if current["state"] == "succeeded":
             return _ready_response(current)
         if current["state"] == "failed":
-            return {"status": "failed", "reason": "generator_failed"}
+            return await _fallback_or_failed(pool, bot_id, "generator_failed")
     return {"status": "pending"}
 
 
@@ -354,7 +387,10 @@ async def orchestrate(
         if existing["state"] == "succeeded":
             return _ready_response(existing)
         if existing["state"] == "failed":
-            return {"status": "failed", "reason": "generator_failed"}
+            # 2026-07-13: serve the most-recent succeeded row instead of
+            # bubbling 502 while today is failed. Bounded lookup so a
+            # multi-day outage still surfaces (see _fallback_or_failed).
+            return await _fallback_or_failed(pool, bot_id, "generator_failed")
         # 'reserved' — poll for the other requester's result.
         return await _poll_for_winner(pool, bot_id, today)
 
@@ -366,9 +402,18 @@ async def orchestrate(
     # Elected generator — enforce the daily hard cap BEFORE spending.
     if not await _check_budget(pool):
         await influencer_collage_repo.mark_failed(pool, bot_id, today)
-        return {"status": "failed", "reason": "budget_hard_cap"}
+        return await _fallback_or_failed(pool, bot_id, "budget_hard_cap")
 
-    return await _run_generation(pool, bot_id, today, theme, lora_weights_url)
+    # 2026-07-13: also apply the fallback when THIS requester was the
+    # elected generator and their own batch just failed. Otherwise the
+    # one user who tapped Request Images gets a raw 502 while everyone
+    # after them (arriving to a state='failed' row) gets the fallback.
+    result = await _run_generation(pool, bot_id, today, theme, lora_weights_url)
+    if result.get("status") == "failed":
+        return await _fallback_or_failed(
+            pool, bot_id, result.get("reason", "generator_failed")
+        )
+    return result
 
 
 def _next_utc_midnight() -> str:

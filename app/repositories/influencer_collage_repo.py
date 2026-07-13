@@ -99,6 +99,65 @@ async def mark_failed(pool, bot_id: str, generation_date: date) -> None:
     )
 
 
+async def get_latest_succeeded(pool, bot_id: str, within_days: int = 7) -> dict | None:
+    """Return the most-recent succeeded collage row for this bot within
+    the last `within_days` calendar days (UTC), or None.
+
+    Powers the endpoint's fallback-to-yesterday behavior (2026-07-13
+    Sarvesh incident): when today's row landed in state='failed'
+    because the provider's safety filter refused, the route serves the
+    most-recent succeeded row instead of bubbling 502 to the user.
+    Bounded by `within_days` so a truly stale bot (weeks-old success)
+    doesn't silently look healthy — we bubble the real "failed" up in
+    that case so the incident stays visible.
+
+    A `within_days` of 0 disables the fallback (returns None even if a
+    row exists). Callers use that as a paranoid switch — set the env
+    var COLLAGE_FALLBACK_MAX_DAYS=0 to revert to the pre-2026-07-13
+    "no fallback" behavior."""
+    if within_days <= 0:
+        return None
+    row = await pool.fetchrow(
+        """
+        SELECT id, bot_id, generation_date, theme, image_urls,
+               image_urls_blurred, state,
+               cost_usd, generated_at, created_at, updated_at
+        FROM influencer_collages
+        WHERE bot_id = $1
+          AND state = 'succeeded'
+          AND generation_date >= CURRENT_DATE - $2::int
+        ORDER BY generation_date DESC
+        LIMIT 1
+        """,
+        bot_id,
+        within_days,
+    )
+    return dict(row) if row else None
+
+
+async def count_fallback_serves_last_24h(pool) -> int:
+    """Dashboard-tile input: how many today-rows currently sit in
+    state='failed'. Each of those, on a request, causes one fallback
+    serve — so this is the upper-bound signal for "how often has the
+    fallback path fired?". Real count would require an events table
+    (Phase 1); this rollup is the ADHD-observability MVP.
+
+    Returns 0 on any DB error so a busted query never breaks the
+    dashboard (matches every other tile's degrade-open pattern)."""
+    try:
+        row = await pool.fetchrow(
+            """
+            SELECT COUNT(*)::int AS n
+            FROM influencer_collages
+            WHERE state = 'failed'
+              AND generation_date >= CURRENT_DATE - 1
+            """
+        )
+        return int(row["n"]) if row else 0
+    except Exception:
+        return 0
+
+
 async def get(pool, bot_id: str, generation_date: date) -> dict | None:
     row = await pool.fetchrow(
         """
