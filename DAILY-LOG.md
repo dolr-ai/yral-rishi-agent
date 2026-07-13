@@ -1,5 +1,46 @@
 # Daily Log
 
+## 2026-07-13 — Collage fallback hardening + collage-message columns shipped, Replicate content-filter incident triaged, /dev/shm=64MB uncovered
+
+### What shipped (2 PRs merged + auto-deployed today)
+
+| # | What | Sarvesh-visible? |
+|---|---|---|
+| #455 | Fallback endpoint on `orchestrate()` — when today's collage row is `state='failed'` OR the elected generator's gen fails, serve the most-recent-succeeded row within `COLLAGE_FALLBACK_MAX_DAYS=7`. New `get_latest_succeeded()` repo query + `_fallback_or_failed` shared helper hooked at 5 seams (the 4 in the brief + the elected-generator seam that hit Sarvesh's 502 loop). Dashboard tile added. | Yes — no more 502s during provider glitches |
+| #456 | Migration 050 adds `collage_id UUID`, `collage_bot_id VARCHAR(255)`, `collage_date DATE` nullable columns on `messages` + partial index on collage_id. Model + repo + both send-message paths + `_format_message` wired. Mobile POSTs with these 3 fields now round-trip on GET; legacy pre-migration rows omit the keys entirely (backward-compat). | Yes — unblocked mobile collage integration |
+
+### Live production ops (all diagnosed + fixed today)
+
+**Bug 1 (self-inflicted).** During my `COLLAGE_HYBRID_MODE=false` retry workflow, I deleted Tara's 07-13 row which Sarvesh had already received. His stored `collage_id=1d0c12ed...` in the chat message became dangling → GET returned 404. Fix: re-seed the row with the SAME collage_id (INSERT preserving UUID). Lesson recorded for the retry-loop pattern: when a user has already retrieved a row, do NOT delete it during ops — copy-then-modify.
+
+**Bug 2 (structural).** Sarvesh's send-message POST body carried collage_id/collage_bot_id/collage_date, but backend silently dropped them — migration 047 widened `message_type` CHECK to accept `'collage'` but never added the storage columns. Design doc §5 self-healing pattern relied on these fields being persisted. Fixed via PR #456 + migration 050. Backward-compat guard in `_format_message` omits null keys entirely so old app builds don't get surprise nulls.
+
+**Replicate content-filter incident.** Nightly pre-gen for Tara failed 2 days running (2026-07-12: 5/6 got, 2026-07-13: 0/6). `nano-banana-pro` tightened its safety filter between 07-11 and 07-12; even bikini/swimwear/editorial-dress themes get rejected now. Immediate mitigation: hot-flipped `COLLAGE_HYBRID_MODE=false` on the v2 service → routes to pure LoRA path (flux-dev), which is less strict. Verification pending next 04:00 UTC nightly. Longer-term (per Rishi 2026-07-13): amorae.ai spicy collage tier will use a permissive provider (fal.ai / Runpod) for actual explicit imagery once the spicy chat gate ships.
+
+**Postgres `/dev/shm` = 64MB uncovered.** feed_ranker throwing `asyncpg.exceptions.DiskFullError: could not resize shared memory segment "/PostgreSQL.<DSM>"`. Host `/dev/shm` is 32GB, but the Patroni container inherits Docker's default 64MB tmpfs. Postgres parallel-worker DSM segments (each 8MB) can't fit. Same class as PR #420 (2026-06-26) but at the container-config layer, not the query layer. Branch `rishi/patroni-shm-size-2g-planned-fix` opened with `shm_size: 2g` + sequenced `update_config` on all 3 patroni services; needs planned redeploy window (touching Patroni = leader failover). PG-level mitigation (`max_parallel_workers_per_gather=0`) queued but not yet applied — auto-mode wants explicit auth on the SQL.
+
+### PR #454 (spicy chat gate) status
+
+Not merged yet — dev session amending for the wire-format alignment (`ctaUrl` → `cta_url`, `ctaLabel` → `cta_label` for snake_case symmetry with the rest of ChatMessage DTO) + streaming-path parity (mobile `shouldStream()` branches on Firebase RC, not is_nsfw, so /stream must honor the deflection gate too). Session 6 chose Path B (backend streaming parity) over Path A (mobile carve-out) after analysis — server-side enforcement protects old-app users too.
+
+### What we learned
+
+**1. When ops-fixing a row in prod, check who's already read it.** Bug 1 was entirely preventable — I deleted a row that had already been served to a real user. The re-seed with same UUID worked but the whole class of bug is avoided by copy-then-mutate patterns during retries. Added to my own working memory.
+
+**2. Migration + code deploy race.** PR #456 auto-deploy failed on the pipeline's own attempt to apply migration 050 (I'd already applied it manually 5 min earlier; the pipeline's transaction hit a 3s lock_timeout, then fell back to two replicas which correctly refused writes). Manual re-run succeeded. Lesson: when applying migrations manually ahead of deploy, either wait for the pipeline to finish OR expect a retry.
+
+**3. Replicate/Google model policy tightens without notice.** Same code, same LoRA, same prompts — worked 07-11, broke 07-12+. Two-day silent regression for real users (fallback endpoint would have caught it if PR #455 had shipped earlier). Reinforces the Karpathy-inspired playbook item about defense-in-depth for external dependencies.
+
+**4. Symmetry rule caught the streaming gap.** Mobile expert's read on `shouldStream()` surfaced that PR #454's non-streaming-only wiring was incomplete for prod. That's the SYMMETRY rule earning its keep — one code path deserves the same treatment on the other.
+
+### Standing next steps
+
+- Sarvesh Motorola test on his integration (Bug 1 + Bug 2 both fixed; Path B streaming parity coming with PR #454 amendment)
+- Rishi Motorola solo test on spicy chat gate once PR #454 lands (task #62)
+- amorae-web PR #5 (`/tara` landing) awaiting Rishi merge (Motorola pass first)
+- Planned patroni redeploy for `shm_size: 2g` — separate window, not urgent (PG-level mitigation planned as bridge)
+- Investigate PR #454 amendment behavior when it lands, then merge → migration 049 + rollout starts
+
 ## 2026-06-26 — Sentry sweep (7 PRs), watchdog deployed, observability tasks 1+2 shipped, codex trigger bug discovered
 
 ### What happened
