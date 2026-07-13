@@ -175,7 +175,13 @@ def _format_message(msg: dict) -> dict:
     if isinstance(created_at, datetime):
         created_at = created_at.isoformat()
 
-    return {
+    # Migration 050 (2026-07-13) — collage reference triple. Populated
+    # only on message_type='collage' rows (nullable columns forgive
+    # any combination; server does not reject mixed sets). Emitted on
+    # the wire only when non-null so legacy messages don't force
+    # mobile to accept new keys that shouldn't be there. UUID +
+    # date serialize as strings for Sarvesh's DTO.
+    payload = {
         "id": msg["id"],
         "conversation_id": msg.get("conversation_id"),
         "role": msg["role"],
@@ -190,6 +196,20 @@ def _format_message(msg: dict) -> dict:
         "token_count": msg.get("token_count"),
         "created_at": created_at,
     }
+    collage_id = msg.get("collage_id")
+    if collage_id is not None:
+        payload["collage_id"] = str(collage_id)
+    collage_bot_id = msg.get("collage_bot_id")
+    if collage_bot_id is not None:
+        payload["collage_bot_id"] = collage_bot_id
+    collage_date = msg.get("collage_date")
+    if collage_date is not None:
+        payload["collage_date"] = (
+            collage_date.isoformat()
+            if hasattr(collage_date, "isoformat")
+            else str(collage_date)
+        )
+    return payload
 
 
 def _format_conversation(
@@ -554,6 +574,14 @@ async def send_message(
     message_type = body.get("message_type", "text")
     audio_url = body.get("audio_url")
     media_urls = body.get("media_urls")
+    # Migration 050 (2026-07-13) — collage reference triple. Persisted
+    # only when the client co-sets them (the mobile POST body Sarvesh
+    # is already sending on message_type='collage'). Server does NOT
+    # reject other combinations today; a CHECK constraint is deferred
+    # per the brief to keep the messages ALTER cheap.
+    collage_id = body.get("collage_id")
+    collage_bot_id = body.get("collage_bot_id")
+    collage_date = body.get("collage_date")
 
     if message_type == "audio" and audio_url:
         transcription = await ai_client.transcribe_audio(audio_url)
@@ -581,6 +609,9 @@ async def send_message(
             audio_duration_seconds=body.get("audio_duration_seconds"),
             client_message_id=client_message_id,
             sender_id=user_id,
+            collage_id=collage_id,
+            collage_bot_id=collage_bot_id,
+            collage_date=collage_date,
         )
     except asyncpg.ForeignKeyViolationError:
         raise HTTPException(status_code=410, detail="Conversation deleted")
@@ -898,6 +929,13 @@ async def send_message_stream(
     content = body.get("content")
     message_type = body.get("message_type", "text")
     media_urls = body.get("media_urls")
+    # Migration 050 (2026-07-13) — mirror the non-streaming path's
+    # collage-reference persistence. Rishi's SYMMETRY rule: both send
+    # handlers write the same 3 fields the same way so mobile can pick
+    # either endpoint and get the same row shape back.
+    collage_id = body.get("collage_id")
+    collage_bot_id = body.get("collage_bot_id")
+    collage_date = body.get("collage_date")
 
     # FK guard — same race as the non-stream path (conversation deleted
     # between the `_can_access_conversation` check + this INSERT).
@@ -913,6 +951,9 @@ async def send_message_stream(
             message_type=message_type,
             media_urls=media_urls,
             sender_id=user_id,
+            collage_id=collage_id,
+            collage_bot_id=collage_bot_id,
+            collage_date=collage_date,
         )
     except asyncpg.ForeignKeyViolationError:
         raise HTTPException(status_code=410, detail="Conversation deleted")

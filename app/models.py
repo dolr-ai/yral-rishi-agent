@@ -1,4 +1,7 @@
+from datetime import date
 from typing import Optional, Literal
+from uuid import UUID
+
 from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 
@@ -145,6 +148,13 @@ class ChatMessage(BaseModel):
     audio_duration_seconds: Optional[int] = None
     token_count: Optional[int] = None
     created_at: str
+    # Migration 050 (2026-07-13) — collage reference for the
+    # self-healing render path (design §5). Populated only when
+    # message_type == "collage"; null on every other row. Serialized
+    # as `collage_id: str` on the wire (UUID → str for Sarvesh's DTO).
+    collage_id: Optional[UUID] = None
+    collage_bot_id: Optional[str] = None
+    collage_date: Optional[date] = None
 
 
 class ConversationResponse(BaseModel):
@@ -181,11 +191,23 @@ class DeleteConversationResponse(BaseModel):
 
 class SendMessageRequest(BaseModel):
     content: Optional[str] = Field(default=None, max_length=50000)
-    message_type: Literal["text", "multimodal", "image", "audio"] = "text"
+    # 2026-07-13 — 'collage' widened per migration 047 CHECK; mobile
+    # send-message wire allows message_type=collage plus the 3
+    # reference fields below so the row round-trips through the
+    # self-healing render path (design §5).
+    message_type: Literal["text", "multimodal", "image", "audio", "collage"] = "text"
     media_urls: Optional[list[str]] = Field(default=None, max_length=10)
     audio_url: Optional[str] = Field(default=None, max_length=2000)
     audio_duration_seconds: Optional[int] = Field(default=None, ge=0, le=3600)
     client_message_id: Optional[str] = Field(default=None, max_length=255)
+    # Migration 050 — collage reference. Nullable — non-collage
+    # messages leave them unset. Mobile is expected to co-set all 3
+    # (or none). Server does NOT reject other combinations today; a
+    # CHECK constraint is deliberately deferred per the brief to
+    # avoid a lock-time cost on the large messages table.
+    collage_id: Optional[UUID] = None
+    collage_bot_id: Optional[str] = Field(default=None, max_length=255)
+    collage_date: Optional[date] = None
 
 
 class AssistantError(BaseModel):
