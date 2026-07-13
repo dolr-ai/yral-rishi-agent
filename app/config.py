@@ -129,6 +129,14 @@ COLLAGE_DAILY_BUDGET_SOFT_USD = _env_float("COLLAGE_DAILY_BUDGET_SOFT_USD", 50.0
 COLLAGE_DAILY_BUDGET_HARD_USD = _env_float("COLLAGE_DAILY_BUDGET_HARD_USD", 100.0)
 COLLAGE_POLL_TIMEOUT_SEC = _env_int("COLLAGE_POLL_TIMEOUT_SEC", 90)
 COLLAGE_POLL_INTERVAL_SEC = _env_int("COLLAGE_POLL_INTERVAL_SEC", 2)
+# 2026-07-13 — endpoint hardening after Replicate/Google tightened the
+# nano-banana-pro safety filter mid-week and every Tara pre-gen row
+# landed as state='failed'. When today's row is failed OR the
+# elected-generator race is lost to a failed peer, orchestrate() falls
+# back to the most-recent succeeded row for the same bot within this
+# window instead of bubbling 502. 0 disables the fallback (revert to
+# pre-2026-07-13 behavior) — the paranoid switch.
+COLLAGE_FALLBACK_MAX_DAYS = _env_int("COLLAGE_FALLBACK_MAX_DAYS", 7)
 # Gaussian blur radius applied to non-subscriber variants. 15 px is
 # the "teasy but face-unreadable" sweet spot Rishi picked after
 # eyeballing 10/15/20/30 radii on 2026-07-08. Hot-tunable so we

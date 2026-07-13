@@ -254,6 +254,47 @@ async def _llm_routing_tile(pool) -> dict:
         }
 
 
+async def _collage_fallback_tile(pool) -> dict:
+    """2026-07-13 — visibility on the endpoint hardening. Counts today-
+    rows currently sitting in state='failed', which is the upper bound
+    on "how many bots would trigger the fallback serve on the next
+    request". >5 = something is systemically wrong at the provider
+    level and someone should look. 0 = healthy day.
+
+    Threshold values are ADHD-observability MVP calibration; adjust
+    once we've watched a few Monday cycles."""
+    try:
+        from repositories import influencer_collage_repo
+
+        n = await influencer_collage_repo.count_fallback_serves_last_24h(pool)
+        if n == 0:
+            status, primary = "ok", "0 failed rows today"
+        elif n <= 5:
+            status, primary = "warn", f"{n} failed row(s) — provider glitch?"
+        else:
+            status, primary = "fail", f"{n} failed rows — provider outage"
+        return {
+            "title": "Collage fallback (Phase 0 hardening)",
+            "status": status,
+            "primary": primary,
+            "details": (
+                "Bots whose today-row is state='failed' fall back to their "
+                "most-recent succeeded row (COLLAGE_FALLBACK_MAX_DAYS default "
+                "7). Non-zero here means the fallback path fired for at least "
+                "that many bots on their next request."
+            ),
+            "link": "/admin/dashboard",
+        }
+    except Exception as e:
+        return {
+            "title": "Collage fallback (Phase 0 hardening)",
+            "status": "fail",
+            "primary": "tile error",
+            "details": str(e)[:200],
+            "link": "/admin/dashboard",
+        }
+
+
 async def _llm_primary_failures_tile(pool) -> dict:
     """Brief task 4 (2026-06-26) — per-process primary-provider failure
     counts over the last hour (Sentry holds the cross-replica view; this
@@ -473,6 +514,7 @@ async def admin_dashboard(request: Request):
         await _integrity_tile(pool),
         await _llm_routing_tile(pool),
         await _llm_primary_failures_tile(pool),
+        await _collage_fallback_tile(pool),
         await _email_digest_tile(pool),
         await _rate_limit_tile(pool),
         await _discovery_pins_tile(pool),
