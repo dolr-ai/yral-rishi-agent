@@ -1,6 +1,7 @@
 import json
-import uuid
 import logging
+import uuid
+from datetime import date
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,17 @@ async def create(
     is_proactive: bool = False,
     is_nudge: bool = False,
     variant_label: str | None = None,
+    collage_id: str | None = None,
+    collage_bot_id: str | None = None,
+    collage_date: date | None = None,
 ) -> dict:
+    """Persist a message row. The collage_* triple (2026-07-13,
+    migration 050) is the self-healing render reference (design §5) —
+    populated by the route layer only when the incoming payload has
+    them; nullable columns forgive any combination.
+
+    Same shape/optional-kwarg pattern as media_urls + audio_url —
+    the SYMMETRY rule Rishi cares about (Rule 1)."""
     message_id = str(uuid.uuid4())
     await pool.execute(
         """
@@ -32,8 +43,11 @@ async def create(
             id, conversation_id, role, sender_id, content, message_type,
             media_urls, audio_url, audio_duration_seconds, token_count,
             client_message_id, status, is_read, is_proactive, is_nudge,
-            variant_label
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'delivered', FALSE, $12, $13, $14)
+            variant_label, collage_id, collage_bot_id, collage_date
+        ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'delivered', FALSE,
+            $12, $13, $14, $15::uuid, $16, $17
+        )
         """,
         message_id,
         conversation_id,
@@ -49,6 +63,9 @@ async def create(
         is_proactive,
         is_nudge,
         variant_label,
+        str(collage_id) if collage_id is not None else None,
+        collage_bot_id,
+        collage_date,
     )
     return await get_by_id(pool, message_id)
 
@@ -134,7 +151,8 @@ async def get_by_id(pool, message_id: str) -> dict | None:
         """
         SELECT id, conversation_id, role, sender_id, content, message_type,
                media_urls, audio_url, audio_duration_seconds, token_count,
-               client_message_id, created_at, metadata, status, is_read
+               client_message_id, created_at, metadata, status, is_read,
+               collage_id, collage_bot_id, collage_date
         FROM messages WHERE id = $1
         """,
         message_id,
@@ -151,7 +169,8 @@ async def get_by_client_id(
         """
         SELECT id, conversation_id, role, sender_id, content, message_type,
                media_urls, audio_url, audio_duration_seconds, token_count,
-               client_message_id, created_at, metadata, status, is_read
+               client_message_id, created_at, metadata, status, is_read,
+               collage_id, collage_bot_id, collage_date
         FROM messages
         WHERE conversation_id = $1 AND client_message_id = $2
         """,
@@ -170,7 +189,8 @@ async def get_assistant_reply(pool, message_id: str) -> dict | None:
         """
         SELECT id, conversation_id, role, sender_id, content, message_type,
                media_urls, audio_url, audio_duration_seconds, token_count,
-               client_message_id, created_at, metadata, status, is_read
+               client_message_id, created_at, metadata, status, is_read,
+               collage_id, collage_bot_id, collage_date
         FROM messages
         WHERE conversation_id = $1 AND role = 'assistant'
               AND created_at >= $2 AND id != $3
@@ -195,7 +215,8 @@ async def list_by_conversation(
         f"""
         SELECT id, conversation_id, role, sender_id, content, message_type,
                media_urls, audio_url, audio_duration_seconds, token_count,
-               client_message_id, created_at, metadata, status, is_read
+               client_message_id, created_at, metadata, status, is_read,
+               collage_id, collage_bot_id, collage_date
         FROM messages
         WHERE conversation_id = $1
         ORDER BY created_at {order_clause}
@@ -253,7 +274,8 @@ async def get_recent_for_context(
         """
         SELECT id, conversation_id, role, sender_id, content, message_type,
                media_urls, audio_url, audio_duration_seconds, token_count,
-               client_message_id, created_at, metadata, status, is_read
+               client_message_id, created_at, metadata, status, is_read,
+               collage_id, collage_bot_id, collage_date
         FROM messages
         WHERE conversation_id = $1
         ORDER BY created_at DESC
@@ -278,6 +300,7 @@ async def get_recent_for_conversations_batch(
             SELECT id, conversation_id, role, sender_id, content, message_type,
                    media_urls, audio_url, audio_duration_seconds, token_count,
                    client_message_id, created_at, metadata, status, is_read,
+                   collage_id, collage_bot_id, collage_date,
                    ROW_NUMBER() OVER (
                        PARTITION BY conversation_id ORDER BY created_at DESC
                    ) as rn
@@ -285,7 +308,8 @@ async def get_recent_for_conversations_batch(
         )
         SELECT id, conversation_id, role, sender_id, content, message_type,
                media_urls, audio_url, audio_duration_seconds, token_count,
-               client_message_id, created_at, metadata, status, is_read
+               client_message_id, created_at, metadata, status, is_read,
+               collage_id, collage_bot_id, collage_date
         FROM RankedMessages
         WHERE rn <= $2
         ORDER BY conversation_id, created_at ASC
