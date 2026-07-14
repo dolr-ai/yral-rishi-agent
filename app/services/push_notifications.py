@@ -47,6 +47,7 @@ async def send_new_message_notification(
     except Exception as e:
         logger.warning(f"Push notification error (non-fatal): {e}")
 
+
 async def send_new_influencer_message_notification(
     user_id: str,
     influencer_name: str,
@@ -54,7 +55,10 @@ async def send_new_influencer_message_notification(
     conversation_id: str,
     influencer_id: str,
 ):
-    if not config.NAITIK_MULTI_SERVICE_URL or not config.NAITIK_MULTI_SERVICE_AUTH_TOKEN:
+    if (
+        not config.NAITIK_MULTI_SERVICE_URL
+        or not config.NAITIK_MULTI_SERVICE_AUTH_TOKEN
+    ):
         return
 
     preview = message_content[:100]
