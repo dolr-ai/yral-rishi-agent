@@ -267,7 +267,7 @@ async def send_proactive_message(
     )
 
     asyncio.create_task(
-        push_notifications.send_new_message_notification(
+        push_notifications.send_new_influencer_message_notification(
             user_id=user_id,
             influencer_name=display_name,
             message_content=content,
@@ -515,7 +515,7 @@ async def send_skill_checkin(pool, *, state_row: dict) -> dict | None:
     # adding a skill-specific trigger_type is a follow-up once mobile
     # has the bucket UI to differentiate.
     asyncio.create_task(
-        push_notifications.send_new_message_notification(
+        push_notifications.send_new_influencer_message_notification(
             user_id=user_id,
             influencer_name=display_name,
             message_content=content,
