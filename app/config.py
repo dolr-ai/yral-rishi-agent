@@ -151,6 +151,8 @@ YRAL_TEAM_PRINCIPALS = frozenset(
 # Push notifications
 METADATA_URL = _env("METADATA_URL", "https://metadata.yral.com")
 METADATA_AUTH_TOKEN = _env("YRAL_METADATA_NOTIFICATION_API_KEY")
+NAITIK_MULTI_SERVICE_URL = _env("NAITIK_MULTI_SERVICE_URL", "https://multi-service.naitik.yral.com")
+NAITIK_MULTI_SERVICE_AUTH_TOKEN = _env("NAITIK_MULTI_SERVICE_AUTH_TOKEN")
 
 # CORS
 CORS_ORIGINS = _env("CORS_ORIGINS", "*")

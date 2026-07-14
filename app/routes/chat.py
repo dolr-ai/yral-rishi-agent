@@ -859,7 +859,7 @@ async def send_message(
     )
 
     websocket_manager.spawn(
-        push_notifications.send_new_message_notification(
+        push_notifications.send_new_influencer_message_notification(
             user_id=user_id,
             influencer_name=inf.get("display_name", "AI"),
             message_content=llm_result.content,
