@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import date, datetime
 
 import asyncpg
 import sentry_sdk
@@ -528,6 +528,32 @@ async def set_proactive_frequency(conversation_id: str, body: dict, request: Req
     return {"conversation_id": conversation_id, "proactive_frequency": freq}
 
 
+def _parse_collage_date(raw) -> date | None:
+    """Wire-format guard for message_type='collage' rows.
+
+    Mobile sends `collage_date` as ISO string "YYYY-MM-DD" (matches
+    ChatMessage.collage_date's Pydantic serialization on the way back).
+    asyncpg's DATE codec requires a `datetime.date` object — passing a
+    string raises DataError('str object has no attribute toordinal') and
+    the whole POST /messages 500s. The `::date` SQL cast on migration
+    050's placeholder cannot fix this because the rejection happens at
+    the codec layer, before the query text runs.
+
+    Discovered 2026-07-14 from Sarvesh integration: PR #456's tests
+    passed a real `date` object through the mocked pool and never
+    exercised the real asyncpg codec.
+    """
+    if raw is None or isinstance(raw, date):
+        return raw
+    try:
+        return date.fromisoformat(str(raw))
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="collage_date must be ISO 8601 YYYY-MM-DD",
+        )
+
+
 @router.post("/conversations/{conversation_id}/messages")
 async def send_message(
     conversation_id: str,
@@ -581,7 +607,7 @@ async def send_message(
     # per the brief to keep the messages ALTER cheap.
     collage_id = body.get("collage_id")
     collage_bot_id = body.get("collage_bot_id")
-    collage_date = body.get("collage_date")
+    collage_date = _parse_collage_date(body.get("collage_date"))
 
     if message_type == "audio" and audio_url:
         transcription = await ai_client.transcribe_audio(audio_url)
@@ -935,7 +961,7 @@ async def send_message_stream(
     # either endpoint and get the same row shape back.
     collage_id = body.get("collage_id")
     collage_bot_id = body.get("collage_bot_id")
-    collage_date = body.get("collage_date")
+    collage_date = _parse_collage_date(body.get("collage_date"))
 
     # FK guard — same race as the non-stream path (conversation deleted
     # between the `_can_access_conversation` check + this INSERT).
