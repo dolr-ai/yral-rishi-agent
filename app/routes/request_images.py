@@ -197,7 +197,17 @@ async def get_collage(
 
     if row is None or row.get("state") != "succeeded":
         raise HTTPException(status_code=404, detail="collage not found")
-    return _envelope_for_ready(row, user_id, is_subscribed)
+    # Chain through _ready_response to sign storage keys → 15-min
+    # presigned URLs. Matches POST-path semantics (orchestrate already
+    # runs the raw row through _ready_response before it reaches
+    # _envelope_for_ready). 2026-07-14 Sarvesh integration bug: GET
+    # was returning raw `collage-blurred/{bot}/{date}/{i}.jpg` bucket
+    # keys — mobile can't render those. _envelope_for_ready reads
+    # image_urls / image_urls_blurred by name so chaining preserves
+    # the wire shape; the only difference is the list contents are
+    # now signed URLs instead of raw keys.
+    signed = image_collage._ready_response(row)
+    return _envelope_for_ready(signed, user_id, is_subscribed)
 
 
 def _map_result(result: dict, user_id: str, is_subscribed: bool | None) -> dict:
