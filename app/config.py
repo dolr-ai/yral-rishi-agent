@@ -119,6 +119,20 @@ COLLAGE_LORA_WEIGHTS_URL = _env("COLLAGE_LORA_WEIGHTS_URL") or None
 # generate_batch treats it as the pre-hybrid behavior — flux-dev +
 # LoRA for all N).
 COLLAGE_HYBRID_MODE = _env("COLLAGE_HYBRID_MODE", "true").lower() == "true"
+# Downstream model for the hybrid pipeline (LoRA anchor → N × downstream).
+# Default flipped 2026-07-15 from `google/nano-banana-pro` to
+# `black-forest-labs/flux-kontext-dev` after Google tightened the nano
+# safety filter mid-week and every Tara batch started landing state=failed
+# (see COLLAGE_FALLBACK_MAX_DAYS comment below for the incident).
+# flux-kontext-dev is Replicate-native, has no Google filter dependency,
+# and accepts a single `input_image` reference — identical anchor
+# semantics, different transport. Hot-editable env var so we can flip
+# back to nano-banana-pro if the filter loosens or we want its scene
+# quality on non-NSFW bots (where the filter doesn't bite).
+COLLAGE_HYBRID_DOWNSTREAM_MODEL = _env(
+    "COLLAGE_HYBRID_DOWNSTREAM_MODEL",
+    "black-forest-labs/flux-kontext-dev",
+)
 # Estimated marginal cost per generation. Real cost lives in the
 # provider bill; this is what we book into influencer_collages.cost_usd
 # for the daily-budget guard. Hybrid = 1 flux-dev-lora anchor (~$0.03)
