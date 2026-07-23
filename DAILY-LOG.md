@@ -14,13 +14,17 @@ Morning review of the 07-21 leaderless-cascade post-mortem, plus a big repo tidy
 - **Cluster is fragile right now:** leader rishi-4 (TL49) healthy, but rishi-6 replica ~1.8 GB behind and rishi-5 stuck "starting" → effectively zero fault tolerance. Next maintenance reboot could repeat the outage.
 
 **Shipped / opened**
-- **PR #463** (`feat(watchdog): Patroni leader-presence alert`) — the missing page. Watchdog now reads Patroni REST `/cluster` and alerts Sentry on a leaderless cluster > 90s (healthy failovers stay silent). Mirrors `replica_drift.py`; 9/9 tests pass; **awaiting review, not deployed.**
-- Landed the post-mortem + a **corrected-findings & action-plan doc** (`docs/postmortems/2026-07-21-patroni-cascade-addendum-and-plan.md`) with the revised reboot plan and a snapshot-first rishi-5/rishi-6 repair runbook.
+- **PR #463** (`feat(watchdog): Patroni leader-presence alert`) — the missing page. Watchdog reads Patroni REST `/cluster` and alerts Sentry on a leaderless cluster > 90s (healthy failovers stay silent). Mirrors `replica_drift.py`; 9/9 tests. **MERGED + DEPLOYED** — leader-check thread confirmed live on the swarm (`watching patroni leadership every 60s`).
+- Landed the post-mortem + a **corrected-findings & action-plan doc** (`docs/postmortems/2026-07-21-patroni-cascade-addendum-and-plan.md`).
+
+**Cluster repaired to 3/3 (Rishi-authorized prod ops)**
+- WAL-G safety net verified first (base backup today 01:03 UTC, `failed_count=0`).
+- `patronictl reinit` rishi-5 → Sync Standby, TL49, lag 0 (was stuck "starting" for hours). Patroni auto-restored synchronous replication once it was healthy.
+- `patronictl reinit` rishi-6 → Replica, TL49, lag 0 (was diverged on TL48 with growing lag — would not self-converge). **All three now on TL49, lag 0** = real fault tolerance restored.
 
 **Open for Rishi**
-- Confirm the reboot trigger in the Hetzner console (needs the account).
-- Approve/sequence the rishi-5 repair (prod ops, snapshot-first).
-- Decide on #461 (new external notification dependency).
+- Confirm the reboot trigger in the Hetzner console (needs the account) — likely host maintenance, the durable fix.
+- Decide on #461 (external notification dependency) — **parked per Rishi 2026-07-23.**
 - Per post-mortem: **do not** prioritize PR #457 (shm) — it didn't contribute and is already bridged.
 
 ## 2026-06-26 — Sentry sweep (7 PRs), watchdog deployed, observability tasks 1+2 shipped, codex trigger bug discovered
