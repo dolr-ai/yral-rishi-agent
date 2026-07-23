@@ -1,5 +1,28 @@
 # Daily Log
 
+## 2026-07-23 — Patroni cascade follow-up: leader-alert PR, corrected root cause, repo cleanup
+
+Morning review of the 07-21 leaderless-cascade post-mortem, plus a big repo tidy.
+
+**Repo cleanup**
+- Closed **PR #444** (stale AI-bot push-notification PR) → superseded by **#461** (same author, clean + CI-green, routes notifications to `multi-service.naitik.yral.com`). #461 still needs a decision: it adds a new external dependency + the `NAITIK_MULTI_SERVICE_AUTH_TOKEN` secret (silently no-ops without it).
+- Closed stale docs/draft PRs: **#391** (paywall discovery — Path-A decision made it moot), **#405 / #397 / #395** (month-old drafts, not executed).
+- Deleted **49 stale local branches** (35 merged-PR + `pr-444-review` + 13 orphan branches already on origin). Held `feat/analytics-design-doc-2026-06-13` — it's local-only with 2 unpushed commits.
+
+**Patroni cascade — two corrections to the post-mortem (verified read-only)**
+- **Root cause is NOT unattended-upgrades.** All 3 nodes have `Automatic-Reboot = false` (confirmed `apt-config dump`), yet all rebooted the *same minute* (Jul 20 08:48) on lockstep kernels. That's a **shared external trigger — almost certainly Hetzner host maintenance**, not per-node u-u. "Stagger the u-u window" (post-mortem rec #1) would fix nothing.
+- **Cluster is fragile right now:** leader rishi-4 (TL49) healthy, but rishi-6 replica ~1.8 GB behind and rishi-5 stuck "starting" → effectively zero fault tolerance. Next maintenance reboot could repeat the outage.
+
+**Shipped / opened**
+- **PR #463** (`feat(watchdog): Patroni leader-presence alert`) — the missing page. Watchdog now reads Patroni REST `/cluster` and alerts Sentry on a leaderless cluster > 90s (healthy failovers stay silent). Mirrors `replica_drift.py`; 9/9 tests pass; **awaiting review, not deployed.**
+- Landed the post-mortem + a **corrected-findings & action-plan doc** (`docs/postmortems/2026-07-21-patroni-cascade-addendum-and-plan.md`) with the revised reboot plan and a snapshot-first rishi-5/rishi-6 repair runbook.
+
+**Open for Rishi**
+- Confirm the reboot trigger in the Hetzner console (needs the account).
+- Approve/sequence the rishi-5 repair (prod ops, snapshot-first).
+- Decide on #461 (new external notification dependency).
+- Per post-mortem: **do not** prioritize PR #457 (shm) — it didn't contribute and is already bridged.
+
 ## 2026-06-26 — Sentry sweep (7 PRs), watchdog deployed, observability tasks 1+2 shipped, codex trigger bug discovered
 
 ### What happened
