@@ -18,7 +18,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install ruff
+      # Pin ruff so a new release can't fail CI on pre-existing code (an
+      # unpinned bump started flagging I001 in app/auth.py 2026-07-26).
+      # Keep in sync with the version developers run locally.
+      - run: pip install ruff==0.15.14
       - run: ruff check app/ infra/
       - run: ruff format --check app/ infra/
 
