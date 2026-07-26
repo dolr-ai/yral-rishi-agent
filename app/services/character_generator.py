@@ -5,6 +5,7 @@ from typing import Optional
 import config
 from services import replicate
 from services import llm_registry
+from services.llm_types import LlmBlockedError
 
 logger = logging.getLogger(__name__)
 
@@ -220,6 +221,12 @@ async def validate_and_generate_metadata(system_instructions: str) -> dict | Non
             )
             return metadata
         return None
+    except LlmBlockedError:
+        # Gemini blocked the concept at the API level (empty candidates
+        # / PROHIBITED_CONTENT). Same user-facing outcome as the text-
+        # level safety refusals above — return the graceful flagged
+        # envelope, not an opaque 500 (Sentry #184 / #307).
+        return {"is_valid": False, "reason": "Content was flagged as inappropriate"}
     except ValueError as e:
         if _is_safety_block(e):
             return {
