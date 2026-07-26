@@ -160,7 +160,7 @@ async def generate_system_instructions(concept: str) -> str | None:
         if contains_safety_refusal(text):
             return None
         return text.strip()
-    except ValueError as e:
+    except (ValueError, LlmBlockedError) as e:
         if _is_safety_block(e):
             raise GeminiSafetyBlocked(
                 "Your concept was flagged as inappropriate. "
@@ -221,13 +221,7 @@ async def validate_and_generate_metadata(system_instructions: str) -> dict | Non
             )
             return metadata
         return None
-    except LlmBlockedError:
-        # Gemini blocked the concept at the API level (empty candidates
-        # / PROHIBITED_CONTENT). Same user-facing outcome as the text-
-        # level safety refusals above — return the graceful flagged
-        # envelope, not an opaque 500 (Sentry #184 / #307).
-        return {"is_valid": False, "reason": "Content was flagged as inappropriate"}
-    except ValueError as e:
+    except (ValueError, LlmBlockedError) as e:
         if _is_safety_block(e):
             return {
                 "is_valid": False,
