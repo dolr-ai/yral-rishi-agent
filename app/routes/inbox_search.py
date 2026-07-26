@@ -28,7 +28,10 @@ router = APIRouter(tags=["Chat v2 — Bot-aware"])
 @router.get("/api/v2/chat/conversations/search")
 async def conversations_search_endpoint(
     request: Request,
-    q: str = Query(..., max_length=100),
+    # No max_length here: a hard Query cap 422s on over-long input,
+    # which breaks this endpoint's documented "never 422" contract.
+    # The service already bounds `q` to 100 chars internally.
+    q: str = Query(...),
     limit: int = Query(20, ge=1, le=50),
 ):
     """Search the JWT-bearing user's existing conversations by bot

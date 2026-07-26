@@ -31,7 +31,9 @@ REPO = Path(__file__).resolve().parents[1]
 def test_route_path_and_required_q_param():
     src = (REPO / "app" / "routes" / "inbox_search.py").read_text()
     assert '"/api/v2/chat/conversations/search"' in src
-    assert "q: str = Query(..., max_length=100)" in src
+    # No route-level max_length: it would 422 on over-long input,
+    # breaking the "never 422" contract; the service caps length.
+    assert "q: str = Query(...)" in src
     assert "limit: int = Query(20, ge=1, le=50)" in src
 
 
