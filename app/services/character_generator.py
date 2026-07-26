@@ -5,6 +5,7 @@ from typing import Optional
 import config
 from services import replicate
 from services import llm_registry
+from services.llm_types import LlmBlockedError
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +160,7 @@ async def generate_system_instructions(concept: str) -> str | None:
         if contains_safety_refusal(text):
             return None
         return text.strip()
-    except ValueError as e:
+    except (ValueError, LlmBlockedError) as e:
         if _is_safety_block(e):
             raise GeminiSafetyBlocked(
                 "Your concept was flagged as inappropriate. "
@@ -220,7 +221,7 @@ async def validate_and_generate_metadata(system_instructions: str) -> dict | Non
             )
             return metadata
         return None
-    except ValueError as e:
+    except (ValueError, LlmBlockedError) as e:
         if _is_safety_block(e):
             return {
                 "is_valid": False,
