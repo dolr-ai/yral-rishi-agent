@@ -3,6 +3,14 @@ FROM python:3.12-slim
 LABEL org.opencontainers.image.source="https://github.com/dolr-ai/yral-rishi-agent"
 LABEL org.opencontainers.image.description="Yral Agent API — AI chat service"
 
+# Apply base-image OS security patches. python:3.12-slim ships Debian
+# packages (openssl, libcap2, …) with fixable HIGH/CRITICAL CVEs the base
+# tag hasn't rebuilt for yet; without this the Trivy container scan on
+# :stable stays red. Early layer so it caches independent of app changes.
+RUN apt-get update && \
+    apt-get upgrade -y && \
+    rm -rf /var/lib/apt/lists/*
+
 RUN groupadd --system --gid 1001 appuser && \
     useradd  --system --uid 1001 --gid appuser --create-home --shell /usr/sbin/nologin appuser
 
