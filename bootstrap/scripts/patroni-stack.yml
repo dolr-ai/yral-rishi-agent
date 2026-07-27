@@ -189,6 +189,14 @@ services:
       PATRONI_POSTGRESQL_REMOVE_DATA_DIRECTORY_ON_DIVERGED_TIMELINES: "true"
       PATRONI_POSTGRESQL_REMOVE_DATA_DIRECTORY_ON_REWIND_FAILURE: "true"
       PATRONI_SUPERUSER_USERNAME: postgres
+      # Spilo silently defaults the superuser password to 'zalando' when
+      # PGPASSWORD_SUPERUSER is unset (configure_spilo.py). After the real
+      # password was rotated in the DB + app, Spilo kept using 'zalando', so
+      # standbys could not authenticate to the leader and streaming broke →
+      # the 2026-07-27 write-stall/timeout outage. Wire it from the same
+      # rendered value pgbouncer uses for DB_PASSWORD so every node agrees on
+      # the ACTUAL superuser password. (See patroni-install.sh:526.)
+      PGPASSWORD_SUPERUSER: "${YRAL_PATRONI_POSTGRES_SUPERUSER_PASSWORD_RENDERED}"
       PATRONI_REPLICATION_USERNAME: standby
       PATRONI_admin_USERNAME: admin
       # WAL-G archive command for L2 backups per CONSTRAINTS D2.
@@ -253,6 +261,14 @@ services:
       PATRONI_POSTGRESQL_REMOVE_DATA_DIRECTORY_ON_DIVERGED_TIMELINES: "true"
       PATRONI_POSTGRESQL_REMOVE_DATA_DIRECTORY_ON_REWIND_FAILURE: "true"
       PATRONI_SUPERUSER_USERNAME: postgres
+      # Spilo silently defaults the superuser password to 'zalando' when
+      # PGPASSWORD_SUPERUSER is unset (configure_spilo.py). After the real
+      # password was rotated in the DB + app, Spilo kept using 'zalando', so
+      # standbys could not authenticate to the leader and streaming broke →
+      # the 2026-07-27 write-stall/timeout outage. Wire it from the same
+      # rendered value pgbouncer uses for DB_PASSWORD so every node agrees on
+      # the ACTUAL superuser password. (See patroni-install.sh:526.)
+      PGPASSWORD_SUPERUSER: "${YRAL_PATRONI_POSTGRES_SUPERUSER_PASSWORD_RENDERED}"
       PATRONI_REPLICATION_USERNAME: standby
       PATRONI_admin_USERNAME: admin
       WALG_S3_PREFIX: "${YRAL_PATRONI_WALG_S3_PREFIX_RENDERED}"
@@ -314,6 +330,14 @@ services:
       PATRONI_POSTGRESQL_REMOVE_DATA_DIRECTORY_ON_DIVERGED_TIMELINES: "true"
       PATRONI_POSTGRESQL_REMOVE_DATA_DIRECTORY_ON_REWIND_FAILURE: "true"
       PATRONI_SUPERUSER_USERNAME: postgres
+      # Spilo silently defaults the superuser password to 'zalando' when
+      # PGPASSWORD_SUPERUSER is unset (configure_spilo.py). After the real
+      # password was rotated in the DB + app, Spilo kept using 'zalando', so
+      # standbys could not authenticate to the leader and streaming broke →
+      # the 2026-07-27 write-stall/timeout outage. Wire it from the same
+      # rendered value pgbouncer uses for DB_PASSWORD so every node agrees on
+      # the ACTUAL superuser password. (See patroni-install.sh:526.)
+      PGPASSWORD_SUPERUSER: "${YRAL_PATRONI_POSTGRES_SUPERUSER_PASSWORD_RENDERED}"
       PATRONI_REPLICATION_USERNAME: standby
       PATRONI_admin_USERNAME: admin
       WALG_S3_PREFIX: "${YRAL_PATRONI_WALG_S3_PREFIX_RENDERED}"
