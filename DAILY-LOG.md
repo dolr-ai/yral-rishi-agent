@@ -1,5 +1,32 @@
 # Daily Log
 
+## 2026-07-23 — Patroni cascade follow-up: leader-alert PR, corrected root cause, repo cleanup
+
+Morning review of the 07-21 leaderless-cascade post-mortem, plus a big repo tidy.
+
+**Repo cleanup**
+- Closed **PR #444** (stale AI-bot push-notification PR) → superseded by **#461** (same author, clean + CI-green, routes notifications to `multi-service.naitik.yral.com`). #461 still needs a decision: it adds a new external dependency + the `NAITIK_MULTI_SERVICE_AUTH_TOKEN` secret (silently no-ops without it).
+- Closed stale docs/draft PRs: **#391** (paywall discovery — Path-A decision made it moot), **#405 / #397 / #395** (month-old drafts, not executed).
+- Deleted **49 stale local branches** (35 merged-PR + `pr-444-review` + 13 orphan branches already on origin). Held `feat/analytics-design-doc-2026-06-13` — it's local-only with 2 unpushed commits.
+
+**Patroni cascade — two corrections to the post-mortem (verified read-only)**
+- **Root cause is NOT unattended-upgrades.** All 3 nodes have `Automatic-Reboot = false` (confirmed `apt-config dump`), yet all rebooted the *same minute* (Jul 20 08:48) on lockstep kernels. That's a **shared external trigger — almost certainly Hetzner host maintenance**, not per-node u-u. "Stagger the u-u window" (post-mortem rec #1) would fix nothing.
+- **Cluster is fragile right now:** leader rishi-4 (TL49) healthy, but rishi-6 replica ~1.8 GB behind and rishi-5 stuck "starting" → effectively zero fault tolerance. Next maintenance reboot could repeat the outage.
+
+**Shipped / opened**
+- **PR #463** (`feat(watchdog): Patroni leader-presence alert`) — the missing page. Watchdog reads Patroni REST `/cluster` and alerts Sentry on a leaderless cluster > 90s (healthy failovers stay silent). Mirrors `replica_drift.py`; 9/9 tests. **MERGED + DEPLOYED** — leader-check thread confirmed live on the swarm (`watching patroni leadership every 60s`).
+- Landed the post-mortem + a **corrected-findings & action-plan doc** (`docs/postmortems/2026-07-21-patroni-cascade-addendum-and-plan.md`).
+
+**Cluster repaired to 3/3 (Rishi-authorized prod ops)**
+- WAL-G safety net verified first (base backup today 01:03 UTC, `failed_count=0`).
+- `patronictl reinit` rishi-5 → Sync Standby, TL49, lag 0 (was stuck "starting" for hours). Patroni auto-restored synchronous replication once it was healthy.
+- `patronictl reinit` rishi-6 → Replica, TL49, lag 0 (was diverged on TL48 with growing lag — would not self-converge). **All three now on TL49, lag 0** = real fault tolerance restored.
+
+**Open for Rishi**
+- Confirm the reboot trigger in the Hetzner console (needs the account) — likely host maintenance, the durable fix.
+- Decide on #461 (external notification dependency) — **parked per Rishi 2026-07-23.**
+- Per post-mortem: **do not** prioritize PR #457 (shm) — it didn't contribute and is already bridged.
+
 ## 2026-06-26 — Sentry sweep (7 PRs), watchdog deployed, observability tasks 1+2 shipped, codex trigger bug discovered
 
 ### What happened
