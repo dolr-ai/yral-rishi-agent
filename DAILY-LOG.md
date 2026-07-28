@@ -1,5 +1,21 @@
 # Daily Log
 
+## 2026-07-28 — Cleanup Wave 0 kicks off (adopt plan, fix deploy docs, delete archive/)
+
+Started the safe cleanup of the v2 chat service against `docs/cleanup-plan-2026-07-27.md`.
+
+**Merged**
+- **#472** — DEPLOY.md FAQ fix (Wave 0 PR1). Three FAQ answers contradicted the doc's own accurate body (claimed manual-only deploy). Now correct: auto-on-merge (Path 1) since 2026-06-08. Docs-only, no deploy.
+- **#471** — adopted the cleanup roadmap + today's 5-way baseline audit as a tracked doc. Docs-only, no deploy.
+
+**In PR — Wave 0 PR2: delete `archive/`**
+- Removed **461 files / ~89K lines** of abandoned microservice skeletons (untouched since 2026-06-04, SHA `83f1bcc`). **Pre-delete main SHA: `33a3a88`** (`git revert` restores everything).
+- **Provably safe:** the Dockerfile only `COPY`s `app/` and `infra/` — `archive/` never entered the image. No live code references it (the `archive.get(...)` hits in `backup_health_admin.py` are a local dict var, not the dir). 1365 tests still collect; no import breakage.
+- **Preserved** the richest archived testcontainers-Postgres conftest → `docs/testing/wave1-conftest-reference.py` (with a v2-adaptation header: swap Alembic → numbered SQL migrations, DATABASE_URL, app/database pool). This is the reference for Wave 1's test safety net.
+- **Deploy:** none. `build-and-push` **skipped** (the PR touches no build-trigger paths — only `archive/`, `docs/`, `DAILY-LOG.md`), so no image is rebuilt and the Deploy workflow never fires. Zero runtime change. (Earlier I expected a byte-identical no-op rollout; in fact the build skips entirely — even safer.)
+
+---
+
 ## 2026-07-23 — Patroni cascade follow-up: leader-alert PR, corrected root cause, repo cleanup
 
 Morning review of the 07-21 leaderless-cascade post-mortem, plus a big repo tidy.
