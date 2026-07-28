@@ -12,7 +12,7 @@ Started the safe cleanup of the v2 chat service against `docs/cleanup-plan-2026-
 - Removed **461 files / ~89K lines** of abandoned microservice skeletons (untouched since 2026-06-04, SHA `83f1bcc`). **Pre-delete main SHA: `33a3a88`** (`git revert` restores everything).
 - **Provably safe:** the Dockerfile only `COPY`s `app/` and `infra/` — `archive/` never entered the image. No live code references it (the `archive.get(...)` hits in `backup_health_admin.py` are a local dict var, not the dir). 1365 tests still collect; no import breakage.
 - **Preserved** the richest archived testcontainers-Postgres conftest → `docs/testing/wave1-conftest-reference.py` (with a v2-adaptation header: swap Alembic → numbered SQL migrations, DATABASE_URL, app/database pool). This is the reference for Wave 1's test safety net.
-- **Note:** this PR *does* trigger a deploy (archive/ isn't in the docs-skip globs), but the image is byte-identical → expect a green no-op rollout + `/health` 200.
+- **Deploy:** none. `build-and-push` **skipped** (the PR touches no build-trigger paths — only `archive/`, `docs/`, `DAILY-LOG.md`), so no image is rebuilt and the Deploy workflow never fires. Zero runtime change. (Earlier I expected a byte-identical no-op rollout; in fact the build skips entirely — even safer.)
 
 ---
 
