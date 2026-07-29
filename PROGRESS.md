@@ -220,7 +220,7 @@ See `Phase 21α / 21α→β / 21αβ.I / 21β / 21γ` tables below for full deta
 |---|-----------|--------|-----------|-----|
 | 9.1 | 50 gold prompts across categories | ✅ Done | — | #168 |
 | 9.2 | Gemini-as-judge scoring | ✅ Done | — | #168 |
-| 9.3 | Run eval and verify results | ✅ Done | — | #195 (eval-results-2026-05-29.json + scripts/eval_v2_vs_chat_ai.py) |
+| 9.3 | Run eval and verify results | ✅ Done | — | #195 (docs/eval-results-2026-05-29.json + scripts/eval_v2_vs_chat_ai.py) |
 | 9.4 | CI integration (eval runs on AI-touching PRs) | ⏳ Pending | 1 | — |
 | 9.5 | Quality regression alerts | ⏳ Pending | 0.5 | — |
 | **Phase 9 total** | | **40% done** | **2 days left** | |
