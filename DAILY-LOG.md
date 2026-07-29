@@ -1,5 +1,18 @@
 # Daily Log
 
+## 2026-07-29 — Wave 0 closed; Wave 1 (test safety net) planned + started
+
+**Wave 0 complete** — PR3 (#474) merged yesterday's session; the repo is now free of `archive/`, has honest deploy docs, and documents its migration numbering.
+
+**Wave 1 planned (#475 merged).** Audited the test suite before planning: **1,364 tests** (CI's `pytest tests/`), **zero touch a database**, ~40% are pure source-inspection (`.read_text()` + substring asserts that survive any refactor), **71 files carry hand-rolled `sys.path` hacks**, and there's **no `conftest.py`/pytest config at all**. The `collage_date` codec bug (`chat.py:531`) is documented in-code as having *passed* the mocked-pool tests and 500'd in prod — the case for real-DB tests. Also found **`pytest-asyncio` is not installed** (not in requirements), so async-marked tests may be silently passing without running — a gap PR6's real integration tests will expose. Plan doc: `docs/wave1-plan-2026-07-29.md`. Harness decision: **Option B (testcontainers)** — real DB tests run identically on the Mac and in CI.
+
+**In PR — Wave 1 PR5a: pytest config foundation.** Split the original PR5 into 5a (config, tiny/readable) + 5b (bulk removal of the 71 hacks, invariant-proven) for safe review.
+- Add `pyproject.toml` `[tool.pytest.ini_options]` with `pythonpath = ["app", "watchdog"]` + `testpaths = ["tests"]`, and a placeholder `tests/conftest.py` (PR6 fills it with the DB fixtures).
+- Verified behavior-neutral: `pytest tests/` collects **1364 → 1364**; full run **53 failed / 1245 passed / 66 skipped** unchanged (the 53 are missing local third-party libs, green in CI); `ruff check`/`format --check app/ infra/` still pass. `testpaths` also stops a bare `pytest` from accidentally collecting the `scripts/` smoke helpers.
+- No runtime code. No deploy.
+
+---
+
 ## 2026-07-28 — Cleanup Wave 0 kicks off (adopt plan, fix deploy docs, delete archive/)
 
 Started the safe cleanup of the v2 chat service against `docs/cleanup-plan-2026-07-27.md`.
