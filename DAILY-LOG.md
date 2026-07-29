@@ -8,11 +8,17 @@ Started the safe cleanup of the v2 chat service against `docs/cleanup-plan-2026-
 - **#472** — DEPLOY.md FAQ fix (Wave 0 PR1). Three FAQ answers contradicted the doc's own accurate body (claimed manual-only deploy). Now correct: auto-on-merge (Path 1) since 2026-06-08. Docs-only, no deploy.
 - **#471** — adopted the cleanup roadmap + today's 5-way baseline audit as a tracked doc. Docs-only, no deploy.
 
-**In PR — Wave 0 PR2: delete `archive/`**
-- Removed **461 files / ~89K lines** of abandoned microservice skeletons (untouched since 2026-06-04, SHA `83f1bcc`). **Pre-delete main SHA: `33a3a88`** (`git revert` restores everything).
+**Merged — Wave 0 PR2 (#473): delete `archive/`**
+- Removed **461 files / ~89K lines** of abandoned microservice skeletons (untouched since 2026-06-04, SHA `83f1bcc`). **Pre-delete main SHA: `33a3a88`** (`git revert` restores everything). `main` now at `a220ff7`.
 - **Provably safe:** the Dockerfile only `COPY`s `app/` and `infra/` — `archive/` never entered the image. No live code references it (the `archive.get(...)` hits in `backup_health_admin.py` are a local dict var, not the dir). 1365 tests still collect; no import breakage.
 - **Preserved** the richest archived testcontainers-Postgres conftest → `docs/testing/wave1-conftest-reference.py` (with a v2-adaptation header: swap Alembic → numbered SQL migrations, DATABASE_URL, app/database pool). This is the reference for Wave 1's test safety net.
-- **Deploy:** none. `build-and-push` **skipped** (the PR touches no build-trigger paths — only `archive/`, `docs/`, `DAILY-LOG.md`), so no image is rebuilt and the Deploy workflow never fires. Zero runtime change. (Earlier I expected a byte-identical no-op rollout; in fact the build skips entirely — even safer.)
+- **Deploy:** none. `build-and-push` **skipped** (touched no build-trigger paths), so no image rebuild and the Deploy workflow never fired. Zero runtime change.
+- Cleaned the 46 git-ignored leftovers (`.DS_Store`/`.pytest_cache`/`.pyc`) from the local disk afterward.
+
+**In PR — Wave 0 PR3: root tidy**
+- Moved `eval-results-2026-05-29.json` (72 KB) from repo root → `docs/`; updated its two path references (PROGRESS.md, this log).
+- Added **`migrations/README.md`** documenting the runner (filename-sorted, gap-tolerant) and — the real finding — **why 037/044/049 are absent**: `037` was simply skipped (never existed anywhere); **`044` is reserved by open PR #426** (l0-eval, `d3bb844`) and **`049` by open PR #454** (spicy, `e34e8cc`). So the next migration is `051`, and nobody should reuse 044/049 or they'll collide when those PRs merge.
+- Docs/markdown only. No deploy.
 
 ---
 
@@ -1011,7 +1017,7 @@ When rebasing #194 onto main (after #195 had already merged), the rebase folded 
 - **language_match 3.10/5 is mediocre** — multilingual mirror works on simple cases but degrades on Telugu, Tamil. Per-archetype temperature + an explicit "match the user's language" rule may help.
 
 ### Artifacts
-- Full per-prompt JSON: `eval-results-2026-05-29.json` (49 prompts × 2 services × {latency, response, scores})
+- Full per-prompt JSON: `docs/eval-results-2026-05-29.json` (49 prompts × 2 services × {latency, response, scores}; moved from repo root → docs/ on 2026-07-28, Wave 0 PR3)
 - Script: `scripts/eval_v2_vs_chat_ai.py` (re-runnable; hits both backends via the same FastAPI surface)
 - Trace IDs in Langfuse: `eval-{i}` for each prompt
 
