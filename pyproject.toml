@@ -1,0 +1,16 @@
+[tool.pytest.ini_options]
+# app/ and watchdog/ are placed on the import path so tests can write
+# `from routes.chat import ...` / `import autoheal` without every file
+# hand-rolling its own sys.path block. The Dockerfile copies app/ to the
+# workdir root, so runtime imports are top-level (`from routes...`) — this
+# mirrors that layout for the test run. watchdog/ is a separate top-level
+# package with no module-name overlap with app/ (verified: autoheal,
+# patroni_leader, replica_drift, watchdog).
+#
+# This config makes the 71 hand-rolled sys.path blocks redundant; PR5b
+# removes them. See docs/wave1-plan-2026-07-29.md.
+pythonpath = ["app", "watchdog"]
+
+# Only matters when pytest is run with no path argument (CI passes `tests/`
+# explicitly); makes a bare `pytest` do the right thing.
+testpaths = ["tests"]
