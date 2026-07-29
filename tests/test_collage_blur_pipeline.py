@@ -12,18 +12,16 @@ Trust model under test:
 import asyncio
 from datetime import date
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
-import pytest
 
 MODULE_ROUTE = Path(__file__).parent.parent / "app" / "routes" / "request_images.py"
 MODULE_COLLAGE = Path(__file__).parent.parent / "app" / "services" / "image_collage.py"
 
 
 def _load(name: str):
-    import sys, importlib
+    import importlib
 
-    sys.path.insert(0, str(Path(__file__).parent.parent / "app"))
     return importlib.import_module(name)
 
 

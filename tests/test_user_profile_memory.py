@@ -1,10 +1,5 @@
 """Phase 4.6 — user profile memory (identity facts go global)."""
 
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
-
 
 def test_global_categories_includes_identity():
     """Identity category MUST be in GLOBAL_CATEGORIES — that's the whole

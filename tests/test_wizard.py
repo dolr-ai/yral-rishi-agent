@@ -1,10 +1,5 @@
 """Phase 7.9 — bot creation wizard. Pin the parser + fallback shape."""
 
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
-
 
 def test_extract_json_array():
     from services.wizard import _extract_json

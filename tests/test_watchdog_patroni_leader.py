@@ -11,10 +11,6 @@ fetch + Sentry emit are trivially thin wrappers in watchdog.py; if
 test_watchdog_replica_drift.py.
 """
 
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "watchdog"))
 
 from patroni_leader import LeaderState, check_once, leader_name  # noqa: E402
 

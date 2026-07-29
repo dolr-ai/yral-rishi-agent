@@ -6,10 +6,13 @@
 
 **Wave 1 planned (#475 merged).** Audited the test suite before planning: **1,364 tests** (CI's `pytest tests/`), **zero touch a database**, ~40% are pure source-inspection (`.read_text()` + substring asserts that survive any refactor), **71 files carry hand-rolled `sys.path` hacks**, and there's **no `conftest.py`/pytest config at all**. The `collage_date` codec bug (`chat.py:531`) is documented in-code as having *passed* the mocked-pool tests and 500'd in prod — the case for real-DB tests. Also found **`pytest-asyncio` is not installed** (not in requirements), so async-marked tests may be silently passing without running — a gap PR6's real integration tests will expose. Plan doc: `docs/wave1-plan-2026-07-29.md`. Harness decision: **Option B (testcontainers)** — real DB tests run identically on the Mac and in CI.
 
-**In PR — Wave 1 PR5a: pytest config foundation.** Split the original PR5 into 5a (config, tiny/readable) + 5b (bulk removal of the 71 hacks, invariant-proven) for safe review.
-- Add `pyproject.toml` `[tool.pytest.ini_options]` with `pythonpath = ["app", "watchdog"]` + `testpaths = ["tests"]`, and a placeholder `tests/conftest.py` (PR6 fills it with the DB fixtures).
+**Merged — Wave 1 PR5a (#476): pytest config foundation.** Split the original PR5 into 5a (config, tiny/readable) + 5b (bulk removal of the 71 hacks, invariant-proven) for safe review.
+- Added `pyproject.toml` `[tool.pytest.ini_options]` with `pythonpath = ["app", "watchdog"]` + `testpaths = ["tests"]`, and a placeholder `tests/conftest.py` (PR6 fills it with the DB fixtures).
 - Verified behavior-neutral: `pytest tests/` collects **1364 → 1364**; full run **53 failed / 1245 passed / 66 skipped** unchanged (the 53 are missing local third-party libs, green in CI); `ruff check`/`format --check app/ infra/` still pass. `testpaths` also stops a bare `pytest` from accidentally collecting the `scripts/` smoke helpers.
 - No runtime code. No deploy.
+
+**In PR — Wave 1 PR5b (#___): remove the 71 `sys.path` hacks.** Now that the config is on `main`, the hand-rolled path blocks are redundant. Deleted them across 71 files via a deterministic script that handled all 4 patterns + the guarded `APP_DIR` form — keeping the `APP_DIR` definition where it also feeds a `.read_text()` source-pin (the one 4× outlier), dropping it where it was hack-only. Then `ruff --select F401 --fix` removed 143 now-orphaned imports (85 `sys`, 53 `os`, 5 pre-existing), and a targeted pass collapsed leftover triple-blank-lines. **Net −307 / +3 across 71 files.**
+- Proven safe by the same invariant at every step: `pytest tests/` **1364 → 1364**, full run **53 failed / 1245 passed / 66 skipped / 1 warning** unchanged; all 71 files parse; 0 `sys.path` references remain. Did **not** run `ruff format` on tests/ (would reformat dict literals repo-wide — scope creep). No runtime code. No deploy.
 
 ---
 

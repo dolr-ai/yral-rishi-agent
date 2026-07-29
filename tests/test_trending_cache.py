@@ -1,11 +1,6 @@
 """Task A — pin the trending cache TTL + key shape so a future refactor
 can't silently turn off the cache or make it too aggressive."""
 
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
-
 
 def test_trending_cache_ttl_in_range():
     """60s is the deliberate value. Below 5s the cache stops mattering

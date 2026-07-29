@@ -3,11 +3,6 @@
 Behavioral tests against the DB are exercised by the live smoke test
 after deploy."""
 
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
-
 
 def test_allowed_frequencies():
     """Migration 012 has the same set in a CHECK constraint. If these

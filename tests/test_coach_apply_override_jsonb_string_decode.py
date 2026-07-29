@@ -19,13 +19,10 @@ already exists in:
 The override-apply path missed it; this test ensures it can't regress.
 """
 
-import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 APP_DIR = REPO / "app"
-if str(APP_DIR) not in sys.path:
-    sys.path.insert(0, str(APP_DIR))
 
 CREATOR_COACH = (APP_DIR / "routes" / "creator_coach.py").read_text()
 

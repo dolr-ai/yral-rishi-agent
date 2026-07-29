@@ -4,16 +4,11 @@ Shipped 2026-05-30 in response to a shared-key rate-limit incident.
 Tests pin: env-var semantics, the 4 known loops are gated, the gates
 appear at the right call sites."""
 
-import os
-import sys
 from pathlib import Path
 
 
 def _read(rel: str) -> str:
     return (Path(__file__).resolve().parent.parent / rel).read_text()
-
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
 
 # ─── pure-function env logic (kill_switch.py has no deps) ────────────────

@@ -5,13 +5,9 @@ Coach showed ✅ Saved receipt → Coach treated it as a NEW edit request.
 These tests defend the fast pre-check that catches that class of input.
 """
 
-import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-APP_DIR = REPO / "app"
-if str(APP_DIR) not in sys.path:
-    sys.path.insert(0, str(APP_DIR))
 
 
 # ─── classifier behavior ─────────────────────────────────────────────────

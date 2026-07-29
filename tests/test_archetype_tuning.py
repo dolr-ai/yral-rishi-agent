@@ -4,11 +4,6 @@ Pins the tuning dict + the per-archetype guardrails added to ARCHETYPE_PROMPTS
 so a future refactor can't silently flatten them.
 """
 
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
-
 
 def test_tuning_for_known_archetypes():
     from services.soul_file import tuning_for, ARCHETYPE_TUNING

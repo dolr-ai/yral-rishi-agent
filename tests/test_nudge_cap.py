@@ -4,11 +4,7 @@ Static checks for the cap-pattern wiring. The runtime behavior (stuck
 user goes silent → 1 nudge → no more nudges → user replies → cap
 resets) is exercised after deploy."""
 
-import os
-import sys
 from pathlib import Path
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
 
 def _read(rel: str) -> str:

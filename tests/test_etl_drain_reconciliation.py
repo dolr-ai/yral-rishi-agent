@@ -8,14 +8,10 @@ can't quietly change Rishi's signal.
 Pure-function tests — no DB, no S3, no asyncio.
 """
 
-import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-APP_DIR = REPO / "app"
-if str(APP_DIR) not in sys.path:
-    sys.path.insert(0, str(APP_DIR))
 
 
 def _fresh_integrity(passes_per_layer: int = 5) -> dict:

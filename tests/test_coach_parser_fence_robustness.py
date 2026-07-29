@@ -6,13 +6,9 @@ These tests defend the fence-aware extractor in
 services.coach._try_extract_proposal.
 """
 
-import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-APP_DIR = REPO / "app"
-if str(APP_DIR) not in sys.path:
-    sys.path.insert(0, str(APP_DIR))
 
 
 # ─── the actual fence-wrapped shapes Gemini emits ─────────────────────────
