@@ -1,10 +1,5 @@
 """Tests for app/services/moderation.py — guardrail append/strip."""
 
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
-
 
 def test_with_guardrails_appends():
     from services.moderation import with_guardrails, STYLE_PROMPT, MODERATION_PROMPT

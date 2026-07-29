@@ -1,10 +1,5 @@
 """Tests for app/services/soul_file.py."""
 
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
-
 
 def test_compose_includes_global_rules():
     from services.soul_file import compose, GLOBAL_RULES

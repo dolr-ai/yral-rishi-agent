@@ -1,10 +1,5 @@
 """Phase 4.7 — Redis session memory (mood detection + degrade-gracefully)."""
 
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
-
 
 def test_detect_mood_neutral_for_blank():
     from services.session_memory import detect_mood

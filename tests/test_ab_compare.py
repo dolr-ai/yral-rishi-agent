@@ -3,11 +3,6 @@
 Pure-function pins. The live judging path is exercised via the deploy
 verification step (mint variant B, send some messages, hit /compare)."""
 
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
-
 
 def test_min_sample_thresholds_are_safe():
     """Below MIN we'd promote on noise; above MAX we'd burn judge calls

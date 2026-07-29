@@ -4,12 +4,8 @@ Covers the error_code path through ai_client: classification of Gemini blocks
 vs transient failures, and the response shape mobile receives.
 """
 
-import os
-import sys
 
 import pytest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
 
 def test_error_messages_exhaustive():

@@ -18,13 +18,10 @@ against the old unconditional NO_PROVIDER gate coming back.
 """
 
 import asyncio
-import os
-import sys
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
 REPO = Path(__file__).resolve().parents[1]
 

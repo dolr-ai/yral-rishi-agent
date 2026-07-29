@@ -19,14 +19,11 @@ Fix: chat.py._parse_collage_date converts ISO string → date at the
 route boundary. This suite pins that behavior.
 """
 
-import os
-import sys
 from datetime import date
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
 REPO = Path(__file__).resolve().parents[1]
 

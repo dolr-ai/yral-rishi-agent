@@ -6,10 +6,6 @@ helpers (credential loader, filename regex, CSV parse, table specs).
 """
 
 import gzip
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
 
 # ─── table specs ──────────────────────────────────────────────────────────

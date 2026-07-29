@@ -15,13 +15,9 @@ The tests below pin:
   - coach_opening route uses parse_opening (source-pin).
 """
 
-import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-APP_DIR = REPO / "app"
-if str(APP_DIR) not in sys.path:
-    sys.path.insert(0, str(APP_DIR))
 
 
 # ─── parse_opening — the residual leak PR-2 closes ───────────────────────

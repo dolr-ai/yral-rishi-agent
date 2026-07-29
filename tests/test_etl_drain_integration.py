@@ -13,17 +13,12 @@ This file is the behavioral coverage.
 """
 
 import asyncio
-import sys
-import types
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 REPO = Path(__file__).resolve().parents[1]
-APP_DIR = REPO / "app"
-if str(APP_DIR) not in sys.path:
-    sys.path.insert(0, str(APP_DIR))
 
 
 # Hardcoded `datetime(2026, 6, 11, 11, 59, ...)` fixtures made this

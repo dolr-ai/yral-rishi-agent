@@ -1,12 +1,8 @@
 """Tests for app/auth.py — JWT extraction and validation."""
 
-import os
-import sys
 import time
 
 import pytest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
 
 def _make_jwt(payload: dict) -> str:

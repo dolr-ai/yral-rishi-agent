@@ -1,10 +1,5 @@
 """Tests for Phase 4.4 — embedding service shape + memory_repo vector helpers."""
 
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
-
 
 def test_memory_to_embed_text_shape():
     """Embed-text format is stable — same format used at write AND query time

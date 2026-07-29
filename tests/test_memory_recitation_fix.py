@@ -3,11 +3,6 @@
 Pins the constants + the strengthened L4 anti-recitation prompt.
 """
 
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
-
 
 def test_semantic_top_k_capped():
     """Top-K dropped from 8 to 3 — if a future refactor moves it back up,

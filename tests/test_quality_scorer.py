@@ -5,11 +5,6 @@ Gemini portions are exercised against the live cluster via the deploy
 verification step.
 """
 
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
-
 
 def test_scoring_constants_in_sensible_range():
     """Sample 20 conversations and 3 turn pairs each. Above these the

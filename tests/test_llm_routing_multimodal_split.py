@@ -16,13 +16,9 @@ Mixed tests:
   are pure data + pure function, no I/O).
 """
 
-import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-APP_DIR = REPO / "app"
-if str(APP_DIR) not in sys.path:
-    sys.path.insert(0, str(APP_DIR))
 
 
 def test_supports_vision_flag_set_on_all_providers():

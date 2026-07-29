@@ -7,11 +7,7 @@ Timer semantics (Bug 1 fix): remaining_seconds() reads the CREATOR's last
 message timestamp — auto-release fires when the creator goes silent.
 """
 
-import os
-import sys
 from datetime import datetime, timezone, timedelta
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
 
 def test_remaining_seconds_no_last_message():
