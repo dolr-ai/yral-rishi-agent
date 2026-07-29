@@ -33,7 +33,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -r requirements.txt pytest
+      # requirements-test.txt adds testcontainers so the integration tests
+      # under tests/integration/ run against a real pgvector Postgres. The
+      # GitHub runner already has a Docker daemon for testcontainers to use.
+      - run: pip install -r requirements.txt -r requirements-test.txt pytest
       - run: pytest tests/ -v
         env:
           DATABASE_URL: "postgresql://test:test@localhost:5432/test"
