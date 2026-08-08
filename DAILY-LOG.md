@@ -16,6 +16,13 @@
 - `WATCHDOG_HEARTBEAT_URL` is **vendor-neutral and unset by default** — inert until an operator opts in, so this changes nothing until we pick a provider. **Decision still needed from Rishi:** external switch (independent, which is the property that failed here) vs. an owned endpoint.
 - 10 new tests, all green; watchdog suite 36/36. No runtime code path changed. Not deployed.
 
+**In PR — US market launch PR1 (market column + dormant config).** Per `docs/us-market-launch-spec-2026-08-08.md` Track B. Ships the column and the knobs with **nothing reading them** — no behaviour change for anyone.
+- `migrations/051_ai_influencers_target_markets.sql` — `target_markets TEXT[]` + GIN index. **NULL/empty = global**, so all ~3,600 existing rows stay visible everywhere with **no backfill**. Additive `ADD COLUMN` with no DEFAULT is metadata-only on PG11+ (no table rewrite). `051` is correct: `044`/`049` are reserved by open PRs #426/#454 per `migrations/README.md`.
+- `app/config.py` — added the `_env_list` helper (the spec assumed one; it didn't exist), plus `MARKET_EXCLUSIVE_COUNTRIES` (default `[]`) and `MARKET_DEBUG_OVERRIDE_ENABLED` (default `False`).
+- **Rule 9 correction:** my first draft told Rishi to take a manual pre-merge pg_dump. Wrong — `scripts/ci/run-migrations.sh` already takes a per-migration `pg_dump -Fc`, uploads it to S3, and **fails closed** if it can't. No manual step. Header corrected to match migration 043's wording.
+- **Verified against a real Postgres,** not just source assertions: 3 new integration tests prove the column is a genuine `TEXT[]`, the GIN index exists, and `target_markets @> ARRAY['US']` selects only tagged rows while NULL *and* `'{}'` both read as global. That last property is the whole launch — if it inverted, the US feed would leak the Indian catalogue or the global feed would empty out.
+- 14 new tests; full suite **1396 passed**, `ruff check`/`format` clean. Not deployed.
+
 ---
 
 ## 2026-07-29 — Wave 0 closed; Wave 1 (test safety net) planned + started

@@ -2,7 +2,7 @@
 REAL pgvector Postgres.
 
 These are the "does the harness actually work end-to-end" tests — a real
-container, the 47 migrations applied, and the app's own pool + health code
+container, every migration applied, and the app's own pool + health code
 exercised against it. See tests/conftest.py.
 """
 
@@ -14,7 +14,7 @@ CONTRACT_TABLES = ("ai_influencers", "conversations", "messages")
 
 
 def test_all_migrations_applied_and_contract_tables_present(pg_dsn):
-    """All 47 migrations applied cleanly (the pg_dsn fixture would have
+    """Every migration applied cleanly (the pg_dsn fixture would have
     failed otherwise) and the three mobile-contract tables exist — the same
     floor migrations-ci.yml checks."""
 
