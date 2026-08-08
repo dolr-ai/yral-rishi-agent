@@ -1,5 +1,23 @@
 # Daily Log
 
+## 2026-08-08 — Sentry down ~45h (DNS eviction on rishi-3); recovered + the blind spot that hid it
+
+**Incident: Sentry was dead and nothing told us.** Found while checking fleet state after the break. `sentry.rishi.yral.com` returned **500 on every authenticated endpoint** from all six edge IPs, `relay` was in a crash loop at **1013 restarts**, and `pgbouncer` / `taskworker` / `seaweedfs` were all unhealthy. Last ingested event was **2026-08-06 10:58Z** — roughly **45 hours** of zero error visibility across the whole fleet.
+
+**Root cause: Docker's embedded DNS registry was evicted on rishi-3.** All 69 containers on `sentry-self-hosted_default` lost their DNS records while staying "Up". `web` couldn't resolve `pgbouncer` (`could not translate host name "pgbouncer"`), `relay` couldn't resolve `redis`. Isolated it by elimination: external DNS worked from inside containers, and two *fresh* throwaway containers resolved each other fine — so the network object was healthy and only the pre-existing registrations were gone. That made the runbook's `up -d --force-recreate` the correct fix (re-attaching re-registers), not a destructive `down`/`up`. Recovered to **zero unhealthy containers**.
+
+**Second fault, uncovered by the fix: the compose file referenced a network that no longer exists.** nginx then failed with `network sentry-web not found`. The 2026-08-01 fleet consolidation folded all six hosts into one Swarm, moved nginx onto `yral-v2-public-web` via a **runtime** `docker network connect`, and deleted `sentry-web` — but the runtime attachment was invisible to `docker-compose.override.yml`, so it survived until the first recreate and then vanished. The edge Caddy proxies `sentry.rishi.yral.com` to a **hardcoded `10.0.1.11:80`**, nginx's address on that overlay.
+- Live-fixed `docker-compose.override.yml` on rishi-3: nginx now joins `yral-v2-public-web` **declaratively** with `ipv4_address: 10.0.1.11` pinned and a `sentry-nginx` alias (so the edge can later drop the hardcoded IP). Backup at `~/override.yml.bak-20260808`. **Needs backporting to the `yral-rishi-sentry` repo** — same live-fix-then-PR pattern as #470.
+- Verified end to end: `_health` **200**, API **200**, and a synthetic event traversed relay → Kafka → consumer → ClickHouse and came back queryable. Ingest is confirmed working, not assumed.
+- Still open: `monitors-clock-tick` crash-loops on `OffsetOutOfRange` (its Kafka offset aged out of retention during the outage). Fix is a reset to **latest**, not earliest — replaying ~2 days of stale clock ticks would fire a flood of bogus missed-check-in alerts.
+
+**In PR — the watchdog blind spot.** The watchdog could not have caught this, and the obvious fix (make it global) would not have helped: its DNS check resolves *Swarm overlay aliases* from its own namespace and would never look at Sentry's compose bridge network, and its `node.role == manager` constraint excludes rishi-3 anyway. The load-bearing problem is simpler — **all three existing checks alert through `sentry_sdk`, so none of them can report a Sentry outage.**
+- Added `watchdog/heartbeat.py`: pings an external dead-man's-switch **while things are fine**, so silence is the alarm. That covers the whole class of faults that kill the reporter too — Sentry down, watchdog crashed, Swarm gone. Gated on the fleet's public surfaces answering 2xx, so it reports failure explicitly rather than waiting to time out.
+- `WATCHDOG_HEARTBEAT_URL` is **vendor-neutral and unset by default** — inert until an operator opts in, so this changes nothing until we pick a provider. **Decision still needed from Rishi:** external switch (independent, which is the property that failed here) vs. an owned endpoint.
+- 10 new tests, all green; watchdog suite 36/36. No runtime code path changed. Not deployed.
+
+---
+
 ## 2026-07-29 — Wave 0 closed; Wave 1 (test safety net) planned + started
 
 **Wave 0 complete** — PR3 (#474) merged yesterday's session; the repo is now free of `archive/`, has honest deploy docs, and documents its migration numbering.
