@@ -1,4 +1,4 @@
-# Overlay watchdog — two independent checks in one Swarm service:
+# Overlay watchdog — three independent checks in one Swarm service:
 #
 #   1. DNS-alias watchdog. Alerts Sentry when a Swarm service alias
 #      goes NXDOMAIN or recovers. Catches the bug we hit 2026-06-22:
@@ -12,6 +12,14 @@
 #      threshold. Catches the 2026-06-29 langfuse-web wedged-task
 #      class of failure — 0 replicas = no alias to lose = the DNS
 #      check misses it.
+#
+#   3. External heartbeat (2026-08-08 extension). Pings a
+#      dead-man's-switch URL while the fleet's public surfaces answer
+#      2xx. Checks 1 and 2 both alert THROUGH Sentry, so neither can
+#      report a Sentry outage — which is exactly why the 2026-08-08
+#      DNS-eviction incident ran ~45h unnoticed. Silence is the alarm,
+#      so this also covers "watchdog dead" and "whole Swarm gone".
+#      Inert until WATCHDOG_HEARTBEAT_URL is set.
 #
 # The docker.sock mount widens the trust boundary: this container
 # gets read access to every service, task, container, and secret spec
@@ -63,6 +71,19 @@ services:
       WATCHDOG_REPLICA_SERVICES_FILTER: "yral-"
       SENTRY_DSN: ${SENTRY_DSN:?SENTRY_DSN must be set}
       SENTRY_ENVIRONMENT: production
+      # External dead-man's switch. Every check above reports THROUGH
+      # Sentry, so none of them can report a Sentry outage — on
+      # 2026-08-08 Sentry dropped every event for ~45h and nothing
+      # paged. This is the one outbound path that does not depend on
+      # the fleet being healthy: it pings while things are FINE, so
+      # silence is the alarm.
+      #
+      # Unset = disabled (the watchdog behaves exactly as before), which
+      # is why this ships with no default. Set it to the check URL from
+      # whichever dead-man's-switch provider we pick; anything that
+      # alerts on "no ping for N minutes" works.
+      WATCHDOG_HEARTBEAT_URL: ${WATCHDOG_HEARTBEAT_URL:-}
+      WATCHDOG_HEARTBEAT_INTERVAL_SEC: "60"
     deploy:
       mode: replicated
       replicas: 1

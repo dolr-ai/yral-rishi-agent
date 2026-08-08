@@ -31,6 +31,7 @@ import urllib.request
 import sentry_sdk
 
 import autoheal
+import heartbeat
 from patroni_leader import (
     INTERVAL_SEC as PATRONI_INTERVAL_SEC,
     REST_URLS as PATRONI_REST_URLS,
@@ -375,6 +376,15 @@ def main() -> None:
     threading.Thread(
         target=_patroni_leader_check_loop,
         name="patroni-leader",
+        daemon=True,
+    ).start()
+    # The three checks above all report THROUGH Sentry, so none of them
+    # can report a Sentry outage. The heartbeat is the only one that
+    # speaks to the outside world, which is why it runs regardless of the
+    # others' health. Self-disables when unconfigured.
+    threading.Thread(
+        target=heartbeat.run_forever,
+        name="heartbeat",
         daemon=True,
     ).start()
 
