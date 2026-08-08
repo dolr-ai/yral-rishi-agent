@@ -9,11 +9,12 @@
 -- user-visible.
 --
 -- NULL or empty means GLOBAL. That is the whole reason there is no
--- backfill: all ~3,600 existing rows keep target_markets IS NULL and stay
--- visible in every market exactly as today. Only the 4 new US personas
--- will be tagged '{US}'. An opt-in encoding means a bug in the filter
--- fails toward "everyone sees everything" (today's behaviour) rather than
--- toward an empty catalogue.
+-- backfill: all 4,081 existing rows (counted on the prod leader
+-- 2026-08-08 — the spec's "~3,600" is stale) keep target_markets IS NULL
+-- and stay visible in every market exactly as today. Only the 4 new US
+-- personas will be tagged '{US}'. An opt-in encoding means a bug in the
+-- filter fails toward "everyone sees everything" (today's behaviour)
+-- rather than toward an empty catalogue.
 --
 -- TEXT[] rather than a single VARCHAR because one English persona
 -- usually serves US + CA + UK + AU, and we don't want duplicate rows per
@@ -22,8 +23,9 @@
 -- serves directly.
 --
 -- GIN is the right index for array containment — btree can't answer @>.
--- Cheap here: the catalog is ~3,600 rows and the column is NULL for all
--- of them at apply time, so the index is near-empty on creation.
+-- Cheap here: the catalog is ~4,100 rows and the column is NULL for all
+-- of them at apply time, so the index is empty on creation and grows only
+-- as personas get tagged.
 --
 -- Skip CONCURRENTLY: same call as migrations 041/042/043 — the runner
 -- (scripts/ci/run-migrations.sh) wraps every file in BEGIN/COMMIT, and

@@ -9,7 +9,7 @@ and answers the containment predicate PR2 will use, and NULL genuinely
 behaves as "global".
 
 That last one is the load-bearing property of the whole launch: every one
-of the ~3,600 existing rows must stay visible everywhere with no backfill.
+of the 4,081 existing rows must stay visible everywhere with no backfill.
 If `target_markets @> ARRAY['US']` ever matched a NULL row — or if the
 inverse "is this row global?" test misread NULL — the US feed would leak
 the Indian catalogue, or the global feed would empty out.
