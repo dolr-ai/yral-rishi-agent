@@ -50,7 +50,7 @@ def _normalize_dsn(url: str) -> str:
 async def _apply_migrations(dsn: str) -> int:
     """Apply migrations/*.sql (excluding *.down.sql) in filename order, the
     same order + set the prod runner uses. Bare execute per file mirrors
-    `psql -f` (migrations-ci.yml); all 47 are transaction-safe."""
+    `psql -f` (migrations-ci.yml); all of them are transaction-safe."""
     files = sorted(
         f for f in glob.glob(str(MIGRATIONS_DIR / "*.sql")) if not f.endswith(".down.sql")
     )

@@ -450,6 +450,22 @@ These are listed so they're tracked, not so they're done before real users arriv
 | 21γ.P25 | **Sentry `monitors-clock-tick` crash-loop.** `OffsetOutOfRange` — its Kafka consumer offset aged out of retention during the 45h outage. Cron-monitor check-ins only; error ingest is unaffected and verified working. Fix is a consumer-group reset to **latest** (not earliest — replaying ~2 days of stale clock ticks would fire a flood of bogus missed-check-in alerts), then restart the container. | ✅ Done 2026-08-08 — group reset `154340 → 156929` via `--all-topics --reset-offsets --to-latest`; container back to `Up (healthy)` with `restarts=0`, consuming from the new offset. Whole Sentry stack now has zero unhealthy/restarting containers. | 0.1 | — |
 | **Phase 21γ total** | | **Tracked — NOT blocking real-user launch** | **~11-15 days** |
 
+## Phase 26 — US market launch (2026-08-08)
+
+Spec: `docs/us-market-launch-spec-2026-08-08.md`. US users see ONLY 4 purpose-built SFW personas; every other market untouched; behind a dormant, reversible flag. Steps 2-6 run in parallel; nothing user-visible changes until the flag flip, and the flip is reversible with an env change.
+
+| # | Item | Status | Est days | PR |
+|---|---|---|---|---|
+| 26.A | Store paperwork — paid apps agreement, banking/tax, Apple Small Business Program, 2 subscription products (`yral_pro_monthly` $12.99 / `yral_pro_annual` $79.99), US pricing | ⏳ Pending — **Rishi, critical path.** Nothing ships without it; realistic 1-2 weeks to first paid US user, bounded by paperwork + review, not code | — | — |
+| 26.B1 | **PR1 — market column + dormant config.** Migration 051 (`target_markets TEXT[]` + GIN, NULL/empty = global, no backfill); `_env_list` helper; `MARKET_EXCLUSIVE_COUNTRIES` + `MARKET_DEBUG_OVERRIDE_ENABLED`, both defaulting off | 🔄 In PR — 14 tests incl. 3 real-Postgres integration tests; full suite 1396 green. Rule 9 satisfied automatically by `run-migrations.sh` (per-migration pg_dump → S3, fails closed) | 0.5 | this PR |
+| 26.B2 | **PR2 — market filter + header plumbing.** One shared helper `app/services/market.py`; precedence `X-Market-Debug` (only when debug enabled) → `X-Market` → global. Discovery ONLY (feed, search, recommendations) — **never** `GET /influencers/{id}`, or every US deep link breaks outside the US (same shape as the H2H list-vs-detail bug). Exclusive market BYPASSES the Redis precomputed feed and queries the DB directly; keep session shuffle. On exhaustion **cycle, don't backfill** — 4 personas is one page | ⏳ Pending — blocked on PR1 merge | 1-2 | — |
+| 26.B3 | **PR3 — subscription entitlement.** RevenueCat webhook → verify signature → flip `is_pro`. Migration 052. Paywall sells **memory** (7 days free / permanent pro), not message count — persistence is what c.ai and Janitor can't offer | ⏳ Pending | 1-2 | — |
+| 26.C | Build + tag the 4 US personas `target_markets='{US}'` — LoRA, soul file, avatar, greeting, suggested messages. **Unambiguously SFW** (IAP + App Review depend on it; the adult surface is a separate business on a separate rail) | ⏳ Pending — needs the 4 persona IDs from the orchestration session | 2-3 | — |
+| 26.D | Mobile sends `X-Market` = **store account country**, not device locale (harder to spoof, and it's the value that sets pricing, so feed and billing agree by construction) | ⏳ Pending — mobile session | 0.5 | — |
+| 26.E | Verify the whole US feed by curl via `X-Market-Debug` — no mobile build, no app review needed | ⏳ Pending — after PR2 | 0.25 | — |
+| 26.F | Flip `MARKET_EXCLUSIVE_COUNTRIES=US` | ⏳ Pending — Rishi, reversible via env | — | — |
+| **Phase 26 total** | | **Gated on Track A paperwork, not code** | **~5-8 days code** |
+
 **How this maps to Rishi's questions on 2026-06-08:**
 - "Do we have the right CI tests?" → I-Sec1 + I-Sec2 + I-Dep2 add the missing security + smoke gates
 - "Canary rollbacks for DB migrations?" → I-Mig1 + I-Mig2 + I-Mig3 cover the migration safety triangle (snapshot + lint + test)

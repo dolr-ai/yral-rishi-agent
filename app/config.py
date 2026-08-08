@@ -23,6 +23,15 @@ def _env_bool(key: str, default: bool = False) -> bool:
     return _env(key, str(default)).lower() in ("true", "1", "yes")
 
 
+def _env_list(key: str, default: str = "") -> list[str]:
+    """Comma-separated env var → list of trimmed, non-empty strings.
+
+    Empty string yields `[]` rather than `[""]`, so an unset feature flag
+    is falsy and reads naturally as "no entries" at the call site — the
+    property MARKET_EXCLUSIVE_COUNTRIES depends on to ship dormant."""
+    return [item.strip() for item in _env(key, default).split(",") if item.strip()]
+
+
 # App
 APP_NAME = _env("APP_NAME", "Yral Agent API")
 APP_VERSION = _env("APP_VERSION", "2.0.0")
@@ -192,3 +201,21 @@ LANGFUSE_HOST = _env("LANGFUSE_HOST")
 
 # JWT auth
 EXPECTED_ISSUERS = ["https://auth.yral.com", "https://auth.dolr.ai"]
+
+# Market targeting (US market launch — see
+# docs/us-market-launch-spec-2026-08-08.md)
+#
+# Countries whose users see ONLY personas tagged for that market on the
+# discovery surfaces. Empty (the default) means today's behaviour
+# everywhere, which is how this ships dormant: PR1 adds the column and
+# these knobs, PR2 adds the filter, and nothing changes for anyone until
+# this list is non-empty. Hot-editable so the US feed can be switched on
+# and off with an env change rather than a deploy — and reversed the same
+# way if it misbehaves.
+MARKET_EXCLUSIVE_COUNTRIES = _env_list("MARKET_EXCLUSIVE_COUNTRIES", "")
+
+# Lets QA drive the market with an X-Market-Debug header so the whole US
+# feed is verifiable by curl, with no mobile build and no app review.
+# That header is trivially spoofable, so this MUST stay false in prod —
+# otherwise any user could pick their own catalogue.
+MARKET_DEBUG_OVERRIDE_ENABLED = _env_bool("MARKET_DEBUG_OVERRIDE_ENABLED", False)
