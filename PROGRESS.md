@@ -466,6 +466,19 @@ Spec: `docs/us-market-launch-spec-2026-08-08.md`. US users see ONLY 4 purpose-bu
 | 26.F | Flip `MARKET_EXCLUSIVE_COUNTRIES=US` | ⏳ Pending — Rishi, reversible via env | — | — |
 | **Phase 26 total** | | **Gated on Track A paperwork, not code** | **~5-8 days code** |
 
+## Phase 27 — amorae-web shared catalogue (2026-08-10)
+
+amorae.ai (adult web) and the mobile app share one backend + one `ai_influencers` catalogue. Split which personas appear where.
+
+| # | Item | Status | Est days | PR |
+|---|---|---|---|---|
+| 27.1 | **`surface` column + opt-in catalogue filter.** `surface TEXT NOT NULL DEFAULT 'mobile'` + CHECK + index; `app/services/surface.py`; `?surface=` on `GET /api/v1/influencers` (absent = unfiltered, unknown = 400); `surface` in the response | 🔄 In PR — 13 tests incl. 4 real-Postgres; suite 1409 green | 0.5 | this PR |
+| 27.2 | **Flag Tara `web` vs `both`** (`qi6gd-…-5qe`, `taaarraaah`, the ONE active `is_nsfw` row) | ⏳ **BLOCKED on Rishi.** `/api/v1/influencers` has no `is_nsfw` filter, so Tara is already served to mobile. `both` = status quo; `web` = removes a 54k-conv bot from the mainstream app. Product call, and it interacts with 26.C's SFW requirement | 0.1 | — |
+| 27.3 | **No `is_nsfw` gate on the mainstream catalogue.** `GET /api/v1/influencers` returns every non-discontinued persona incl. NSFW; discovery feed/search don't filter `is_nsfw` either. Pre-existing, not introduced here — but App Review + IAP for the US launch assume mainstream is SFW | ⏳ Pending — needs a decision alongside 27.2 | 0.5 | — |
+| 27.4 | **Guest identity for web-anonymous chat.** `auth.get_current_user` requires a JWT whose `iss` ∈ `EXPECTED_ISSUERS` and takes `sub` as the principal. An anonymous web visitor has neither, so amorae-web cannot call the chat API today | ⏳ Pending — design needed; see 27.5 first | 1-2 | — |
+| 27.5 | **SECURITY: JWT signatures are not verified** (`verify_signature: False`, "matches the production Rust service"). Only the `iss` claim is checked, so anyone can forge a token for any `sub` and impersonate any user on a public endpoint. Pre-existing and inherited from chat-ai — but an open, anonymous adult web surface makes it far likelier to be found and abused, and it makes any guest-identity scheme built on top of it unenforceable | ⏳ **Needs Rishi's call** — raise before 27.4 is designed | TBD | — |
+| **Phase 27 total** | | **Column ready; the rest gated on decisions** | **~2-3 days code** |
+
 **How this maps to Rishi's questions on 2026-06-08:**
 - "Do we have the right CI tests?" → I-Sec1 + I-Sec2 + I-Dep2 add the missing security + smoke gates
 - "Canary rollbacks for DB migrations?" → I-Mig1 + I-Mig2 + I-Mig3 cover the migration safety triangle (snapshot + lint + test)

@@ -1,5 +1,23 @@
 # Daily Log
 
+## 2026-08-10 — Surface targeting for amorae-web (shared catalogue split)
+
+**In PR — `surface` column + opt-in catalogue filter.** Requested by the amorae-web session: amorae.ai (adult web) and the mobile app now share one backend and one `ai_influencers` catalogue, so the catalogue has to say where each persona belongs.
+
+- `migrations/052_ai_influencers_surface.sql` — `surface TEXT NOT NULL DEFAULT 'mobile'` + CHECK (`mobile|web|both`) + btree index. **Deliberately the opposite encoding from 051's `target_markets`** (where NULL = everywhere): market targeting fails safe by showing more of a catalogue you may already see, but surface targeting can only fail safe by showing LESS. A NULL-means-everywhere encoding would let one missed backfill publish all 3,804 active mainstream personas to an adult site.
+- `app/services/surface.py` — one helper owns the predicate (the H2H list-vs-detail lesson). `web` → `IN ('web','both')`; `both` is a single-value match, **not** a wildcard.
+- `GET /api/v1/influencers` — **opt-in** `?surface=`. No param = no filter, so mobile is byte-identical today. An *unknown* surface 400s rather than degrading to unfiltered — a typo'd `?surface=wbe` from amorae-web must never return the mainstream catalogue to the adult site. `surface` now included on each influencer.
+- 13 new tests (incl. 4 real-Postgres) proving the default lands without backfill, the CHECK rejects `'Web'`, and web never sees mobile. Full suite **1409 passed**, lint clean.
+
+**Verified against prod before building — three corrections to the request:**
+1. **`is_nsfw` already exists** on `ai_influencers` (with 2 indexes) and is live in `ai_client.py` + `content_safety.py`. `surface` is genuinely a different axis (distribution vs content rating), so it's additive rather than duplicative — but they are now two overlapping flags and the invariant "`is_nsfw` must never reach mobile" is still enforced by **nothing**.
+2. **The column is `system_instructions`, not `system_prompt`** — though the *API field* is `system_prompt` (moderation-stripped), so the request was right at the wire and wrong at the schema.
+3. **Counts:** 3,803 active SFW + 279 discontinued + **exactly 1 active NSFW (Tara)** = 4,083 total. Their "~3,800" is right for active rows.
+
+**Not done — needs Rishi.** Step 3 of the request (flag Tara `web`/`both`) is left unflagged: `GET /api/v1/influencers` has **no `is_nsfw` filter today**, so Tara is already served to mobile. `both` preserves that; `web` would *remove* a 54k-conversation bot from the mainstream app. That's a product decision, not a side effect of an infra PR — and it collides with the US launch's SFW requirement.
+
+---
+
 ## 2026-08-08 — Sentry down ~45h (DNS eviction on rishi-3); recovered + the blind spot that hid it
 
 **Incident: Sentry was dead and nothing told us.** Found while checking fleet state after the break. `sentry.rishi.yral.com` returned **500 on every authenticated endpoint** from all six edge IPs, `relay` was in a crash loop at **1013 restarts**, and `pgbouncer` / `taskworker` / `seaweedfs` were all unhealthy. Last ingested event was **2026-08-06 10:58Z** — roughly **45 hours** of zero error visibility across the whole fleet.

@@ -106,16 +106,24 @@ async def get_with_conversation_count(pool, influencer_id: str) -> dict | None:
     return _row_to_dict(row) if row else None
 
 
-async def list_all(pool, limit: int = 50, offset: int = 0) -> list[dict]:
+async def list_all(
+    pool, limit: int = 50, offset: int = 0, surfaces: tuple[str, ...] | None = None
+) -> list[dict]:
+    """`surfaces=None` means no surface filter — the query is then identical
+    to the pre-2026-08-10 one, so existing callers are unaffected. When a
+    filter IS requested it is applied in SQL rather than in Python, so
+    `count_all` and the page contents agree; filtering after LIMIT would
+    return short pages and a total that doesn't match."""
     rows = await pool.fetch(
         """
         SELECT id, name, display_name, avatar_url, description, category,
                system_instructions, personality_traits, initial_greeting,
                suggested_messages, is_active, is_nsfw, parent_principal_id,
                source, created_at, updated_at, metadata, skill_slug,
-               global_rule_overrides, system_instructions_sections
+               global_rule_overrides, system_instructions_sections, surface
         FROM ai_influencers
         WHERE is_active != 'discontinued'
+          AND ($3::text[] IS NULL OR surface = ANY($3::text[]))
         ORDER BY CASE is_active
             WHEN 'active' THEN 1
             WHEN 'coming_soon' THEN 2
@@ -124,11 +132,21 @@ async def list_all(pool, limit: int = 50, offset: int = 0) -> list[dict]:
         """,
         limit,
         offset,
+        list(surfaces) if surfaces else None,
     )
     return [_row_to_dict(r) for r in rows]
 
 
-async def count_all(pool) -> int:
+async def count_all(pool, surfaces: tuple[str, ...] | None = None) -> int:
+    """Must apply the same predicate as `list_all` or pagination lies."""
+    if surfaces:
+        return await pool.fetchval(
+            """
+            SELECT COUNT(*) FROM ai_influencers
+            WHERE is_active != 'discontinued' AND surface = ANY($1::text[])
+            """,
+            list(surfaces),
+        )
     return await pool.fetchval(
         "SELECT COUNT(*) FROM ai_influencers WHERE is_active != 'discontinued'"
     )
