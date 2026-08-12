@@ -164,6 +164,15 @@ services:
       # cleanup PR once this migration is verified in the live cluster.
       ETCD3_HOSTS: etcd-rishi-4:2379,etcd-rishi-5:2379,etcd-rishi-6:2379
       PATRONI_NAME: patroni-rishi-4
+      # pg_hba override baked in after the 2026-08-10 reboot outage. Spilo does
+      # not wire a replication password (same class of bug as PGPASSWORD_SUPERUSER
+      # below): after a reboot the standbys could not re-authenticate to the leader
+      # and streaming silently broke → the cluster wedged with no leader. The added
+      # rule `host replication standby 10.0.3.0/24 trust` lets standbys on the
+      # overlay network re-auth without a password. This is the exact value proven
+      # live on all 3 nodes; kept here so a clean `docker stack deploy` cannot
+      # revert the runtime `--env-add` applied during recovery.
+      SPILO_CONFIGURATION: '{"postgresql":{"pg_hba":["local all all trust","hostssl all +zalandos 127.0.0.1/32 pam","host all all 127.0.0.1/32 md5","hostssl all +zalandos ::1/128 pam","host all all ::1/128 md5","local replication standby trust","host replication standby 10.0.3.0/24 trust","hostssl replication standby all md5","hostnossl all all all reject","hostssl all +zalandos all pam","hostssl all all all md5"]}}'
       PATRONI_RESTAPI_LISTEN: 0.0.0.0:8008
       PATRONI_RESTAPI_CONNECT_ADDRESS: patroni-rishi-4:8008
       PATRONI_POSTGRESQL_LISTEN: 0.0.0.0:5432
@@ -247,6 +256,8 @@ services:
       PGVERSION: "15"
       ETCD3_HOSTS: etcd-rishi-4:2379,etcd-rishi-5:2379,etcd-rishi-6:2379  # see patroni-rishi-4 comment block above for full ETCD3 migration rationale
       PATRONI_NAME: patroni-rishi-5
+      # pg_hba override — see patroni-rishi-4 block above (2026-08-10 outage fix).
+      SPILO_CONFIGURATION: '{"postgresql":{"pg_hba":["local all all trust","hostssl all +zalandos 127.0.0.1/32 pam","host all all 127.0.0.1/32 md5","hostssl all +zalandos ::1/128 pam","host all all ::1/128 md5","local replication standby trust","host replication standby 10.0.3.0/24 trust","hostssl replication standby all md5","hostnossl all all all reject","hostssl all +zalandos all pam","hostssl all all all md5"]}}'
       PATRONI_RESTAPI_LISTEN: 0.0.0.0:8008
       PATRONI_RESTAPI_CONNECT_ADDRESS: patroni-rishi-5:8008
       PATRONI_POSTGRESQL_LISTEN: 0.0.0.0:5432
@@ -312,6 +323,8 @@ services:
       PGVERSION: "15"
       ETCD3_HOSTS: etcd-rishi-4:2379,etcd-rishi-5:2379,etcd-rishi-6:2379  # see patroni-rishi-4 comment block above for full ETCD3 migration rationale
       PATRONI_NAME: patroni-rishi-6
+      # pg_hba override — see patroni-rishi-4 block above (2026-08-10 outage fix).
+      SPILO_CONFIGURATION: '{"postgresql":{"pg_hba":["local all all trust","hostssl all +zalandos 127.0.0.1/32 pam","host all all 127.0.0.1/32 md5","hostssl all +zalandos ::1/128 pam","host all all ::1/128 md5","local replication standby trust","host replication standby 10.0.3.0/24 trust","hostssl replication standby all md5","hostnossl all all all reject","hostssl all +zalandos all pam","hostssl all all all md5"]}}'
       PATRONI_RESTAPI_LISTEN: 0.0.0.0:8008
       PATRONI_RESTAPI_CONNECT_ADDRESS: patroni-rishi-6:8008
       PATRONI_POSTGRESQL_LISTEN: 0.0.0.0:5432
