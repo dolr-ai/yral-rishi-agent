@@ -745,15 +745,17 @@ Items surfaced during Phase 4.4 rollout (Spilo pgvector + Patroni failover gap).
 
 pgbouncer's `DB_HOST: patroni-rishi-4` is still hardcoded, so any **future** service that goes through pgbouncer (instead of asyncpg-direct like the agent) will break on Patroni failover. Revisit when adding the next service that needs pooled connections. Long-term answer is HAProxy + Patroni REST `/master` endpoint, but that's a separate architectural project.
 
+**Hardened 2026-08-12 (#465, in repo):** asyncpg's own multi-host connect raises on a host stuck "starting up" instead of failing over — which took v2 fully down on 2026-08-10 when a recovering node sat first in `DATABASE_URL`. `app/database.py` now iterates the hosts itself on `CannotConnectNowError`, skipping starting-up/read-only hosts to reach the leader. Deployed + validated live.
+
 ### Infra-Y: agent DATABASE_URL lives only in swarm service env, not in repo
 The multi-host URL change for Infra-X was applied via `docker service update --env-add`. There's no IaC source-of-truth for the agent's env vars yet. Next service-spec change will overwrite it unless we codify. **Action:** when we eventually add a `bootstrap/scripts/agent-stack.yml` (mirroring `patroni-stack.yml`), wire DATABASE_URL through it.
 
 ### Infra-Z: Patroni container `/dev/shm` = 64MB triggers DiskFullError on parallel-worker DSM
 **Surfaced 2026-07-13** during smoke test after PR #456 deploy. `services.feed_ranker` logs `asyncpg.exceptions.DiskFullError: could not resize shared memory segment "/PostgreSQL.<DSM>" to 8388608 bytes: No space left on device`. Host `/dev/shm` is 32GB (unused); Patroni container inherits Docker default 64MB tmpfs, which can't hold parallel-worker DSM segments (8MB each × parallel gathers). Same class as PR #420 (2026-06-26) at query layer — this is the container-config layer that PR #420 didn't reach.
 
-**Fix ready but not deployed:** Branch `rishi/patroni-shm-size-2g-planned-fix` adds `shm_size: 2g` + sequenced `update_config { parallelism:1, order:stop-first, delay:60s, monitor:90s }` on all 3 patroni services in `bootstrap/scripts/patroni-stack.yml`. Deploy requires a planned window (touches Patroni = leader failover risk). **Bridge mitigation planned:** `ALTER SYSTEM SET max_parallel_workers_per_gather = 0` (needs explicit Rishi authorization on the SQL — auto-mode blocked). Feed_ranker + video_ideas run single-threaded until the redeploy.
+**MERGED (#457) 2026-08-12, NOT yet live.** `shm_size: 2g` + sequenced `update_config { parallelism:1, order:stop-first, delay:60s, monitor:90s }` on all 3 patroni services in `bootstrap/scripts/patroni-stack.yml`. Rebased past #482 so shm_size and the SPILO trust rule coexist in one redeploy. **Still shows 64 MB on all nodes (verified 2026-08-12)** — deploy.yml ships the app, not the patroni stack, so this needs a separate `docker stack deploy` in a planned window (leader failover). **Bridge mitigation planned:** `ALTER SYSTEM SET max_parallel_workers_per_gather = 0` (needs explicit Rishi authorization on the SQL — auto-mode blocked). Feed_ranker + video_ideas run single-threaded until the redeploy.
 
-**Action:** merge the PR whenever ready, schedule planned patroni redeploy window (est ~15-20 min end-to-end with sequenced restart via `update_config`), verify each node comes up with `shm_size=2G` in inspect. Post-fix: revert `max_parallel_workers_per_gather` to default 2.
+**Action:** schedule the planned patroni redeploy window (est ~15-20 min end-to-end with sequenced restart via `update_config`), verify each node comes up with `shm_size=2G` in inspect + the SPILO trust rule survives. Post-fix: revert `max_parallel_workers_per_gather` to default 2.
 
 ### Phase 0 re-audit needed before production cutover
 Two Phase 0 assumptions didn't survive contact with reality on 2026-05-28:
