@@ -1,0 +1,7 @@
+# Test-only dependencies. Kept out of requirements.txt so the runtime
+# image stays lean. CI installs both; see .github/workflows/ci.yml.
+#
+# testcontainers spins an ephemeral pgvector/pgvector:pg15 container per
+# test session so the integration tests run against a REAL Postgres with
+# the real asyncpg codecs — see tests/conftest.py + docs/wave1-plan-2026-07-29.md.
+testcontainers[postgres]==4.15.0

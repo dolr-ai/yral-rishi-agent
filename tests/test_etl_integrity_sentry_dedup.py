@@ -17,11 +17,8 @@ Expected post-deploy delta: 24,817 events / week → tens of events,
 one per (layer, bucket) per hour.
 """
 
-import os
-import sys
 from pathlib import Path
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
 REPO = Path(__file__).resolve().parents[1]
 

@@ -7,7 +7,7 @@ posture.
 """
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -36,9 +36,7 @@ def test_registered_in_kill_switch_default_off():
     """The loop spends money on Replicate + Gemini each day. If it
     silently defaults ON, a fresh deploy or a rollback surprise-bills
     the operator (2026-05-29 Gemini burn lesson). MUST ship dormant."""
-    import sys
 
-    sys.path.insert(0, str(Path(__file__).parent.parent / "app"))
     import importlib
 
     ks = importlib.import_module("kill_switch")
@@ -70,9 +68,7 @@ def test_only_active_lora_bots_are_pregen_candidates():
 
 
 def test_seconds_until_next_04_utc_correct_when_before():
-    import sys
 
-    sys.path.insert(0, str(Path(__file__).parent.parent / "app"))
     import importlib
 
     m = importlib.import_module("services.collage_nightly_pregen")
@@ -86,9 +82,7 @@ def test_seconds_until_next_04_utc_correct_when_before():
 
 
 def test_seconds_until_next_04_utc_correct_when_after():
-    import sys
 
-    sys.path.insert(0, str(Path(__file__).parent.parent / "app"))
     import importlib
 
     m = importlib.import_module("services.collage_nightly_pregen")
@@ -105,9 +99,7 @@ def test_pregen_skips_bots_with_succeeded_row_today():
     """Idempotent semantic: pre-gen fills the gap. If the row is
     already 'succeeded' (e.g. an early user requested at 03:00 UTC
     before the 04:00 pre-gen), we MUST skip to avoid a double spend."""
-    import sys
 
-    sys.path.insert(0, str(Path(__file__).parent.parent / "app"))
     import importlib
 
     m = importlib.import_module("services.collage_nightly_pregen")
@@ -155,9 +147,7 @@ def test_pregen_generates_when_no_row_exists():
     """Happy path: no row for today → theme_generator → orchestrate
     with `consume_quota=False`. The synthetic user_id doesn't consume
     any real user's daily quota."""
-    import sys
 
-    sys.path.insert(0, str(Path(__file__).parent.parent / "app"))
     import importlib
 
     m = importlib.import_module("services.collage_nightly_pregen")
@@ -203,9 +193,7 @@ def test_pregen_generates_when_no_row_exists():
 def test_pregen_counts_failures_but_continues():
     """If bot A fails, bot B MUST still get a chance. A single Replicate
     5xx should not stop the whole nightly sweep."""
-    import sys
 
-    sys.path.insert(0, str(Path(__file__).parent.parent / "app"))
     import importlib
 
     m = importlib.import_module("services.collage_nightly_pregen")

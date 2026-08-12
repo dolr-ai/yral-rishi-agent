@@ -2,11 +2,6 @@
 
 Pure-function pins for the parser + the format helpers."""
 
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
-
 
 def test_parse_recommendations_clean_json():
     from services.recommendations import _parse_recommendations

@@ -16,9 +16,6 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 REPO = Path(__file__).resolve().parents[1]
-APP_DIR = REPO / "app"
-if str(APP_DIR) not in sys.path:
-    sys.path.insert(0, str(APP_DIR))
 
 
 # ─── source-pin: the alert site exists with the right gating ────────────

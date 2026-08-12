@@ -123,19 +123,19 @@ Use this only if the GitHub workflow itself is failing AND you need to deploy ur
 ## FAQ
 
 **Q: Do I need to do anything to deploy when a PR is merged?**
-A: Yes — merging is step 1. Deploying is step 3 (the button click). They're separate so you can choose WHEN to ship a merge. Code that's merged but not deployed sits safely on main, isn't visible to users.
+A: No. Auto-on-merge is on (Path 1, since 2026-06-08): merging a non-docs PR to `main` builds the image and the Deploy workflow fires automatically. Merge == deploy. (Docs-only PRs skip it — see "What does NOT trigger an auto-deploy" above.)
 
 **Q: What if I forget which SHA to deploy?**
 A: Leave the SHA field blank — the workflow deploys the latest main HEAD by default.
 
 **Q: Can I deploy from a feature branch?**
-A: No. The "production" environment is configured to only deploy from `main`. Merge to main first.
+A: No — the Deploy workflow only deploys from `main`. Merge to main first. (The old `production` environment gate was removed for auto-deploy — see "What about the production environment" above.)
 
 **Q: What if I want to roll back to a specific older version, not just the immediate previous?**
 A: Use the Deploy workflow + paste the older commit SHA in the input field. That's effectively a forward-deploy to an older image.
 
 **Q: Will this auto-deploy whenever a PR merges?**
-A: No. Today it's manual button-click only. We can flip on auto-deploy by changing the workflow trigger from `workflow_dispatch` to `push: branches: [main]` — but that's a separate decision and is currently off for safety.
+A: Yes — auto-on-merge has been on since 2026-06-08 (Path 1). A non-docs merge to `main` builds the image and the Deploy workflow fires automatically, with health-polling + auto-rollback if it fails. Docs-only PRs skip it. (The safety gate moved up to the PR stage: branch protection requires CI + Codex approval before any merge.)
 
 **Q: Does the deploy roll all replicas at the same time?**
 A: No. It uses Docker Swarm's rolling update (1 replica at a time by default). So the service stays available throughout — at least 1 replica is always serving traffic.

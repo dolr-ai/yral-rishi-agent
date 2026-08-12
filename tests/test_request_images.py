@@ -20,14 +20,11 @@ if it's right, the routes are right (they're thin adapters).
 """
 
 import asyncio
-import os
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -432,3 +429,133 @@ def test_subscription_stub_yral_team_hardcoded(monkeypatch):
     assert subscription_stub.is_subscribed("outsider") is False
     assert subscription_stub.is_subscribed(None) is False
     assert subscription_stub.is_subscribed("") is False
+
+
+# ─── GET /collage URL-signing regression (2026-07-14 Sarvesh bug) ───────
+
+
+def test_get_collage_chains_through_ready_response():
+    """Source-pin invariant: the GET /collage handler MUST chain through
+    `image_collage._ready_response` before handing the row to
+    `_envelope_for_ready`. A raw DB row has `image_urls` = list of
+    storage keys (e.g. `collage-blurred/{bot}/{date}/00.jpg`);
+    _envelope_for_ready doesn't sign — it just picks between clear
+    and blurred by subscription. Without the chain, mobile gets
+    bucket-key strings that don't resolve. Sarvesh integration bug
+    2026-07-14."""
+    src = _read("app/routes/request_images.py")
+    # Locate the get_collage handler body.
+    start = src.find("async def get_collage(")
+    end = src.find("\ndef _map_result", start + 1)
+    body = src[start:end] if end != -1 else src[start:]
+    # Must call _ready_response on the raw row BEFORE passing to
+    # _envelope_for_ready.
+    ready_pos = body.find("image_collage._ready_response(row)")
+    envelope_pos = body.find("_envelope_for_ready(")
+    assert ready_pos != -1, (
+        "GET /collage must chain through image_collage._ready_response "
+        "to sign storage keys — bare DB row leaks bucket keys to mobile"
+    )
+    assert envelope_pos != -1
+    assert ready_pos < envelope_pos, (
+        "signing must happen BEFORE _envelope_for_ready — otherwise "
+        "the envelope carries raw keys"
+    )
+    # The envelope call must be `_envelope_for_ready(signed, ...)`,
+    # NOT `_envelope_for_ready(row, ...)` — that's the exact
+    # regression shape from the pre-2026-07-14 code.
+    assert "_envelope_for_ready(row, user_id" not in body, (
+        "GET /collage must NOT pass the raw `row` to _envelope_for_ready "
+        "— that was the pre-2026-07-14 shape that returned bucket keys"
+    )
+    assert "_envelope_for_ready(signed, user_id" in body
+
+
+@requires_fastapi
+def test_get_collage_returns_signed_urls_not_bucket_keys(monkeypatch):
+    """Behavioural: seed a succeeded row with raw storage keys +
+    stub storage.generate_presigned_url so signing is deterministic.
+    Call get_collage, assert every URL in the response is the
+    signed shape — NOT the raw `collage-clear/` / `collage-blurred/`
+    prefix mobile can't render."""
+    import asyncio
+    from datetime import datetime, timezone
+
+    from routes.request_images import get_collage
+    from services import storage
+
+    class _RowPool:
+        """Minimal stub — returns a raw succeeded row for the
+        `get(bot_id, generation_date)` path get_collage takes with
+        no ?date param."""
+
+        def __init__(self, row: dict) -> None:
+            self._row = row
+
+        async def fetchrow(self, sql, *args):
+            return self._row
+
+        async def fetch(self, sql, *args):
+            return []
+
+    raw_row = {
+        "id": "1d0c12ed-aaa2-4a04-83a8-4233eab95fa3",
+        "bot_id": "tara",
+        "generation_date": datetime.now(timezone.utc).date(),
+        "theme": "beach",
+        "image_urls": [
+            "collage-clear/tara/2026-07-14/00.jpg",
+            "collage-clear/tara/2026-07-14/01.jpg",
+        ],
+        "image_urls_blurred": [
+            "collage-blurred/tara/2026-07-14/00.jpg",
+            "collage-blurred/tara/2026-07-14/01.jpg",
+        ],
+        "state": "succeeded",
+        "cost_usd": 0.27,
+        "generated_at": datetime.now(timezone.utc),
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
+    }
+    pool = _RowPool(raw_row)
+
+    async def _fake_get_pool():
+        return pool
+
+    monkeypatch.setattr("routes.request_images.get_pool", _fake_get_pool)
+    monkeypatch.setattr("routes.request_images.get_current_user", lambda request: "u1")
+    # Sign deterministically so the assertion can check the prefix
+    # without depending on real S3 signature bytes.
+    monkeypatch.setattr(
+        storage,
+        "generate_presigned_url",
+        lambda key: f"https://gateway.storjshare.io/signed/{key}?X-Amz-Signature=fake",
+    )
+
+    class _FakeReq:
+        headers = {}
+        client = None
+
+    # ── Subscribed → clear URLs should be signed ──
+    result_sub = asyncio.run(get_collage("tara", _FakeReq(), is_subscribed=True))
+    assert result_sub["is_blurred"] is False
+    assert len(result_sub["images"]) == 2
+    for url in result_sub["images"]:
+        assert url.startswith("https://"), (
+            f"subscriber got raw bucket key instead of signed URL: {url!r}"
+        )
+        assert not url.startswith("collage-clear/"), (
+            f"raw storage key leaked to subscriber: {url!r}"
+        )
+
+    # ── Non-subscribed → blurred URLs should also be signed ──
+    result_nosub = asyncio.run(get_collage("tara", _FakeReq(), is_subscribed=False))
+    assert result_nosub["is_blurred"] is True
+    assert len(result_nosub["images"]) == 2
+    for url in result_nosub["images"]:
+        assert url.startswith("https://"), (
+            f"non-subscriber got raw bucket key instead of signed URL: {url!r}"
+        )
+        assert not url.startswith("collage-blurred/"), (
+            f"raw storage key leaked to non-subscriber: {url!r}"
+        )

@@ -4,11 +4,7 @@ Pin the resolution contract so a refactor can't silently flip the
 precedence (which would silently send container traffic to the
 no-credential Redis env-var path instead of the Swarm-secret file)."""
 
-import os
-import sys
 from pathlib import Path
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
 
 def test_file_takes_priority_over_env(tmp_path, monkeypatch):

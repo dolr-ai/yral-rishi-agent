@@ -4,14 +4,10 @@ Mix of behavioral (cache freshness, validator) + source-pin (route
 wiring, repo helper, LLM-call shape).
 """
 
-import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-APP_DIR = REPO / "app"
-if str(APP_DIR) not in sys.path:
-    sys.path.insert(0, str(APP_DIR))
 
 
 # ─── cache freshness ─────────────────────────────────────────────────────

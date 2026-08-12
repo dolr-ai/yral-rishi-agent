@@ -19,16 +19,25 @@ dev, or the deploy hasn't been updated yet) the replica-drift
 thread logs once and exits — the DNS loop keeps running unaffected.
 """
 
+import json
 import logging
 import os
 import socket
 import sys
 import threading
 import time
+import urllib.request
 
 import sentry_sdk
 
 import autoheal
+import heartbeat
+from patroni_leader import (
+    INTERVAL_SEC as PATRONI_INTERVAL_SEC,
+    REST_URLS as PATRONI_REST_URLS,
+    LeaderState,
+    check_once as patroni_check_once,
+)
 from replica_drift import (
     DRIFT_ALERT_SEC,
     INTERVAL_SEC as REPLICA_INTERVAL_SEC,
@@ -117,6 +126,53 @@ def _emit_replica_alert(alert_ev) -> None:
         scope.set_tag("transition", alert_ev.kind)
         scope.set_level(level)
         sentry_sdk.capture_message(msg)
+
+
+def _emit_leader_alert(alert_ev) -> None:
+    """Turn a patroni_leader.LeaderAlert into a log line + Sentry event.
+    Kept out of the pure check_once function so patroni_leader stays
+    Sentry-free (easier to test), mirroring _emit_replica_alert."""
+    if alert_ev.kind == "leaderless":
+        msg = (
+            f"patroni cluster LEADERLESS for {alert_ev.duration_sec}s "
+            f"({alert_ev.member_count} members, none holding the leader "
+            f"role) — sync-mode will refuse auto-promotion; manual "
+            f"failover likely needed"
+        )
+        level = "error"
+    else:
+        msg = (
+            f"patroni leader recovered: {alert_ev.leader_name} after "
+            f"{alert_ev.duration_sec}s leaderless"
+        )
+        level = "info"
+    log.error(msg) if level == "error" else log.info(msg)
+    with sentry_sdk.push_scope() as scope:
+        scope.set_tag("check", "patroni_leader")
+        scope.set_tag("transition", alert_ev.kind)
+        scope.set_level(level)
+        sentry_sdk.capture_message(msg)
+
+
+def _fetch_patroni_members() -> list[dict] | None:
+    """Best-effort read of Patroni's cluster view. Any one reachable
+    node returns the whole membership, so we try each REST URL and use
+    the first that answers. Returns None when NONE answer — the caller
+    then skips the poll rather than paging, so a watchdog-side network
+    blip can't be mistaken for a leaderless cluster. A genuine
+    leaderless cluster still has its Patroni REST up (processes run,
+    just no elected leader), so it returns members with no leader."""
+    for base in PATRONI_REST_URLS:
+        url = f"{base.rstrip('/')}/cluster"
+        try:
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                data = json.loads(resp.read().decode())
+            members = data.get("members")
+            if isinstance(members, list):
+                return members
+        except Exception as e:
+            log.info("patroni REST %s unreachable: %s", url, e)
+    return None
 
 
 _docker_client = None
@@ -279,6 +335,34 @@ def _replica_check_loop() -> None:
         time.sleep(REPLICA_INTERVAL_SEC)
 
 
+def _patroni_leader_check_loop() -> None:
+    """Runs in a daemon thread. Polls Patroni's REST cluster view and
+    alerts when the cluster stays leaderless past the threshold — the
+    page that the 2026-07-20 leaderless outage never produced. Fetch
+    failures skip the poll (see _fetch_patroni_members) so they never
+    advance the leaderless timer."""
+    log.info(
+        "watching patroni leadership every %ds via %s",
+        PATRONI_INTERVAL_SEC,
+        PATRONI_REST_URLS,
+    )
+    state = LeaderState()
+    while True:
+        try:
+            members = _fetch_patroni_members()
+            if members is None:
+                log.warning(
+                    "no patroni REST endpoint answered — skipping leader "
+                    "check this poll (DNS-alias check covers process-down)"
+                )
+            else:
+                for a in patroni_check_once(members, state):
+                    _emit_leader_alert(a)
+        except Exception as e:
+            log.warning("patroni leader check iteration failed: %s", e)
+        time.sleep(PATRONI_INTERVAL_SEC)
+
+
 def main() -> None:
     # Kick off the replica-drift loop in a daemon thread — inherits
     # SIGTERM from the main thread's exit, no explicit shutdown hook
@@ -287,6 +371,20 @@ def main() -> None:
     threading.Thread(
         target=_replica_check_loop,
         name="replica-drift",
+        daemon=True,
+    ).start()
+    threading.Thread(
+        target=_patroni_leader_check_loop,
+        name="patroni-leader",
+        daemon=True,
+    ).start()
+    # The three checks above all report THROUGH Sentry, so none of them
+    # can report a Sentry outage. The heartbeat is the only one that
+    # speaks to the outside world, which is why it runs regardless of the
+    # others' health. Self-disables when unconfigured.
+    threading.Thread(
+        target=heartbeat.run_forever,
+        name="heartbeat",
         daemon=True,
     ).start()
 

@@ -78,23 +78,25 @@ async def generate_batch(
             _lora_is_model_ref = "/" in lora_weights_url
 
         if _lora_is_model_ref and config.COLLAGE_HYBRID_MODE:
-            # OPTION C HYBRID (Rishi choice 2026-07-07, superseding the
-            # 2026-07-06 pure-LoRA smoke-test outcome that first proved
-            # identity durability): LoRA anchor + nano-banana-pro
-            # batch. The LoRA (ostris-trained, e.g. `yral/tara-lora-v1:V`)
-            # guarantees identity — it "knows Tara". Nano-banana-pro is
-            # the highest-quality general scene model but zero-shot
-            # identity drifts on named characters. Solution: generate
-            # ONE anchor via the LoRA with today's theme prompt, then
-            # feed the anchor into nano-banana-pro N times as
-            # `image_input` — nano-banana-pro then preserves the
-            # anchor's identity while producing high-quality variations.
-            # Verified schema 2026-07-07:
-            # google/nano-banana-pro accepts up to 14 reference images
-            # via `image_input: array`. Anchor is prompt-specific
-            # (regenerated per batch) so it always matches today's
-            # theme; caching the anchor across batches would lock us
-            # to yesterday's scene shape.
+            # HYBRID pipeline (evolved from the 2026-07-06 pure-LoRA
+            # smoke-test; Rishi choice 2026-07-07 added the anchor
+            # step; downstream model pivoted 2026-07-15):
+            # LoRA generates a per-batch anchor; a downstream model then
+            # produces N variations of the anchor at the theme's scene.
+            # The LoRA (ostris-trained, e.g. `yral/tara-lora-v1:V`) is the
+            # identity lock — same anchor across all N → all N look like
+            # the same person. Anchor is prompt-specific (regenerated per
+            # batch) so it always matches today's theme.
+            #
+            # Downstream model is env-driven via
+            # COLLAGE_HYBRID_DOWNSTREAM_MODEL (default:
+            # `black-forest-labs/flux-kontext-dev`, pivoted from
+            # `google/nano-banana-pro` on 2026-07-15 after Google
+            # tightened nano's safety filter and every Tara pregen batch
+            # landed state=failed for 4 days). Both models supported —
+            # flux-kontext-dev uses `input_image` (str), nano-banana-pro
+            # uses `image_input` (array, up to 14 refs). Same anchor is
+            # the reference in both.
             model, _, version = lora_weights_url.partition(":")
             version = version or None
             anchor_url = await _run_prediction(
@@ -110,7 +112,7 @@ async def generate_batch(
             )
             if not anchor_url:
                 # Anchor generation failed → don't produce identityless
-                # nano-banana-pro outputs; return empty and let
+                # downstream outputs; return empty and let
                 # image_collage.orchestrate mark the batch failed
                 # (design §2.5).
                 logger.error(
@@ -118,14 +120,32 @@ async def generate_batch(
                     "aborting batch to avoid identity-drifted outputs"
                 )
                 return []
-            model = "google/nano-banana-pro"
+            model = config.COLLAGE_HYBRID_DOWNSTREAM_MODEL
             version = None
-            input_data = {
-                "prompt": prompt,
-                "image_input": [anchor_url],
-                "aspect_ratio": "9:16",
-                "output_format": "jpg",
-            }
+            if model == "google/nano-banana-pro":
+                # Legacy shape — kept as escape lever if Google loosens
+                # the filter or we want its scene quality on SFW bots.
+                input_data = {
+                    "prompt": prompt,
+                    "image_input": [anchor_url],
+                    "aspect_ratio": "9:16",
+                    "output_format": "jpg",
+                }
+            else:
+                # Default 2026-07-15 — flux-kontext-dev. Params mirror
+                # generate_image_with_reference() above so the same
+                # kontext-dev is invoked the same way both places.
+                input_data = {
+                    "prompt": prompt,
+                    "input_image": anchor_url,
+                    "go_fast": True,
+                    "guidance": 2.5,
+                    "megapixels": "1",
+                    "num_inference_steps": 30,
+                    "aspect_ratio": "9:16",
+                    "output_format": "jpg",
+                    "output_quality": 85,
+                }
         elif _lora_is_model_ref:
             # Pure-LoRA fallback (COLLAGE_HYBRID_MODE=false). Same as
             # the pre-hybrid behavior — N × flux-dev-LoRA via the

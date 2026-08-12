@@ -16,6 +16,7 @@ from services import (
     google_chat,
     video_ideas as video_ideas_service,
     influencer_summary,
+    surface as surface_service,
 )
 from services.character_generator import GeminiSafetyBlocked
 from models import (
@@ -45,6 +46,11 @@ def _format_influencer_response(inf: dict) -> dict:
         "description": inf.get("description") or "",
         "category": inf.get("category") or "",
         "is_active": inf.get("is_active", "active"),
+        # Defaulted here as well as in the DB so callers that build a dict
+        # without the column (tests, the trending/search queries that don't
+        # select it yet) still get a valid surface rather than a null the
+        # web client has to special-case.
+        "surface": inf.get("surface") or surface_service.MOBILE,
         "parent_principal_id": inf.get("parent_principal_id"),
         "source": inf.get("source"),
         "system_prompt": system_prompt_display,
@@ -111,11 +117,28 @@ def _format_influencer_detail(inf: dict) -> dict:
 async def list_influencers(
     limit: int = Query(default=50, le=100),
     offset: int = Query(default=0, ge=0),
+    surface: str | None = Query(
+        default=None,
+        description="Filter to a product surface: mobile | web | both. "
+        "Omit for the unfiltered catalogue (existing behaviour).",
+    ),
 ):
+    # Reject an unknown surface rather than falling back to unfiltered. A
+    # typo'd ?surface=wbe from amorae-web must NOT quietly return the whole
+    # mainstream catalogue to the adult site — the one failure this filter
+    # exists to prevent.
+    if surface is not None and surface_service.normalize(surface) is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid surface '{surface}'. Expected one of: "
+            f"{', '.join(surface_service.VALID_SURFACES)}",
+        )
+    surfaces = surface_service.visible_surfaces(surface)
+
     try:
         pool = await get_pool()
-        influencers = await influencer_repo.list_all(pool, limit, offset)
-        total = await influencer_repo.count_all(pool)
+        influencers = await influencer_repo.list_all(pool, limit, offset, surfaces)
+        total = await influencer_repo.count_all(pool, surfaces)
 
         response = JSONResponse(
             content={

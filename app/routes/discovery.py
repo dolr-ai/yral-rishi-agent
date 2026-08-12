@@ -149,7 +149,11 @@ async def influencer_feed(
 
 @router.get("/api/v2/discovery/search")
 async def discovery_search_endpoint(
-    q: str = Query(..., max_length=100),
+    # No max_length here: a hard Query cap 422s on over-long input,
+    # which breaks this endpoint's documented "never 422" contract
+    # (a user pasting a long block into search should degrade, not
+    # error). The service already bounds `q` to 100 chars internally.
+    q: str = Query(...),
     limit: int = Query(20, ge=1, le=50),
 ):
     """`GET /api/v2/discovery/search?q=<text>&limit=20`

@@ -19,11 +19,8 @@ Fix: catch `asyncpg.ForeignKeyViolationError` around every
     other stream errors use)
 """
 
-import os
-import sys
 from pathlib import Path
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
 REPO = Path(__file__).resolve().parents[1]
 

@@ -1,9 +1,6 @@
 """Tests for app/config.py — verify env reading and defaults."""
 
 import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
 
 def test_env_helper_returns_default():

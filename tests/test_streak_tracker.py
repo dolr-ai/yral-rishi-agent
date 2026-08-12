@@ -4,11 +4,6 @@ Pure-function pins. The SQL update is exercised against the live cluster via
 the deploy verification step.
 """
 
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
-
 
 def test_interval_is_daily():
     """24h cycle. Below this we'd thrash the DB; above it streaks lag a day."""

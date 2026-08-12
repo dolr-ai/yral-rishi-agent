@@ -6,10 +6,6 @@ silently break the contract docs/SSE-PROTOCOL.md ships to the mobile expert.
 """
 
 import json
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
 
 def test_sse_event_format_matches_docs():

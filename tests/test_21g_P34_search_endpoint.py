@@ -11,12 +11,9 @@ Three categories:
 """
 
 import asyncio
-import os
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -128,9 +125,10 @@ def test_service_filters_to_active_bots():
 def test_route_path_and_required_q_param():
     src = (REPO / "app" / "routes" / "discovery.py").read_text()
     assert '"/api/v2/discovery/search"' in src
-    # q is required (no default) but bounded; mobile sends q="" while
-    # debouncing so we must accept empty (handled in service).
-    assert "q: str = Query(..., max_length=100)" in src
+    # q is required (no default) but NOT length-capped at the route:
+    # a hard max_length 422s on over-long input, breaking the
+    # "never 422" contract. The service bounds length internally.
+    assert "q: str = Query(...)" in src
     assert "limit: int = Query(20, ge=1, le=50)" in src
 
 

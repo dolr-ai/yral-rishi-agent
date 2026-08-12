@@ -1,45 +1,118 @@
 # Daily Log
 
-## 2026-07-13 — Collage fallback hardening + collage-message columns shipped, Replicate content-filter incident triaged, /dev/shm=64MB uncovered
+## 2026-08-10 — Surface targeting for amorae-web (shared catalogue split)
 
-### What shipped (2 PRs merged + auto-deployed today)
+**In PR — `surface` column + opt-in catalogue filter.** Requested by the amorae-web session: amorae.ai (adult web) and the mobile app now share one backend and one `ai_influencers` catalogue, so the catalogue has to say where each persona belongs.
 
-| # | What | Sarvesh-visible? |
-|---|---|---|
-| #455 | Fallback endpoint on `orchestrate()` — when today's collage row is `state='failed'` OR the elected generator's gen fails, serve the most-recent-succeeded row within `COLLAGE_FALLBACK_MAX_DAYS=7`. New `get_latest_succeeded()` repo query + `_fallback_or_failed` shared helper hooked at 5 seams (the 4 in the brief + the elected-generator seam that hit Sarvesh's 502 loop). Dashboard tile added. | Yes — no more 502s during provider glitches |
-| #456 | Migration 050 adds `collage_id UUID`, `collage_bot_id VARCHAR(255)`, `collage_date DATE` nullable columns on `messages` + partial index on collage_id. Model + repo + both send-message paths + `_format_message` wired. Mobile POSTs with these 3 fields now round-trip on GET; legacy pre-migration rows omit the keys entirely (backward-compat). | Yes — unblocked mobile collage integration |
+- `migrations/052_ai_influencers_surface.sql` — `surface TEXT NOT NULL DEFAULT 'mobile'` + CHECK (`mobile|web|both`) + btree index. **Deliberately the opposite encoding from 051's `target_markets`** (where NULL = everywhere): market targeting fails safe by showing more of a catalogue you may already see, but surface targeting can only fail safe by showing LESS. A NULL-means-everywhere encoding would let one missed backfill publish all 3,804 active mainstream personas to an adult site.
+- `app/services/surface.py` — one helper owns the predicate (the H2H list-vs-detail lesson). `web` → `IN ('web','both')`; `both` is a single-value match, **not** a wildcard.
+- `GET /api/v1/influencers` — **opt-in** `?surface=`. No param = no filter, so mobile is byte-identical today. An *unknown* surface 400s rather than degrading to unfiltered — a typo'd `?surface=wbe` from amorae-web must never return the mainstream catalogue to the adult site. `surface` now included on each influencer.
+- 13 new tests (incl. 4 real-Postgres) proving the default lands without backfill, the CHECK rejects `'Web'`, and web never sees mobile. Full suite **1409 passed**, lint clean.
 
-### Live production ops (all diagnosed + fixed today)
+**Verified against prod before building — three corrections to the request:**
+1. **`is_nsfw` already exists** on `ai_influencers` (with 2 indexes) and is live in `ai_client.py` + `content_safety.py`. `surface` is genuinely a different axis (distribution vs content rating), so it's additive rather than duplicative — but they are now two overlapping flags and the invariant "`is_nsfw` must never reach mobile" is still enforced by **nothing**.
+2. **The column is `system_instructions`, not `system_prompt`** — though the *API field* is `system_prompt` (moderation-stripped), so the request was right at the wire and wrong at the schema.
+3. **Counts:** 3,803 active SFW + 279 discontinued + **exactly 1 active NSFW (Tara)** = 4,083 total. Their "~3,800" is right for active rows.
 
-**Bug 1 (self-inflicted).** During my `COLLAGE_HYBRID_MODE=false` retry workflow, I deleted Tara's 07-13 row which Sarvesh had already received. His stored `collage_id=1d0c12ed...` in the chat message became dangling → GET returned 404. Fix: re-seed the row with the SAME collage_id (INSERT preserving UUID). Lesson recorded for the retry-loop pattern: when a user has already retrieved a row, do NOT delete it during ops — copy-then-modify.
+**Not done — needs Rishi.** Step 3 of the request (flag Tara `web`/`both`) is left unflagged: `GET /api/v1/influencers` has **no `is_nsfw` filter today**, so Tara is already served to mobile. `both` preserves that; `web` would *remove* a 54k-conversation bot from the mainstream app. That's a product decision, not a side effect of an infra PR — and it collides with the US launch's SFW requirement.
 
-**Bug 2 (structural).** Sarvesh's send-message POST body carried collage_id/collage_bot_id/collage_date, but backend silently dropped them — migration 047 widened `message_type` CHECK to accept `'collage'` but never added the storage columns. Design doc §5 self-healing pattern relied on these fields being persisted. Fixed via PR #456 + migration 050. Backward-compat guard in `_format_message` omits null keys entirely so old app builds don't get surprise nulls.
+---
 
-**Replicate content-filter incident.** Nightly pre-gen for Tara failed 2 days running (2026-07-12: 5/6 got, 2026-07-13: 0/6). `nano-banana-pro` tightened its safety filter between 07-11 and 07-12; even bikini/swimwear/editorial-dress themes get rejected now. Immediate mitigation: hot-flipped `COLLAGE_HYBRID_MODE=false` on the v2 service → routes to pure LoRA path (flux-dev), which is less strict. Verification pending next 04:00 UTC nightly. Longer-term (per Rishi 2026-07-13): amorae.ai spicy collage tier will use a permissive provider (fal.ai / Runpod) for actual explicit imagery once the spicy chat gate ships.
+## 2026-08-08 — Sentry down ~45h (DNS eviction on rishi-3); recovered + the blind spot that hid it
 
-**Postgres `/dev/shm` = 64MB uncovered.** feed_ranker throwing `asyncpg.exceptions.DiskFullError: could not resize shared memory segment "/PostgreSQL.<DSM>"`. Host `/dev/shm` is 32GB, but the Patroni container inherits Docker's default 64MB tmpfs. Postgres parallel-worker DSM segments (each 8MB) can't fit. Same class as PR #420 (2026-06-26) but at the container-config layer, not the query layer. Branch `rishi/patroni-shm-size-2g-planned-fix` opened with `shm_size: 2g` + sequenced `update_config` on all 3 patroni services; needs planned redeploy window (touching Patroni = leader failover). PG-level mitigation (`max_parallel_workers_per_gather=0`) queued but not yet applied — auto-mode wants explicit auth on the SQL.
+**Incident: Sentry was dead and nothing told us.** Found while checking fleet state after the break. `sentry.rishi.yral.com` returned **500 on every authenticated endpoint** from all six edge IPs, `relay` was in a crash loop at **1013 restarts**, and `pgbouncer` / `taskworker` / `seaweedfs` were all unhealthy. Last ingested event was **2026-08-06 10:58Z** — roughly **45 hours** of zero error visibility across the whole fleet.
 
-### PR #454 (spicy chat gate) status
+**Root cause: Docker's embedded DNS registry was evicted on rishi-3.** All 69 containers on `sentry-self-hosted_default` lost their DNS records while staying "Up". `web` couldn't resolve `pgbouncer` (`could not translate host name "pgbouncer"`), `relay` couldn't resolve `redis`. Isolated it by elimination: external DNS worked from inside containers, and two *fresh* throwaway containers resolved each other fine — so the network object was healthy and only the pre-existing registrations were gone. That made the runbook's `up -d --force-recreate` the correct fix (re-attaching re-registers), not a destructive `down`/`up`. Recovered to **zero unhealthy containers**.
 
-Not merged yet — dev session amending for the wire-format alignment (`ctaUrl` → `cta_url`, `ctaLabel` → `cta_label` for snake_case symmetry with the rest of ChatMessage DTO) + streaming-path parity (mobile `shouldStream()` branches on Firebase RC, not is_nsfw, so /stream must honor the deflection gate too). Session 6 chose Path B (backend streaming parity) over Path A (mobile carve-out) after analysis — server-side enforcement protects old-app users too.
+**Second fault, uncovered by the fix: the compose file referenced a network that no longer exists.** nginx then failed with `network sentry-web not found`. The 2026-08-01 fleet consolidation folded all six hosts into one Swarm, moved nginx onto `yral-v2-public-web` via a **runtime** `docker network connect`, and deleted `sentry-web` — but the runtime attachment was invisible to `docker-compose.override.yml`, so it survived until the first recreate and then vanished. The edge Caddy proxies `sentry.rishi.yral.com` to a **hardcoded `10.0.1.11:80`**, nginx's address on that overlay.
+- Live-fixed `docker-compose.override.yml` on rishi-3: nginx now joins `yral-v2-public-web` **declaratively** with `ipv4_address: 10.0.1.11` pinned and a `sentry-nginx` alias (so the edge can later drop the hardcoded IP). Backup at `~/override.yml.bak-20260808`. **Needs backporting to the `yral-rishi-sentry` repo** — same live-fix-then-PR pattern as #470.
+- Verified end to end: `_health` **200**, API **200**, and a synthetic event traversed relay → Kafka → consumer → ClickHouse and came back queryable. Ingest is confirmed working, not assumed.
+- **Closed same day:** `monitors-clock-tick` was crash-looping on `OffsetOutOfRange` (its Kafka offset aged out of retention during the outage). Reset the consumer group `154340 → 156929` with `--to-latest` — deliberately not `--to-earliest`, which would replay ~2 days of stale clock ticks and fire a flood of bogus missed-check-in alerts. Back to `Up (healthy)`, `restarts=0`. **The Sentry stack now has zero unhealthy or restarting containers.**
 
-### What we learned
+**In PR — the watchdog blind spot.** The watchdog could not have caught this, and the obvious fix (make it global) would not have helped: its DNS check resolves *Swarm overlay aliases* from its own namespace and would never look at Sentry's compose bridge network, and its `node.role == manager` constraint excludes rishi-3 anyway. The load-bearing problem is simpler — **all three existing checks alert through `sentry_sdk`, so none of them can report a Sentry outage.**
+- Added `watchdog/heartbeat.py`: pings an external dead-man's-switch **while things are fine**, so silence is the alarm. That covers the whole class of faults that kill the reporter too — Sentry down, watchdog crashed, Swarm gone. Gated on the fleet's public surfaces answering 2xx, so it reports failure explicitly rather than waiting to time out.
+- `WATCHDOG_HEARTBEAT_URL` is **vendor-neutral and unset by default** — inert until an operator opts in, so this changes nothing until we pick a provider. **Decision still needed from Rishi:** external switch (independent, which is the property that failed here) vs. an owned endpoint.
+- 10 new tests, all green; watchdog suite 36/36. No runtime code path changed. Not deployed.
 
-**1. When ops-fixing a row in prod, check who's already read it.** Bug 1 was entirely preventable — I deleted a row that had already been served to a real user. The re-seed with same UUID worked but the whole class of bug is avoided by copy-then-mutate patterns during retries. Added to my own working memory.
+**In PR — US market launch PR1 (market column + dormant config).** Per `docs/us-market-launch-spec-2026-08-08.md` Track B. Ships the column and the knobs with **nothing reading them** — no behaviour change for anyone.
+- `migrations/051_ai_influencers_target_markets.sql` — `target_markets TEXT[]` + GIN index. **NULL/empty = global**, so all 4,081 existing rows (real prod count) stay visible everywhere with **no backfill**. Additive `ADD COLUMN` with no DEFAULT is metadata-only on PG11+ (no table rewrite). `051` is correct: `044`/`049` are reserved by open PRs #426/#454 per `migrations/README.md`.
+- `app/config.py` — added the `_env_list` helper (the spec assumed one; it didn't exist), plus `MARKET_EXCLUSIVE_COUNTRIES` (default `[]`) and `MARKET_DEBUG_OVERRIDE_ENABLED` (default `False`).
+- **Rule 9 correction:** my first draft told Rishi to take a manual pre-merge pg_dump. Wrong — `scripts/ci/run-migrations.sh` already takes a per-migration `pg_dump -Fc`, uploads it to S3, and **fails closed** if it can't. No manual step. Header corrected to match migration 043's wording.
+- **Verified against a real Postgres,** not just source assertions: 3 new integration tests prove the column is a genuine `TEXT[]`, the GIN index exists, and `target_markets @> ARRAY['US']` selects only tagged rows while NULL *and* `'{}'` both read as global. That last property is the whole launch — if it inverted, the US feed would leak the Indian catalogue or the global feed would empty out.
+- 14 new tests; full suite **1396 passed**, `ruff check`/`format` clean. Not deployed.
 
-**2. Migration + code deploy race.** PR #456 auto-deploy failed on the pipeline's own attempt to apply migration 050 (I'd already applied it manually 5 min earlier; the pipeline's transaction hit a 3s lock_timeout, then fell back to two replicas which correctly refused writes). Manual re-run succeeded. Lesson: when applying migrations manually ahead of deploy, either wait for the pipeline to finish OR expect a retry.
+---
 
-**3. Replicate/Google model policy tightens without notice.** Same code, same LoRA, same prompts — worked 07-11, broke 07-12+. Two-day silent regression for real users (fallback endpoint would have caught it if PR #455 had shipped earlier). Reinforces the Karpathy-inspired playbook item about defense-in-depth for external dependencies.
+## 2026-07-29 — Wave 0 closed; Wave 1 (test safety net) planned + started
 
-**4. Symmetry rule caught the streaming gap.** Mobile expert's read on `shouldStream()` surfaced that PR #454's non-streaming-only wiring was incomplete for prod. That's the SYMMETRY rule earning its keep — one code path deserves the same treatment on the other.
+**Wave 0 complete** — PR3 (#474) merged yesterday's session; the repo is now free of `archive/`, has honest deploy docs, and documents its migration numbering.
 
-### Standing next steps
+**Wave 1 planned (#475 merged).** Audited the test suite before planning: **1,364 tests** (CI's `pytest tests/`), **zero touch a database**, ~40% are pure source-inspection (`.read_text()` + substring asserts that survive any refactor), **71 files carry hand-rolled `sys.path` hacks**, and there's **no `conftest.py`/pytest config at all**. The `collage_date` codec bug (`chat.py:531`) is documented in-code as having *passed* the mocked-pool tests and 500'd in prod — the case for real-DB tests. Also found **`pytest-asyncio` is not installed** (not in requirements), so async-marked tests may be silently passing without running — a gap PR6's real integration tests will expose. Plan doc: `docs/wave1-plan-2026-07-29.md`. Harness decision: **Option B (testcontainers)** — real DB tests run identically on the Mac and in CI.
 
-- Sarvesh Motorola test on his integration (Bug 1 + Bug 2 both fixed; Path B streaming parity coming with PR #454 amendment)
-- Rishi Motorola solo test on spicy chat gate once PR #454 lands (task #62)
-- amorae-web PR #5 (`/tara` landing) awaiting Rishi merge (Motorola pass first)
-- Planned patroni redeploy for `shm_size: 2g` — separate window, not urgent (PG-level mitigation planned as bridge)
-- Investigate PR #454 amendment behavior when it lands, then merge → migration 049 + rollout starts
+**Merged — Wave 1 PR5a (#476): pytest config foundation.** Split the original PR5 into 5a (config, tiny/readable) + 5b (bulk removal of the 71 hacks, invariant-proven) for safe review.
+- Added `pyproject.toml` `[tool.pytest.ini_options]` with `pythonpath = ["app", "watchdog"]` + `testpaths = ["tests"]`, and a placeholder `tests/conftest.py` (PR6 fills it with the DB fixtures).
+- Verified behavior-neutral: `pytest tests/` collects **1364 → 1364**; full run **53 failed / 1245 passed / 66 skipped** unchanged (the 53 are missing local third-party libs, green in CI); `ruff check`/`format --check app/ infra/` still pass. `testpaths` also stops a bare `pytest` from accidentally collecting the `scripts/` smoke helpers.
+- No runtime code. No deploy.
+
+**Merged — Wave 1 PR5b (#477): remove the 71 `sys.path` hacks.** Now that the config is on `main`, the hand-rolled path blocks are redundant. Deleted them across 71 files via a deterministic script that handled all 4 patterns + the guarded `APP_DIR` form — keeping the `APP_DIR` definition where it also feeds a `.read_text()` source-pin (the one 4× outlier), dropping it where it was hack-only. Then `ruff --select F401 --fix` removed 143 now-orphaned imports (85 `sys`, 53 `os`, 5 pre-existing), and a targeted pass collapsed leftover triple-blank-lines. **Net −307 / +3 across 71 files.**
+- Proven safe by the same invariant at every step: `pytest tests/` **1364 → 1364**, full run **53 failed / 1245 passed / 66 skipped / 1 warning** unchanged; all 71 files parse; 0 `sys.path` references remain. Did **not** run `ruff format` on tests/ (would reformat dict literals repo-wide — scope creep). No runtime code. No deploy.
+
+**In PR — Wave 1 PR6 (#478): the real-database safety net (harness + marquee proof).** The payoff of the wave — real integration tests against a real Postgres, which the mocked-pool suite could never do. Shipped as the harness + 5 core tests; access-control / SSE / ETL tests follow as PR6b on the same harness.
+- **Harness** in `tests/conftest.py`: a session-scoped `pgvector/pgvector:pg15` testcontainer, all 47 `migrations/*.sql` applied via asyncpg (verified they're all transaction-safe), per-test TRUNCATE isolation. Test deps isolated in `requirements-test.txt` (runtime image stays lean); CI's `test` job installs it and runs the tests against the runner's Docker. **Deliberately no `pytest-asyncio`** (would make ~38 existing async tests suddenly run — separate change); integration tests are sync + `asyncio.run()`. Skips gracefully if Docker/testcontainers absent.
+- **5 tests** (`tests/integration/`): all 47 migrations apply + 3 contract tables present; pgvector extension enabled; app's `check_db_health()` against the real DB (proves the pool-binding harness); and the **collage_date codec pair** — a real `date` persists, a raw string is rejected by the real codec.
+- **Acceptance proof:** reintroduced the exact prod bug (stringify `collage_date` in `message_repo.create`) → `test_collage_date_accepts_real_date` went **red with the identical prod error** (`DataError … 'str' object has no attribute 'toordinal'`), then restored (git clean). The new test catches what the mocks shipped.
+- Verified locally against Docker: **5/5 integration pass; full suite 1369 passed** (1364 + 5), harness doesn't disturb existing tests. No runtime code. No deploy.
+
+---
+
+## 2026-07-28 — Cleanup Wave 0 kicks off (adopt plan, fix deploy docs, delete archive/)
+
+Started the safe cleanup of the v2 chat service against `docs/cleanup-plan-2026-07-27.md`.
+
+**Merged**
+- **#472** — DEPLOY.md FAQ fix (Wave 0 PR1). Three FAQ answers contradicted the doc's own accurate body (claimed manual-only deploy). Now correct: auto-on-merge (Path 1) since 2026-06-08. Docs-only, no deploy.
+- **#471** — adopted the cleanup roadmap + today's 5-way baseline audit as a tracked doc. Docs-only, no deploy.
+
+**Merged — Wave 0 PR2 (#473): delete `archive/`**
+- Removed **461 files / ~89K lines** of abandoned microservice skeletons (untouched since 2026-06-04, SHA `83f1bcc`). **Pre-delete main SHA: `33a3a88`** (`git revert` restores everything). `main` now at `a220ff7`.
+- **Provably safe:** the Dockerfile only `COPY`s `app/` and `infra/` — `archive/` never entered the image. No live code references it (the `archive.get(...)` hits in `backup_health_admin.py` are a local dict var, not the dir). 1365 tests still collect; no import breakage.
+- **Preserved** the richest archived testcontainers-Postgres conftest → `docs/testing/wave1-conftest-reference.py` (with a v2-adaptation header: swap Alembic → numbered SQL migrations, DATABASE_URL, app/database pool). This is the reference for Wave 1's test safety net.
+- **Deploy:** none. `build-and-push` **skipped** (touched no build-trigger paths), so no image rebuild and the Deploy workflow never fired. Zero runtime change.
+- Cleaned the 46 git-ignored leftovers (`.DS_Store`/`.pytest_cache`/`.pyc`) from the local disk afterward.
+
+**In PR — Wave 0 PR3: root tidy**
+- Moved `eval-results-2026-05-29.json` (72 KB) from repo root → `docs/`; updated its two path references (PROGRESS.md, this log).
+- Added **`migrations/README.md`** documenting the runner (filename-sorted, gap-tolerant) and — the real finding — **why 037/044/049 are absent**: `037` was simply skipped (never existed anywhere); **`044` is reserved by open PR #426** (l0-eval, `d3bb844`) and **`049` by open PR #454** (spicy, `e34e8cc`). So the next migration is `051`, and nobody should reuse 044/049 or they'll collide when those PRs merge.
+- Docs/markdown only. No deploy.
+
+---
+
+## 2026-07-23 — Patroni cascade follow-up: leader-alert PR, corrected root cause, repo cleanup
+
+Morning review of the 07-21 leaderless-cascade post-mortem, plus a big repo tidy.
+
+**Repo cleanup**
+- Closed **PR #444** (stale AI-bot push-notification PR) → superseded by **#461** (same author, clean + CI-green, routes notifications to `multi-service.naitik.yral.com`). #461 still needs a decision: it adds a new external dependency + the `NAITIK_MULTI_SERVICE_AUTH_TOKEN` secret (silently no-ops without it).
+- Closed stale docs/draft PRs: **#391** (paywall discovery — Path-A decision made it moot), **#405 / #397 / #395** (month-old drafts, not executed).
+- Deleted **49 stale local branches** (35 merged-PR + `pr-444-review` + 13 orphan branches already on origin). Held `feat/analytics-design-doc-2026-06-13` — it's local-only with 2 unpushed commits.
+
+**Patroni cascade — two corrections to the post-mortem (verified read-only)**
+- **Root cause is NOT unattended-upgrades.** All 3 nodes have `Automatic-Reboot = false` (confirmed `apt-config dump`), yet all rebooted the *same minute* (Jul 20 08:48) on lockstep kernels. That's a **shared external trigger — almost certainly Hetzner host maintenance**, not per-node u-u. "Stagger the u-u window" (post-mortem rec #1) would fix nothing.
+- **Cluster is fragile right now:** leader rishi-4 (TL49) healthy, but rishi-6 replica ~1.8 GB behind and rishi-5 stuck "starting" → effectively zero fault tolerance. Next maintenance reboot could repeat the outage.
+
+**Shipped / opened**
+- **PR #463** (`feat(watchdog): Patroni leader-presence alert`) — the missing page. Watchdog reads Patroni REST `/cluster` and alerts Sentry on a leaderless cluster > 90s (healthy failovers stay silent). Mirrors `replica_drift.py`; 9/9 tests. **MERGED + DEPLOYED** — leader-check thread confirmed live on the swarm (`watching patroni leadership every 60s`).
+- Landed the post-mortem + a **corrected-findings & action-plan doc** (`docs/postmortems/2026-07-21-patroni-cascade-addendum-and-plan.md`).
+
+**Cluster repaired to 3/3 (Rishi-authorized prod ops)**
+- WAL-G safety net verified first (base backup today 01:03 UTC, `failed_count=0`).
+- `patronictl reinit` rishi-5 → Sync Standby, TL49, lag 0 (was stuck "starting" for hours). Patroni auto-restored synchronous replication once it was healthy.
+- `patronictl reinit` rishi-6 → Replica, TL49, lag 0 (was diverged on TL48 with growing lag — would not self-converge). **All three now on TL49, lag 0** = real fault tolerance restored.
+
+**Open for Rishi**
+- Confirm the reboot trigger in the Hetzner console (needs the account) — likely host maintenance, the durable fix.
+- Decide on #461 (external notification dependency) — **parked per Rishi 2026-07-23.**
+- Per post-mortem: **do not** prioritize PR #457 (shm) — it didn't contribute and is already bridged.
 
 ## 2026-06-26 — Sentry sweep (7 PRs), watchdog deployed, observability tasks 1+2 shipped, codex trigger bug discovered
 
@@ -1009,7 +1082,7 @@ When rebasing #194 onto main (after #195 had already merged), the rebase folded 
 - **language_match 3.10/5 is mediocre** — multilingual mirror works on simple cases but degrades on Telugu, Tamil. Per-archetype temperature + an explicit "match the user's language" rule may help.
 
 ### Artifacts
-- Full per-prompt JSON: `eval-results-2026-05-29.json` (49 prompts × 2 services × {latency, response, scores})
+- Full per-prompt JSON: `docs/eval-results-2026-05-29.json` (49 prompts × 2 services × {latency, response, scores}; moved from repo root → docs/ on 2026-07-28, Wave 0 PR3)
 - Script: `scripts/eval_v2_vs_chat_ai.py` (re-runnable; hits both backends via the same FastAPI surface)
 - Trace IDs in Langfuse: `eval-{i}` for each prompt
 

@@ -11,11 +11,8 @@ sleep loop + Sentry emit are trivially thin wrappers in
 watchdog.py; if `check_once` is right, the loop is right too.
 """
 
-import os
-import sys
 from pathlib import Path
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "watchdog"))
 
 REPO = Path(__file__).resolve().parents[1]
 

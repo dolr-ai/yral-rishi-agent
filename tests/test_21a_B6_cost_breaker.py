@@ -18,8 +18,6 @@ in this repo (matches the lighter-touch style of the rest of tests/).
 """
 
 import asyncio
-import os
-import sys
 from pathlib import Path
 
 import pytest
@@ -28,7 +26,6 @@ REPO = Path(__file__).resolve().parents[1]
 
 # Same shim other tests in this repo use — make `from services import …`
 # importable. The repo doesn't run pytest with PYTHONPATH=app set.
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
 
 # ══════════════════════════════════════════════════════════════════════

@@ -1,10 +1,5 @@
 """Phase 4.8 — nightly consolidation. Pins the merge threshold + stats shape."""
 
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
-
 
 def test_merge_threshold_in_reasonable_range():
     """0.08 is the post-tuning value. Below 0.05 we'd merge too aggressively

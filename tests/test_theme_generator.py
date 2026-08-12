@@ -10,7 +10,6 @@ import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-import pytest
 
 MODULE = Path(__file__).parent.parent / "app" / "services" / "theme_generator.py"
 
@@ -91,9 +90,7 @@ def test_prompt_gives_setting_variety_categories():
 
 
 def test_validator_rejects_missing_trigger():
-    import sys
 
-    sys.path.insert(0, str(Path(__file__).parent.parent / "app"))
     import importlib
 
     tg = importlib.import_module("services.theme_generator")
@@ -108,9 +105,7 @@ def test_validator_rejects_missing_trigger():
 
 
 def test_validator_rejects_forbidden_words():
-    import sys
 
-    sys.path.insert(0, str(Path(__file__).parent.parent / "app"))
     import importlib
 
     tg = importlib.import_module("services.theme_generator")
@@ -121,9 +116,7 @@ def test_validator_rejects_forbidden_words():
 
 
 def test_validator_rejects_no_clothing_anchor():
-    import sys
 
-    sys.path.insert(0, str(Path(__file__).parent.parent / "app"))
     import importlib
 
     tg = importlib.import_module("services.theme_generator")
@@ -141,9 +134,7 @@ def test_validator_rejects_truncated_theme_ending_in_comma():
     accepted it (passed trigger + clothing + length checks) and shipped
     a fragmentary prompt to nano-banana-pro. The fix bumps the length
     floor to 60 AND rejects any theme not ending on letter/digit/period."""
-    import sys
 
-    sys.path.insert(0, str(Path(__file__).parent.parent / "app"))
     import importlib
 
     tg = importlib.import_module("services.theme_generator")
@@ -157,9 +148,7 @@ def test_validator_rejects_theme_missing_editorial_qualifier():
     """The whole product bet is 'premium editorial-magazine aesthetic'.
     A theme without an editorial qualifier drops the prompt's Constraint
     4 and lands generic-looking outputs."""
-    import sys
 
-    sys.path.insert(0, str(Path(__file__).parent.parent / "app"))
     import importlib
 
     tg = importlib.import_module("services.theme_generator")
@@ -177,9 +166,7 @@ def test_validator_rejects_theme_missing_editorial_qualifier():
 def test_validator_rejects_theme_missing_lens_qualifier():
     """Same as editorial — Constraint 5 requires a lens/depth qualifier
     so nano-banana-pro produces cinematic compositions, not flat ones."""
-    import sys
 
-    sys.path.insert(0, str(Path(__file__).parent.parent / "app"))
     import importlib
 
     tg = importlib.import_module("services.theme_generator")
@@ -195,9 +182,7 @@ def test_validator_rejects_theme_missing_lens_qualifier():
 
 
 def test_validator_accepts_good_theme():
-    import sys
 
-    sys.path.insert(0, str(Path(__file__).parent.parent / "app"))
     import importlib
 
     tg = importlib.import_module("services.theme_generator")
@@ -214,9 +199,7 @@ def test_validator_accepts_good_theme():
 def test_generate_daily_theme_falls_back_on_llm_exception():
     """LLM outage must NOT block the user. Fall back to
     config.COLLAGE_THEME_TARA silently (with a warning log)."""
-    import sys
 
-    sys.path.insert(0, str(Path(__file__).parent.parent / "app"))
     import importlib
 
     tg = importlib.import_module("services.theme_generator")
@@ -260,9 +243,7 @@ def test_generate_daily_theme_falls_back_after_two_invalid_llm_outputs():
     """Two invalid outputs in a row → fall back. If the LLM is
     consistently emitting bad prompts (prompt-injection, drift,
     off-brand), we don't want to burn API calls forever."""
-    import sys
 
-    sys.path.insert(0, str(Path(__file__).parent.parent / "app"))
     import importlib
 
     tg = importlib.import_module("services.theme_generator")
@@ -309,9 +290,7 @@ def test_bot_without_trigger_word_falls_back_immediately():
     the LLM path — fall back to the config default without spending
     an LLM call. Prevents the 'generic western woman' bug for any
     unconfigured bot."""
-    import sys
 
-    sys.path.insert(0, str(Path(__file__).parent.parent / "app"))
     import importlib
 
     tg = importlib.import_module("services.theme_generator")
@@ -350,9 +329,7 @@ def test_db_trigger_word_beats_hardcoded_fallback():
     push + deploy. Uses a bot_id NOT in the fallback map so the only
     way `_resolve_trigger_word` can return a value is through the DB
     path."""
-    import sys
 
-    sys.path.insert(0, str(Path(__file__).parent.parent / "app"))
     import importlib
 
     tg = importlib.import_module("services.theme_generator")
@@ -398,9 +375,7 @@ def test_fallback_map_still_used_when_db_empty():
     """Behavior-preserving safety net: while operators roll out the DB
     metadata update, the hardcoded fallback dict must still resolve
     known bots (Tara) so nothing regresses mid-migration."""
-    import sys
 
-    sys.path.insert(0, str(Path(__file__).parent.parent / "app"))
     import importlib
 
     tg = importlib.import_module("services.theme_generator")
@@ -428,9 +403,7 @@ def test_llm_defaults_registers_collage_theme_generator_on_gemini():
     Two places to check: the LLM_DEFAULTS dict entry (routes to
     provider + model) AND the runtime import via llm_registry so
     the constant is actually loaded, not just present in source."""
-    import sys
 
-    sys.path.insert(0, str(Path(__file__).parent.parent / "app"))
     import importlib
 
     llm_registry = importlib.import_module("services.llm_registry")

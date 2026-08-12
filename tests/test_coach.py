@@ -4,11 +4,6 @@ Pure-function pins. The DB + Gemini portions are exercised via the live
 smoke test in the deploy step.
 """
 
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
-
 
 def test_extract_proposal_finds_clean_json():
     """When the coach returns plain JSON, _try_extract_proposal returns

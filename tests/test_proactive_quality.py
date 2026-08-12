@@ -5,11 +5,6 @@ queries are exercised against the live cluster via the deploy verification
 script, not unit-tested here (asyncpg + Postgres needed).
 """
 
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
-
 
 def test_message_types_complete_and_ordered():
     """Spec: question / observation / story / light_topic. If a refactor

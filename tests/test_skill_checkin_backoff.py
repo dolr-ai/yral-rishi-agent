@@ -10,13 +10,10 @@ These tests pin both the math (so the ladder can't silently flatten
 to a constant) and the wiring (so a refactor can't drop the helper
 on the floor and revert to the old fixed cadence)."""
 
-import os
-import sys
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
 REPO = Path(__file__).resolve().parents[1]
 

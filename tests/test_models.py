@@ -1,11 +1,7 @@
 """Tests for app/models.py — Pydantic model validation."""
 
-import os
-import sys
 
 import pytest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
 
 def test_create_influencer_lowercases_name():

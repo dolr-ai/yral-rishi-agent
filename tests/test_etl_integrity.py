@@ -3,11 +3,6 @@
 The live verifier behavior runs after deploy; here we pin static
 configuration + the filename regex + the dispatch table."""
 
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
-
 
 def test_to_naive_utc_strips_tzinfo():
     """For TIMESTAMP (no tz) columns. asyncpg's codec rejects tz-aware
