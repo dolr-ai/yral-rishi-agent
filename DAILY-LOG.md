@@ -1,5 +1,24 @@
 # Daily Log
 
+## 2026-08-12 — Outage hardening landed: DB failover, SPILO durable, analytics self-heal, reboot fix
+
+**Closing out the 2026-08-10 outage.** Monday's weekly reboot took all three Patroni nodes (rishi-4/5/6) down within ~35s → no leader could be elected → full v2 outage. Recovered live (promoted rishi-5, removed a phantom timeline 57 + stale WAL, rebuilt replicas via `pg_basebackup`), **zero data loss**. Root cause was **Saikat's Ansible `weekly-update.yml`**, not Hetzner host maintenance as previously assumed — it rebooted rishi-4/5/6 as 3 of 41 flat-group hosts with no cluster awareness, and the reboot step returned early so the serial pause never staggered them.
+
+**What landed today (all merged):**
+- **#465** — asyncpg now fails over past a host stuck "starting up" in the multi-host `DATABASE_URL` (the exact trap that forced scaling rishi-4 to 0 during recovery). Auto-deployed; **validated live** — the pool builds and influencers serve 200, which exercises the new `create_pool(connect=…)` path in prod.
+- **#482** — baked the reboot-durable pg_hba rule `host replication standby 10.0.3.0/24 trust` into `patroni-stack.yml` (byte-for-byte what recovery set at runtime), so a `docker stack deploy` can't silently revert it. Spilo never wires a replication password, which is *why* standbys couldn't re-auth after the reboot and streaming broke.
+- **#17** (analytics repo) — `restart_policy.max_attempts: 0` on the analytics web + events-consumer services. The same reboot left analytics stuck 0/1 for ~8h: `/healthz` 503'd on the recovering replica, Swarm killed it 5× and (with no restart `window`) gave up permanently. Recovered live by forcing a fresh slot (scale 2 → 1). Now it self-heals after any dependency blip.
+- **#457** — `shm_size: 2g` + sequenced `update_config` on all 3 Patroni services (fixes `DiskFullError` on parallel workers). Rebased past #482 so both changes coexist.
+- **Hetzner PR** ([dolr-ai/hetzner-bare-metal-fleet#2](https://github.com/dolr-ai/hetzner-bare-metal-fleet/pull/2)) — makes the weekly reboot wait for each node to be genuinely back + settle before the next, so a quorum can never lose >1 node at once. **Awaiting Saikat's review.**
+
+**Closed (not merged):** #454 (spicy native deflection — approach superseded by amorae-standalone + the #481 surface flag; the store-safety gap it targeted is now the accepted "Tara = both" tradeoff), #426 (l0-eval — deprioritized; pg_dump + design doc preserved for a clean rebuild), #461 (Naitik's push-notif — overlaps his own merged `952170b`; handed back to him, branch left intact).
+
+**Correction to today's earlier entry:** #457's `shm_size: 2g` is **not live yet** — all 3 nodes still show 64 MB shm. Only #482's SPILO trust rule is live (set at runtime during recovery). The planned Patroni stack redeploy (which applies shm_size + confirms SPILO durability, with a brief leader failover) **has not run** and is parked for a quiet window.
+
+**Still parked (non-blocking):** the Patroni redeploy (#457+#482, needs a window), the analytics redeploy (#17, non-urgent), a Monday cluster-health cron (needs the Google Chat webhook URL — the intended one from 2026-07-26 does not actually exist), and the broken WAL-G archive (`restore_command = /bin/false`).
+
+---
+
 ## 2026-08-12 — Surface filter live; Tara = `both`; shared-DB POC decision
 
 **Rishi's architecture call: one shared database for now.** Adult (amorae.ai) and mainstream (YRAL app) both serve off the same DB while we find out whether the product works; separate later only if it proves out. This **deliberately overrides** the July contract's Level-2 write isolation (`docs/amorae-v2-contract-2026-07-01.md`). Recorded so it isn't re-litigated as a violation — it's a chosen trade of separation for speed. The `/api/v1/spicy/*` endpoints (handoff, context, `X-Amorae-Secret`) still exist and still work; they're just no longer the only channel.
