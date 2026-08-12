@@ -1,5 +1,24 @@
 # Daily Log
 
+## 2026-08-12 — Surface filter live; Tara = `both`; shared-DB POC decision
+
+**Rishi's architecture call: one shared database for now.** Adult (amorae.ai) and mainstream (YRAL app) both serve off the same DB while we find out whether the product works; separate later only if it proves out. This **deliberately overrides** the July contract's Level-2 write isolation (`docs/amorae-v2-contract-2026-07-01.md`). Recorded so it isn't re-litigated as a violation — it's a chosen trade of separation for speed. The `/api/v1/spicy/*` endpoints (handoff, context, `X-Amorae-Secret`) still exist and still work; they're just no longer the only channel.
+
+**#481 merged + deployed.** Migration 052 applied to prod (`surface TEXT NOT NULL DEFAULT 'mobile'` + CHECK + index). Waited for the in-flight #457 Patroni redeploy to finish before touching the DB — a sequenced restart of all 3 Patroni services is the wrong moment to write. Cluster verified 3/3, leader rishi-6, 0 lag before proceeding.
+
+**Tara set to `both`.** `UPDATE 1`, guarded by exact id AND `is_nsfw = TRUE` so it could only ever hit the one row. Distribution now **4,084 mobile / 1 both**. `both` rather than `web` because `/api/v1/influencers` has never filtered `is_nsfw` — she was already being served to mobile, so `web` would have *removed* a 54k-conversation bot from the mainstream app rather than preserving the status quo.
+
+**Verified live in production, not assumed:**
+- `?surface=web` → **total 1**, exactly `taaarraaah` / Tara
+- no param → **total 3806**, unchanged
+- `?surface=wbe` → **400**
+
+**Self-review catch before merge:** `_format_influencer_response` is shared by the list AND trending endpoints, but only `list_all` selected the new column — so the `or MOBILE` fallback would have reported `surface: "mobile"` for a web-only persona on trending. A default that silently substitutes for absent data is worse than a null, because the client can't tell "this is mobile" from "this query forgot to ask". Added `surface` to the five remaining column lists.
+
+**Still open (raised, not fixed):** nothing gates `is_nsfw` off the mainstream catalogue — neither `/api/v1/influencers` nor discovery feed/search filter it. Matters for the US launch, where App Review + IAP assume mainstream is SFW. Tracked 27.3.
+
+---
+
 ## 2026-08-10 — Surface targeting for amorae-web (shared catalogue split)
 
 **In PR — `surface` column + opt-in catalogue filter.** Requested by the amorae-web session: amorae.ai (adult web) and the mobile app now share one backend and one `ai_influencers` catalogue, so the catalogue has to say where each persona belongs.
