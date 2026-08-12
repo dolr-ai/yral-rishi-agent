@@ -236,6 +236,31 @@ services:
       resources:
         limits:   { cpus: "1.5", memory: 3G }
         reservations: { cpus: "0.5", memory: 1G }
+      # Sequenced restart per patroni service so a Swarm-triggered
+      # redeploy doesn't wipe all 3 patroni tasks at once (each service
+      # has replicas=1 pinned to a distinct hostname, so parallelism
+      # here is per-service). stop-first keeps the leader-elected
+      # replica-recovery flow predictable — Patroni + etcd handle the
+      # leader-election handshake cleanly when a single member cycles.
+      # delay + monitor give the recreated node time to catch up on
+      # streaming replication + register with etcd before the next
+      # service in the stack rolls.
+      update_config:
+        parallelism: 1
+        order: stop-first
+        delay: 60s
+        monitor: 90s
+        failure_action: rollback
+    # 2026-07-13 incident: DiskFullError on /PostgreSQL.<DSM> when
+    # feed_ranker's parallel-worker plans allocated DSM segments in
+    # the container's default 64MB /dev/shm. Host /dev/shm is 32GB
+    # (plenty). Bumping the container-level shm_size from Docker's
+    # 64MB default to 2GB gives Postgres comfortable headroom for
+    # max_parallel_workers_per_gather (currently temp-mitigated to
+    # 0 while awaiting this planned redeploy) + max_parallel_workers.
+    # Rollout: requires stack redeploy → planned window; sequenced by
+    # update_config above. See DAILY-LOG.md 2026-07-13.
+    shm_size: 2g
     volumes:
       - type: bind
         source: /data/patroni-data
@@ -309,6 +334,15 @@ services:
       resources:
         limits:   { cpus: "1.5", memory: 3G }
         reservations: { cpus: "0.5", memory: 1G }
+      # See patroni-rishi-4 for the sequenced-restart rationale.
+      update_config:
+        parallelism: 1
+        order: stop-first
+        delay: 60s
+        monitor: 90s
+        failure_action: rollback
+    # See patroni-rishi-4 for the DSM/parallel-worker /dev/shm story.
+    shm_size: 2g
     volumes:
       - type: bind
         source: /data/patroni-data
@@ -380,6 +414,15 @@ services:
       resources:
         limits:   { cpus: "1.5", memory: 3G }
         reservations: { cpus: "0.5", memory: 1G }
+      # See patroni-rishi-4 for the sequenced-restart rationale.
+      update_config:
+        parallelism: 1
+        order: stop-first
+        delay: 60s
+        monitor: 90s
+        failure_action: rollback
+    # See patroni-rishi-4 for the DSM/parallel-worker /dev/shm story.
+    shm_size: 2g
     volumes:
       - type: bind
         source: /data/patroni-data
