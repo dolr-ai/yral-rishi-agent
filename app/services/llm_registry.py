@@ -272,6 +272,13 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         # HETZNER_INFERENCE_API_KEY → rotate-hetzner-inference-key workflow →
         # swarm secret → /run/secrets/HETZNER_INFERENCE_API_KEY.
         "concurrency_cap": 5,
+        # Client-side pacing so we don't blast past Hetzner's free rate limit and
+        # eat 429s (it returns 429 + Retry-After: 5). Requests/min, PER REPLICA —
+        # the bucket is in-process, so set HETZNER_INFERENCE_RATE_PER_MIN to
+        # (Hetzner's account limit ÷ agent replica count) once the real number is
+        # known. This default is a conservative starting guess. Absent on other
+        # providers = no client-side pacing.
+        "rate_limit_per_min": int(os.environ.get("HETZNER_INFERENCE_RATE_PER_MIN", "120")),
         "base_url": "https://inference.hetzner.com/api/v1",
         "secret_path": "/run/secrets/HETZNER_INFERENCE_API_KEY",
         "env_fallback": "HETZNER_INFERENCE_API_KEY",
@@ -468,6 +475,82 @@ def _semaphore(provider: str) -> asyncio.Semaphore:
         cap = PROVIDERS.get(provider, {}).get("concurrency_cap", 10)
         _semaphores[provider] = asyncio.Semaphore(cap)
     return _semaphores[provider]
+
+
+# ── Client-side rate limiting (2026-08-14) ───────────────────────────────
+# Hetzner's free tier is fair-use rate-limited: it returns 429 + Retry-After: 5
+# once we exceed the cap. The concurrency semaphore above bounds PARALLELISM but
+# not the request RATE, so we were hammering the limit (~82% of async calls
+# 429'd). Two mechanisms pace us to their limit instead of hammering it:
+#   1. a per-provider token bucket callers await before dispatching (below), and
+#   2. a 429-aware retry that honours Retry-After (in call()).
+_MAX_RATE_RETRIES = 2
+_DEFAULT_RETRY_AFTER_SEC = 5.0
+_MAX_RETRY_AFTER_SEC = 15.0
+
+
+class _RateLimiter:
+    """Async token bucket — paces acquisitions to <= per_min per minute with a
+    small burst. acquire() waits up to max_wait for a token and returns False if
+    it can't get one in time, so the caller fails fast instead of dispatching a
+    request that would just time out under load."""
+
+    def __init__(self, per_min: float) -> None:
+        self._rate = per_min / 60.0                # tokens per second
+        self._capacity = max(1.0, per_min / 12.0)  # ~5s burst
+        self._tokens = self._capacity
+        self._last = time.monotonic()
+        self._lock = asyncio.Lock()
+
+    async def acquire(self, max_wait: float) -> bool:
+        deadline = time.monotonic() + max_wait
+        while True:
+            async with self._lock:
+                now = time.monotonic()
+                self._tokens = min(
+                    self._capacity, self._tokens + (now - self._last) * self._rate
+                )
+                self._last = now
+                if self._tokens >= 1.0:
+                    self._tokens -= 1.0
+                    return True
+                wait = (1.0 - self._tokens) / self._rate
+            if time.monotonic() + wait > deadline:
+                return False
+            await asyncio.sleep(wait)
+
+
+_rate_limiters: dict[str, _RateLimiter] = {}
+
+
+def _rate_limiter(provider: str) -> _RateLimiter | None:
+    """Per-provider token bucket, or None if the provider sets no rate limit."""
+    per_min = (PROVIDERS.get(provider) or {}).get("rate_limit_per_min")
+    if not per_min:
+        return None
+    if provider not in _rate_limiters:
+        _rate_limiters[provider] = _RateLimiter(float(per_min))
+    return _rate_limiters[provider]
+
+
+def _retry_after_seconds(exc: BaseException) -> float | None:
+    """If exc is an HTTP 429, return the Retry-After delay in seconds (from the
+    header, default 5, capped 15); else None (not retryable at this layer)."""
+    import httpx
+
+    if isinstance(exc, httpx.HTTPStatusError):
+        resp = getattr(exc, "response", None)
+        if resp is not None and getattr(resp, "status_code", None) == 429:
+            raw = resp.headers.get("retry-after") if hasattr(resp, "headers") else None
+            try:
+                return (
+                    min(float(raw), _MAX_RETRY_AFTER_SEC)
+                    if raw
+                    else _DEFAULT_RETRY_AFTER_SEC
+                )
+            except (TypeError, ValueError):
+                return _DEFAULT_RETRY_AFTER_SEC
+    return None
 
 
 def _resolve_api_key(provider: str) -> str:
@@ -933,6 +1016,25 @@ async def _do_complete(
     if extra_body:
         merged_extra.update(extra_body)
 
+    # Client-side rate limiting — wait for a token before dispatching so we stay
+    # under the provider's published rate rather than hammering it into 429s. If
+    # we can't get one within the request timeout, fail fast + record it (waiting
+    # longer would just time out anyway).
+    limiter = _rate_limiter(provider)
+    if limiter is not None and not await limiter.acquire(
+        max_wait=min(timeout_sec, 30.0)
+    ):
+        await _record_outcome(
+            process,
+            provider=provider,
+            model=model,
+            outcome="rate_limit",
+            error_message=f"local rate limiter: no {provider} token within timeout",
+        )
+        raise asyncio.TimeoutError(
+            f"local rate limiter: no {provider} token available within timeout"
+        )
+
     sem = _semaphore(provider)
     async with sem:
         if provider == "gemini":
@@ -1017,79 +1119,100 @@ async def call(
     # Leak guard — async process resolving to gemini is a routing bug.
     _check_async_gemini_leak(process, provider)
 
-    try:
-        return await _do_complete(
-            process=process,
-            provider=provider,
-            model=model,
-            timeout_sec=timeout_sec,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            extra_body=extra_body,
-            user_id=user_id,
-            conversation_id=conversation_id,
-            request_id=request_id,
-        )
-    except Exception as primary_exc:
-        fallback_provider = cfg.get("fallback_provider")
-        fallback_model = cfg.get("fallback_model") or model
-        if not fallback_provider or fallback_provider not in PROVIDERS:
-            raise
-
-        # Fallback path. Leak guard runs again so a misconfigured
-        # async-process → gemini fallback still alerts.
-        _check_async_gemini_leak(process, fallback_provider)
-
-        # Brief task 4 (2026-06-26) — record + alert before the fallback
-        # attempt. The counter feeds the admin dashboard tile; the Sentry
-        # warning carries structured tags so a Sentry alert rule
-        # (>10 events / 5 min across any process) can page on a
-        # systemic primary brown-out. Gates task 9 (fallback removal).
-        _record_primary_failure(process, provider)
-        logger.warning(
-            "llm_registry: primary %s failed for process=%s; trying fallback %s. "
-            "Primary error: %s",
-            provider,
-            process,
-            fallback_provider,
-            primary_exc,
-        )
+    # 429-aware retry: on a rate-limit response honour Retry-After (Hetzner sends
+    # Retry-After: 5) and retry a bounded number of times before giving up to the
+    # fallback (if any). Keeps a transient rate-limit blip from failing an offline
+    # job outright. Any non-429 error breaks out immediately.
+    primary_exc: Exception | None = None
+    for _attempt in range(_MAX_RATE_RETRIES + 1):
         try:
-            import sentry_sdk
-
-            error_type = _classify_outcome(primary_exc)
-            with sentry_sdk.push_scope() as scope:
-                scope.set_tag("process", process)
-                scope.set_tag("primary_provider", provider)
-                scope.set_tag("fallback_provider", fallback_provider)
-                scope.set_tag("error_type", error_type)
-                # Full str(exc) can be long (stack-like traces from httpx);
-                # 200 chars is enough to triage and keeps the Sentry
-                # event small.
-                scope.set_extra("error_summary", str(primary_exc)[:200])
-                sentry_sdk.capture_message(
-                    f"LLM fallback activated: {process} "
-                    f"{provider}→{fallback_provider} (error_type={error_type})",
-                    level="warning",
+            return await _do_complete(
+                process=process,
+                provider=provider,
+                model=model,
+                timeout_sec=timeout_sec,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                extra_body=extra_body,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                request_id=request_id,
+            )
+        except Exception as exc:
+            primary_exc = exc
+            retry_after = _retry_after_seconds(exc)
+            if retry_after is not None and _attempt < _MAX_RATE_RETRIES:
+                logger.info(
+                    "llm_registry: %s 429 on process=%s; honouring Retry-After "
+                    "%.1fs (attempt %d/%d)",
+                    provider,
+                    process,
+                    retry_after,
+                    _attempt + 1,
+                    _MAX_RATE_RETRIES,
                 )
-        except Exception:
-            # Never let Sentry-side failure break the dispatch path.
-            pass
+                await asyncio.sleep(retry_after)
+                continue
+            break
 
-        return await _do_complete(
-            process=process,
-            provider=fallback_provider,
-            model=fallback_model,
-            timeout_sec=timeout_sec,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            extra_body=extra_body,
-            user_id=user_id,
-            conversation_id=conversation_id,
-            request_id=request_id,
-        )
+    # Primary exhausted (after any 429 retries) → fallback, if configured.
+    fallback_provider = cfg.get("fallback_provider")
+    fallback_model = cfg.get("fallback_model") or model
+    if not fallback_provider or fallback_provider not in PROVIDERS:
+        raise primary_exc
+
+    # Fallback path. Leak guard runs again so a misconfigured
+    # async-process → gemini fallback still alerts.
+    _check_async_gemini_leak(process, fallback_provider)
+
+    # Brief task 4 (2026-06-26) — record + alert before the fallback attempt.
+    # The counter feeds the admin dashboard tile; the Sentry warning carries
+    # structured tags so a Sentry alert rule (>10 events / 5 min across any
+    # process) can page on a systemic primary brown-out.
+    _record_primary_failure(process, provider)
+    logger.warning(
+        "llm_registry: primary %s failed for process=%s; trying fallback %s. "
+        "Primary error: %s",
+        provider,
+        process,
+        fallback_provider,
+        primary_exc,
+    )
+    try:
+        import sentry_sdk
+
+        error_type = _classify_outcome(primary_exc)
+        with sentry_sdk.push_scope() as scope:
+            scope.set_tag("process", process)
+            scope.set_tag("primary_provider", provider)
+            scope.set_tag("fallback_provider", fallback_provider)
+            scope.set_tag("error_type", error_type)
+            # Full str(exc) can be long (stack-like traces from httpx);
+            # 200 chars is enough to triage and keeps the Sentry event small.
+            scope.set_extra("error_summary", str(primary_exc)[:200])
+            sentry_sdk.capture_message(
+                f"LLM fallback activated: {process} "
+                f"{provider}→{fallback_provider} (error_type={error_type})",
+                level="warning",
+            )
+    except Exception:
+        # Never let Sentry-side failure break the dispatch path.
+        pass
+
+    return await _do_complete(
+        process=process,
+        provider=fallback_provider,
+        model=fallback_model,
+        timeout_sec=timeout_sec,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        extra_body=extra_body,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        request_id=request_id,
+    )
 
 
 async def call_stream(
