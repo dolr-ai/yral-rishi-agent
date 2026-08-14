@@ -1,8 +1,11 @@
-"""Routing policy tests — 2026-06-08 cost-leak fix.
+"""Routing policy tests.
 
-Pin the contract Rishi asked for:
-- Async background processes: runpod_vllm primary + internal_vllm fallback,
-  NEVER gemini in the chain.
+Pins the contract Rishi asked for:
+- Async background processes (the 6 text ones): `hetzner` primary, NO
+  fallback (Rishi 2026-08-14 — moved off Saikat's runpod_vllm; offline jobs
+  fail + retry rather than fanning out). NEVER gemini in the chain.
+- `influencer_classification` stays on runpod_vllm (Saikat) for now — it
+  sends avatar images and Hetzner vision isn't verified yet.
 - Sync user-facing processes: gemini primary, no fallback (TTFT matters).
 - Leak guard: any async process resolving to gemini fires an error log
   + Sentry capture_message (called but does not block the request).
@@ -24,48 +27,51 @@ from services.llm_registry import (
 
 # ─── Routing-policy contract ─────────────────────────────────────────
 
+# The 6 text async processes moved to Hetzner. influencer_classification is
+# vision-bearing and stays on Saikat's pod until Hetzner vision is verified.
+HETZNER_ASYNC = {
+    "proactive_generation",
+    "quality_scorer",
+    "memory_extraction",
+    "memory_consolidation",
+    "nudge_generation",
+    "video_idea_generation",
+}
 
-def test_async_processes_primary_is_runpod_vllm():
-    """All async background processes must default to Saikat's pod
-    (runpod_vllm) at the code-default layer. Even if DB overrides
-    fail to load (the 2026-06-08 bug), the code default must NOT be
-    gemini — otherwise the cost-leak that motivated this PR reappears."""
-    for p in ASYNC_PROCESSES_NEVER_GEMINI:
+
+def test_text_async_processes_default_to_hetzner_no_fallback():
+    """Rishi 2026-08-14: the 6 text async background processes default to
+    Hetzner's free inference API with NO fallback. Same model as Saikat's
+    pod (Qwen/Qwen3.6-35B-A3B-FP8) so behaviour is host-only. No fallback
+    is deliberate: these are offline jobs, so if Hetzner is down they fail
+    + retry on the next sweep rather than fanning out to other providers."""
+    for p in HETZNER_ASYNC:
         d = LLM_DEFAULTS[p]
-        assert d["provider"] == "runpod_vllm", (
-            f"{p}: async-process code default must be runpod_vllm; got {d['provider']!r}"
+        assert d["provider"] == "hetzner", (
+            f"{p}: async-process code default must be hetzner; got {d['provider']!r}"
         )
-
-
-def test_async_processes_have_internal_vllm_fallback():
-    """Anshuman's pod (internal_vllm) is the documented fallback per
-    Rishi 2026-06-08. Never gemini in the chain.
-
-    Exception: `influencer_classification` (Phase 21γ.P34.M1) is
-    vision-bearing — `internal_vllm` is text-only, so an automatic
-    fallback would silently drop the avatar image and produce
-    garbage labels. Mirrors the rationale for
-    `user_chat_main_multimodal` having no fallback."""
-    no_fallback_by_design = {"influencer_classification"}
-    for p in ASYNC_PROCESSES_NEVER_GEMINI:
-        d = LLM_DEFAULTS[p]
-        if p in no_fallback_by_design:
-            assert "fallback_provider" not in d, (
-                f"{p}: documented as no-fallback (vision-bearing); "
-                f"got {d.get('fallback_provider')!r}"
-            )
-            continue
-        assert d.get("fallback_provider") == "internal_vllm", (
-            f"{p}: fallback_provider must be internal_vllm; "
+        assert "fallback_provider" not in d, (
+            f"{p}: no fallback by design (Rishi 2026-08-14); "
             f"got {d.get('fallback_provider')!r}"
         )
-        assert d.get("fallback_model"), (
-            f"{p}: fallback_model required when fallback_provider is set"
-        )
+
+
+def test_influencer_classification_stays_on_runpod_vllm():
+    """The one vision-bearing async process keeps routing to Saikat's pod
+    (runpod_vllm, supports_vision=True) until Hetzner vision is verified —
+    Hetzner's `hetzner` provider ships supports_vision=False, so the H12
+    capability guard would refuse the flip anyway. No fallback (a text-only
+    fallback would silently drop the avatar image)."""
+    d = LLM_DEFAULTS["influencer_classification"]
+    assert d["provider"] == "runpod_vllm", (
+        f"influencer_classification stays on runpod_vllm (vision) until "
+        f"Hetzner vision is verified; got {d['provider']!r}"
+    )
+    assert "fallback_provider" not in d
 
 
 def test_no_async_process_chains_to_gemini():
-    """Hard guard: even if a future contributor adds a 3-link chain, the
+    """Hard guard: even if a future contributor adds a fallback chain, the
     async-process chain must never end at gemini."""
     for p in ASYNC_PROCESSES_NEVER_GEMINI:
         d = LLM_DEFAULTS[p]
@@ -117,14 +123,12 @@ def test_async_never_gemini_set_covers_known_async_processes():
         "nudge_generation",
         "video_idea_generation",
         # Phase 21γ.P34.M1 — Discovery Feed bot classification.
-        # Vision-bearing; no fallback (see test_async_processes_have_internal_vllm_fallback
-        # exception list).
         "influencer_classification",
     }
     assert ASYNC_PROCESSES_NEVER_GEMINI == expected, (
         "ASYNC_PROCESSES_NEVER_GEMINI drifted from the canonical set. "
-        "If you're adding a new async process, add it to the set + add a "
-        "fallback chain in LLM_DEFAULTS in the same PR."
+        "If you're adding a new async process, add it to the set in the "
+        "same PR so the leak guard covers it."
     )
 
 
@@ -158,18 +162,18 @@ def test_leak_guard_silent_on_sync_user_facing_to_gemini(caplog):
     )
 
 
-def test_leak_guard_silent_on_async_to_runpod_vllm(caplog):
-    """Async → runpod_vllm is the intended state. Silent."""
+def test_leak_guard_silent_on_async_to_hetzner(caplog):
+    """Async → hetzner is the intended state now. Silent."""
     caplog.set_level(logging.ERROR, logger="services.llm_registry")
-    _check_async_gemini_leak("quality_scorer", "runpod_vllm")
+    _check_async_gemini_leak("quality_scorer", "hetzner")
     msgs = [r.getMessage() for r in caplog.records]
     assert not any("ASYNC PROCESS" in m for m in msgs)
 
 
-def test_leak_guard_silent_on_async_to_internal_vllm(caplog):
-    """Async → internal_vllm is the fallback state. Also intended; silent."""
+def test_leak_guard_silent_on_async_to_runpod_vllm(caplog):
+    """Async → runpod_vllm (influencer_classification) is intended. Silent."""
     caplog.set_level(logging.ERROR, logger="services.llm_registry")
-    _check_async_gemini_leak("quality_scorer", "internal_vllm")
+    _check_async_gemini_leak("influencer_classification", "runpod_vllm")
     msgs = [r.getMessage() for r in caplog.records]
     assert not any("ASYNC PROCESS" in m for m in msgs)
 
@@ -177,11 +181,11 @@ def test_leak_guard_silent_on_async_to_internal_vllm(caplog):
 # ─── Provider registry sanity ─────────────────────────────────────────
 
 
-def test_both_vllm_providers_registered():
-    """Routing depends on both runpod_vllm (Saikat) and internal_vllm
-    (Anshuman) being registered as providers. If either is removed
-    from PROVIDERS, the fallback chain breaks silently. Pin both."""
-    for p in ("runpod_vllm", "internal_vllm"):
+def test_async_providers_registered():
+    """Async routing depends on hetzner (the 6 text processes) and
+    runpod_vllm (influencer_classification) being registered. If either is
+    removed from PROVIDERS, routing breaks silently. Pin both."""
+    for p in ("hetzner", "runpod_vllm"):
         assert p in PROVIDERS, f"provider {p!r} must be registered"
         meta = PROVIDERS[p]
         assert meta.get("supports_chat") is True
