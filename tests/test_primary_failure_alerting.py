@@ -160,29 +160,21 @@ def test_call_records_failure_alerts_then_serves_via_fallback(monkeypatch):
     with llm_registry._PRIMARY_FAILURES_LOCK:
         llm_registry._PRIMARY_FAILURES.clear()
 
-    # No process configures a fallback anymore (Rishi 2026-08-14 — async
-    # went hetzner-only). The fallback DISPATCH mechanism in call() is kept,
-    # so exercise it with a synthetic config injected via _process_config:
-    # hetzner primary → runpod_vllm fallback (neither is gemini, so the
-    # async leak guard stays silent).
+    # Drive call() with quality_scorer (runpod_vllm primary →
+    # internal_vllm fallback per LLM_DEFAULTS).
     process = "quality_scorer"
-    primary_provider = "hetzner"
-    fallback_provider = "runpod_vllm"
-    synthetic_cfg = {
-        "provider": primary_provider,
-        "model": "Qwen/Qwen3.6-35B-A3B-FP8",
-        "fallback_provider": fallback_provider,
-        "fallback_model": "Qwen/Qwen3.6-35B-A3B-FP8",
-        "timeout_sec": 120.0,
-    }
-    monkeypatch.setattr(llm_registry, "_process_config", lambda _p: dict(synthetic_cfg))
+    cfg = llm_registry._process_config(process)
+    primary_provider = cfg["provider"]
+    fallback_provider = cfg["fallback_provider"]
+    assert primary_provider == "runpod_vllm"
+    assert fallback_provider == "internal_vllm"
 
     call_log: list[str] = []
 
     async def fake_do_complete(*, provider, model, **kwargs):
         call_log.append(provider)
         if provider == primary_provider:
-            raise RuntimeError("simulated hetzner 5xx")
+            raise RuntimeError("simulated runpod_vllm 5xx")
         # fallback path returns a normal result
         return LlmResponse(
             content="fallback ok",
@@ -266,7 +258,7 @@ def test_call_records_failure_alerts_then_serves_via_fallback(monkeypatch):
     # don't break this test). What matters is the tag IS set.
     assert "error_type" in ev["tags"]
     assert isinstance(ev["extras"].get("error_summary"), str)
-    assert "simulated hetzner 5xx" in ev["extras"]["error_summary"]
+    assert "simulated runpod_vllm 5xx" in ev["extras"]["error_summary"]
 
     # Clean up shared state.
     with llm_registry._PRIMARY_FAILURES_LOCK:
