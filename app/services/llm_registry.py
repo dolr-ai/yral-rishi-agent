@@ -261,6 +261,38 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         # mode, so classification inherits the 10× latency win.
         "supports_vision": True,
     },
+    "hetzner": {
+        # Hetzner Inference API (inference.hetzner.com) — the free-for-now
+        # experimental OpenAI-spec endpoint (token from experiments.hetzner.com),
+        # open-weight models on EU servers (DE/FI). Serves the SAME
+        # Qwen/Qwen3.6-35B-A3B-FP8 as runpod_vllm above, so the async processes
+        # move over with NO model-string change. Experimental: rate-limited +
+        # no SLA, so it stays a *primary with a proven fallback* (runpod_vllm /
+        # internal_vllm), never a sole provider. Token flow: GitHub Secret
+        # HETZNER_INFERENCE_API_KEY → rotate-hetzner-inference-key workflow →
+        # swarm secret → /run/secrets/HETZNER_INFERENCE_API_KEY.
+        "concurrency_cap": 5,
+        "base_url": "https://inference.hetzner.com/api/v1",
+        "secret_path": "/run/secrets/HETZNER_INFERENCE_API_KEY",
+        "env_fallback": "HETZNER_INFERENCE_API_KEY",
+        "cost_basis": "synthetic",
+        # Free during the experiment → $0. Kept 'synthetic' (not 'real') so the
+        # dashboard cap math doesn't count it as paid vendor spend.
+        "cost_per_1k_input_usd": 0.0,
+        "cost_per_1k_output_usd": 0.0,
+        # Same Qwen family as runpod_vllm — suppress the verbose "thinking"
+        # tokens we don't want to pay latency for.
+        "default_extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+        "supports_chat": True,
+        "supports_stream": True,
+        "supports_transcribe": False,
+        # Vision UNVERIFIED on Hetzner's serving config: the model supports
+        # images, but the endpoint may not enable the projector. Start False so
+        # the H12 capability guard refuses to route the one vision-dependent
+        # async process (influencer_classification) here until an empirical
+        # multimodal smoke test flips it True.
+        "supports_vision": False,
+    },
     "ollama": {
         "concurrency_cap": 2,
         "base_url": "http://ollama:11434/v1",
