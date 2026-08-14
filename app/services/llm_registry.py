@@ -321,16 +321,21 @@ PROVIDERS: dict[str, dict[str, Any]] = {
 #   - Sync user-waiting (user_chat_main, audio_transcription, creator
 #     tools where a human is on the screen): gemini, no fallback. TTFT
 #     matters; gemini wins.
-#   - Async background (the 6 in ASYNC_PROCESSES below): runpod_vllm
-#     primary (Saikat's pod, Qwen3.6-35B-A3B-FP8) → internal_vllm
-#     fallback (Anshuman's pod, Qwen3.6-27B-FP8). NEVER gemini — leak
-#     guard in `call()` will alert if it ever happens.
+#   - Async background (the 6 below): hetzner ONLY, NO fallback
+#     (Rishi 2026-08-14). Moved off Saikat's runpod_vllm to Hetzner's
+#     free experimental inference API — SAME model
+#     (Qwen/Qwen3.6-35B-A3B-FP8), so behaviour is unchanged, just a
+#     different host. No fallback is Rishi's explicit call: these are
+#     offline jobs, so if Hetzner is down they fail + retry on the next
+#     sweep rather than fanning out to other providers or burning gemini.
+#     NEVER gemini — leak guard in `call()` will alert if it ever happens.
+#     (influencer_classification stays on runpod_vllm below until Hetzner
+#     vision is verified — it sends avatar images.)
 #
-# Why no gemini fallback for async: a 4-day audit showed the
-# quality_scorer loop quietly burned $22 on gemini due to a DB-override
-# cache that didn't load (the bug that motivated this PR). Removing
-# gemini from the async chain means even if EVERYTHING else regresses,
-# we land on internal_vllm or fail loud — never silent gemini spend.
+# Why never gemini for async: a 4-day audit showed the quality_scorer
+# loop quietly burned $22 on gemini due to a DB-override cache that
+# didn't load. Keeping gemini out of the async chain means even if
+# EVERYTHING else regresses we fail loud — never silent gemini spend.
 LLM_DEFAULTS: dict[str, dict[str, Any]] = {
     # ─── Sync user-waiting ──────────────────────────────────────────
     "user_chat_main": {
@@ -388,47 +393,35 @@ LLM_DEFAULTS: dict[str, dict[str, Any]] = {
         "model": "gemini-2.5-flash",
         "timeout_sec": 30.0,
     },
-    # ─── Async background — Saikat primary + Anshuman fallback ──────
+    # ─── Async background — hetzner only, no fallback (Rishi 2026-08-14) ──
     "proactive_generation": {
-        "provider": "runpod_vllm",
+        "provider": "hetzner",
         "model": "Qwen/Qwen3.6-35B-A3B-FP8",
-        "fallback_provider": "internal_vllm",
-        "fallback_model": "Qwen/Qwen3.6-27B-FP8",
         "timeout_sec": 120.0,
     },
     "quality_scorer": {
-        "provider": "runpod_vllm",
+        "provider": "hetzner",
         "model": "Qwen/Qwen3.6-35B-A3B-FP8",
-        "fallback_provider": "internal_vllm",
-        "fallback_model": "Qwen/Qwen3.6-27B-FP8",
         "timeout_sec": 120.0,
     },
     "memory_extraction": {
-        "provider": "runpod_vllm",
+        "provider": "hetzner",
         "model": "Qwen/Qwen3.6-35B-A3B-FP8",
-        "fallback_provider": "internal_vllm",
-        "fallback_model": "Qwen/Qwen3.6-27B-FP8",
         "timeout_sec": 120.0,
     },
     "memory_consolidation": {
-        "provider": "runpod_vllm",
+        "provider": "hetzner",
         "model": "Qwen/Qwen3.6-35B-A3B-FP8",
-        "fallback_provider": "internal_vllm",
-        "fallback_model": "Qwen/Qwen3.6-27B-FP8",
         "timeout_sec": 180.0,
     },
     "nudge_generation": {
-        "provider": "runpod_vllm",
+        "provider": "hetzner",
         "model": "Qwen/Qwen3.6-35B-A3B-FP8",
-        "fallback_provider": "internal_vllm",
-        "fallback_model": "Qwen/Qwen3.6-27B-FP8",
         "timeout_sec": 120.0,
     },
     "video_idea_generation": {
-        "provider": "runpod_vllm",
+        "provider": "hetzner",
         "model": "Qwen/Qwen3.6-35B-A3B-FP8",
-        "fallback_provider": "internal_vllm",
-        "fallback_model": "Qwen/Qwen3.6-27B-FP8",
         "timeout_sec": 120.0,
     },
     # Phase 21γ.P34.M1 — multimodal classification of AI influencers.
