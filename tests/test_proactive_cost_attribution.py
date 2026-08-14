@@ -66,19 +66,18 @@ def test_chat_routes_still_omit_process_override():
 
 
 def test_proactive_generation_is_in_async_processes_never_gemini():
-    """The whole point of the override is to route proactive to a
-    self-hosted provider (hetzner since 2026-08-14, was runpod_vllm). If
-    `proactive_generation` ever drops out of the NEVER_GEMINI guard, a
-    future LLM_DEFAULTS bump could silently re-route it back to gemini and
-    burn premium $ on background traffic. Pin the guard membership."""
+    """The whole point of the override is to route proactive to
+    runpod_vllm. If `proactive_generation` ever drops out of the
+    NEVER_GEMINI guard, a future LLM_DEFAULTS bump could silently
+    re-route it back to gemini and burn premium $ on background traffic.
+    Pin the guard membership."""
     from services.llm_registry import LLM_DEFAULTS
 
     proactive_cfg = LLM_DEFAULTS["proactive_generation"]
     # Primary must be a non-gemini provider
     assert proactive_cfg["provider"] != "gemini"
-    # Fallback, if any, must also be non-gemini. No fallback (None) is fine —
-    # proactive is hetzner-only now (Rishi 2026-08-14), so nothing to fall to.
-    assert proactive_cfg.get("fallback_provider") != "gemini"
+    # Fallback must also be non-gemini
+    assert proactive_cfg.get("fallback_provider", "gemini") != "gemini"
 
 
 def test_overrride_skips_nsfw_and_multimodal_heuristic():
