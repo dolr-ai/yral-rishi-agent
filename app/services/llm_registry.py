@@ -278,7 +278,9 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         # (Hetzner's account limit ÷ agent replica count) once the real number is
         # known. This default is a conservative starting guess. Absent on other
         # providers = no client-side pacing.
-        "rate_limit_per_min": int(os.environ.get("HETZNER_INFERENCE_RATE_PER_MIN", "120")),
+        "rate_limit_per_min": int(
+            os.environ.get("HETZNER_INFERENCE_RATE_PER_MIN", "120")
+        ),
         "base_url": "https://inference.hetzner.com/api/v1",
         "secret_path": "/run/secrets/HETZNER_INFERENCE_API_KEY",
         "env_fallback": "HETZNER_INFERENCE_API_KEY",
@@ -496,7 +498,7 @@ class _RateLimiter:
     request that would just time out under load."""
 
     def __init__(self, per_min: float) -> None:
-        self._rate = per_min / 60.0                # tokens per second
+        self._rate = per_min / 60.0  # tokens per second
         self._capacity = max(1.0, per_min / 12.0)  # ~5s burst
         self._tokens = self._capacity
         self._last = time.monotonic()
