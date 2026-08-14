@@ -1,0 +1,189 @@
+name: Rotate hetzner inference key on swarm
+
+# Manually triggered. Reads the current value of GitHub Secret
+# HETZNER_INFERENCE_API_KEY, curl-verifies it against Hetzner's inference
+# API, creates a new SHA8-suffixed swarm secret, and swaps it onto
+# yral-rishi-agent at /run/secrets/HETZNER_INFERENCE_API_KEY. The service
+# rolls a single task picking up the new secret value.
+#
+# Use case: the Hetzner experimental Inference API token
+# (inference.hetzner.com — free-for-now, OpenAI-spec, EU servers) is
+# created at experiments.hetzner.com and pasted into the GitHub Secret.
+# Trigger this workflow to inject it (first time) or rotate it (later).
+# The background processes routed to the `hetzner` provider pick up the
+# new key on the next request after the service rolls.
+#
+# Structurally symmetric with rotate-runpod-vllm-key.yml — the ONE
+# addition is the "Verify token against Hetzner" step, because unlike
+# Saikat's known-good pod this endpoint is new + experimental, so we
+# confirm the token works (and surface the exact model IDs) BEFORE
+# touching the swarm.
+#
+# What this does NOT do:
+# - Does NOT update the GitHub Secret value itself. That's a UI action
+#   in repo Settings → Secrets and variables → Actions. The workflow
+#   assumes you've already pasted the value there.
+# - Does NOT roll the image. Only swaps the secret + restarts the tasks.
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Why are you injecting/rotating? (Captured in run logs.)'
+        required: true
+        default: 'Injecting hetzner inference key because: '
+      i_understand:
+        description: 'Type ROTATE KEY to confirm you understand this restarts yral-rishi-agent tasks.'
+        required: true
+        default: ''
+
+env:
+  SERVICE: yral-rishi-agent
+  SECRET_TARGET_NAME: HETZNER_INFERENCE_API_KEY
+  SECRET_BASE_NAME: HETZNER_INFERENCE_API_KEY
+  HETZNER_BASE_URL: https://inference.hetzner.com/api/v1
+  SWARM_MANAGER_1: 138.201.128.108
+  SWARM_MANAGER_2: 88.99.160.251
+  SWARM_MANAGER_3: 162.55.88.112
+  SWARM_USER: rishi-deploy
+
+jobs:
+  rotate:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+
+    steps:
+      - name: Confirm ROTATE KEY typed
+        run: |
+          if [ "${{ inputs.i_understand }}" != "ROTATE KEY" ]; then
+            echo "::error::Confirmation phrase mismatched (must be exactly 'ROTATE KEY'); aborting."
+            exit 1
+          fi
+          echo "─── hetzner inference key injection initiated ───"
+          echo "Triggered by:  ${{ github.actor }}"
+          echo "Reason:        ${{ inputs.reason }}"
+          echo "Timestamp:     $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+      - name: Verify GitHub Secret is set
+        env:
+          KEY_VALUE: ${{ secrets.HETZNER_INFERENCE_API_KEY }}
+        run: |
+          if [ -z "$KEY_VALUE" ]; then
+            echo "::error::GitHub Secret HETZNER_INFERENCE_API_KEY is empty. Set it under repo Settings → Secrets and variables → Actions before triggering this workflow."
+            exit 1
+          fi
+          # Length-only confirmation, never log the value itself.
+          echo "✓ HETZNER_INFERENCE_API_KEY present (length=${#KEY_VALUE})"
+
+      - name: Verify token against Hetzner (and surface model IDs)
+        env:
+          KEY_VALUE: ${{ secrets.HETZNER_INFERENCE_API_KEY }}
+        run: |
+          # Confirm the token authenticates + list the model IDs it serves.
+          # The model list is not sensitive; the token is never printed.
+          CODE=$(curl -sS -m 20 -o /tmp/models.json -w '%{http_code}' \
+            -H "Authorization: Bearer $KEY_VALUE" \
+            "${{ env.HETZNER_BASE_URL }}/models")
+          echo "GET ${{ env.HETZNER_BASE_URL }}/models -> HTTP $CODE"
+          if [ "$CODE" != "200" ]; then
+            echo "::error::Hetzner token did not authenticate (HTTP $CODE). Fix the GitHub Secret value before injecting."
+            head -c 400 /tmp/models.json || true
+            exit 1
+          fi
+          echo "── model IDs served ──"
+          # Print id fields without needing jq
+          grep -oE '"id"[[:space:]]*:[[:space:]]*"[^"]+"' /tmp/models.json || cat /tmp/models.json
+
+      - name: Set up SSH key + known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          for host in ${{ env.SWARM_MANAGER_1 }} ${{ env.SWARM_MANAGER_2 }} ${{ env.SWARM_MANAGER_3 }}; do
+            ssh-keyscan -T 10 -H "$host" >> ~/.ssh/known_hosts 2>/dev/null || true
+          done
+
+      - name: Pick a responding swarm manager
+        id: pick
+        run: |
+          SSH_OPTS="-i ~/.ssh/deploy_key -o ConnectTimeout=15 -o BatchMode=yes -o StrictHostKeyChecking=yes"
+          MGR=""
+          for host in ${{ env.SWARM_MANAGER_1 }} ${{ env.SWARM_MANAGER_2 }} ${{ env.SWARM_MANAGER_3 }}; do
+            if ssh $SSH_OPTS "${{ env.SWARM_USER }}@$host" "docker info --format '{{.Swarm.LocalNodeState}}' 2>/dev/null | grep -q active"; then
+              MGR="$host"
+              break
+            fi
+          done
+          if [ -z "$MGR" ]; then
+            echo "::error::No responding swarm manager"
+            exit 1
+          fi
+          echo "Using swarm manager: $MGR"
+          echo "mgr=$MGR" >> "$GITHUB_OUTPUT"
+
+      - name: Create new SHA8 swarm secret + swap on service
+        env:
+          KEY_VALUE: ${{ secrets.HETZNER_INFERENCE_API_KEY }}
+        run: |
+          SSH_OPTS="-i ~/.ssh/deploy_key -o ConnectTimeout=15 -o BatchMode=yes -o StrictHostKeyChecking=yes"
+          MGR="${{ steps.pick.outputs.mgr }}"
+          TARGET="${{ env.SECRET_TARGET_NAME }}"
+          BASE="${{ env.SECRET_BASE_NAME }}"
+          SERVICE="${{ env.SERVICE }}"
+
+          # SHA8 suffix on the swarm secret name. Swarm secrets are
+          # immutable so we can't update in place — must create new + swap.
+          SHA8=$(printf '%s' "$KEY_VALUE" | sha256sum | cut -c1-8)
+          NEW_SECRET="${BASE}_${SHA8}"
+          echo "New swarm secret name: $NEW_SECRET (target=$TARGET)"
+
+          # Discover the secret currently mounted at /run/secrets/$TARGET.
+          CURRENT=$(ssh $SSH_OPTS "${{ env.SWARM_USER }}@$MGR" \
+              "docker service inspect $SERVICE --format '{{range \$s := .Spec.TaskTemplate.ContainerSpec.Secrets}}{{if eq \$s.File.Name \"$TARGET\"}}{{\$s.SecretName}}{{end}}{{end}}' 2>/dev/null || true")
+          echo "Current secret at /run/secrets/$TARGET: ${CURRENT:-<none>}"
+
+          if [ "$CURRENT" = "$NEW_SECRET" ]; then
+            echo "✓ Service already has $NEW_SECRET attached at /run/secrets/$TARGET — nothing to do."
+            exit 0
+          fi
+
+          # Create the new swarm secret (value piped via stdin so it never
+          # hits disk). Idempotent: skip if a secret with that name exists.
+          ssh $SSH_OPTS "${{ env.SWARM_USER }}@$MGR" "
+            set -e
+            if docker secret inspect '$NEW_SECRET' >/dev/null 2>&1; then
+              echo '  swarm secret already exists — skipping create'
+            else
+              printf '%s' '$KEY_VALUE' | docker secret create '$NEW_SECRET' -
+              echo '  ✓ swarm secret created'
+            fi
+          "
+
+          # Swap on the service spec. --secret-rm only when there's an
+          # existing secret at the same target (first injection has none).
+          ATTACH_FLAGS="--secret-add source=$NEW_SECRET,target=$TARGET"
+          if [ -n "$CURRENT" ] && [ "$CURRENT" != "$NEW_SECRET" ]; then
+            DETACH_FLAGS="--secret-rm $CURRENT"
+          else
+            DETACH_FLAGS=""
+          fi
+
+          echo "── Updating $SERVICE: $DETACH_FLAGS $ATTACH_FLAGS ──"
+          ssh $SSH_OPTS "${{ env.SWARM_USER }}@$MGR" \
+              "docker service update --detach=false $DETACH_FLAGS $ATTACH_FLAGS '$SERVICE'"
+
+          echo "✓ Service updated. Tasks re-rolled with new secret at /run/secrets/$TARGET"
+
+      - name: Next steps
+        run: |
+          echo ""
+          echo "─── Hetzner key deployed ───"
+          echo "The 'hetzner' provider can now resolve its key at"
+          echo "/run/secrets/HETZNER_INFERENCE_API_KEY. Nothing routes to it"
+          echo "until you flip a process on the LLM-routing dashboard:"
+          echo "  https://agent.rishi.yral.com/admin/llm-routing"
+          echo ""
+          echo "Recommended rollout: flip ONE async process (e.g. quality_scorer)"
+          echo "to hetzner, watch cost/latency/quality, then move the rest."
