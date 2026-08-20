@@ -77,6 +77,18 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"llm_registry hot-override reload skipped at startup: {e}")
 
+    # Pre-warm the yral-auth JWKS so the first authenticated request after a
+    # deploy verifies instantly rather than paying a cold key fetch. Best-effort
+    # + off-loop: if auth.yral.com is briefly unreachable, the first request
+    # fetches it lazily instead.
+    try:
+        import auth
+
+        await asyncio.to_thread(auth._jwks_client.get_jwk_set)
+        logger.info("yral-auth JWKS pre-warmed")
+    except Exception as e:
+        logger.warning(f"JWKS pre-warm skipped at startup: {e}")
+
     trending_refresher_task = asyncio.create_task(_trending_stats_refresher())
     redis_sub_task = asyncio.create_task(websocket_manager.start_redis_subscriber())
 
@@ -536,30 +548,6 @@ async def capture_cost_breaker_open(request: Request, exc: CostCircuitBreakerOpe
 async def auth_me(request: Request):
     user_id = get_current_user(request)
     return {"user_id": user_id}
-
-
-@app.get("/api/v1/debug/whoami", tags=["Debug"])
-async def debug_whoami(request: Request):
-    """Temporary: decode JWT and return full payload. Remove before cutover."""
-    import jwt as pyjwt
-
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith(("Bearer ", "bearer ")):
-        return {"error": "No Bearer token"}
-    token = auth_header[7:]
-    try:
-        payload = pyjwt.decode(
-            token,
-            options={
-                "verify_signature": False,
-                "verify_aud": False,
-                "verify_exp": False,
-            },
-            algorithms=["RS256", "HS256"],
-        )
-        return {"payload": payload, "token_length": len(token)}
-    except Exception as e:
-        return {"error": str(e)}
 
 
 app.include_router(health_router)

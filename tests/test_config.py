@@ -46,8 +46,9 @@ def test_env_bool_true():
 def test_expected_issuers():
     from config import EXPECTED_ISSUERS
 
-    assert "https://auth.yral.com" in EXPECTED_ISSUERS
-    assert "https://auth.dolr.ai" in EXPECTED_ISSUERS
+    # yral-auth v2 issues under auth.yral.com only; the legacy auth.dolr.ai
+    # issuer was retired when signature verification landed.
+    assert EXPECTED_ISSUERS == ["https://auth.yral.com"]
 
 
 def test_app_defaults():

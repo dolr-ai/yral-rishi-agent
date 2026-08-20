@@ -15,34 +15,17 @@ async def ws_inbox(websocket: WebSocket, user_id: str, token: str = Query(defaul
         await websocket.close(code=4001, reason="Missing authentication token")
         return
 
-    import jwt as pyjwt
-    from config import EXPECTED_ISSUERS
+    from jwt import PyJWTError
+
+    from auth import verify_jwt
 
     try:
-        payload = pyjwt.decode(
-            token,
-            options={
-                "verify_signature": False,
-                "verify_aud": False,
-                "verify_exp": True,
-            },
-            algorithms=["RS256", "HS256"],
-        )
-    except Exception:
+        payload = verify_jwt(token)
+    except PyJWTError:
         await websocket.close(code=4001, reason="Invalid or expired token")
         return
 
-    issuer = payload.get("iss", "")
-    if issuer not in EXPECTED_ISSUERS:
-        await websocket.close(code=4001, reason="Invalid token issuer")
-        return
-
-    token_user_id = payload.get("sub", "")
-    if not token_user_id:
-        await websocket.close(code=4001, reason="Invalid token: missing sub")
-        return
-
-    if token_user_id != user_id:
+    if payload["sub"] != user_id:
         await websocket.close(code=4003, reason="Forbidden")
         return
 

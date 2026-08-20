@@ -200,7 +200,12 @@ LANGFUSE_PUBLIC_KEY = _env("LANGFUSE_PUBLIC_KEY")
 LANGFUSE_HOST = _env("LANGFUSE_HOST")
 
 # JWT auth
-EXPECTED_ISSUERS = ["https://auth.yral.com", "https://auth.dolr.ai"]
+EXPECTED_ISSUERS = ["https://auth.yral.com"]
+
+# yral-auth v2 issues ES256-signed JWTs; the public key is published at the JWKS
+# endpoint (fetched + cached, keyed by `kid` so rotation is automatic). Tokens
+# are always signature-verified — there is no unverified fallback.
+JWKS_URL = _env("JWKS_URL", "https://auth.yral.com/.well-known/jwks.json")
 
 # Market targeting (US market launch — see
 # docs/us-market-launch-spec-2026-08-08.md)
