@@ -77,6 +77,18 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"llm_registry hot-override reload skipped at startup: {e}")
 
+    # Pre-warm the yral-auth JWKS so the first authenticated request after a
+    # deploy verifies instantly rather than paying a cold key fetch. Best-effort
+    # + off-loop: if auth.yral.com is briefly unreachable, the first request
+    # fetches it lazily instead.
+    try:
+        import auth
+
+        await asyncio.to_thread(auth._jwks_client.get_jwk_set)
+        logger.info("yral-auth JWKS pre-warmed")
+    except Exception as e:
+        logger.warning(f"JWKS pre-warm skipped at startup: {e}")
+
     trending_refresher_task = asyncio.create_task(_trending_stats_refresher())
     redis_sub_task = asyncio.create_task(websocket_manager.start_redis_subscriber())
 
