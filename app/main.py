@@ -36,6 +36,7 @@ from routes.health import router as health_router
 from routes.human_chat import router as human_chat_router
 from routes.influencers import router as influencers_router
 from routes.media import router as media_router
+from routes.user import router as user_router
 from routes.soul_file import router as soul_file_router
 from routes.memories import router as memories_router
 from routes.skills import router as skills_router
@@ -564,6 +565,7 @@ app.include_router(soul_file_router)
 app.include_router(chat_router)
 app.include_router(chat_v2_router)
 app.include_router(media_router)
+app.include_router(user_router)
 app.include_router(human_chat_router)
 app.include_router(chat_v3_router)
 app.include_router(creator_router)

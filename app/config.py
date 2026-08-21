@@ -86,6 +86,20 @@ S3_ENDPOINT_URL = _env("S3_ENDPOINT_URL")
 S3_PUBLIC_URL_BASE = _env("S3_PUBLIC_URL_BASE")
 S3_URL_EXPIRES_SECONDS = _env_int("S3_URL_EXPIRES_SECONDS", 900)
 
+# Profile-picture storage (Storj — dedicated bucket + public link-share).
+# Reuses the SAME Storj gateway creds + endpoint as the chat-media store above
+# (AWS_ACCESS_KEY_ID/SECRET, S3_ENDPOINT_URL) — only the bucket differs — so no
+# new credentials are needed. Kept separate from chat media because a profile-pic
+# URL is written to SpacetimeDB and rendered by clients directly, forever, so it
+# must be durable + public. Storj has no public-read policy; public access is via
+# the link-sharing service, so PROFILE_PIC_PUBLIC_URL_BASE is the bucket's
+# read-only, non-expiring `/raw/` link-share and the full URL is base + "/" + key.
+PROFILE_PIC_S3_BUCKET = _env("PROFILE_PIC_S3_BUCKET", "yral-profile-pictures")
+PROFILE_PIC_PUBLIC_URL_BASE = _env(
+    "PROFILE_PIC_PUBLIC_URL_BASE",
+    "https://link.storjshare.io/raw/juojrspbmsy7dtukovdepimmpnma/yral-profile-pictures",
+)
+
 # Media limits
 MAX_IMAGE_SIZE_MB = _env_int("MAX_IMAGE_SIZE_MB", 10)
 MAX_AUDIO_SIZE_MB = _env_int("MAX_AUDIO_SIZE_MB", 20)

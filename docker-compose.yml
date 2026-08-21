@@ -31,6 +31,8 @@ services:
       AWS_REGION: ${AWS_REGION:-eu-central-1}
       S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-}
       S3_PUBLIC_URL_BASE: ${S3_PUBLIC_URL_BASE:-}
+      PROFILE_PIC_S3_BUCKET: ${PROFILE_PIC_S3_BUCKET:-yral-profile-pictures}
+      PROFILE_PIC_PUBLIC_URL_BASE: ${PROFILE_PIC_PUBLIC_URL_BASE:-https://link.storjshare.io/raw/juojrspbmsy7dtukovdepimmpnma/yral-profile-pictures}
       REPLICATE_API_TOKEN: ${REPLICATE_API_TOKEN:-}
       METADATA_URL: ${METADATA_URL:-https://metadata.yral.com}
       YRAL_METADATA_NOTIFICATION_API_KEY: ${YRAL_METADATA_NOTIFICATION_API_KEY:-}
