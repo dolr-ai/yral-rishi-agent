@@ -76,6 +76,11 @@ _PER_LOOP_KEYS = {
     # (lesson from the 2026-05-29 Gemini burn — new background loops
     # that spend money must never surprise on first deploy).
     "collage_pregen": "ENABLE_COLLAGE_PREGEN_LOOP",
+    # Video generation — the loop that polls ComfyUI on the GPU box and
+    # finishes generations. Defaults OFF: it is useless until that box is
+    # reachable from the swarm, and turning it off is also the stop button
+    # if generation starts producing bad output.
+    "videogen": "ENABLE_VIDEOGEN_LOOP",
 }
 
 
@@ -105,6 +110,10 @@ _DEFAULT_OFF_LOOPS: frozenset[str] = frozenset(
         # would surprise-charge before Sarvesh's mobile integration
         # is ready.
         "collage_pregen",
+        # Video generation ships dormant — the poll loop has nothing to
+        # talk to until ComfyUI on the GPU box is reachable from the
+        # swarm, and mobile is still pointed at the old service.
+        "videogen",
     }
 )
 

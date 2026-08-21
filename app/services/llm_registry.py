@@ -453,6 +453,21 @@ LLM_DEFAULTS: dict[str, dict[str, Any]] = {
         "model": "Qwen/Qwen3.6-35B-A3B-FP8",
         "timeout_sec": 60.0,
     },
+    # Video-generation safety gate — prompt AND the user's uploaded image
+    # judged together in ONE multimodal call. Replaces a separate HMAC-signed
+    # moderation service plus the staging bucket that existed only because
+    # that service could not read base64 images.
+    #
+    # Vision-capable provider required, and NO fallback for the same reason as
+    # the classifier above: a text-only fallback would silently drop the image
+    # and wave through exactly the uploads this exists to catch. If runpod_vllm
+    # is down the check fails closed and generation is refused — the user is
+    # told to try again, which costs seconds; a bad video is permanent.
+    "videogen_prompt_check": {
+        "provider": "runpod_vllm",
+        "model": "Qwen/Qwen3.6-35B-A3B-FP8",
+        "timeout_sec": 45.0,
+    },
 }
 
 

@@ -37,6 +37,7 @@ from routes.human_chat import router as human_chat_router
 from routes.influencers import router as influencers_router
 from routes.media import router as media_router
 from routes.user import router as user_router
+from videogen import router as videogen_router
 from routes.soul_file import router as soul_file_router
 from routes.memories import router as memories_router
 from routes.skills import router as skills_router
@@ -165,6 +166,13 @@ async def lifespan(app: FastAPI):
 
     collage_pregen_task = asyncio.create_task(collage_pregen_loop())
 
+    # Video generation — polls ComfyUI on the GPU box, stores finished videos
+    # and registers them as SpacetimeDB drafts. Gated by kill_switch
+    # "videogen" → ENABLE_VIDEOGEN_LOOP, which ships OFF.
+    from videogen.worker import run_forever as videogen_loop
+
+    videogen_task = asyncio.create_task(videogen_loop())
+
     # Hydrate rate-limit config from DB into Redis so the middleware
     # reads the operator-tuned values, not just the defaults. Idempotent.
     try:
@@ -190,6 +198,7 @@ async def lifespan(app: FastAPI):
     classification_task.cancel()
     feed_ranker_task.cancel()
     collage_pregen_task.cancel()
+    videogen_task.cancel()
     llm_routing_pubsub_task.cancel()
     try:
         await trending_refresher_task
@@ -249,6 +258,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await collage_pregen_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await videogen_task
     except asyncio.CancelledError:
         pass
     try:
@@ -566,6 +579,7 @@ app.include_router(chat_router)
 app.include_router(chat_v2_router)
 app.include_router(media_router)
 app.include_router(user_router)
+app.include_router(videogen_router)
 app.include_router(human_chat_router)
 app.include_router(chat_v3_router)
 app.include_router(creator_router)

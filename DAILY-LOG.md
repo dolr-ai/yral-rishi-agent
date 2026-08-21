@@ -1,5 +1,21 @@
 # Daily Log
 
+## 2026-08-21 (later) — AI video generation rebuilt on the agent service
+
+**Same root cause as the profile-image fix, three endpoints further on.** Mobile's SpacetimeDB migration moved every call to a yral-auth bearer token; Prakash's `storage-interface` still demands `delegated_identity` in the body, so **generate / drafts / publish all 422** and the whole AI-video feature is dead in prod. (`providers` still 200s, so the user gets as far as pressing the button.) Fix is the same shape as #490: don't migrate his Rust service — rebuild the endpoints here.
+
+**What landed:** new `app/videogen/` package — 5 routes, one table (`videogen_requests`, migration 053), a ComfyUI client, the LTX-2 graph, Storj storage + thumbnail, SpacetimeDB writes and a poll loop. ~700 lines replacing ~6,250 lines of Rust across three servers.
+
+**What got deleted rather than ported:** RabbitMQ (ComfyUI queues natively — `POST /prompt` → `GET /history/{id}`), HMAC-signed completion callbacks and the retry outbox (nothing calls us back, we poll), pre-signed upload URLs and the refresh endpoint their expiry needed (the video transits the service), request fingerprinting/dedup (every prompt yields a different video), the image staging bucket and its TTL sweeper (images go straight to ComfyUI), and the separate moderation service. Prakash's Rust worker on the GPU box goes too — the workflow JSON lived in the service we're replacing, so talking to ComfyUI directly is ~60 lines. Five identifiers collapse to one.
+
+**Safety:** one multimodal LLM call judges prompt *and* the user's uploaded image together (`videogen_prompt_check` → runpod_vllm, vision-capable, no fallback — a text-only fallback would silently drop the image and wave through exactly what the check exists to catch). Fails closed. Rejection returns HTTP 400 `{"InvalidInput": "<message>"}`, which the app already renders to the user — **zero mobile work for the reject path**.
+
+**SpacetimeDB, as the user not as an admin.** Posts are written by forwarding the caller's own `id_token` rather than holding the shared `SPACETIMEDB_ADMIN_TOKEN` (which can rewrite any user's username, email or subscription plan). That needs **[cluster#190](https://github.com/dolr-ai/yral-bare-metal-kubernetes-cluster/pull/190)** — opens `add_post`/`update_post_status` to the post's creator, matching the gate `delete_post` already uses. Compile-verified; awaiting Saikat.
+
+**Verified:** all 5 routes registered and answering, providers payload byte-identical to the live old service, 17 new tests + full suite (1433) green, ruff clean. GPU box confirmed reachable — ComfyUI answers on `127.0.0.1:18188`, `ltx-2.3-22b-dev-fp8.safetensors` present and all six custom node types the graph needs exist.
+
+**Ships dormant** (`ENABLE_VIDEOGEN_LOOP` off). Three things gate go-live: ComfyUI reachable from the swarm (tunnel + token — it has no auth of its own), `cdn-yral-sfw.yral.com` serving the video bucket (else generation succeeds and playback 404s), and cluster#190 merged.
+
 ## 2026-08-21 — AI-influencer creation unblocked end-to-end; profile-image upload moved onto our infra
 
 **Create-AI-influencer works again — the 2-day fight is over.** Root cause chain (4 stacked bugs) fully peeled: (1) reducer name `_v2`→`_v_2` + Option arg encoding [mobile], (2) persona-gen client timeout 30s→90s [mobile — gemini-2.5-flash *thinking* runs 7→20s+], (3) owner never registered in SpacetimeDB → registered via `accept(main_account_text=None)` [mobile], (4) **the wall: `accept_new_user_registration_v2` panicked on bot-attach** — SpacetimeDB `delete(row)` matches by value, but the reducer mutated the row *before* `delete(clone)`, so the delete missed and the re-`insert` hit the `principal_text` PK → panic. Fixed by converting all 14 `user_info.rs` update sites to `.principal_text().update()` (**[dolr-ai/yral-bare-metal-kubernetes-cluster#189](https://github.com/dolr-ai/yral-bare-metal-kubernetes-cluster/pull/189)** — Saikat merged + republished). Verified live: bot-attach now returns 200; on-device creation gets all the way through account+bot creation.
