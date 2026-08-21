@@ -21,6 +21,7 @@ and endpoint as chat media and profile pictures, only the bucket differs.
 
 import asyncio
 import logging
+import tempfile
 
 import config
 from services import storage
@@ -47,30 +48,37 @@ def public_url(key: str) -> str:
 
 
 async def extract_thumbnail(video_bytes: bytes) -> bytes:
-    """First frame as PNG, via ffmpeg on stdin/stdout.
+    """First frame as PNG.
 
-    Same single-frame extraction the old Rust service did
-    (`ffmpeg -i in -vframes 1 -f image2 out.png`), kept as a subprocess so there
-    is no video-decoding dependency in the Python image beyond ffmpeg itself.
+    Same single-frame extraction the old Rust service did, and like it we hand
+    ffmpeg a **file path** rather than piping the video in on stdin. MP4 keeps
+    its `moov` index atom at the end of the file, so a decoder has to seek back
+    after reading it; on a pipe it cannot, and ffmpeg fails with "Cannot
+    determine format of input after EOF". Verified inside the runtime image.
+
+    Output still goes to stdout — PNG is written linearly, so that direction is
+    safe and saves a second temp file.
     """
-    proc = await asyncio.create_subprocess_exec(
-        "ffmpeg",
-        "-loglevel",
-        "error",
-        "-i",
-        "pipe:0",
-        "-vframes",
-        "1",
-        "-f",
-        "image2",
-        "-c:v",
-        "png",
-        "pipe:1",
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    out, err = await proc.communicate(input=video_bytes)
+    with tempfile.NamedTemporaryFile(suffix=".mp4") as source:
+        source.write(video_bytes)
+        source.flush()
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg",
+            "-loglevel",
+            "error",
+            "-i",
+            source.name,
+            "-vframes",
+            "1",
+            "-f",
+            "image2",
+            "-c:v",
+            "png",
+            "pipe:1",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out, err = await proc.communicate()
     if proc.returncode != 0 or not out:
         raise ThumbnailError((err or b"").decode("utf-8", "replace")[:300])
     return out

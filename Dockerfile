@@ -7,8 +7,14 @@ LABEL org.opencontainers.image.description="Yral Agent API — AI chat service"
 # packages (openssl, libcap2, …) with fixable HIGH/CRITICAL CVEs the base
 # tag hasn't rebuilt for yet; without this the Trivy container scan on
 # :stable stays red. Early layer so it caches independent of app changes.
+# ffmpeg is a hard runtime dependency, not a convenience: video generation
+# extracts the first frame of every finished video as its thumbnail, and the
+# mobile app fetches a `-thumbnail.png` sibling for every draft and feed card.
+# Without it, generation succeeds and every card renders broken.
+# --no-install-recommends keeps this to the codecs and skips the X11/SDL chain.
 RUN apt-get update && \
     apt-get upgrade -y && \
+    apt-get install -y --no-install-recommends ffmpeg && \
     rm -rf /var/lib/apt/lists/*
 
 RUN groupadd --system --gid 1001 appuser && \

@@ -64,7 +64,9 @@ def test_duration_is_clamped():
 
 
 def test_duration_defaults_when_absent():
-    graph = comfyui.build_workflow(prompt="x", duration_seconds=None, image_filename=None)
+    graph = comfyui.build_workflow(
+        prompt="x", duration_seconds=None, image_filename=None
+    )
     assert (
         graph[comfyui.NODE_DURATION]["inputs"]["value"] == comfyui.MAX_DURATION_SECONDS
     )
@@ -210,3 +212,65 @@ def test_prompt_check_sends_the_image_alongside_the_prompt():
     content = prompt_check._build_messages(body)[-1]["content"]
     kinds = [part["type"] for part in content]
     assert "text" in kinds and "image_url" in kinds
+
+
+# ─── thumbnails ─────────────────────────────────────────────────────────
+
+
+def test_thumbnail_does_not_read_the_video_from_a_pipe():
+    """Regression guard. MP4 keeps its `moov` index atom at the end of the
+    file, so a decoder must seek backwards after reading it. On stdin it
+    cannot, and ffmpeg dies with "Cannot determine format of input after EOF" —
+    which meant every generated video got a broken thumbnail while generation
+    itself looked fine. Always hand ffmpeg a path.
+
+    Cheap enough to run everywhere, unlike the end-to-end test below.
+    """
+    import inspect
+
+    from videogen import storage as videogen_storage
+
+    source = inspect.getsource(videogen_storage.extract_thumbnail)
+    assert "pipe:0" not in source, "ffmpeg cannot read MP4 from stdin"
+    assert "NamedTemporaryFile" in source
+
+
+@pytest.mark.skipif(
+    __import__("shutil").which("ffmpeg") is None, reason="ffmpeg not installed"
+)
+def test_thumbnail_extraction_produces_a_png():
+    import subprocess
+    import tempfile
+
+    from videogen import storage as videogen_storage
+
+    with tempfile.NamedTemporaryFile(suffix=".mp4") as clip:
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=64x64:rate=8:duration=1",
+                "-pix_fmt",
+                "yuv420p",
+                clip.name,
+            ],
+            check=True,
+        )
+        video = pathlib.Path(clip.name).read_bytes()
+
+    thumb = asyncio.run(videogen_storage.extract_thumbnail(video))
+    assert thumb[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_storage_keys_match_what_the_app_builds():
+    """The app constructs {cdn}/{principal}/{video_id}.mp4 and the
+    `-thumbnail.png` sibling itself. These keys are the contract."""
+    from videogen import storage as videogen_storage
+
+    assert videogen_storage.video_key("abc", "vid1") == "abc/vid1.mp4"
+    assert videogen_storage.thumbnail_key("abc", "vid1") == "abc/vid1-thumbnail.png"
