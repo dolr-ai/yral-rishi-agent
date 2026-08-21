@@ -92,8 +92,8 @@ path switched off.
 
 ## Operating it
 
-Ships dormant. `ENABLE_VIDEOGEN_LOOP=true` starts the poll loop; it is also the
-stop button, checked every tick so it takes effect without a redeploy.
+On by default. `ENABLE_VIDEOGEN_LOOP=false` is the stop button — checked every
+tick, so stopping and restarting takes effect without a redeploy.
 
 | Setting | Purpose |
 |---|---|

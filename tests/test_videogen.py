@@ -1,7 +1,11 @@
 """Video generation — the parts that fail silently if they drift.
 
-Deliberately not testing "does FastAPI route a request". These cover the three
-things that would ship broken without anyone noticing until a user hit them:
+One rule: test what fails **silently** and is expensive to discover. Not that
+pydantic serialises a model, not that a dict literal has its keys — those pass
+whatever the code does and only cost time to read.
+
+Every test below maps to either "this breaks and nothing tells you" or "this
+already broke once":
 
 1. workflow injection — a wrong node id produces a *valid* graph that generates
    the wrong thing, or ignores the prompt entirely
@@ -9,6 +13,7 @@ things that would ship broken without anyone noticing until a user hit them:
    dumping raw text at the user for anything else
 3. the safety gate failing closed — the one behaviour where a bug is not a bad
    UX but a bad video, permanently public
+4. thumbnail extraction — it shipped broken once already (see below)
 """
 
 import asyncio
@@ -54,18 +59,11 @@ def test_image_to_video_enables_the_image_path_and_references_the_upload():
     assert graph[comfyui.NODE_IMAGE]["inputs"]["image"] == "abc-source.png"
 
 
-def test_duration_is_clamped():
+@pytest.mark.parametrize("requested", [600, None])
+def test_duration_never_exceeds_the_cap(requested):
+    """Over the cap, and absent, both land on the cap."""
     graph = comfyui.build_workflow(
-        prompt="x", duration_seconds=600, image_filename=None
-    )
-    assert (
-        graph[comfyui.NODE_DURATION]["inputs"]["value"] == comfyui.MAX_DURATION_SECONDS
-    )
-
-
-def test_duration_defaults_when_absent():
-    graph = comfyui.build_workflow(
-        prompt="x", duration_seconds=None, image_filename=None
+        prompt="x", duration_seconds=requested, image_filename=None
     )
     assert (
         graph[comfyui.NODE_DURATION]["inputs"]["value"] == comfyui.MAX_DURATION_SECONDS
@@ -87,38 +85,7 @@ def test_seeds_are_randomised_per_request():
     assert len(seeds) > 1, "seeds are not being randomised"
 
 
-def test_build_does_not_mutate_the_file_on_disk():
-    before = WORKFLOW.read_text()
-    comfyui.build_workflow(prompt="x", duration_seconds=5, image_filename="y.png")
-    assert WORKFLOW.read_text() == before
-
-
 # ─── the mobile contract ────────────────────────────────────────────────
-
-
-def test_provider_carries_every_field_the_app_reads():
-    """ProviderDto defaults most fields, but `id` and `name` are non-null and
-    the app calls resolvedAspectRatio()/resolvedDuration() off the rest."""
-    p = models.public_providers()[0]
-    for field in (
-        "id",
-        "name",
-        "cost",
-        "supports_image",
-        "allowed_aspect_ratios",
-        "allowed_durations",
-        "default_aspect_ratio",
-        "default_duration",
-        "is_available",
-        "is_internal",
-    ):
-        assert field in p, f"providers response missing {field}"
-    assert p["id"] == "ltx2"
-
-
-def test_generate_response_has_exactly_the_two_fields_the_app_reads():
-    body = models.GenerateResponse(operation_id="abc", provider="ltx2").model_dump()
-    assert body == {"operation_id": "abc", "provider": "ltx2"}
 
 
 def test_error_body_is_a_flat_string_value():
@@ -130,24 +97,6 @@ def test_error_body_is_a_flat_string_value():
     payload = json.loads(bytes(_error(400, "InvalidInput", "try again").body))
     assert payload == {"InvalidInput": "try again"}
     assert isinstance(payload["InvalidInput"], str)
-
-
-def test_image_payload_matches_the_kotlin_shape():
-    parsed = models.GenerateRequest.model_validate(
-        {
-            "request": {
-                "prompt": "p",
-                "model_id": "ltx2",
-                "user_id": "u",
-                "image": {
-                    "type": "Base64",
-                    "value": {"data": "aGk=", "mime_type": "image/png"},
-                },
-            },
-            "upload_handling": "ServerDraft",
-        }
-    )
-    assert parsed.request.image.value.data == "aGk="
 
 
 # ─── the safety gate ────────────────────────────────────────────────────

@@ -97,9 +97,9 @@ async def tick(pool) -> None:
 async def run_forever() -> None:
     """Background task started from the app lifespan.
 
-    Gated by kill_switch "videogen" → ENABLE_VIDEOGEN_LOOP, which ships OFF.
-    Checked every tick rather than once at startup, so the loop can be stopped
-    and restarted by flipping the env var without a redeploy.
+    On by default. ENABLE_VIDEOGEN_LOOP=false stops it — checked every tick
+    rather than once at startup, so stopping and restarting is an env change,
+    not a redeploy.
     """
     from database import get_pool
     from kill_switch import is_enabled

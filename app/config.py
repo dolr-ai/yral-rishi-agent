@@ -241,9 +241,10 @@ MARKET_DEBUG_OVERRIDE_ENABLED = _env_bool("MARKET_DEBUG_OVERRIDE_ENABLED", False
 
 # ─── Video generation ──────────────────────────────────────────────────
 #
-# The feature's on/off knob is the kill switch ENABLE_VIDEOGEN_LOOP (see
-# kill_switch.py), which ships OFF — deliberately not a second flag here, so
-# there is only ever one place to look when asking "is video generation on?".
+# On by default. The only knob is the kill switch ENABLE_VIDEOGEN_LOOP (see
+# kill_switch.py) — deliberately not a second flag here, so there is one place
+# to look when asking "is video generation on?", and one thing to flip to stop
+# it without a redeploy.
 #
 # ComfyUI on the GPU box (rishi-gpu-1). It listens on 127.0.0.1:18188 there and
 # has NO authentication of its own, so it must never be exposed openly — reach
