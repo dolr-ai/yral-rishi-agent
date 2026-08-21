@@ -48,7 +48,8 @@ async def upload_profile_image(body: UploadProfileImageRequest, request: Request
         raise HTTPException(status_code=422, detail="image_data is empty")
     if len(image_bytes) > config.MAX_IMAGE_SIZE_BYTES:
         raise HTTPException(
-            status_code=413, detail=f"Image too large. Max: {config.MAX_IMAGE_SIZE_MB}MB"
+            status_code=413,
+            detail=f"Image too large. Max: {config.MAX_IMAGE_SIZE_MB}MB",
         )
 
     ext = profile_storage.detect_extension(image_bytes)
