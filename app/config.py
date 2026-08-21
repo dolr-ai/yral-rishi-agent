@@ -86,21 +86,18 @@ S3_ENDPOINT_URL = _env("S3_ENDPOINT_URL")
 S3_PUBLIC_URL_BASE = _env("S3_PUBLIC_URL_BASE")
 S3_URL_EXPIRES_SECONDS = _env_int("S3_URL_EXPIRES_SECONDS", 900)
 
-# Profile-picture storage (Hetzner Object Storage — a dedicated PUBLIC bucket).
-# Kept separate from the media store above on purpose: chat media is private and
-# served via short-lived presigned URLs, but a profile-picture URL is written to
-# SpacetimeDB and rendered directly by clients forever — so it must be a durable,
-# public URL. Bucket `yral-profile-pictures` has a public-read policy.
-PROFILE_PIC_S3_ENDPOINT = _env(
-    "PROFILE_PIC_S3_ENDPOINT", "https://hel1.your-objectstorage.com"
-)
-PROFILE_PIC_S3_REGION = _env("PROFILE_PIC_S3_REGION", "hel1")
+# Profile-picture storage (Storj — dedicated bucket + public link-share).
+# Reuses the SAME Storj gateway creds + endpoint as the chat-media store above
+# (AWS_ACCESS_KEY_ID/SECRET, S3_ENDPOINT_URL) — only the bucket differs — so no
+# new credentials are needed. Kept separate from chat media because a profile-pic
+# URL is written to SpacetimeDB and rendered by clients directly, forever, so it
+# must be durable + public. Storj has no public-read policy; public access is via
+# the link-sharing service, so PROFILE_PIC_PUBLIC_URL_BASE is the bucket's
+# read-only, non-expiring `/raw/` link-share and the full URL is base + "/" + key.
 PROFILE_PIC_S3_BUCKET = _env("PROFILE_PIC_S3_BUCKET", "yral-profile-pictures")
-PROFILE_PIC_S3_ACCESS_KEY_ID = _env("PROFILE_PIC_S3_ACCESS_KEY_ID")
-PROFILE_PIC_S3_SECRET_ACCESS_KEY = _env("PROFILE_PIC_S3_SECRET_ACCESS_KEY")
 PROFILE_PIC_PUBLIC_URL_BASE = _env(
     "PROFILE_PIC_PUBLIC_URL_BASE",
-    "https://yral-profile-pictures.hel1.your-objectstorage.com",
+    "https://link.storjshare.io/raw/juojrspbmsy7dtukovdepimmpnma/yral-profile-pictures",
 )
 
 # Media limits

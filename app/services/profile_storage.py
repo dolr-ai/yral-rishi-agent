@@ -1,48 +1,27 @@
-"""Profile-picture storage on Hetzner Object Storage (public bucket).
+"""Profile-picture storage — a dedicated Storj bucket + public link-share.
 
-Deliberately separate from `services/storage.py` (the Storj chat-media store):
-profile-picture URLs are written to SpacetimeDB and rendered by clients forever,
-so they must be durable + public — not the private, presigned model used for chat
-media. The `yral-profile-pictures` bucket carries a public-read policy, so any
-uploaded object is fetchable at `{PROFILE_PIC_PUBLIC_URL_BASE}/{key}` with no auth.
+Replaces the departed `storage-interface.prakash.yral.com` avatar upload. Reuses
+the chat-media Storj client (`services/storage.py`) — same gateway creds, endpoint,
+and the checksum config Storj's gateway requires — only the *bucket* differs, so no
+new credentials are involved. Storj has no public-read policy, so the durable public
+URL is the bucket's read-only, non-expiring `/raw/` link-share
+(`PROFILE_PIC_PUBLIC_URL_BASE`) + the object key. We hold only the file; the profile
+record itself lives in SpacetimeDB (`update_profile_details_v2`).
 """
 
 import logging
 import uuid
 
-import boto3
-from botocore.config import Config as BotoConfig
-
 import config
+from services import storage
 
 logger = logging.getLogger(__name__)
 
-# Magic-byte → extension. Defaults to jpg (the app sends JPEG avatars).
 _CONTENT_TYPE = {
     "png": "image/png",
     "jpg": "image/jpeg",
     "webp": "image/webp",
 }
-
-_client = None
-
-
-def _get_client():
-    global _client
-    if _client is not None:
-        return _client
-    if not config.PROFILE_PIC_S3_ACCESS_KEY_ID:
-        logger.warning("Profile-pic S3 not configured — profile uploads will fail")
-        return None
-    _client = boto3.client(
-        "s3",
-        endpoint_url=config.PROFILE_PIC_S3_ENDPOINT,
-        aws_access_key_id=config.PROFILE_PIC_S3_ACCESS_KEY_ID,
-        aws_secret_access_key=config.PROFILE_PIC_S3_SECRET_ACCESS_KEY,
-        region_name=config.PROFILE_PIC_S3_REGION,
-        config=BotoConfig(signature_version="s3v4", s3={"addressing_style": "path"}),
-    )
-    return _client
 
 
 def detect_extension(image_bytes: bytes) -> str:
@@ -57,8 +36,8 @@ def detect_extension(image_bytes: bytes) -> str:
 
 
 def upload_profile_image(owner: str, image_bytes: bytes, ext: str) -> str:
-    """Store the image publicly and return its durable public URL."""
-    client = _get_client()
+    """Store the image in the public bucket and return its durable public URL."""
+    client = storage._get_s3_client()  # same Storj client used for chat media
     if not client:
         raise RuntimeError("Profile-pic storage not configured")
     key = f"{owner}/{uuid.uuid4()}.{ext}"
