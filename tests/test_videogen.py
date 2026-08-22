@@ -223,3 +223,40 @@ def test_storage_keys_match_what_the_app_builds():
 
     assert videogen_storage.video_key("abc", "vid1") == "abc/vid1.mp4"
     assert videogen_storage.thumbnail_key("abc", "vid1") == "abc/vid1-thumbnail.png"
+
+
+# ─── SpacetimeDB identity ───────────────────────────────────────────────
+
+
+def test_identity_derivation_matches_spacetimedb():
+    """Reducers taking `creator: Identity` need the caller's SpacetimeDB
+    identity, which is derived from the token's iss+sub and is NOT the IC
+    principal the JWT's `sub` holds.
+
+    These vectors came from `POST /v1/identity` on maincloud, whose response
+    carries both the identity and a token to read the claims from — so this
+    pins our derivation against SpacetimeDB's own output rather than against
+    our reading of it. Getting this wrong fails every post registration with
+    `Unauthorized`, which looks like a permissions problem rather than an
+    encoding one.
+    """
+    from videogen.spacetime import _identity_from_claims
+
+    vectors = [
+        (
+            "localhost",
+            "1e43621e-1613-421a-899b-f1cddc153937",
+            "0xc200a12a7d2427db861ee365901eb5d6629c34a178097867b0195cc2c910c791",
+        ),
+    ]
+    for issuer, subject, expected in vectors:
+        assert _identity_from_claims(issuer, subject) == expected
+
+
+def test_post_status_is_a_tagged_variant_not_a_string():
+    """SATS enums go over the wire as {"draft": []}. A bare "Draft" is
+    rejected with `unknown variant` — verified against the live database."""
+    from videogen import spacetime
+
+    assert spacetime.STATUS_DRAFT == {"draft": []}
+    assert spacetime.STATUS_UPLOADED == {"uploaded": []}
