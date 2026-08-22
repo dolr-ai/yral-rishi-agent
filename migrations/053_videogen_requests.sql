@@ -20,9 +20,11 @@ SET statement_timeout = '60s';
 
 
 CREATE TABLE IF NOT EXISTS videogen_requests (
-    id             BIGSERIAL PRIMARY KEY,
+    -- video_id IS the primary key. There is no surrogate id: nothing reads one,
+    -- and adding one would put a second identifier on a table whose whole point
+    -- is that there is only ever one.
+    video_id       TEXT PRIMARY KEY,
     user_id        TEXT NOT NULL,
-    video_id       TEXT NOT NULL UNIQUE,
     prompt         TEXT NOT NULL,
     model_id       TEXT NOT NULL,
     status         TEXT NOT NULL DEFAULT 'pending'

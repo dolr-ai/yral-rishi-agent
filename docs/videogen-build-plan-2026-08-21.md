@@ -162,7 +162,7 @@ the loop *is* the recovery path. No resume-on-boot special case.
 
 ```sql
 CREATE TABLE videogen_requests (
-    id             BIGSERIAL PRIMARY KEY,
+    video_id       TEXT PRIMARY KEY,       -- also the operation id + object key
     user_id        TEXT NOT NULL,          -- JWT sub
     prompt         TEXT NOT NULL,
     status         TEXT NOT NULL DEFAULT 'pending',  -- pending|complete|failed
