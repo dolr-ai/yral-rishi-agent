@@ -76,6 +76,11 @@ _PER_LOOP_KEYS = {
     # (lesson from the 2026-05-29 Gemini burn — new background loops
     # that spend money must never surprise on first deploy).
     "collage_pregen": "ENABLE_COLLAGE_PREGEN_LOOP",
+    # Video generation — the loop that polls ComfyUI on the GPU box and
+    # finishes generations. Defaults ON. The switch exists purely as a stop
+    # button: if generation starts producing bad output or hammering the GPU,
+    # ENABLE_VIDEOGEN_LOOP=false stops it in seconds without a redeploy.
+    "videogen": "ENABLE_VIDEOGEN_LOOP",
 }
 
 

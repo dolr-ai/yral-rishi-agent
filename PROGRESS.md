@@ -783,3 +783,30 @@ Recommend a Phase 0 design re-audit before production cutover: enumerate every "
 - Motorola retest (2026-05-28): all 3 scenarios from `~/Claude Projects/yral-mobile/HANDOFF-CHAT-AS-HUMAN.md` pass.
 
 **Mobile UI PR to Sarvesh still pending** — feature-flag-gated, awaiting agent v2 cutover.
+
+---
+
+## Absorbing departed-employee services — video generation (2026-08-21)
+
+Prakash left; `storage-interface.prakash.yral.com` is orphaned and every mobile
+call to it 422s (the app moved to yral-auth bearer tokens; the service still
+wants `delegated_identity` in the body). Decision: **rebuild the endpoints mobile
+actually calls, retire the rest.** Only 9 of its 37 endpoints have a mobile
+consumer, and manual video upload is dead code in the app.
+
+| Item | Status | PR |
+|---|---|---|
+| Recon + migration plan (`docs/videogen-build-plan-2026-08-21.md`) | ✅ Done | — |
+| Profile-image endpoint (human + bot avatars) | ✅ Done + deployed | #490 |
+| Mobile: point profile-image hosts at the agent via the right constants | 🔄 Branch ready, awaiting Motorola pass | mobile `fix/mobile-hosts-name-the-right-constant-2026-08-21` |
+| SpacetimeDB: creator may call `add_post` / `update_post_status` | 🔄 Open, awaiting Saikat | cluster#190 |
+| `app/videogen/` — 5 routes, 1 table, ComfyUI client, poll loop | 🔄 In PR | this PR |
+| Expose ComfyUI to the swarm (tunnel + token; it has no auth) | ⏳ Pending | — |
+| Point `cdn-yral-sfw.yral.com` at the video bucket | ⏳ Pending | — |
+| Mobile: flip `VIDEOGEN_BASE_URL` / `UPLOAD_BASE_URL` to the agent | ⏳ Ships with go-live | — |
+| Retire `storage-interface`, prakash-1/2/3, its RabbitMQ + Patroni clusters | ⏳ After videogen proven | — |
+
+**Not being ported** (no mobile consumer): raw/HLS upload, `get-upload-url`,
+`update-video-metadata`, dedup, pHash, `move-to-nsfw`, the Storj↔Hetzner mirror,
+the media index — 28 endpoints. Existing videos keep playing; they are already
+in the bucket.

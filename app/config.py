@@ -238,3 +238,46 @@ MARKET_EXCLUSIVE_COUNTRIES = _env_list("MARKET_EXCLUSIVE_COUNTRIES", "")
 # That header is trivially spoofable, so this MUST stay false in prod —
 # otherwise any user could pick their own catalogue.
 MARKET_DEBUG_OVERRIDE_ENABLED = _env_bool("MARKET_DEBUG_OVERRIDE_ENABLED", False)
+
+# ─── Video generation ──────────────────────────────────────────────────
+#
+# On by default. The only knob is the kill switch ENABLE_VIDEOGEN_LOOP (see
+# kill_switch.py) — deliberately not a second flag here, so there is one place
+# to look when asking "is video generation on?", and one thing to flip to stop
+# it without a redeploy.
+#
+# ComfyUI on the GPU box (rishi-gpu-1). It listens on 127.0.0.1:18188 there and
+# has NO authentication of its own, so it must never be exposed openly — reach
+# it over a tunnel and keep the shared token set.
+COMFYUI_BASE_URL = _env("COMFYUI_BASE_URL", "http://127.0.0.1:18188")
+COMFYUI_AUTH_TOKEN = _env("COMFYUI_AUTH_TOKEN", "")
+COMFYUI_TIMEOUT_SECONDS = _env_int("COMFYUI_TIMEOUT_SECONDS", 120)
+
+# Finished videos — a dedicated Storj bucket, reusing the same gateway
+# credentials as chat media and profile pictures (only the bucket differs).
+# Storj rather than the Hetzner bucket behind today's CDN for the reason
+# profile pictures chose it: the Hetzner credentials also reach the DB-backup
+# bucket, and a public-facing upload path should not hold those.
+#
+# THE KEY LAYOUT IS THE CONTRACT, not this URL. The app never reads a video URL
+# from us — it builds one itself from the post's video_uid and creator:
+#     https://cdn-yral-sfw.yral.com/{principal}/{video_id}.mp4
+# So a generated video only plays once that CDN hostname serves this bucket.
+# Until it does, generation works end-to-end and playback 404s. That is a
+# Cloudflare origin change, not a code change — see app/videogen/README.md.
+VIDEOGEN_S3_BUCKET = _env("VIDEOGEN_S3_BUCKET", "yral-videos")
+VIDEOGEN_PUBLIC_URL_BASE = _env(
+    "VIDEOGEN_PUBLIC_URL_BASE", "https://cdn-yral-sfw.yral.com"
+)
+
+# Poll cadence and the giving-up point. Generation runs a couple of minutes;
+# the stale window only has to be generous enough that a queued job behind
+# other work is not retired while it is still legitimately waiting.
+VIDEOGEN_POLL_INTERVAL_SECONDS = _env_int("VIDEOGEN_POLL_INTERVAL_SECONDS", 15)
+VIDEOGEN_STALE_AFTER_SECONDS = _env_int("VIDEOGEN_STALE_AFTER_SECONDS", 1800)
+
+# SpacetimeDB holds the posts. We call reducers as the requesting user by
+# forwarding their token, so there is no admin credential here to leak.
+SPACETIMEDB_URL = _env("SPACETIMEDB_URL", "https://maincloud.spacetimedb.com")
+SPACETIMEDB_DB_NAME = _env("SPACETIMEDB_DB_NAME", "yral-database-spacetime-4lbo7")
+SPACETIMEDB_TIMEOUT_SECONDS = _env_int("SPACETIMEDB_TIMEOUT_SECONDS", 30)
