@@ -10,6 +10,14 @@
 --
 -- user_token holds the caller's yral-auth id_token, needed minutes later to
 -- write the post to SpacetimeDB as that user. Cleared on any terminal state.
+--
+-- Squawk compliance: BOTH timeouts before any DDL (the PR #427 lesson).
+-- This migration only creates a NEW table, so it takes no lock anything else
+-- contends for — the timeouts are cheap insurance, not a real constraint here.
+
+SET lock_timeout = '3s';
+SET statement_timeout = '60s';
+
 
 CREATE TABLE IF NOT EXISTS videogen_requests (
     id             BIGSERIAL PRIMARY KEY,
