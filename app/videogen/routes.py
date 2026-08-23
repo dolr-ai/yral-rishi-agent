@@ -68,10 +68,19 @@ async def generate_video(body: models.GenerateRequest, request: Request):
     user_id = get_current_user(request)
     req = body.request
 
-    # The app sends user_id in the body; the JWT is what we trust. A mismatch
-    # means someone is generating into another account.
+    # `req.user_id` is accepted for contract compatibility and otherwise unused —
+    # every identity decision below comes from the verified JWT. Rejecting on a
+    # mismatch therefore bought no security (the token cannot be forged, and the
+    # body field is never read) while breaking generation outright for anyone
+    # whose client-side principal is spelled differently from the token subject.
+    # Log it instead: a steady stream here means the two representations have
+    # diverged and is worth chasing, but it is not a reason to refuse the user.
     if req.user_id and req.user_id != user_id:
-        return _error(401, "AuthError", "identity mismatch")
+        logger.warning(
+            "videogen: body user_id %r != token sub %r — proceeding with the token",
+            req.user_id,
+            user_id,
+        )
 
     if not (req.prompt or "").strip():
         return _error(400, "InvalidInput", "Add a prompt to create a video.")
