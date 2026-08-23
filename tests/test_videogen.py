@@ -248,3 +248,19 @@ def test_targets_the_reducers_the_app_actually_reads():
 
     assert '"add_post_2"' in inspect.getsource(spacetime.add_draft_post)
     assert '"update_post_status_2"' in inspect.getsource(spacetime.publish_post)
+
+
+def test_generate_does_not_reject_a_mismatched_body_user_id():
+    """`user_id` in the body is decorative — every identity decision uses the
+    verified JWT. Rejecting on a mismatch bought nothing and broke generation
+    for real users (401 "Authentication failed" on the Alpha build, 2026-08-23),
+    while the same request's drafts poll succeeded on the identical token.
+    """
+    import inspect
+
+    from videogen import routes
+
+    source = inspect.getsource(routes.generate_video)
+    body_check = source.split("if not (req.prompt")[0]
+    assert "AuthError" not in body_check, "body user_id must not produce a 401"
+    assert "req.user_id" in body_check, "the mismatch should still be logged"
