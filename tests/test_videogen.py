@@ -269,12 +269,11 @@ def test_generate_does_not_reject_a_mismatched_body_user_id():
 # ─── concurrency ────────────────────────────────────────────────────────
 
 
-def test_poll_loop_claims_rows_instead_of_listing_them():
-    """The service runs 2 replicas x 4 uvicorn workers, so eight copies of the
-    poll loop run concurrently. A plain SELECT hands each pending row to all of
-    them — on 2026-08-25 that fetched one generation from the GPU box and
-    uploaded it to Storj six times, and every loser got `DuplicatePostId` back
-    from SpacetimeDB.
+def test_the_finish_step_is_claimed_atomically():
+    """Eight copies of the poll loop run concurrently (2 replicas x 4 uvicorn
+    workers). Download, upload and post-registration are side-effecting, and
+    without a claim all eight ran them for the same generation — six uploads of
+    one video, and `DuplicatePostId` for the seven losers.
 
     The claim must stay atomic (UPDATE ... RETURNING, not read-then-write) or
     the race reopens.
@@ -283,10 +282,23 @@ def test_poll_loop_claims_rows_instead_of_listing_them():
 
     from videogen import repository, worker
 
-    assert "claim_pending" in inspect.getsource(worker.tick)
-    claim = inspect.getsource(repository.claim_pending)
+    assert "claim_for_finish" in inspect.getsource(worker._advance_one)
+    claim = inspect.getsource(repository.claim_for_finish)
     assert "UPDATE" in claim and "RETURNING" in claim, "claim must be atomic"
-    assert "SKIP LOCKED" in claim
+
+
+def test_polling_is_not_claimed():
+    """Claiming at poll time would hold the row for the whole 2-3 minute
+    generation, so no worker — not even the holder — could look at it again
+    until the lease lapsed. A 15-second turnaround would become ten minutes.
+    Polling is a cheap idempotent read; leave it unsynchronised.
+    """
+    import inspect
+
+    from videogen import repository, worker
+
+    assert "list_pending" in inspect.getsource(worker.tick)
+    assert "claimed_at" not in inspect.getsource(repository.list_pending)
 
 
 def test_claim_lease_outlasts_a_generation_but_expires_before_the_sweep():

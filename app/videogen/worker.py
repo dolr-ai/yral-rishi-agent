@@ -7,10 +7,12 @@ HMAC-signed completion callbacks, a retry outbox and pre-signed upload URLs with
 an expiry-refresh endpoint to achieve the same thing.
 
 **Several copies of this loop run at once** — the service is 2 swarm replicas x
-4 uvicorn workers, and every worker process starts its own. Rows are therefore
-*claimed* atomically rather than merely read; without that all eight process the
-same generation, which on 2026-08-25 meant one video was fetched and uploaded
-six times (see `repository.claim_pending`).
+4 uvicorn workers, and every worker process starts its own. Polling is left
+unsynchronised because it is a cheap idempotent read; the *finish* step is
+claimed, because downloading, uploading and registering the post are not. Without
+that claim all eight ran the finish for the same generation: the first two videos
+this service ever produced were each fetched and uploaded six times, and the
+seven losers got `DuplicatePostId` (see `repository.claim_for_finish`).
 
 It is restart-safe by construction: the row is written before the job is
 submitted, so a process that dies mid-generation simply finds the row still
@@ -76,6 +78,14 @@ async def _advance_one(pool, row: dict) -> None:
         logger.warning("videogen: %s failed at ComfyUI", video_id)
         return
 
+    # Everything above is idempotent and safe to duplicate; everything below is
+    # not. Take the claim here, so the exclusive window is the few seconds the
+    # finish takes rather than the whole generation.
+    if not await repository.claim_for_finish(
+        pool, video_id=video_id, lease_seconds=config.VIDEOGEN_CLAIM_LEASE_SECONDS
+    ):
+        return  # another worker is finishing this one
+
     try:
         await _finish(pool, row, file_ref)
     except Exception as e:
@@ -93,12 +103,7 @@ async def tick(pool) -> None:
     await repository.fail_stale(
         pool, older_than_seconds=config.VIDEOGEN_STALE_AFTER_SECONDS
     )
-    # Claim rather than list: eight copies of this loop run concurrently
-    # (2 replicas x 4 uvicorn workers), and a plain read hands each row to all
-    # of them. See repository.claim_pending.
-    for row in await repository.claim_pending(
-        pool, lease_seconds=config.VIDEOGEN_CLAIM_LEASE_SECONDS
-    ):
+    for row in await repository.list_pending(pool):
         try:
             await _advance_one(pool, row)
         except Exception as e:
