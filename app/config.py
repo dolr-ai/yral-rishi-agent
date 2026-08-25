@@ -276,6 +276,12 @@ VIDEOGEN_PUBLIC_URL_BASE = _env(
 VIDEOGEN_POLL_INTERVAL_SECONDS = _env_int("VIDEOGEN_POLL_INTERVAL_SECONDS", 15)
 VIDEOGEN_STALE_AFTER_SECONDS = _env_int("VIDEOGEN_STALE_AFTER_SECONDS", 1800)
 
+# How long one loop copy owns a claimed row. Must comfortably exceed a full
+# generation (~2-3 min observed) or a healthy job is picked up twice; must stay
+# well under VIDEOGEN_STALE_AFTER_SECONDS or a dead worker's row is retired
+# before anyone re-claims it.
+VIDEOGEN_CLAIM_LEASE_SECONDS = _env_int("VIDEOGEN_CLAIM_LEASE_SECONDS", 600)
+
 # SpacetimeDB holds the posts. We call reducers as the requesting user by
 # forwarding their token, so there is no admin credential here to leak.
 SPACETIMEDB_URL = _env("SPACETIMEDB_URL", "https://maincloud.spacetimedb.com")

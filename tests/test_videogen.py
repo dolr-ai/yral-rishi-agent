@@ -264,3 +264,48 @@ def test_generate_does_not_reject_a_mismatched_body_user_id():
     body_check = source.split("if not (req.prompt")[0]
     assert "AuthError" not in body_check, "body user_id must not produce a 401"
     assert "req.user_id" in body_check, "the mismatch should still be logged"
+
+
+# ─── concurrency ────────────────────────────────────────────────────────
+
+
+def test_the_finish_step_is_claimed_atomically():
+    """Eight copies of the poll loop run concurrently (2 replicas x 4 uvicorn
+    workers). Download, upload and post-registration are side-effecting, and
+    without a claim all eight ran them for the same generation — six uploads of
+    one video, and `DuplicatePostId` for the seven losers.
+
+    The claim must stay atomic (UPDATE ... RETURNING, not read-then-write) or
+    the race reopens.
+    """
+    import inspect
+
+    from videogen import repository, worker
+
+    assert "claim_for_finish" in inspect.getsource(worker._advance_one)
+    claim = inspect.getsource(repository.claim_for_finish)
+    assert "UPDATE" in claim and "RETURNING" in claim, "claim must be atomic"
+
+
+def test_polling_is_not_claimed():
+    """Claiming at poll time would hold the row for the whole 2-3 minute
+    generation, so no worker — not even the holder — could look at it again
+    until the lease lapsed. A 15-second turnaround would become ten minutes.
+    Polling is a cheap idempotent read; leave it unsynchronised.
+    """
+    import inspect
+
+    from videogen import repository, worker
+
+    assert "list_pending" in inspect.getsource(worker.tick)
+    assert "claimed_at" not in inspect.getsource(repository.list_pending)
+
+
+def test_claim_lease_outlasts_a_generation_but_expires_before_the_sweep():
+    """A lease shorter than a generation means a healthy job gets picked up
+    twice; one longer than the stale sweep means a dead worker's row is retired
+    before anyone can re-claim it."""
+    import config
+
+    assert config.VIDEOGEN_CLAIM_LEASE_SECONDS > 300
+    assert config.VIDEOGEN_CLAIM_LEASE_SECONDS < config.VIDEOGEN_STALE_AFTER_SECONDS

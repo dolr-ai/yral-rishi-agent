@@ -62,6 +62,19 @@ async def attach_comfy_id(pool, *, video_id: str, comfy_id: str) -> None:
 
 
 async def list_pending(pool, limit: int = 50) -> list[dict]:
+    """Pending rows, for polling. Deliberately NOT claimed.
+
+    Eight copies of the poll loop run concurrently (2 replicas x 4 uvicorn
+    workers) and all of them see every row here. That is fine: polling is one
+    cheap read-only GET to ComfyUI and duplicating it changes nothing. Claiming
+    at this stage would be actively harmful — a claim held across the 2-3 minutes
+    a generation takes would stop *every* worker, including the holder, from
+    looking at the row again until the lease lapsed, turning a 15-second
+    turnaround into a ten-minute one.
+
+    Exclusivity is taken later, around the part that actually needs it —
+    see `claim_for_finish`.
+    """
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
@@ -73,6 +86,38 @@ async def list_pending(pool, limit: int = 50) -> list[dict]:
             limit,
         )
     return [dict(r) for r in rows]
+
+
+async def claim_for_finish(pool, *, video_id: str, lease_seconds: int) -> bool:
+    """Take exclusive ownership of the *finish* step. True if we won it.
+
+    Everything before this point is idempotent; everything after it is not.
+    Downloading the video, uploading it to storage and registering the post are
+    each side-effecting, and on 2026-08-24 and -25 all eight loop copies ran them
+    for the same generation — the video was fetched from the GPU box and uploaded
+    to Storj six times, and the seven losers got `DuplicatePostId` back from
+    SpacetimeDB.
+
+    Claiming here rather than at poll time keeps the exclusive window down to the
+    few seconds the finish takes, instead of spanning the whole generation.
+
+    The claim lapses after `lease_seconds` so a worker that dies midway cannot
+    strand a row; the next loop to see it finished will re-claim and complete it.
+    """
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE videogen_requests SET claimed_at = NOW()
+            WHERE video_id = $1
+              AND status = 'pending'
+              AND (claimed_at IS NULL
+                   OR claimed_at < NOW() - ($2 || ' seconds')::interval)
+            RETURNING video_id
+            """,
+            video_id,
+            str(lease_seconds),
+        )
+    return row is not None
 
 
 async def list_in_progress(pool, *, user_id: str) -> list[dict]:
