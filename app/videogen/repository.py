@@ -61,15 +61,38 @@ async def attach_comfy_id(pool, *, video_id: str, comfy_id: str) -> None:
         )
 
 
-async def list_pending(pool, limit: int = 50) -> list[dict]:
+async def claim_pending(pool, *, lease_seconds: int, limit: int = 50) -> list[dict]:
+    """Take exclusive ownership of up to `limit` pending rows and return them.
+
+    The service runs 2 replicas x 4 uvicorn workers, so eight copies of the poll
+    loop run at once. A plain SELECT hands the same row to all of them: on
+    2026-08-25 one generation was fetched from the GPU box and uploaded to Storj
+    six times, and every loser got `DuplicatePostId` from SpacetimeDB.
+
+    The UPDATE ... RETURNING is atomic, so exactly one worker sees each row.
+    `SKIP LOCKED` keeps the other seven from queueing behind it rather than
+    moving on to work of their own.
+
+    Claims lapse after `lease_seconds` so a worker that dies mid-generation
+    cannot strand a row — the next loop re-claims it. That window must comfortably
+    exceed a full generation (~2-3 min) or a healthy job gets picked up twice.
+    """
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT * FROM videogen_requests
-            WHERE status = 'pending'
-            ORDER BY created_at ASC
-            LIMIT $1
+            UPDATE videogen_requests SET claimed_at = NOW()
+            WHERE video_id IN (
+                SELECT video_id FROM videogen_requests
+                WHERE status = 'pending'
+                  AND (claimed_at IS NULL
+                       OR claimed_at < NOW() - ($1 || ' seconds')::interval)
+                ORDER BY created_at ASC
+                LIMIT $2
+                FOR UPDATE SKIP LOCKED
+            )
+            RETURNING *
             """,
+            str(lease_seconds),
             limit,
         )
     return [dict(r) for r in rows]

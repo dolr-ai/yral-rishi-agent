@@ -1,16 +1,23 @@
 """The loop that finishes generations.
 
-A single background loop scans `pending` rows and asks ComfyUI whether each one
-is done. That is the entire async machinery — the previous design used a message
-broker, HMAC-signed completion callbacks, a retry outbox and pre-signed upload
-URLs with an expiry-refresh endpoint to achieve the same thing.
+Scans `pending` rows and asks ComfyUI whether each one is done.
+
+That is the entire async machinery — the previous design used a message broker,
+HMAC-signed completion callbacks, a retry outbox and pre-signed upload URLs with
+an expiry-refresh endpoint to achieve the same thing.
+
+**Several copies of this loop run at once** — the service is 2 swarm replicas x
+4 uvicorn workers, and every worker process starts its own. Rows are therefore
+*claimed* atomically rather than merely read; without that all eight process the
+same generation, which on 2026-08-25 meant one video was fetched and uploaded
+six times (see `repository.claim_pending`).
 
 It is restart-safe by construction: the row is written before the job is
 submitted, so a process that dies mid-generation simply finds the row still
-pending on the next tick. There is no separate resume path because the loop *is*
-the resume path.
+pending — and re-claimable once its lease lapses — on a later tick. There is no
+separate resume path because the loop *is* the resume path.
 
-Ordering at completion matters. `add_post` runs **before** the row is closed —
+Ordering at completion matters. `add_post_2` runs **before** the row is closed —
 reversed, the app's spinner would disappear a beat before the draft appeared,
 and the user would watch their video vanish.
 """
@@ -86,7 +93,12 @@ async def tick(pool) -> None:
     await repository.fail_stale(
         pool, older_than_seconds=config.VIDEOGEN_STALE_AFTER_SECONDS
     )
-    for row in await repository.list_pending(pool):
+    # Claim rather than list: eight copies of this loop run concurrently
+    # (2 replicas x 4 uvicorn workers), and a plain read hands each row to all
+    # of them. See repository.claim_pending.
+    for row in await repository.claim_pending(
+        pool, lease_seconds=config.VIDEOGEN_CLAIM_LEASE_SECONDS
+    ):
         try:
             await _advance_one(pool, row)
         except Exception as e:

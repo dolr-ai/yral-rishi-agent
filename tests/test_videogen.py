@@ -264,3 +264,36 @@ def test_generate_does_not_reject_a_mismatched_body_user_id():
     body_check = source.split("if not (req.prompt")[0]
     assert "AuthError" not in body_check, "body user_id must not produce a 401"
     assert "req.user_id" in body_check, "the mismatch should still be logged"
+
+
+# ─── concurrency ────────────────────────────────────────────────────────
+
+
+def test_poll_loop_claims_rows_instead_of_listing_them():
+    """The service runs 2 replicas x 4 uvicorn workers, so eight copies of the
+    poll loop run concurrently. A plain SELECT hands each pending row to all of
+    them — on 2026-08-25 that fetched one generation from the GPU box and
+    uploaded it to Storj six times, and every loser got `DuplicatePostId` back
+    from SpacetimeDB.
+
+    The claim must stay atomic (UPDATE ... RETURNING, not read-then-write) or
+    the race reopens.
+    """
+    import inspect
+
+    from videogen import repository, worker
+
+    assert "claim_pending" in inspect.getsource(worker.tick)
+    claim = inspect.getsource(repository.claim_pending)
+    assert "UPDATE" in claim and "RETURNING" in claim, "claim must be atomic"
+    assert "SKIP LOCKED" in claim
+
+
+def test_claim_lease_outlasts_a_generation_but_expires_before_the_sweep():
+    """A lease shorter than a generation means a healthy job gets picked up
+    twice; one longer than the stale sweep means a dead worker's row is retired
+    before anyone can re-claim it."""
+    import config
+
+    assert config.VIDEOGEN_CLAIM_LEASE_SECONDS > 300
+    assert config.VIDEOGEN_CLAIM_LEASE_SECONDS < config.VIDEOGEN_STALE_AFTER_SECONDS
