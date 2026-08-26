@@ -1,5 +1,48 @@
 # Daily Log
 
+## 2026-08-26 — one unreachable tunnel task was losing videos
+
+**Symptom.** Rishi created "Sahara the desert girl", the spinner ran, and the
+draft never appeared. The row was `failed` with the message `submit failed: `
+and nothing after it.
+
+**Root cause.** Two separate faults, neither of them in the generation itself.
+
+1. *The empty message was our bug.* httpx timeout exceptions raised through
+   anyio stringify to `""`, so `f"submit failed: {e}"` recorded a failure that
+   named nothing at all.
+2. *The failure was one bad network path.* The ComfyUI tunnel is a Swarm
+   **global** service — one task per node, all six behind a single virtual IP,
+   with the load balancer choosing a task per connection. Hammering the VIP from
+   inside the agent gave **33 OK / 7 ConnectTimeout**, almost exactly one in six,
+   and testing each task by IP found rishi-3's blackholed. rishi-3's tunnel was
+   *healthy* — autossh forwarded fine and rishi-3 reached it locally — what was
+   broken was inbound overlay traffic to that node from the others, six minutes
+   after the 09:47 redeploy moved both agent containers. It converged on its own
+   shortly after.
+
+So one node in six silently swallowed submissions, and there was no retry: a
+single unlucky connection lost the user's video outright.
+
+**Fixed** (#TBD): retry transport failures across attempts — each attempt opens
+a fresh connection, so it is routed afresh and lands on a different tunnel task.
+A reply *from* ComfyUI is never retried; every tunnel reaches the same box, so a
+refusal would be identical from all of them. Connect now has its own 5s budget
+instead of inheriting the 120s read timeout, which is why one dead path used to
+hold a user's request for two full minutes. And `_reason()` falls back to the
+exception class name, so a failure can never again be recorded as blank.
+
+**Also diagnosed, not ours to fix:**
+
+- *Home feed empty.* `discoveryFeedV2Enabled` defaults to **false**, so the app
+  still calls `recsys-influencer-feed.ansuman.yral.com`, which returns
+  `503 Feed not yet available. Pipeline has not completed.` — permanently, since
+  that ingestion died on 2026-07-16. Our feed is healthy (3,812 active
+  influencers, 50/page). **Flip the flag** — no app release needed.
+- *Bot profile picture vanishes.* The avatar is intact on our side and serves
+  `HTTP 200` as an 82KB JPEG. This is the SpacetimeDB identity split
+  (two `user_profiles` rows per user) — Saikat's.
+
 ## 2026-08-21 (later) — AI video generation rebuilt on the agent service
 
 **Same root cause as the profile-image fix, three endpoints further on.** Mobile's SpacetimeDB migration moved every call to a yral-auth bearer token; Prakash's `storage-interface` still demands `delegated_identity` in the body, so **generate / drafts / publish all 422** and the whole AI-video feature is dead in prod. (`providers` still 200s, so the user gets as far as pressing the button.) Fix is the same shape as #490: don't migrate his Rust service — rebuild the endpoints here.

@@ -799,10 +799,12 @@ consumer, and manual video upload is dead code in the app.
 | Recon + migration plan (`docs/videogen-build-plan-2026-08-21.md`) | ✅ Done | — |
 | Profile-image endpoint (human + bot avatars) | ✅ Done + deployed | #490 |
 | Mobile: point profile-image hosts at the agent via the right constants | 🔄 Branch ready, awaiting Motorola pass | mobile `fix/mobile-hosts-name-the-right-constant-2026-08-21` |
-| SpacetimeDB: creator may call `add_post` / `update_post_status` | 🔄 Open, awaiting Saikat | cluster#190 |
-| `app/videogen/` — 5 routes, 1 table, ComfyUI client, poll loop | 🔄 In PR | this PR |
-| Expose ComfyUI to the swarm (tunnel + token; it has no auth) | ⏳ Pending | — |
-| Point `cdn-yral-sfw.yral.com` at the video bucket | ⏳ Pending | — |
+| SpacetimeDB: a creator may post **as a bot they own** (`add_post_2` takes `post_as_ai_account_id`) | ✅ Merged + published by Saikat | cluster#232 |
+| `app/videogen/` — 5 routes, 1 table, ComfyUI client, poll loop | ✅ Done + deployed | #493 |
+| Register the draft against the **bot**, not the human owner | ✅ Done + deployed | #498 |
+| Survive one unreachable tunnel task (retry + real error messages) | 🔄 In PR | this PR |
+| Expose ComfyUI to the swarm (tunnel + token; it has no auth) | ✅ Done — `comfyui_comfyui-tunnel`, global | — |
+| Point `cdn-yral-sfw.yral.com` at the video bucket | ⏳ Worker written + signing proven; **needs Rishi's Cloudflare access to deploy** | `deploy/cloudflare/` |
 | Mobile: flip `VIDEOGEN_BASE_URL` / `UPLOAD_BASE_URL` to the agent | ⏳ Ships with go-live | — |
 | Retire `storage-interface`, prakash-1/2/3, its RabbitMQ + Patroni clusters | ⏳ After videogen proven | — |
 

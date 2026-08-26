@@ -252,6 +252,14 @@ MARKET_DEBUG_OVERRIDE_ENABLED = _env_bool("MARKET_DEBUG_OVERRIDE_ENABLED", False
 COMFYUI_BASE_URL = _env("COMFYUI_BASE_URL", "http://127.0.0.1:18188")
 COMFYUI_AUTH_TOKEN = _env("COMFYUI_AUTH_TOKEN", "")
 COMFYUI_TIMEOUT_SECONDS = _env_int("COMFYUI_TIMEOUT_SECONDS", 120)
+# Connecting is a hop across the local overlay and takes milliseconds when it
+# works at all, so it gets its own short budget. Sharing the 120s read timeout
+# meant one unreachable tunnel task held a user's request for two minutes
+# before failing (2026-08-26).
+COMFYUI_CONNECT_TIMEOUT_SECONDS = _env_int("COMFYUI_CONNECT_TIMEOUT_SECONDS", 5)
+# The tunnel is a Swarm global service behind one virtual IP; a retry opens a
+# new connection and so lands on a different task. See videogen/comfyui.py.
+COMFYUI_ATTEMPTS = _env_int("COMFYUI_ATTEMPTS", 3)
 
 # Finished videos — a dedicated Storj bucket, reusing the same gateway
 # credentials as chat media and profile pictures (only the bucket differs).
