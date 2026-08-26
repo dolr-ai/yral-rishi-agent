@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 import config
 from auth import get_current_user
 from database import get_pool
+from repositories import influencer_repo
 from videogen import comfyui, models, prompt_check, repository, spacetime
 
 logger = logging.getLogger(__name__)
@@ -65,22 +66,8 @@ async def list_all_providers():
 
 @router.post("/api/v2/videogen/generate")
 async def generate_video(body: models.GenerateRequest, request: Request):
-    user_id = get_current_user(request)
+    owner_id = get_current_user(request)
     req = body.request
-
-    # `req.user_id` is accepted for contract compatibility and otherwise unused —
-    # every identity decision below comes from the verified JWT. Rejecting on a
-    # mismatch therefore bought no security (the token cannot be forged, and the
-    # body field is never read) while breaking generation outright for anyone
-    # whose client-side principal is spelled differently from the token subject.
-    # Log it instead: a steady stream here means the two representations have
-    # diverged and is worth chasing, but it is not a reason to refuse the user.
-    if req.user_id and req.user_id != user_id:
-        logger.warning(
-            "videogen: body user_id %r != token sub %r — proceeding with the token",
-            req.user_id,
-            user_id,
-        )
 
     if not (req.prompt or "").strip():
         return _error(400, "InvalidInput", "Add a prompt to create a video.")
@@ -101,6 +88,22 @@ async def generate_video(body: models.GenerateRequest, request: Request):
                 f"That image is too large. Max {config.MAX_IMAGE_SIZE_MB}MB.",
             )
 
+    # `bot_id` (wire name `user_id`) is the AI influencer the video is FOR. It is
+    # normally NOT the caller — a human owner generating for their bot — so a
+    # mismatch is the expected case, not an error. What must be checked is that
+    # the caller owns that bot, otherwise anyone knowing a bot id could generate
+    # into someone else's account. Ordered after the pure validations so a
+    # malformed request never reaches the database.
+    pool = await get_pool()
+    if req.bot_id and req.bot_id != owner_id:
+        if await influencer_repo.get_parent_principal(pool, req.bot_id) != owner_id:
+            logger.warning(
+                "videogen: %s tried to generate for bot %s it does not own",
+                owner_id,
+                req.bot_id,
+            )
+            return _error(401, "AuthError", "You don't have access to that profile.")
+
     # One multimodal call covers the prompt and the image together. Fails
     # closed — see prompt_check.
     if not await prompt_check.is_safe(req):
@@ -108,13 +111,12 @@ async def generate_video(body: models.GenerateRequest, request: Request):
 
     # One id serves as operation id, storage object name and post id.
     video_id = str(uuid.uuid4())
-    pool = await get_pool()
 
     # Recorded before anything is submitted, so a crash between here and the
     # ComfyUI call leaves a row the sweep can retire rather than a ghost job.
     await repository.create_pending(
         pool,
-        user_id=user_id,
+        user_id=req.bot_id or owner_id,
         video_id=video_id,
         prompt=req.prompt,
         model_id=req.model_id,
@@ -148,11 +150,19 @@ async def generate_video(body: models.GenerateRequest, request: Request):
 
 @router.post("/api/v2/videogen/drafts/in-progress")
 async def in_progress_drafts(body: models.InProgressDraftsRequest, request: Request):
-    """Polled by the Drafts tab while a generation runs. Scoped to the JWT's
-    subject; `body.user_id` is accepted for contract compatibility only."""
-    user_id = get_current_user(request)
+    """Polled by the Drafts tab while a generation runs.
+
+    Scoped to `bot_id` (wire name `user_id`) when the caller owns that bot, so a
+    bot's spinner shows its own generations. Falls back to the caller's own rows
+    when no bot is named."""
+    owner_id = get_current_user(request)
     pool = await get_pool()
-    rows = await repository.list_in_progress(pool, user_id=user_id)
+    subject = owner_id
+    if body.bot_id and body.bot_id != owner_id:
+        if await influencer_repo.get_parent_principal(pool, body.bot_id) != owner_id:
+            raise HTTPException(status_code=401, detail="Not your profile")
+        subject = body.bot_id
+    rows = await repository.list_in_progress(pool, user_id=subject)
     return models.InProgressDraftsResponse(
         items=[
             models.InProgressDraftItem(
