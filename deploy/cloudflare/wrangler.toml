@@ -1,0 +1,18 @@
+# Cloudflare Worker serving cdn-yral-sfw.yral.com.
+#
+# Secrets are NOT in this file. Set them once with:
+#   wrangler secret put STORJ_ACCESS_KEY_ID
+#   wrangler secret put STORJ_SECRET_ACCESS_KEY
+# Use the same Storj gateway credentials the agent service uses to write the
+# videos (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in its environment) — the
+# worker only ever reads.
+
+name = "cdn-yral-sfw"
+main = "cdn-yral-sfw-worker.js"
+compatibility_date = "2026-08-26"
+
+# The app builds video URLs against this hostname directly, so the worker has to
+# answer on it rather than on a workers.dev subdomain.
+[[routes]]
+pattern = "cdn-yral-sfw.yral.com/*"
+zone_name = "yral.com"
