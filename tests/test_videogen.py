@@ -463,3 +463,25 @@ def test_a_refusal_from_comfyui_is_not_retried(monkeypatch):
         _run(comfyui.submit({"1": {}}))
     assert state["calls"] == 1
     assert "400" in str(caught.value)
+
+
+def test_a_read_timeout_is_never_retried(monkeypatch):
+    """The safety property, not a preference.
+
+    `/prompt` queues a generation. A read timeout means the request very likely
+    *arrived* and a video is already being made — sending it again would make a
+    second one, burn the GPU twice, and leave us tracking only one of them.
+    """
+    factory, state = _client_failing(99, httpx.ReadTimeout(""))
+    monkeypatch.setattr(comfyui, "_client", factory)
+
+    with pytest.raises(comfyui.ComfyUnavailable) as caught:
+        _run(comfyui.submit({"1": {}}))
+    assert state["calls"] == 1  # one submission, one generation
+    assert "ReadTimeout" in str(caught.value)
+
+
+def test_attempts_can_never_be_configured_down_to_zero():
+    """A stray `COMFYUI_ATTEMPTS=0` would otherwise switch off every call to
+    ComfyUI and report it as a failure after zero tries."""
+    assert comfyui.ATTEMPTS >= 1

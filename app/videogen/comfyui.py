@@ -70,6 +70,15 @@ def _reason(e: BaseException | None) -> str:
     return str(e) or type(e).__name__
 
 
+# Failures where the request provably never reached ComfyUI, and so can be sent
+# again without any risk of queueing a second generation. Everything else —
+# including a read timeout — may already have started one.
+NEVER_ARRIVED = (httpx.ConnectError, httpx.ConnectTimeout)
+
+# A misconfigured env must not be able to switch every call off.
+ATTEMPTS = max(1, config.COMFYUI_ATTEMPTS)
+
+
 async def _post(path: str, what: str, **kwargs) -> httpx.Response:
     """POST to ComfyUI, retrying a connection that never landed.
 
@@ -82,11 +91,19 @@ async def _post(path: str, what: str, **kwargs) -> httpx.Response:
 
     Each attempt opens a *new* client, and therefore a new connection, which is
     what makes the retry worth anything: it is routed afresh and lands on a
-    different tunnel. Retrying is only correct for transport failures — a reply
-    from ComfyUI itself, however unwelcome, would be identical from every task.
+    different tunnel.
+
+    **Only a connection that never landed is retried** — `NEVER_ARRIVED`. That
+    restraint is the whole safety argument: `/prompt` queues a generation, so a
+    request that did reach ComfyUI has already started one, and re-sending it
+    after a slow or lost *reply* would queue a second. We would burn the GPU
+    twice and track only one of the two videos. A read timeout means the job is
+    very likely running; the poll loop finds it. A reply from ComfyUI, however
+    unwelcome, would also be identical from every task, so it is not retried
+    either.
     """
     last: Exception | None = None
-    for attempt in range(1, config.COMFYUI_ATTEMPTS + 1):
+    for attempt in range(1, ATTEMPTS + 1):
         async with _client() as client:
             try:
                 resp = await client.post(path, **kwargs)
@@ -96,18 +113,19 @@ async def _post(path: str, what: str, **kwargs) -> httpx.Response:
                 raise ComfyUnavailable(
                     f"{what} refused: HTTP {e.response.status_code}"
                 ) from e
-            except httpx.HTTPError as e:
+            except NEVER_ARRIVED as e:
                 last = e
                 logger.warning(
-                    "videogen: %s attempt %d/%d failed: %s",
+                    "videogen: %s attempt %d/%d never connected: %s",
                     what,
                     attempt,
-                    config.COMFYUI_ATTEMPTS,
+                    ATTEMPTS,
                     _reason(e),
                 )
-    raise ComfyUnavailable(
-        f"{what} failed after {config.COMFYUI_ATTEMPTS} attempts: {_reason(last)}"
-    )
+            except httpx.HTTPError as e:
+                # Reached ComfyUI, or may have. Not safe to send again.
+                raise ComfyUnavailable(f"{what} failed: {_reason(e)}") from e
+    raise ComfyUnavailable(f"{what} failed after {ATTEMPTS} attempts: {_reason(last)}")
 
 
 def build_workflow(
