@@ -20,6 +20,7 @@ import asyncio
 import json
 import pathlib
 
+import httpx
 import pytest
 
 from videogen import comfyui, models, prompt_check
@@ -381,3 +382,84 @@ def test_reads_the_subject_without_reverifying_the_signature():
         .decode()
     )
     assert oauth_subject_from_token(f"header.{payload}.signature") == "owner-1"
+
+
+# ─── reaching ComfyUI through the tunnel ────────────────────────────────
+#
+# 5. one unreachable tunnel task must not lose a video. The tunnel is a Swarm
+#    global service behind one virtual IP, so a node whose overlay path has not
+#    converged blackholes about one connection in six — and on 2026-08-26 that
+#    is precisely what happened: a user's generation was marked failed with the
+#    message `submit failed: ` and nothing after it, because httpx timeouts
+#    stringify to "".
+
+
+def _client_failing(times: int, exc: Exception):
+    """A stand-in `_client` that raises `exc` for the first `times` calls.
+
+    Mirrors the real failure: each attempt builds a fresh client, so counting
+    calls counts connections — which is the thing the retry depends on.
+    """
+    state = {"calls": 0}
+
+    def factory():
+        state["calls"] += 1
+        failing = state["calls"] <= times
+
+        def handle(request):
+            if failing:
+                raise exc
+            return httpx.Response(200, json={"prompt_id": "queued-1"})
+
+        return httpx.AsyncClient(
+            base_url="http://comfyui-tunnel:18188",
+            transport=httpx.MockTransport(handle),
+        )
+
+    return factory, state
+
+
+def test_a_blank_exception_never_becomes_a_blank_reason():
+    """The bug that made the real failure unreadable."""
+    assert comfyui._reason(httpx.ConnectTimeout("")) == "ConnectTimeout"
+    assert comfyui._reason(httpx.ConnectError("refused")) == "refused"
+    assert comfyui._reason(None) == "unknown error"
+
+
+def test_submit_retries_past_an_unreachable_tunnel_task(monkeypatch):
+    factory, state = _client_failing(2, httpx.ConnectTimeout(""))
+    monkeypatch.setattr(comfyui, "_client", factory)
+
+    assert _run(comfyui.submit({"1": {}})) == "queued-1"
+    assert state["calls"] == 3  # two blackholed connections, then a good one
+
+
+def test_submit_gives_up_with_a_message_that_names_the_failure(monkeypatch):
+    factory, _ = _client_failing(99, httpx.ConnectTimeout(""))
+    monkeypatch.setattr(comfyui, "_client", factory)
+
+    with pytest.raises(comfyui.ComfyUnavailable) as caught:
+        _run(comfyui.submit({"1": {}}))
+    assert "ConnectTimeout" in str(caught.value)
+
+
+def test_a_refusal_from_comfyui_is_not_retried(monkeypatch):
+    """Every tunnel reaches the same box, so a reply is the same from all of
+    them. Retrying one would only make the user wait three times as long."""
+    state = {"calls": 0}
+
+    def factory():
+        state["calls"] += 1
+        return httpx.AsyncClient(
+            base_url="http://comfyui-tunnel:18188",
+            transport=httpx.MockTransport(
+                lambda r: httpx.Response(400, text="bad graph")
+            ),
+        )
+
+    monkeypatch.setattr(comfyui, "_client", factory)
+
+    with pytest.raises(comfyui.ComfyUnavailable) as caught:
+        _run(comfyui.submit({"1": {}}))
+    assert state["calls"] == 1
+    assert "400" in str(caught.value)

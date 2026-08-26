@@ -46,7 +46,67 @@ def _client() -> httpx.AsyncClient:
     return httpx.AsyncClient(
         base_url=config.COMFYUI_BASE_URL,
         headers=headers,
-        timeout=config.COMFYUI_TIMEOUT_SECONDS,
+        # Reading can take as long as a generation does; connecting is one hop
+        # across the overlay and must not inherit that budget.
+        timeout=httpx.Timeout(
+            config.COMFYUI_TIMEOUT_SECONDS,
+            connect=config.COMFYUI_CONNECT_TIMEOUT_SECONDS,
+        ),
+    )
+
+
+def _reason(e: BaseException | None) -> str:
+    """A description of a failure that is never blank.
+
+    httpx timeouts raised through anyio carry an empty message, so the obvious
+    `f"submit failed: {e}"` wrote a bare `submit failed: ` into the database —
+    which is exactly what the first real failure of this service looked like on
+    2026-08-26, saying nothing about whether the box was down, refusing, or
+    simply unreachable. Falling back to the exception's class name always
+    names the failure mode.
+    """
+    if e is None:
+        return "unknown error"
+    return str(e) or type(e).__name__
+
+
+async def _post(path: str, what: str, **kwargs) -> httpx.Response:
+    """POST to ComfyUI, retrying a connection that never landed.
+
+    The tunnel to the GPU box is a Swarm *global* service — one task per node,
+    all six behind a single virtual IP — and the load balancer picks a task per
+    connection. So a node whose encrypted-overlay path has not converged (which
+    is the normal state for a few minutes after a redeploy moves a container)
+    blackholes roughly one connection in six while the other five are fine.
+    That is what lost a user's video on 2026-08-26.
+
+    Each attempt opens a *new* client, and therefore a new connection, which is
+    what makes the retry worth anything: it is routed afresh and lands on a
+    different tunnel. Retrying is only correct for transport failures — a reply
+    from ComfyUI itself, however unwelcome, would be identical from every task.
+    """
+    last: Exception | None = None
+    for attempt in range(1, config.COMFYUI_ATTEMPTS + 1):
+        async with _client() as client:
+            try:
+                resp = await client.post(path, **kwargs)
+                resp.raise_for_status()
+                return resp
+            except httpx.HTTPStatusError as e:
+                raise ComfyUnavailable(
+                    f"{what} refused: HTTP {e.response.status_code}"
+                ) from e
+            except httpx.HTTPError as e:
+                last = e
+                logger.warning(
+                    "videogen: %s attempt %d/%d failed: %s",
+                    what,
+                    attempt,
+                    config.COMFYUI_ATTEMPTS,
+                    _reason(e),
+                )
+    raise ComfyUnavailable(
+        f"{what} failed after {config.COMFYUI_ATTEMPTS} attempts: {_reason(last)}"
     )
 
 
@@ -87,16 +147,12 @@ async def upload_image(image_bytes: bytes, filename: str) -> str:
     The old pipeline staged this to object storage, passed a URL to the worker,
     and had the worker download and re-upload it here. It goes straight in.
     """
-    async with _client() as client:
-        try:
-            resp = await client.post(
-                "/upload/image",
-                files={"image": (filename, image_bytes, "application/octet-stream")},
-                data={"overwrite": "true"},
-            )
-            resp.raise_for_status()
-        except httpx.HTTPError as e:
-            raise ComfyUnavailable(f"image upload failed: {e}") from e
+    resp = await _post(
+        "/upload/image",
+        "image upload",
+        files={"image": (filename, image_bytes, "application/octet-stream")},
+        data={"overwrite": "true"},
+    )
     stored = resp.json()
     name = stored.get("name") or filename
     subfolder = stored.get("subfolder") or ""
@@ -105,12 +161,7 @@ async def upload_image(image_bytes: bytes, filename: str) -> str:
 
 async def submit(graph: dict) -> str:
     """Queue the graph. Returns ComfyUI's prompt id."""
-    async with _client() as client:
-        try:
-            resp = await client.post("/prompt", json={"prompt": graph})
-            resp.raise_for_status()
-        except httpx.HTTPError as e:
-            raise ComfyUnavailable(f"submit failed: {e}") from e
+    resp = await _post("/prompt", "submit", json={"prompt": graph})
     prompt_id = resp.json().get("prompt_id")
     if not prompt_id:
         raise ComfyUnavailable("submit returned no prompt_id")
@@ -131,7 +182,9 @@ async def poll(prompt_id: str) -> tuple[str, dict | None]:
             resp = await client.get(f"/history/{prompt_id}")
             resp.raise_for_status()
         except httpx.HTTPError as e:
-            logger.warning("videogen: history poll failed for %s: %s", prompt_id, e)
+            logger.warning(
+                "videogen: history poll failed for %s: %s", prompt_id, _reason(e)
+            )
             return "pending", None
 
     entry = resp.json().get(prompt_id)
