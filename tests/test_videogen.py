@@ -310,24 +310,30 @@ def test_bot_id_is_read_from_the_user_id_wire_field():
     assert body.bot_id == "a0b419f3-bot"
 
 
-def test_a_bot_id_differing_from_the_caller_is_normal_not_an_error():
+def test_access_is_decided_by_ownership_not_by_equality():
     """An owner generating for their bot is the ordinary case, so a mismatch
     between the token subject and bot_id must never by itself be a 401 — that
-    broke generation outright once already."""
+    broke generation outright once already. Access is decided by looking up who
+    owns the bot.
+
+    Without the lookup, knowing a bot id would be enough to generate into
+    someone else's profile.
+    """
     import inspect
 
     from videogen import routes
 
-    pre = inspect.getsource(routes.generate_video).split("if not (req.prompt")[0]
-    assert "get_parent_principal" in pre, "ownership must be checked, not equality"
+    source = inspect.getsource(routes.generate_video)
+    assert "get_parent_principal" in source, "ownership must be looked up"
+    assert "AuthError" in source, "an unowned bot must be refused"
 
 
-def test_generation_for_a_bot_you_do_not_own_is_refused():
-    """Without this, knowing a bot id would be enough to generate videos into
-    someone else's profile."""
+def test_the_ownership_lookup_runs_after_the_pure_validations():
+    """A malformed request (no prompt, unknown model) should be rejected without
+    touching the database."""
     import inspect
 
     from videogen import routes
 
-    pre = inspect.getsource(routes.generate_video).split("if not (req.prompt")[0]
-    assert "AuthError" in pre and "get_parent_principal" in pre
+    source = inspect.getsource(routes.generate_video)
+    assert source.index("UnsupportedModel") < source.index("get_parent_principal")

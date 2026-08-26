@@ -69,21 +69,6 @@ async def generate_video(body: models.GenerateRequest, request: Request):
     owner_id = get_current_user(request)
     req = body.request
 
-    # `bot_id` (wire name `user_id`) is the AI influencer the video is FOR. It is
-    # normally NOT the caller — a human owner generating for their bot — so a
-    # mismatch is the expected case, not an error. What must be checked is that
-    # the caller owns that bot, otherwise anyone knowing a bot id could generate
-    # into someone else's account.
-    pool = await get_pool()
-    if req.bot_id and req.bot_id != owner_id:
-        if await influencer_repo.get_parent_principal(pool, req.bot_id) != owner_id:
-            logger.warning(
-                "videogen: %s tried to generate for bot %s it does not own",
-                owner_id,
-                req.bot_id,
-            )
-            return _error(401, "AuthError", "You don't have access to that profile.")
-
     if not (req.prompt or "").strip():
         return _error(400, "InvalidInput", "Add a prompt to create a video.")
 
@@ -102,6 +87,22 @@ async def generate_video(body: models.GenerateRequest, request: Request):
                 "InvalidInput",
                 f"That image is too large. Max {config.MAX_IMAGE_SIZE_MB}MB.",
             )
+
+    # `bot_id` (wire name `user_id`) is the AI influencer the video is FOR. It is
+    # normally NOT the caller — a human owner generating for their bot — so a
+    # mismatch is the expected case, not an error. What must be checked is that
+    # the caller owns that bot, otherwise anyone knowing a bot id could generate
+    # into someone else's account. Ordered after the pure validations so a
+    # malformed request never reaches the database.
+    pool = await get_pool()
+    if req.bot_id and req.bot_id != owner_id:
+        if await influencer_repo.get_parent_principal(pool, req.bot_id) != owner_id:
+            logger.warning(
+                "videogen: %s tried to generate for bot %s it does not own",
+                owner_id,
+                req.bot_id,
+            )
+            return _error(401, "AuthError", "You don't have access to that profile.")
 
     # One multimodal call covers the prompt and the image together. Fails
     # closed — see prompt_check.
