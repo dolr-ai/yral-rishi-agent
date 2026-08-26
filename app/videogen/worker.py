@@ -51,7 +51,7 @@ async def _finish(pool, row: dict, file_ref: dict) -> None:
 
     await spacetime.add_draft_post(
         video_id=video_id,
-        user_id=user_id,
+        owner_of_video=user_id,
         prompt=row["prompt"] or "",
         user_token=token,
     )

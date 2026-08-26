@@ -337,3 +337,47 @@ def test_the_ownership_lookup_runs_after_the_pure_validations():
 
     source = inspect.getsource(routes.generate_video)
     assert source.index("UnsupportedModel") < source.index("get_parent_principal")
+
+
+def test_posts_as_the_bot_when_the_video_is_a_bots():
+    """The app generates with `userId = botPrincipal`, so the video is by the
+    bot. `add_post_2` must be told to post as that account, or the draft lands
+    in the owner's profile instead — which is what happened before this."""
+    import inspect
+
+    from videogen import spacetime
+
+    source = inspect.getsource(spacetime.add_draft_post)
+    assert "post_as_ai_account_id" in source
+    assert "add_post_2" in source
+
+
+def test_posts_as_self_when_the_video_is_the_callers_own():
+    """`add_post_2` refuses an account the caller's token does not list as
+    theirs — and nobody's token lists themselves. So a person generating on
+    their own profile must send None, not their own subject."""
+    import inspect
+
+    from videogen import spacetime
+
+    source = inspect.getsource(spacetime.add_draft_post)
+    assert "None if owner_of_video == caller else owner_of_video" in source
+
+
+def test_reads_the_subject_without_reverifying_the_signature():
+    """auth.get_current_user already verified the token against the JWKS before
+    the request reached a handler. Verifying again would be a second place to
+    get it wrong."""
+    from videogen.spacetime import oauth_subject_from_token
+
+    import base64
+    import json
+
+    payload = (
+        base64.urlsafe_b64encode(
+            json.dumps({"sub": "owner-1", "iss": "https://auth.yral.com"}).encode()
+        )
+        .rstrip(b"=")
+        .decode()
+    )
+    assert oauth_subject_from_token(f"header.{payload}.signature") == "owner-1"
