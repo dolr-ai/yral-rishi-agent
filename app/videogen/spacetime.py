@@ -17,6 +17,9 @@ Drafts and profile queries filter on. So there is nothing for us to derive, pass
 or get wrong.
 """
 
+import base64
+import binascii
+import json
 import logging
 
 import httpx
@@ -61,23 +64,60 @@ async def _call_reducer(reducer: str, args: list, user_token: str) -> None:
         raise SpacetimeError(f"{reducer}: HTTP {resp.status_code} {resp.text[:200]}")
 
 
+def oauth_subject_from_token(token: str) -> str:
+    """The `sub` claim of a token — who the caller is.
+
+    The signature is NOT re-checked here. `auth.get_current_user` already
+    verified it against the JWKS before the request reached any handler, and
+    verifying twice would mean two places to get it wrong. This only needs to
+    read a claim we have already established is trustworthy.
+    """
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        return json.loads(base64.urlsafe_b64decode(payload))["sub"]
+    except (IndexError, ValueError, KeyError, binascii.Error) as e:
+        raise SpacetimeError(f"could not read the subject from the token: {e}") from e
+
+
 async def add_draft_post(
-    *, video_id: str, user_id: str, prompt: str, user_token: str
+    *, video_id: str, owner_of_video: str, prompt: str, user_token: str
 ) -> None:
-    """Register the generated video as a Draft belonging to the caller.
+    """Register the generated video as a Draft belonging to `owner_of_video`.
+
+    `owner_of_video` is usually an AI influencer — the app generates videos with
+    `userId = botPrincipal`, so the video is by the bot rather than by the person
+    who asked for it. It is only the caller themselves when someone generates a
+    video on their own profile.
+
+    `add_post_2` takes the account to post as, and refuses an account the
+    caller's token does not list as theirs. Passing the caller's *own* subject
+    would be refused too — a person does not own themselves — so that case sends
+    `None`, which means "post as me".
 
     `video_id` is both the post id and the storage object name, so the app's
     client-side URL builder resolves to the file we just wrote.
-
-    Argument order matches the reducer:
-    `add_post_2(id, description, hashtags, video_uid, status)`.
     """
+    caller = oauth_subject_from_token(user_token)
+    post_as_ai_account_id = None if owner_of_video == caller else owner_of_video
+
     await _call_reducer(
         "add_post_2",
-        [video_id, prompt[:500], [], video_id, STATUS_DRAFT],
+        [
+            video_id,
+            prompt[:500],
+            [],
+            video_id,
+            STATUS_DRAFT,
+            post_as_ai_account_id,
+        ],
         user_token,
     )
-    logger.info("videogen: registered draft post %s for %s", video_id, user_id)
+    logger.info(
+        "videogen: registered draft post %s as %s",
+        video_id,
+        post_as_ai_account_id or f"{caller} (self)",
+    )
 
 
 async def publish_post(*, post_id: str, user_token: str) -> None:
