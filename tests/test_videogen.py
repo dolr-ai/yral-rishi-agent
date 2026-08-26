@@ -250,22 +250,6 @@ def test_targets_the_reducers_the_app_actually_reads():
     assert '"update_post_status_2"' in inspect.getsource(spacetime.publish_post)
 
 
-def test_generate_does_not_reject_a_mismatched_body_user_id():
-    """`user_id` in the body is decorative — every identity decision uses the
-    verified JWT. Rejecting on a mismatch bought nothing and broke generation
-    for real users (401 "Authentication failed" on the Alpha build, 2026-08-23),
-    while the same request's drafts poll succeeded on the identical token.
-    """
-    import inspect
-
-    from videogen import routes
-
-    source = inspect.getsource(routes.generate_video)
-    body_check = source.split("if not (req.prompt")[0]
-    assert "AuthError" not in body_check, "body user_id must not produce a 401"
-    assert "req.user_id" in body_check, "the mismatch should still be logged"
-
-
 # ─── concurrency ────────────────────────────────────────────────────────
 
 
@@ -309,3 +293,41 @@ def test_claim_lease_outlasts_a_generation_but_expires_before_the_sweep():
 
     assert config.VIDEOGEN_CLAIM_LEASE_SECONDS > 300
     assert config.VIDEOGEN_CLAIM_LEASE_SECONDS < config.VIDEOGEN_STALE_AFTER_SECONDS
+
+
+# ─── bot ownership ──────────────────────────────────────────────────────
+
+
+def test_bot_id_is_read_from_the_user_id_wire_field():
+    """The app sends the AI influencer's id in a field called `user_id`
+    (`BotVideoGenCoordinator` sets `userId = botPrincipal`). The video belongs
+    to the BOT, not the human who owns it. That misleading name once led to the
+    field being dismissed as a duplicate of the caller and dropped entirely,
+    after which every generated video landed in the owner's drafts."""
+    body = models.GenerateRequestBody.model_validate(
+        {"prompt": "p", "model_id": "ltx2", "user_id": "a0b419f3-bot"}
+    )
+    assert body.bot_id == "a0b419f3-bot"
+
+
+def test_a_bot_id_differing_from_the_caller_is_normal_not_an_error():
+    """An owner generating for their bot is the ordinary case, so a mismatch
+    between the token subject and bot_id must never by itself be a 401 — that
+    broke generation outright once already."""
+    import inspect
+
+    from videogen import routes
+
+    pre = inspect.getsource(routes.generate_video).split("if not (req.prompt")[0]
+    assert "get_parent_principal" in pre, "ownership must be checked, not equality"
+
+
+def test_generation_for_a_bot_you_do_not_own_is_refused():
+    """Without this, knowing a bot id would be enough to generate videos into
+    someone else's profile."""
+    import inspect
+
+    from videogen import routes
+
+    pre = inspect.getsource(routes.generate_video).split("if not (req.prompt")[0]
+    assert "AuthError" in pre and "get_parent_principal" in pre

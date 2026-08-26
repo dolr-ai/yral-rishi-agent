@@ -8,7 +8,7 @@ the *host*, not the contract. Anything renamed here is a mobile crash.
 
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 # ─── generate ───────────────────────────────────────────────────────────
 
@@ -27,9 +27,17 @@ class ImagePayload(BaseModel):
 
 
 class GenerateRequestBody(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     prompt: str
     model_id: str
-    user_id: str
+    # Wire name is `user_id`, but the app puts the AI influencer's id here —
+    # `BotVideoGenCoordinator` sets `userId = botPrincipal`. The video belongs to
+    # the BOT, not to the human who owns it. The misleading wire name is why an
+    # earlier change dismissed this field as a duplicate of the caller and
+    # dropped it; every generated video then landed in the owner's drafts
+    # instead of the bot's. Aliased so our code says what it means.
+    bot_id: str = Field(validation_alias="user_id", serialization_alias="user_id")
     image: ImagePayload | None = None
     aspect_ratio: str | None = None
     duration_seconds: int | None = None
@@ -58,7 +66,10 @@ class GenerateResponse(BaseModel):
 
 
 class InProgressDraftsRequest(BaseModel):
-    user_id: str
+    model_config = ConfigDict(populate_by_name=True)
+
+    # Same wire name, same meaning as above: whose drafts to list.
+    bot_id: str = Field(validation_alias="user_id", serialization_alias="user_id")
 
 
 class InProgressDraftItem(BaseModel):
