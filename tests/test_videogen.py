@@ -340,31 +340,6 @@ def test_the_ownership_lookup_runs_after_the_pure_validations():
     assert source.index("UnsupportedModel") < source.index("get_parent_principal")
 
 
-def test_posts_as_the_bot_when_the_video_is_a_bots():
-    """The app generates with `userId = botPrincipal`, so the video is by the
-    bot. `add_post_2` must be told to post as that account, or the draft lands
-    in the owner's profile instead — which is what happened before this."""
-    import inspect
-
-    from videogen import spacetime
-
-    source = inspect.getsource(spacetime.add_draft_post)
-    assert "post_as_ai_account_id" in source
-    assert "add_post_2" in source
-
-
-def test_posts_as_self_when_the_video_is_the_callers_own():
-    """`add_post_2` refuses an account the caller's token does not list as
-    theirs — and nobody's token lists themselves. So a person generating on
-    their own profile must send None, not their own subject."""
-    import inspect
-
-    from videogen import spacetime
-
-    source = inspect.getsource(spacetime.add_draft_post)
-    assert "None if owner_of_video == caller else owner_of_video" in source
-
-
 def test_reads_the_subject_without_reverifying_the_signature():
     """auth.get_current_user already verified the token against the JWKS before
     the request reached a handler. Verifying again would be a second place to
@@ -485,3 +460,50 @@ def test_attempts_can_never_be_configured_down_to_zero():
     """A stray `COMFYUI_ATTEMPTS=0` would otherwise switch off every call to
     ComfyUI and report it as a failure after zero tries."""
     assert comfyui.ATTEMPTS >= 1
+
+
+# ─── the SpacetimeDB wire shape ─────────────────────────────────────────
+#
+# 6. reducer arguments are tagged enums, and getting one wrong is invisible
+#    until a real generation reaches the very last step. `add_post_2` took a
+#    bare string for `post_as_ai_account_id` on 2026-08-27 and answered
+#    `HTTP 400 ... expected sum type`, after the video had already been
+#    generated and stored. Verified against the live schema: the parameter is
+#    a sum of `some(String) | none`.
+
+
+def _captured_add_post_args(monkeypatch, *, owner_of_video, caller):
+    from videogen import spacetime
+
+    sent = {}
+
+    async def capture(reducer, args, token):
+        sent["reducer"], sent["args"] = reducer, args
+
+    monkeypatch.setattr(spacetime, "_call_reducer", capture)
+    monkeypatch.setattr(spacetime, "oauth_subject_from_token", lambda _t: caller)
+    _run(
+        spacetime.add_draft_post(
+            video_id="v1", owner_of_video=owner_of_video, prompt="p", user_token="t"
+        )
+    )
+    return sent["args"]
+
+
+def test_posting_as_a_bot_sends_the_tagged_some_variant(monkeypatch):
+    args = _captured_add_post_args(monkeypatch, owner_of_video="bot-9", caller="me")
+    assert args[5] == {"some": "bot-9"}, (
+        "a bare string is rejected as 'expected sum type'"
+    )
+
+
+def test_posting_as_yourself_sends_the_tagged_none_variant(monkeypatch):
+    args = _captured_add_post_args(monkeypatch, owner_of_video="me", caller="me")
+    assert args[5] == {"none": []}
+
+
+def test_every_add_post_argument_is_a_shape_spacetimedb_accepts(monkeypatch):
+    """The whole positional list, since one wrong slot fails the entire call."""
+    args = _captured_add_post_args(monkeypatch, owner_of_video="bot-9", caller="me")
+    assert args[:5] == ["v1", "p", [], "v1", {"draft": []}]
+    assert len(args) == 6

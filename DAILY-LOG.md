@@ -1,5 +1,65 @@
 # Daily Log
 
+## 2026-08-27 — a generated video, lost at the very last step
+
+Rishi made "Zara Papa", the video generated, and no draft appeared. Different
+failure from yesterday's, one step further along:
+
+```
+add_post_2: HTTP 400 invalid arguments for reducer ... expected sum type
+comfy_id present, video 1,586,933 bytes already in Storj
+```
+
+Yesterday's fix worked — the submit went through and the video was made. It died
+registering the post.
+
+**Bug 1 — my encoding, shipped in #498.** `post_as_ai_account_id` is
+`Option<String>`, and SpacetimeDB puts an Option on the wire as a *tagged
+variant*, exactly like the `PostStatus` sitting one argument earlier. I sent a
+bare string. Probed against the live reducer with an id that already exists, so
+nothing could be created:
+
+```
+bare null        -> DuplicatePostId     (parsed; posting as YOURSELF always worked)
+bare string      -> "expected sum type" (THE BUG: posting as a BOT)
+{"none": []}     -> DuplicatePostId     ok
+{"some": "..."}  -> Unauthorized        ok — arguments parsed
+```
+
+So #498 broke precisely the case it was written to enable. Generating on your own
+profile kept working; generating as a bot never once succeeded.
+
+The two tests #498 shipped asserted `inspect.getsource()` contained a variable
+name. They passed while the feature was broken, and failed the moment the
+variable was renamed. Deleted; replaced with three that assert the actual wire
+shape, verified against the deployed schema.
+
+**Bug 2 — the token is older than the bot.** `caller_owns_ai_account` reads
+`ext_ai_account_ids`, a claim baked in **at token grant**. Nothing in the app's
+bot-creation flow refreshes the token (grep: no match), and both bots were used
+9 seconds after being created:
+
+```
+Sahara    created 09:53:09 -> video 09:53:18
+Zara Papa created 10:52:05 -> video 10:52:14
+```
+
+yral-auth does persist the bot (`{owner}-ai-accounts`), so a *refreshed* token
+carries it. Until then the claim can't list it and the ownership check correctly
+returns false. Bug 1 masked this — the call never got far enough to be refused.
+
+The same stale claim is why **Zara Papa vanished from the profile dropdown**:
+`BotIdentitiesStore` merges the token's list into a local cache, so once the
+cache is rebuilt from a token that predates the bot, the bot disappears. One
+cause, two symptoms.
+
+**Interim:** after creating a bot, relaunch the app before generating. Bots that
+existed at login are unaffected once Bug 1 ships.
+
+**Still needed:** a token refresh after `create_ai_account` (mobile), or have the
+reducer consult yral-auth's `ai-account:{id}` reverse lookup instead of the claim
+(Saikat's call).
+
 ## 2026-08-26 — one unreachable tunnel task was losing videos
 
 **Symptom.** Rishi created "Sahara the desert girl", the spinner ran, and the
@@ -24,7 +84,7 @@ and nothing after it.
 So one node in six silently swallowed submissions, and there was no retry: a
 single unlucky connection lost the user's video outright.
 
-**Fixed** (#TBD): retry transport failures across attempts — each attempt opens
+**Fixed** (#499): retry transport failures across attempts — each attempt opens
 a fresh connection, so it is routed afresh and lands on a different tunnel task.
 A reply *from* ComfyUI is never retried; every tunnel reaches the same box, so a
 refusal would be identical from all of them. Connect now has its own 5s budget

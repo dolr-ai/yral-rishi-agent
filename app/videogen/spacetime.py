@@ -33,6 +33,21 @@ logger = logging.getLogger(__name__)
 STATUS_DRAFT = {"draft": []}
 STATUS_UPLOADED = {"uploaded": []}
 
+# `Option<T>` is a tagged enum on the wire too, and takes exactly the same shape
+# as the status above — never a bare value and never JSON null. The live schema
+# declares `post_as_ai_account_id` as a sum of `some(String) | none`, and sending
+# the bare string is what made `add_post_2` answer `HTTP 400 invalid arguments
+# ... expected sum type` on 2026-08-27, losing a generated video at the last
+# step. Note `null` happens to parse as `none`, so only the `some` side broke —
+# which is why generating on your own profile kept working and generating as a
+# bot never did.
+NO_AI_ACCOUNT = {"none": []}
+
+
+def posting_as(ai_account_id: str) -> dict:
+    """The `some` side of that Option."""
+    return {"some": ai_account_id}
+
 
 class SpacetimeError(RuntimeError):
     """A reducer call failed or was refused."""
@@ -93,13 +108,16 @@ async def add_draft_post(
     `add_post_2` takes the account to post as, and refuses an account the
     caller's token does not list as theirs. Passing the caller's *own* subject
     would be refused too — a person does not own themselves — so that case sends
-    `None`, which means "post as me".
+    `none`, which means "post as me".
+
+    Both sides go on the wire as tagged variants, not bare values; see
+    `NO_AI_ACCOUNT`.
 
     `video_id` is both the post id and the storage object name, so the app's
     client-side URL builder resolves to the file we just wrote.
     """
     caller = oauth_subject_from_token(user_token)
-    post_as_ai_account_id = None if owner_of_video == caller else owner_of_video
+    posting_as_self = owner_of_video == caller
 
     await _call_reducer(
         "add_post_2",
@@ -109,14 +127,14 @@ async def add_draft_post(
             [],
             video_id,
             STATUS_DRAFT,
-            post_as_ai_account_id,
+            NO_AI_ACCOUNT if posting_as_self else posting_as(owner_of_video),
         ],
         user_token,
     )
     logger.info(
         "videogen: registered draft post %s as %s",
         video_id,
-        post_as_ai_account_id or f"{caller} (self)",
+        f"{caller} (self)" if posting_as_self else owner_of_video,
     )
 
 
