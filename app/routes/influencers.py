@@ -275,9 +275,7 @@ async def get_influencer_summary(influencer_id: str):
     return response
 
 
-@router.post(
-    "/influencers/generate-prompt", response_model=GeneratePromptResponse
-)
+@router.post("/influencers/generate-prompt", response_model=GeneratePromptResponse)
 async def generate_prompt(body: GeneratePromptRequest, request: Request):
     get_current_user(request)
     try:

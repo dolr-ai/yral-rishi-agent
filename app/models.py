@@ -47,6 +47,7 @@ class InfluencerDetailResponse(BaseModel):
 
 # Influencer creation models
 
+
 # NOTE on request/response models: every `Optional[X] = None` field
 # emits an OpenAPI 3.1 `anyOf: [{...}, {"type": "null"}]` schema under
 # pydantic v2 / modern FastAPI. Codegen consumers that can't follow
