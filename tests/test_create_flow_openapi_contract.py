@@ -1,7 +1,10 @@
-"""Coach Fix 2 backend — plain-English bot-summary endpoint.
+"""OpenAPI create-flow contract pins.
 
-Mix of behavioral (cache freshness, validator) + source-pin (route
-wiring, repo helper, LLM-call shape).
+Guards the three spec-shape fixes the iOS codegen needs: the create
+request carries no anyOf-null property (Swift OpenAPI Generator #817
+drops those), the validate-and-generate response declares the fields
+the route actually returns, and create declares its 409 name-taken
+response.
 """
 
 from datetime import datetime, timedelta, timezone
