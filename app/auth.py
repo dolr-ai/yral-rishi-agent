@@ -39,6 +39,20 @@ def verify_jwt(token: str) -> dict:
     return payload
 
 
+# TODO(Rishi, security scheme in the OpenAPI doc): get_current_user is a
+# plain Request-header read, not a FastAPI security dependency, so the
+# generated /openapi.json declares NO security scheme — authenticated
+# endpoints are indistinguishable from public ones in the spec, and
+# codegen clients can't tell they need to send Authorization. The
+# proper fix is converting get_current_user to an
+# HTTPBearer(auto_error=False)-backed dependency (routes declare
+# security=Security(...), public routes opt out with security=[]);
+# ~45 routes (health, discovery feed, admin-key endpoints, websocket
+# docs) don't take user auth and would need the explicit opt-out. Out
+# of scope for this PR — see the PR description. Client-side impact
+# today: apps inject the Bearer token via their HTTP-client middleware
+# (swift-openapi-generator ignores security schemes entirely, so
+# nothing changes for the iOS client either way).
 def get_current_user(request: Request) -> str:
     auth_header = request.headers.get("Authorization")
     if not auth_header:

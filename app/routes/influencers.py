@@ -22,7 +22,9 @@ from services.character_generator import GeminiSafetyBlocked
 from models import (
     CreateInfluencerRequest,
     GeneratePromptRequest,
+    GeneratePromptResponse,
     ValidateAndGenerateRequest,
+    ValidateAndGenerateResponse,
     UpdateSystemPromptRequest,
     GenerateVideoPromptRequest,
 )
@@ -273,7 +275,7 @@ async def get_influencer_summary(influencer_id: str):
     return response
 
 
-@router.post("/influencers/generate-prompt")
+@router.post("/influencers/generate-prompt", response_model=GeneratePromptResponse)
 async def generate_prompt(body: GeneratePromptRequest, request: Request):
     get_current_user(request)
     try:
@@ -289,7 +291,10 @@ async def generate_prompt(body: GeneratePromptRequest, request: Request):
     return {"system_instructions": instructions}
 
 
-@router.post("/influencers/validate-and-generate-metadata")
+@router.post(
+    "/influencers/validate-and-generate-metadata",
+    response_model=ValidateAndGenerateResponse,
+)
 async def validate_and_generate(body: ValidateAndGenerateRequest, request: Request):
     get_current_user(request)
     result = await character_generator.validate_and_generate_metadata(body.concept)
@@ -297,10 +302,19 @@ async def validate_and_generate(body: ValidateAndGenerateRequest, request: Reque
         raise HTTPException(
             status_code=500, detail="Failed to validate and generate metadata"
         )
+    # avatar_url is None when avatar generation fails server-side; the
+    # response model pins it as a plain string (anyOf-null schemas get
+    # dropped by some codegen clients — apple/swift-openapi-generator#817),
+    # so coalesce to "" — the clients already treat blank as "no avatar".
+    result["avatar_url"] = result.get("avatar_url") or ""
     return result
 
 
-@router.post("/influencers/create", status_code=201)
+@router.post(
+    "/influencers/create",
+    status_code=201,
+    responses={409: {"description": "Name is already taken"}},
+)
 async def create_influencer(body: CreateInfluencerRequest, request: Request):
     user_id = get_current_user(request)
     pool = await get_pool()

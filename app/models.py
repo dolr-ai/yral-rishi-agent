@@ -48,20 +48,33 @@ class InfluencerDetailResponse(BaseModel):
 # Influencer creation models
 
 
+# NOTE on request/response models: every `Optional[X] = None` field
+# emits an OpenAPI 3.1 `anyOf: [{...}, {"type": "null"}]` schema under
+# pydantic v2 / modern FastAPI. Codegen consumers that can't follow
+# $refs through anyOf-null (apple/swift-openapi-generator#817 today)
+# then DROP the property entirely — a request model silently loses
+# fields for such clients. The wizard models below therefore use plain
+# defaulted fields (no Optional): the property becomes
+# required-with-default in the doc, consumers may omit it, and null
+# schemas never appear.
 class CreateInfluencerRequest(BaseModel):
     name: str = Field(min_length=3, max_length=50, pattern=r"^[a-z0-9_-]+$")
     display_name: str = Field(min_length=1, max_length=255)
     system_instructions: str = Field(min_length=10, max_length=10000)
     bot_principal_id: str = Field(min_length=1, max_length=255)
-    avatar_url: Optional[str] = None
-    description: Optional[str] = None
-    category: Optional[str] = None
-    personality_traits: Optional[dict] = None
-    initial_greeting: Optional[str] = None
-    suggested_messages: Optional[list[str]] = None
+    # Plain defaults instead of Optional[...] — see the model-level
+    # note. Empty string / empty container means "not provided"; the
+    # create handler and the DB treat it the same as the old `None`
+    # (influencer_repo.create already does `json.dumps(x or {})`).
+    avatar_url: str = ""
+    description: str = ""
+    category: str = ""
+    personality_traits: dict = Field(default_factory=dict)
+    initial_greeting: str = ""
+    suggested_messages: list[str] = Field(default_factory=list)
     is_nsfw: bool = False
-    source: Optional[str] = None
-    metadata: Optional[dict] = None
+    source: str = ""
+    metadata: dict = Field(default_factory=dict)
 
     # Mobile sends TitleCase names — lowercase before pattern validation
     @field_validator("name", mode="before")
@@ -75,7 +88,7 @@ class CreateInfluencerRequest(BaseModel):
 class GeneratePromptRequest(BaseModel):
     # Mobile sends "prompt", backend canonical name is "concept" — accept both
     concept: str = Field(validation_alias=AliasChoices("concept", "prompt"))
-    language: Optional[str] = None
+    language: str = ""
 
 
 class GeneratePromptResponse(BaseModel):
@@ -87,20 +100,28 @@ class ValidateAndGenerateRequest(BaseModel):
     concept: str = Field(
         validation_alias=AliasChoices("concept", "system_instructions"),
     )
-    language: Optional[str] = None
+    language: str = ""
 
 
 class ValidateAndGenerateResponse(BaseModel):
+    # Declares exactly what validate_and_generate_metadata returns: the
+    # rejected case carries is_valid=false + reason; the accepted case
+    # carries the full persona. Plain defaults instead of Optional —
+    # see the model-level note on CreateInfluencerRequest. avatar_url
+    # is a plain string because the route coalesces a failed generation
+    # (None) to "" — a nullable schema here would get the field dropped
+    # by some codegen clients (anyOf-null, see the note above).
     is_valid: bool
-    name: Optional[str] = None
-    display_name: Optional[str] = None
-    description: Optional[str] = None
-    system_instructions: Optional[str] = None
-    avatar_url: Optional[str] = None
-    initial_greeting: Optional[str] = None
-    suggested_messages: Optional[list[str]] = None
-    personality_traits: Optional[dict] = None
-    rejection_reason: Optional[str] = None
+    reason: str = ""
+    name: str = ""
+    display_name: str = ""
+    description: str = ""
+    avatar_url: str = ""
+    initial_greeting: str = ""
+    suggested_messages: list[str] = Field(default_factory=list)
+    personality_traits: dict = Field(default_factory=dict)
+    category: str = ""
+    image_prompt: str = ""
 
 
 class UpdateSystemPromptRequest(BaseModel):
@@ -108,7 +129,7 @@ class UpdateSystemPromptRequest(BaseModel):
 
 
 class GenerateVideoPromptRequest(BaseModel):
-    topic: Optional[str] = None
+    topic: str = ""
 
 
 class GenerateVideoPromptResponse(BaseModel):
