@@ -29,11 +29,13 @@ def _format(row: dict) -> dict:
 
 
 @router.get("/memories")
-async def list_my_memories(request: Request, influencer_id: str | None = None):
+async def list_my_memories(request: Request, influencer_id: str = ""):
     """List the calling user's stored memories.
 
     If influencer_id is given, returns memories for that influencer + global ones.
     Otherwise returns global-only (influencer_id IS NULL).
+    (Plain "" default — anyOf-null query schemas get dropped by
+    codegen clients; the `if influencer_id:` check is falsy-safe.)
     """
     user_id = get_current_user(request)
     pool = await get_pool()

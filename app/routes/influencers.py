@@ -119,8 +119,13 @@ def _format_influencer_detail(inf: dict) -> dict:
 async def list_influencers(
     limit: int = Query(default=50, le=100),
     offset: int = Query(default=0, ge=0),
-    surface: str | None = Query(
-        default=None,
+    # Plain "" default instead of `str | None = None` — see the
+    # CreateInfluencerRequest note in app/models.py (anyOf-null
+    # schemas get dropped by codegen clients). `surface_service.
+    # normalize("")` returns None ("don't filter") — same behavior as
+    # the old None default.
+    surface: str = Query(
+        "",
         description="Filter to a product surface: mobile | web | both. "
         "Omit for the unfiltered catalogue (existing behaviour).",
     ),

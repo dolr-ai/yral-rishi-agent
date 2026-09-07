@@ -104,13 +104,16 @@ async def mint(
         raise RuntimeError("spicy_handoff: Redis unavailable at mint time")
 
     ticket = secrets.token_urlsafe(_TICKET_BYTES)
-    payload = json.dumps(
-        {
-            "user_id": user_id,
-            "bot_handle": bot_handle,
-            "is_anonymous": bool(is_anonymous),
-        }
-    )
+    # bot_handle "" (or None) = minted without a specific bot: omit the
+    # key entirely so the exchange payload stays null-free on the wire
+    # (HandoffExchangeResponse.bot_handle: str = "").
+    payload_dict = {
+        "user_id": user_id,
+        "is_anonymous": bool(is_anonymous),
+    }
+    if bot_handle:
+        payload_dict["bot_handle"] = bot_handle
+    payload = json.dumps(payload_dict)
     # SETEX = SET + EX in one round trip; also NX would let us reject
     # a collision, but 256 bits of entropy makes collision practically
     # impossible — bet on TTL alone to keep the code simple.

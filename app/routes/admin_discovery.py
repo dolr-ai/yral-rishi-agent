@@ -58,7 +58,14 @@ class PinRequest(BaseModel):
 
     influencer_id: str = Field(..., min_length=1, max_length=255)
     pinned_rank: int = Field(..., ge=1, le=1000)
-    note: str | None = None
+    # Plain default for note instead of `str | None = None` — see the
+    # CreateInfluencerRequest note in app/models.py (anyOf-null schemas
+    # get dropped by codegen clients). expires_at stays Optional: it's
+    # genuinely tri-state (None = never expires — the DB column is
+    # NULL and queries rely on that), and datetime has no falsy value
+    # to repurpose. The call site converts note "" → None so the
+    # stored value stays NULL, not empty string.
+    note: str = ""
     expires_at: datetime | None = None
 
 
@@ -187,7 +194,7 @@ async def admin_pin(
         pool,
         influencer_id=body.influencer_id,
         pinned_rank=body.pinned_rank,
-        note=body.note,
+        note=body.note or None,
         expires_at=expires_at,
         created_by="admin",
     )

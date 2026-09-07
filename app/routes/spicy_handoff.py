@@ -13,7 +13,6 @@ Option A verdict from track 1b applies verbatim here.
 """
 
 import logging
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -32,10 +31,15 @@ router = APIRouter(prefix="/api/v1/spicy/handoff", tags=["Spicy — Handoff"])
 
 class HandoffMintRequest(BaseModel):
     """Optional bot_handle so the ticket can carry the intended web
-    destination. Nullable so the client can mint without knowing the
-    specific bot (rare — amorae's URL always includes /<bot>)."""
+    destination. Empty so the client can mint without knowing the
+    specific bot (rare — amorae's URL always includes /<bot>).
 
-    bot_handle: Optional[str] = Field(default=None, max_length=64)
+    Plain default instead of Optional — see the CreateInfluencerRequest
+    note in app/models.py (anyOf-null schemas get dropped by codegen
+    clients). `spicy_handoff.mint` treats "" exactly like None (its
+    body dict carries the handle only when truthy)."""
+
+    bot_handle: str = Field(default="", max_length=64)
 
 
 class HandoffMintResponse(BaseModel):
@@ -51,10 +55,15 @@ class HandoffExchangeResponse(BaseModel):
     """Contract §1 shape. `is_anonymous` defaults false for the
     logged-in flow; anonymous handoff is a design open question left
     for a fast-follow (mint side would need to accept the anon
-    principal separately)."""
+    principal separately).
+
+    bot_handle is a plain "" when the ticket was minted without a
+    specific bot (see HandoffMintRequest) — no anyOf-null on the
+    response schema (codegen clients drop those; see the
+    CreateInfluencerRequest note in app/models.py)."""
 
     user_id: str
-    bot_handle: Optional[str] = None
+    bot_handle: str = ""
     is_anonymous: bool = False
 
 
@@ -102,6 +111,6 @@ async def exchange_handoff(body: HandoffExchangeRequest) -> HandoffExchangeRespo
         raise HTTPException(status_code=401, detail="invalid or consumed ticket")
     return HandoffExchangeResponse(
         user_id=payload["user_id"],
-        bot_handle=payload.get("bot_handle"),
+        bot_handle=payload.get("bot_handle") or "",
         is_anonymous=bool(payload.get("is_anonymous", False)),
     )

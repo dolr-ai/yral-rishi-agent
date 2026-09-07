@@ -40,7 +40,11 @@ class ConsentWriteRequest(BaseModel):
     wire it into the audit column later."""
 
     user_id: str = Field(min_length=1, max_length=255)
-    source_ip: Optional[str] = Field(default=None, max_length=45)
+    # Plain default instead of Optional — see the CreateInfluencerRequest
+    # note in app/models.py (anyOf-null schemas get dropped by codegen
+    # clients). The route's `body.source_ip or peer_ip` is falsy-safe,
+    # so "" and None behave identically.
+    source_ip: str = Field("", max_length=45)
     surface: str = Field(default="web_spicy", min_length=1, max_length=64)
 
 

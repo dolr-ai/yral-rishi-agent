@@ -132,16 +132,19 @@ async def etl_integrity_stale(request: Request):
 
 
 @router.get("/admin/etl-skipped")
-async def etl_skipped(request: Request, hours: int = 24, reason: str | None = None):
+async def etl_skipped(request: Request, hours: int = 24, reason: str = ""):
     """Recent etl_skipped_rows entries — Option A audit trail.
 
     `reason` must be one of conflict/orphan if provided. `hours` clamped
-    to [1, 168]. Capped at 500 rows in the response."""
+    to [1, 168]. Capped at 500 rows in the response.
+    (Plain "" default instead of `str | None = None` — anyOf-null
+    query schemas get dropped by codegen clients; the consumers below
+    are falsy-safe.)"""
     from auth import get_current_user
     from services.etl_chat_ai import get_skipped
 
     get_current_user(request)
-    if reason is not None and reason not in {"conflict", "orphan"}:
+    if reason and reason not in {"conflict", "orphan"}:
         raise HTTPException(
             status_code=400,
             detail="reason must be 'conflict' or 'orphan'",

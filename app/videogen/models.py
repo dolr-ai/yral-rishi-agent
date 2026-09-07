@@ -15,7 +15,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class ImageValue(BaseModel):
     data: str
-    mime_type: str | None = None
+    # Plain default instead of Optional — see the
+    # CreateInfluencerRequest note in app/models.py (anyOf-null
+    # schemas get dropped by codegen clients). comfyui.upload_image
+    # hard-codes the content type; this field is passthrough metadata
+    # today, "" = unspecified.
+    mime_type: str = ""
 
 
 class ImagePayload(BaseModel):
@@ -38,21 +43,39 @@ class GenerateRequestBody(BaseModel):
     # dropped it; every generated video then landed in the owner's drafts
     # instead of the bot's. Aliased so our code says what it means.
     bot_id: str = Field(validation_alias="user_id", serialization_alias="user_id")
+    # Plain defaults instead of `X | None = None` for fields consumed
+    # falsy-safely or as unused passthroughs — see the
+    # CreateInfluencerRequest note in app/models.py (anyOf-null schemas
+    # get dropped by codegen clients):
+    #   - duration_seconds: comfyui.build_workflow does
+    #     `min(duration_seconds or MAX_DURATION_SECONDS, MAX)` — 0
+    #     (unspecified) resolves to the provider max, same as None.
+    #   - image: genuinely tri-state (None = text-to-video vs an image
+    #     payload = image-to-video) — kept Optional; the one remaining
+    #     anyOf-null warning for this field is accepted (mobile always
+    #     sends the field explicitly; no codegen consumer depends on
+    #     its absence shape).
+    #   - generate_audio/seed: UNREAD passthroughs today (the graph
+    #     randomizes seeds per request); plain defaults remove the null
+    #     schema without changing any behavior.
     image: ImagePayload | None = None
-    aspect_ratio: str | None = None
-    duration_seconds: int | None = None
-    generate_audio: bool | None = None
-    negative_prompt: str | None = None
-    resolution: str | None = None
-    seed: int | None = None
+    aspect_ratio: str = ""
+    duration_seconds: int = 0
+    generate_audio: bool = True
+    negative_prompt: str = ""
+    resolution: str = ""
+    seed: int = 0
     # Mobile always sends "Free" and every provider costs 0. Accepted so the
     # payload validates; deliberately unused — there is no billing here.
-    token_type: str | None = None
+    token_type: str = ""
 
 
 class GenerateRequest(BaseModel):
     request: GenerateRequestBody
-    upload_handling: str | None = None
+    # Plain default — unused passthrough (upload handling is a
+    # provider-side concern the graph encodes); no anyOf-null on the
+    # published schema.
+    upload_handling: str = ""
 
 
 class GenerateResponse(BaseModel):

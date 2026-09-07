@@ -82,7 +82,11 @@ async def influencer_feed(
     offset: int = Query(0, ge=0, le=10000),
     limit: int = Query(20, ge=1, le=50),
     with_metadata: bool = Query(False),
-    session_id: str | None = Query(None),
+    # Plain "" default instead of `str | None = None` — see the
+    # CreateInfluencerRequest note in app/models.py (anyOf-null schemas
+    # get dropped by codegen clients). `_derive_session_id` treats ""
+    # exactly like None (its `if explicit:` falsy check).
+    session_id: str = Query(""),
 ):
     """Return a paginated, deduplicated, per-session-shuffled feed.
 

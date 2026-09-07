@@ -353,7 +353,10 @@ async def list_conversations(
     request: Request,
     limit: int = Query(default=20, le=100),
     offset: int = Query(default=0, ge=0),
-    influencer_id: str | None = Query(default=None),
+    # Plain "" default — anyOf-null query schemas get dropped by
+    # codegen clients (see the CreateInfluencerRequest note in
+    # app/models.py); conversation_repo.list_by_user is falsy-safe.
+    influencer_id: str = Query(""),
 ):
     user_id = get_current_user(request)
     pool = await get_pool()

@@ -38,7 +38,15 @@ class RequestImagesBody(BaseModel):
     Play Store IAP; sending it in the request body lets the backend
     decide which URL set (clear vs pre-blurred) to serve without
     having to call billing.yral.com on every request. Absent = fall
-    back to subscription_stub (YRAL team allowlist)."""
+    back to subscription_stub (YRAL team allowlist).
+
+    Genuinely TRI-STATE: None (absent) → subscription_stub fallback;
+    False → pre-blurred; True → clear. A plain `bool = False` default
+    would silently reclassify every absent-body request to
+    "not subscribed". Keep the Optional here — the anyOf-null warning
+    is accepted for this one field BECAUSE the third state is load-
+    bearing. (The mobile client always sends the field explicitly,
+    so no codegen consumer ever relies on the dropped-null shape.)"""
 
     is_subscribed: bool | None = None
 
@@ -147,9 +155,15 @@ async def request_images(
 async def get_collage(
     influencer_id: str,
     request: Request,
+    # Plain "" defaults for the lookup keys (anyOf-null query schemas
+    # get dropped by codegen clients — see the CreateInfluencerRequest
+    # note in app/models.py; the `if collage_id:` / `if date:` checks
+    # below are falsy-safe). is_subscribed is genuinely TRI-STATE:
+    # None (absent) → subscription_stub fallback; False → pre-blurred;
+    # True → clear. Keep the Optional for it.
     is_subscribed: bool | None = None,
-    collage_id: str | None = None,
-    date: str | None = None,
+    collage_id: str = "",
+    date: str = "",
 ) -> dict:
     """Idempotent read — used by mobile for polling + reload +
     render-time refetch (design §5 self-healing pattern). Never

@@ -72,12 +72,19 @@ class ClassifyOverrideRequest(BaseModel):
     """Operator override. At least one of (archetype, gender, category)
     must be present. Enum validation happens in
     `apply_admin_override`; we keep Pydantic free-form here so the
-    route returns a useful 422 with the canonical valid set."""
+    route returns a useful 422 with the canonical valid set.
+
+    Plain "" defaults instead of `str | None = None` — see the note on
+    CreateInfluencerRequest in app/models.py: pydantic v2 emits
+    anyOf-null schemas for Optional fields, which codegen clients
+    (e.g. apple/swift-openapi-generator#817) DROP entirely.
+    `apply_admin_override` treats "" exactly like None (its `is not
+    None` checks become falsy checks with the same outcome)."""
 
     influencer_id: str = Field(..., min_length=1, max_length=255)
-    archetype: str | None = None
-    gender: str | None = None
-    category: str | None = Field(None, max_length=100)
+    archetype: str = ""
+    gender: str = ""
+    category: str = Field("", max_length=100)
 
 
 @router.post("/admin/discovery/classify-override")

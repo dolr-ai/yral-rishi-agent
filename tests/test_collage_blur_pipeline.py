@@ -346,11 +346,13 @@ def test_route_supports_collage_id_query_param():
     src = (
         Path(__file__).parent.parent / "app" / "routes" / "request_images.py"
     ).read_text()
-    assert "collage_id: str | None = None" in src, (
+    # Plain "" defaults (no anyOf-null schemas — codegen clients drop
+    # those; see the CreateInfluencerRequest note in app/models.py).
+    assert 'collage_id: str = ""' in src, (
         "route dropped the collage_id query param — mobile's primary "
         "lookup path is broken"
     )
-    assert "date: str | None = None" in src, (
+    assert 'date: str = ""' in src, (
         "route dropped the date query param — mobile's fallback path "
         "for legacy chat messages is broken"
     )
