@@ -6,6 +6,7 @@ import sentry_sdk
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 
 import config
@@ -483,6 +484,78 @@ app = FastAPI(
     version=config.APP_VERSION,
     lifespan=lifespan,
 )
+
+
+# ─── OpenAPI publication transform: collapse anyOf: [T, null] ────────────
+# Python types stay honest (Optional[X] = None where the domain is genuinely
+# nullable) and the null variant is collapsed at PUBLICATION time instead —
+# the OpenAPI 3.1 equivalent of the `required` list carrying optionality
+# (absent key = optional field), per the apple/swift-openapi-generator
+# maintainer's guidance on #817 ("rely on the `required` property").
+#
+# Why: codegen clients that can't follow null variants (swift-openapi-
+# generator#817 today) DROP such fields from generated types entirely, so
+# every anyOf-null schema in the published doc silently vanished from the
+# iOS client's API surface — e.g. ?session_id on the discovery feed.
+#
+# Semantics preserved:
+# - not-required fields stay not-required: absence ("key missing") is the
+#   optionality carrier on the wire, and query params can't be null anyway
+#   (only absent or valued), so the null variant was unexpressible noise.
+# - Response bodies may still emit literal null — every mainstream client
+#   (Swift decodeIfPresent, Kotlin String? = null) treats missing and null
+#   identically for not-required fields.
+# - Multi-variant anyOfs (unions of several non-null types) are untouched;
+#   only the exact 2-variant [T, {"type": "null"}] shape collapses to T.
+
+
+def _collapse_anyof_null(schema_node):
+    """Recursively replace `anyOf: [T, {"type": "null"}]` with plain T."""
+    if isinstance(schema_node, dict):
+        any_of = schema_node.get("anyOf")
+        if isinstance(any_of, list) and {"type": "null"} in any_of:
+            non_null_variants = [
+                variant for variant in any_of if variant != {"type": "null"}
+            ]
+            if len(non_null_variants) == 1:
+                merged = dict(non_null_variants[0])
+                for key, value in schema_node.items():
+                    if key not in ("anyOf", "default") and key not in merged:
+                        merged[key] = value
+                if "default" in schema_node and schema_node["default"] is not None:
+                    merged["default"] = schema_node["default"]
+                schema_node = merged
+        return {key: _collapse_anyof_null(value) for key, value in schema_node.items()}
+    if isinstance(schema_node, list):
+        return [_collapse_anyof_null(value) for value in schema_node]
+    return schema_node
+
+
+def _openapi_with_collapsed_nulls():
+    """FastAPI's documented customization point (extending-openapi): override
+    app.openapi(), generate via get_openapi(), cache in app.openapi_schema."""
+    if app.openapi_schema is None:
+        app.openapi_schema = _collapse_anyof_null(
+            get_openapi(
+                title=app.title,
+                version=app.version,
+                openapi_version=app.openapi_version,
+                summary=app.summary,
+                description=app.description,
+                terms_of_service=app.terms_of_service,
+                contact=app.contact,
+                license_info=app.license_info,
+                routes=app.routes,
+                webhooks=app.webhooks.routes,
+                tags=app.openapi_tags,
+                servers=app.servers,
+                separate_input_output_schemas=app.separate_input_output_schemas,
+            )
+        )
+    return app.openapi_schema
+
+
+app.openapi = _openapi_with_collapsed_nulls
 
 if config.CORS_ORIGINS == "*":
     origins = ["*"]
