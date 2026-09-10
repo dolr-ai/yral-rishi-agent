@@ -1,5 +1,30 @@
 # Daily Log
 
+## 2026-09-10 (evening) — evaluated the whole service; parked the plan
+
+Rishi asked for a full evaluation and a plan across alpha verification,
+automated tests, cleanup, absorbing Ansuman's service, rewriting Sarvesh's
+billing service in Python, and ongoing structural hygiene. Written up in
+PROGRESS.md under "Service evaluation + long-range plan (2026-09-10)" and
+parked there.
+
+The finding worth carrying: **105 of 145 test files read our own source as
+text, and 1,283 assertions are substring matches against it.** So "1458
+passing" is not the coverage it looks like — it is the same shape as the two
+gates fixed earlier today, at a much larger scale. That is why #503 passed CI
+while broken. Everything else on the list depends on fixing it first.
+
+Also corrected a scan of my own before reporting it: an ad-hoc grep flagged
+eleven route modules as dead, including `health.py`. All 29 routers are wired
+into `main.py` — the grep was wrong, not the code.
+
+One decision locked, against what was asked: **billing gets absorbed, not
+rewritten.** 8,277 lines of Rust implementing a ledger, currently working.
+Reasoning is in PROGRESS.md so it does not get re-argued from zero.
+
+Stale header in PROGRESS.md fixed while in there — it claimed ~7,500 lines of
+Python and a last-updated date of 2026-06-13. Actual is 30,089 lines.
+
 ## 2026-09-10 — the lint gate was never pinned to anything
 
 Saikat filed #505: our CI pins `ruff==0.15.14`, current is 0.16.6, and running
