@@ -1,7 +1,8 @@
 # Master Feature Tracker — yral-rishi-agent v2 (1000x Vision)
 
-**Last updated:** 2026-06-13 morning (pre-flip)
-**Codebase:** ~7,500 lines Python (post 13-PR shipping day 2026-06-08)
+**Last updated:** 2026-09-10 (service evaluation — see the section at the end)
+**Codebase:** 30,089 lines Python across 123 files in `app/` (measured 2026-09-10).
+The `~7,500` figure here was from 2026-06-08 and stood unrevised for three months.
 **Total phases:** 25 + cutover phases 21α / 21α→β / 21αβ.I / 21β / 21γ
 **Cutover target:** ~2 weeks from 2026-06-08 (realistic D+17 to real users on V2; mostly waiting on Sarvesh merges + Play Store approval)
 
@@ -813,3 +814,80 @@ consumer, and manual video upload is dead code in the app.
 `update-video-metadata`, dedup, pHash, `move-to-nsfw`, the Storj↔Hetzner mirror,
 the media index — 28 endpoints. Existing videos keep playing; they are already
 in the bucket.
+
+
+## Service evaluation + long-range plan (2026-09-10)
+
+Rishi asked for a full evaluation of the agent service and a plan covering:
+alpha verification, automated tests, cleanup, absorbing Ansuman's service,
+rewriting Sarvesh's billing service in Python, and ongoing structural hygiene.
+**Parked after evaluation — to be resumed.** Nothing below is started.
+
+### Measured state (2026-09-10, not estimated)
+
+| Measure | Value | Note |
+|---|---|---|
+| `app/` | 123 files, 30,089 lines | chat-ai, the service this replaces, is ~6.8K |
+| `app/services/` | 55 files, 14,860 lines | half the codebase |
+| `app/routes/` | 30 files, 8,816 lines | all 29 routers wired — **no orphaned routes** |
+| `tests/` | 145 files, 24,801 lines | see the row below before trusting this |
+| Test files reading source as text | **105 of 145** | — |
+| `assert "..." in src`-shaped assertions | **1,283** | — |
+| ETL (`etl_chat_ai` + `etl_integrity` + `etl_drain`) | ~2,100 lines | re-bootstrap completed 2026-06-05 |
+| Open rows in this file | 182 ⏳/🔄 | the tracker itself needs a cull |
+| `yral-rishi-billing` | 30 files, 8,277 lines Rust | Diesel + SQLite/Litestream; it is a **ledger** |
+
+### The headline finding
+
+**Our tests largely do not test.** 1,283 assertions grep our own source for
+substrings, so "1458 passing" overstates real coverage by a wide margin. This is
+what let #503 pass CI while breaking video generation in the alpha — its author
+kept the suite green by editing the assertion to match the break. Same failure
+family as Codex-skipping (#507) and ruff-unpinned (#506): a gate that reports
+green without checking anything.
+
+Everything else on the list depends on fixing this first. You cannot safely
+delete 30K lines, absorb a service, or rewrite a ledger when the safety net is
+a substring match.
+
+### Sequenced plan
+
+| # | Workstream | Status | Why this order |
+|---|---|---|---|
+| 1 | **Make testing real** — HTTP-level suite driving the real app (the testcontainers harness in `conftest.py` exists and is barely used); convert highest-risk source-text tests; CI gate blocking *new* source-text assertions | ⏳ Not started | Unblocks everything below, and unblocks the agent session testing anything itself |
+| 2 | **Alpha verification, automated** — end-to-end script over the real alpha paths, pass/fail | ⏳ Not started | Mobile still gates on Rishi's Motorola pass — unchanged |
+| 3 | **Cleanup with the net in place** — retire ETL, consolidate `services/`, cull this file | ⏳ Not started | Needs #1 first; deleting code under substring tests is how things break silently |
+| 4 | **Absorb Ansuman's service** | ⏳ Not started | Specs already in `docs/` from 2026-08-08 |
+| 5 | **Billing** — see the locked decision below | ⏳ Not started | Last, and not as a rewrite |
+| 6 | **Structural hygiene, mechanised** — enforce the CLAUDE.md symmetry rules in CI, real dead-code tooling (not ad-hoc grep), scheduled audit | ⏳ Not started | Ongoing once #1–#3 land |
+
+### Decision locked 2026-09-10 — billing: absorb, do NOT rewrite
+
+Rishi asked to rewrite Sarvesh's billing service in Python and fold it into the
+agent. **Recommendation is not to**, and the reasoning is recorded here so it
+does not get re-litigated from scratch:
+
+- It is 8,277 lines of Rust implementing a **ledger**. Rust gives it
+  compile-time guarantees and exact-decimal discipline Python does not.
+- It currently works — last commit is "tested ledger reconciliation".
+- A rounding or reconciliation bug in a rewrite costs real money.
+- "One service, one language" is a good instinct and is why CLAUDE.md exists,
+  but consistency is not worth a ledger bug.
+
+**Instead:** absorb *ownership* — deploys, monitoring, on-call understanding.
+That delivers what is actually needed when Sarvesh is not around. If the Rust
+later becomes a genuine maintenance burden, rewrite it with a shadow period
+where both implementations run and reconcile daily. That is a quarter of work,
+not a sprint.
+
+If the real driver is "nobody here reads Rust", the cheaper answer is likely
+that one of us learns enough Rust to maintain 8K lines.
+
+### Honest sizing
+
+Items 1–5 are **months** at 3–4 hrs/day, not weeks. The fastest thing that makes
+every later item cheaper is #1.
+
+**Next session picks up at:** the test-quality audit — a full inventory of the
+1,283 assertions grouped by what each actually pins, so the real-versus-assumed
+coverage gap is visible and the rest of the work can be sized.
