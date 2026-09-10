@@ -1,5 +1,62 @@
 # Daily Log
 
+## 2026-09-10 (later still) — every VALID influencer concept has been 500ing since Sunday
+
+Saikat couldn't create AI influencers from the new iOS client. Rishi checked the
+Replicate balance ($9.43, fine) — but the request never gets as far as image
+generation. Sentry #602:
+
+```
+ResponseValidationError  routes.influencers.validate_and_generate
+{'loc': ('response', 'reason'), 'msg': 'Input should be a valid string', 'input': None}
+POST /api/v1/influencers/validate-and-generate-metadata -> 500
+first seen 2026-09-08 · last seen 2026-09-10 13:32 · 5 events · 1 user
+```
+
+**Our own PR #501 did this.** It attached a typed `response_model` to the
+endpoint and declared `reason` a plain `str` to keep anyOf-null out of the spec.
+Meanwhile the prompt at `character_generator.py:65` instructs the model:
+
+```
+"reason": "reason if invalid, null if valid",
+```
+
+So a VALID concept returns `{"is_valid": true, "reason": null, ...}`. A pydantic
+default only fills an **absent** key — never a present-but-null one — so
+response validation rejected it and FastAPI raised a 500. Reproduced exactly:
+
+```
+happy path (reason=None): REJECTED -> ('reason',) Input should be a valid string
+key absent instead      : ''  (default applies)
+rejected path           : ACCEPTED
+```
+
+Only the rejection path worked. Give it a bad concept and you got a clean "no";
+give it a good one and you got a 500. That asymmetry is why it survived four
+days — the failure looked like an edge case and was actually the main path.
+
+Not just Saikat: the alpha app calls the same endpoint
+(`AiInfluencerViewModel.kt` -> `ValidateAndGenerateMetadataUseCase`), so
+influencer creation has been broken there since 2026-09-06 too. It shows one
+user because he was the only one trying.
+
+**Third instance of one pattern this week** — #501, #503 and this are all
+"convert Optional[X] to a plain type to dodge anyOf-null, without checking what
+the runtime value actually is". #503 got caught before merge. #501 shipped, with
+**no Codex review**, because it was opened as a draft — precisely the gate #507
+fixed today.
+
+Fix is `reason: str | None = None`. What makes that free now is #504: since it
+collapses anyOf-null at publication, the published schema is still a plain
+not-required string, so no generated client changes. We no longer need to
+distort Python types to get a clean spec — which means the rest of #501's
+distortions are now both unnecessary and each a latent copy of this bug. Worth
+unwinding separately.
+
+Test is driven through the real route so `response_model` validation actually
+runs, and it fails on the unfixed code. A source-text assertion over models.py
+would have stayed green through the whole outage.
+
 ## 2026-09-10 (later) — Trivy was red because only one of two allowlists got filled in
 
 Trivy has been failing on every push to main. Three findings, all HIGH, all the
