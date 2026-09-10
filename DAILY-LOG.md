@@ -1,5 +1,69 @@
 # Daily Log
 
+## 2026-09-10 — the lint gate was never pinned to anything
+
+Saikat filed #505: our CI pins `ruff==0.15.14`, current is 0.16.6, and running
+the new one against our repo produces 423 findings. Our CI is green. Both are
+true at once, which is the whole problem.
+
+Ruff 0.16.0 expanded its **default rule set from 59 rules to 413**. We pinned
+the version but never the rules, so "which rules apply" was whatever the
+installed ruff happened to default to. Two people running "the same" lint on
+the same commit got different answers.
+
+I couldn't reproduce his number — I got 345, and zero of the 70 `UP017`
+findings he reported. Forcing `--target-version py312` produced exactly 70.
+That was the tell:
+
+```
+rules enabled by 0.15.14 defaults: 59
+rules enabled by 0.16.6 defaults:  413
+```
+
+**We never tell ruff which Python we target.** No `[tool.ruff]` section, no
+`requires-python`. So it guesses, guesses old, and silently switches off every
+rule gated on 3.11+ — while the Dockerfile ships `python:3.12-slim` and CI runs
+3.12. His 423 is the honest number for the Python we actually run; our 345 was
+a discount for declaring nothing.
+
+Two things his suggested migration would have hit. `ruff check --fix` rewrites
+`Optional[UUID]` to `UUID | None` in `app/models.py`, and
+`tests/test_collage_message_persistence.py` has six assertions of the form
+`assert "collage_id: Optional[UUID]" in block` — source-text tests again, third
+time this month. And the fix touches 78 files in `app/` for zero behaviour
+change. The 149 `BLE001` blind-except findings are our deliberate fail-open
+paths; they carry comments saying so.
+
+**What shipped instead of the migration.** Pin the rule set, not just the
+version — `select = ["E4", "E7", "E9", "F"]` is exactly ruff's pre-0.16 default
+and exactly what CI has enforced all along, so the 0.15.14 → 0.16.6 bump in the
+same PR is a verified no-op:
+
+```
+0.16.6 + explicit select -> 59 rules, All checks passed, 126 files formatted
+0.15.14 + explicit select -> All checks passed   (config is version-agnostic)
+```
+
+The version moved to `requirements-lint.txt` because Dependabot cannot read a
+version out of a workflow's `run:` step — a dependabot.yml pointed at an inline
+pin would have been a safety net that silently does nothing. Scoped to ruff
+alone; opening the queue on runtime deps is a separate decision.
+
+Pinning was right and it held. Pinning and never moving is how we got 15
+releases behind and found out from an outside contributor.
+
+**Yesterday, for the record.** #504 merged and auto-deployed (`2a77c95`) —
+collapses `anyOf: [T, null]` to `T` at OpenAPI publication time so Saikat's
+generated iOS client stops dropping fields. Verified live: 0 null schemas on
+`agent.rishi.yral.com/openapi.json`, 103 paths, 29 schemas. #503 was its
+predecessor and would have 422'd every video generation in the alpha app;
+Saikat withdrew it and rebuilt the idea as #504, which changes no models and no
+routes at all.
+
+Still open: Codex review has been silently skipping on every draft-first PR
+(`ready_for_review` isn't in the workflow's trigger list), and Trivy is red on
+main.
+
 ## 2026-08-27 — a generated video, lost at the very last step
 
 Rishi made "Zara Papa", the video generated, and no draft appeared. Different

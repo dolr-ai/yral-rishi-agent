@@ -14,3 +14,29 @@ pythonpath = ["app", "watchdog"]
 # Only matters when pytest is run with no path argument (CI passes `tests/`
 # explicitly); makes a bare `pytest` do the right thing.
 testpaths = ["tests"]
+
+
+[tool.ruff]
+# Ruff infers its Python target from `requires-python`, which this project
+# doesn't declare — so it guessed old and silently disabled every rule gated
+# on 3.11+. The Dockerfile ships python:3.12-slim and CI runs 3.12; say so
+# here too, so the linter stops disagreeing with the runtime about what
+# language we're writing.
+target-version = "py312"
+
+[tool.ruff.lint]
+# Pin the RULE SET, not just the ruff version.
+#
+# Ruff 0.16.0 expanded the default selection from 59 rules to 413. Because we
+# had pinned only the version, "which rules apply" was whatever the installed
+# ruff happened to default to — so a version bump was silently a semantic
+# change, and two people running "the same" lint got different answers
+# (issue #505: 423 findings measured against our green CI).
+#
+# This list is exactly ruff's pre-0.16 default — E4/E7/E9 plus Pyflakes, 59
+# rules — which is what CI has been enforcing all along. That makes the
+# 0.15.14 -> 0.16.6 bump landing in this same PR a verified no-op.
+#
+# New rules are now opt-in: add its code here in its own PR, with the
+# findings it produces fixed in that same PR.
+select = ["E4", "E7", "E9", "F"]

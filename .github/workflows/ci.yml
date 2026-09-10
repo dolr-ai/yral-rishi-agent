@@ -20,8 +20,11 @@ jobs:
           python-version: "3.12"
       # Pin ruff so a new release can't fail CI on pre-existing code (an
       # unpinned bump started flagging I001 in app/auth.py 2026-07-26).
-      # Keep in sync with the version developers run locally.
-      - run: pip install ruff==0.15.14
+      # The version lives in requirements-lint.txt so Dependabot can bump it
+      # (it can't read a version out of a `run:` step); the RULE SET is pinned
+      # in pyproject.toml [tool.ruff.lint], which is what makes a bump a no-op
+      # rather than a semantic change. Keep in sync with what developers run.
+      - run: pip install -r requirements-lint.txt
       - run: ruff check app/ infra/
       - run: ruff format --check app/ infra/
 
