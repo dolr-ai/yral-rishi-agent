@@ -1,5 +1,62 @@
 # Daily Log
 
+## 2026-09-10 (later still) — every VALID influencer concept has been 500ing since Sunday
+
+Saikat couldn't create AI influencers from the new iOS client. Rishi checked the
+Replicate balance ($9.43, fine) — but the request never gets as far as image
+generation. Sentry #602:
+
+```
+ResponseValidationError  routes.influencers.validate_and_generate
+{'loc': ('response', 'reason'), 'msg': 'Input should be a valid string', 'input': None}
+POST /api/v1/influencers/validate-and-generate-metadata -> 500
+first seen 2026-09-08 · last seen 2026-09-10 13:32 · 5 events · 1 user
+```
+
+**Our own PR #501 did this.** It attached a typed `response_model` to the
+endpoint and declared `reason` a plain `str` to keep anyOf-null out of the spec.
+Meanwhile the prompt at `character_generator.py:65` instructs the model:
+
+```
+"reason": "reason if invalid, null if valid",
+```
+
+So a VALID concept returns `{"is_valid": true, "reason": null, ...}`. A pydantic
+default only fills an **absent** key — never a present-but-null one — so
+response validation rejected it and FastAPI raised a 500. Reproduced exactly:
+
+```
+happy path (reason=None): REJECTED -> ('reason',) Input should be a valid string
+key absent instead      : ''  (default applies)
+rejected path           : ACCEPTED
+```
+
+Only the rejection path worked. Give it a bad concept and you got a clean "no";
+give it a good one and you got a 500. That asymmetry is why it survived four
+days — the failure looked like an edge case and was actually the main path.
+
+Not just Saikat: the alpha app calls the same endpoint
+(`AiInfluencerViewModel.kt` -> `ValidateAndGenerateMetadataUseCase`), so
+influencer creation has been broken there since 2026-09-06 too. It shows one
+user because he was the only one trying.
+
+**Third instance of one pattern this week** — #501, #503 and this are all
+"convert Optional[X] to a plain type to dodge anyOf-null, without checking what
+the runtime value actually is". #503 got caught before merge. #501 shipped, with
+**no Codex review**, because it was opened as a draft — precisely the gate #507
+fixed today.
+
+Fix is `reason: str | None = None`. What makes that free now is #504: since it
+collapses anyOf-null at publication, the published schema is still a plain
+not-required string, so no generated client changes. We no longer need to
+distort Python types to get a clean spec — which means the rest of #501's
+distortions are now both unnecessary and each a latent copy of this bug. Worth
+unwinding separately.
+
+Test is driven through the real route so `response_model` validation actually
+runs, and it fails on the unfixed code. A source-text assertion over models.py
+would have stayed green through the whole outage.
+
 ## 2026-09-10 (evening) — evaluated the whole service; parked the plan
 
 Rishi asked for a full evaluation and a plan across alpha verification,
@@ -24,6 +81,71 @@ Reasoning is in PROGRESS.md so it does not get re-argued from zero.
 
 Stale header in PROGRESS.md fixed while in there — it claimed ~7,500 lines of
 Python and a last-updated date of 2026-06-13. Actual is 30,089 lines.
+
+## 2026-09-10 (later) — Trivy was red because only one of two allowlists got filled in
+
+Trivy has been failing on every push to main. Three findings, all HIGH, all the
+same package: `starlette 0.46.2`, which we never chose — it arrives with
+`fastapi==0.115.12`.
+
+They were already known. All three sit in `pip-audit-ignore.txt` with a written
+justification from June ("defer to a FastAPI bump that pulls starlette >=0.49").
+`.trivyignore` says `# (no entries — empty baseline as of 2026-06-13)`. Two
+scanners, two separate allowlists, and only one was ever filled in. So pip-audit
+passed and Trivy failed on the identical CVEs, and the red light became
+furniture.
+
+**One of the three is actually reachable.** I traced each into our code rather
+than copying entries across:
+
+| CVE | reaches us? |
+|---|---|
+| CVE-2026-48818 — Windows UNC paths in StaticFiles | no — no StaticFiles, Linux only |
+| CVE-2025-62727 — Range header DoS in file serving | no — no FileResponse anywhere |
+| CVE-2026-54283 — `request.form()` limits ignored → DoS | **yes** |
+
+`app/routes/media.py` declares `UploadFile = File(...)` and `type: str =
+Form(...)`, so FastAPI calls the vulnerable `request.form()` internally. Worse,
+`get_current_user()` is called *inside* the handler — FastAPI parses the body
+before we check who is asking, so it is reachable without an account.
+
+**The edge mitigation everyone assumed exists does not.** The June rationale
+leans on Caddy's `request_body max_size`. The infra-template does define
+`max_size 100MB`, and PROGRESS.md flagged it "unverified" in June. It is still
+unverified, because it is not there — their own documented probe returns the
+wrong thing:
+
+```
+POST /api/v1/media/upload  Content-Length: 1073741824  ->  HTTP 422
+                                        (expected 413 from Caddy)
+```
+
+422 is our app answering. Caddy never rejected it. Worth chasing separately —
+it is the stated mitigation for three python-multipart CVEs still on the list.
+
+**Fixed properly rather than allowlisted.** `fastapi==0.141.1` pulls starlette
+1.6.0, past the fix version for all three. Verified with Trivy itself rather
+than by reading version numbers:
+
+```
+before (0.46.2): Total: 3 (HIGH: 3, CRITICAL: 0)
+after  (1.6.0):  clean, no findings
+```
+
+Suite 1458 passed — same as before the bump. pip-audit now needs 10 ignores
+instead of 17. `.trivyignore` stays empty, which is the point: an entry there is
+a promise to revisit, and the seven starlette entries are exactly what happens
+when nobody does. Adding three more to a second ledger would have repeated the
+mistake.
+
+`starlette` is now pinned explicitly. fastapi 0.141 asks only for
+`starlette>=0.46.0` with no upper bound, so without a floor a resolver may
+happily reinstall the vulnerable 0.46.2.
+
+One client-visible spec change: media upload's `file` property loses
+`format: "binary"` and gains `contentMediaType: "application/octet-stream"` —
+the OpenAPI 3.1-correct spelling. Flagged to Saikat before merge since he
+generates a client from this.
 
 ## 2026-09-10 — the lint gate was never pinned to anything
 
