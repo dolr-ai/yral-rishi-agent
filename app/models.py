@@ -112,7 +112,15 @@ class ValidateAndGenerateResponse(BaseModel):
     # (None) to "" — a nullable schema here would get the field dropped
     # by some codegen clients (anyOf-null, see the note above).
     is_valid: bool
-    reason: str = ""
+    # Nullable on purpose. The prompt in character_generator.py tells the
+    # model "reason if invalid, null if valid", so the happy path really
+    # does return an explicit null here — and a pydantic default only fills
+    # an ABSENT key, never a present-but-null one. Declaring this `str` made
+    # every VALID concept fail response validation with a 500 (Sentry #602,
+    # 2026-09-06 to 2026-09-10). Since #504 collapses anyOf-null at
+    # publication, an honest Optional costs nothing: the published schema is
+    # still a plain not-required string.
+    reason: str | None = None
     name: str = ""
     display_name: str = ""
     description: str = ""
