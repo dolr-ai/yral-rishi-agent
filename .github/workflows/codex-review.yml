@@ -2,7 +2,19 @@ name: Codex Review
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    # ready_for_review is load-bearing, not decorative. A PR opened as a DRAFT
+    # fires `opened` while draft, which the `if:` below correctly skips — and
+    # clicking "Ready for review" fires ONLY `ready_for_review`. Without it in
+    # this list, a draft-first PR is never reviewed at all unless the author
+    # happens to push another commit afterwards (`synchronize`).
+    #
+    # That is not hypothetical: #501, #503 and #504 all show `skipped` here
+    # because they were opened as drafts, so all three merged with no Codex
+    # review — including #503, which would have 422'd every video generation
+    # in the alpha app. deploy.yml auto-deploys on merge and names "Codex
+    # review must pass" as one of the five safety nets that justify doing so,
+    # so this gate silently not running is a hole in the deploy story.
+    types: [opened, synchronize, ready_for_review]
     paths:
       - "app/**"
       - "infra/**"

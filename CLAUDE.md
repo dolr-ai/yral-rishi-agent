@@ -38,7 +38,10 @@ One service. One database. Code in app/.
 2. Wait for CI green + Codex review.
 3. Wait for Rishi explicit approval ("merge it" / "approved").
 4. Merge PR to main.
-5. Only THEN build image and deploy.
+5. The merge IS the deploy — there is no manual step. CI builds and pushes the
+   image, then deploy.yml fires on `workflow_run`, rolling-restarts the swarm,
+   polls /health for 2 min, and auto-triggers Rollback if it doesn't come back.
+   Docs-only merges skip the deploy via a path filter.
 
 No exceptions for "hotfixes." A genuine hotfix is a small PR with fast review,
 not a direct push. Direct deploys from unmerged branches cause source/runtime
