@@ -1,0 +1,23 @@
+# Keeps the lint pin from going stale.
+#
+# We pin ruff exactly so CI is a deterministic gate (a linter that changes
+# its mind on someone else's release schedule stops being trusted). But
+# pinning without ever moving is how we ended up 15 releases behind and
+# facing a 423-finding wall discovered by an outside contributor — see
+# issue #505. Pin for determinism, then automate the bump.
+#
+# Scoped to ruff ONLY. Runtime dependencies stay manual: pip-audit already
+# surfaces security drift there, and opening that queue is a separate
+# decision, not a side effect of fixing the lint gate.
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    allow:
+      - dependency-name: "ruff"
+    commit-message:
+      prefix: "chore"
+    labels:
+      - "dependencies"

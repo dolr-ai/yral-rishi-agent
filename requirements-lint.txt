@@ -1,0 +1,9 @@
+# Lint-only dependency. Kept out of requirements.txt so the runtime image
+# stays lean, and in a requirements FILE (rather than inline in ci.yml) so
+# Dependabot can see the pin at all — it does not read versions out of a
+# workflow's `run:` shell step. See .github/dependabot.yml.
+#
+# The rule SET is pinned separately in pyproject.toml [tool.ruff.lint].
+# That split is the point: this line may move freely, and a bump cannot
+# change which rules are enforced. See issue #505.
+ruff==0.16.6
