@@ -1,5 +1,70 @@
 # Daily Log
 
+## 2026-09-10 (later) — Trivy was red because only one of two allowlists got filled in
+
+Trivy has been failing on every push to main. Three findings, all HIGH, all the
+same package: `starlette 0.46.2`, which we never chose — it arrives with
+`fastapi==0.115.12`.
+
+They were already known. All three sit in `pip-audit-ignore.txt` with a written
+justification from June ("defer to a FastAPI bump that pulls starlette >=0.49").
+`.trivyignore` says `# (no entries — empty baseline as of 2026-06-13)`. Two
+scanners, two separate allowlists, and only one was ever filled in. So pip-audit
+passed and Trivy failed on the identical CVEs, and the red light became
+furniture.
+
+**One of the three is actually reachable.** I traced each into our code rather
+than copying entries across:
+
+| CVE | reaches us? |
+|---|---|
+| CVE-2026-48818 — Windows UNC paths in StaticFiles | no — no StaticFiles, Linux only |
+| CVE-2025-62727 — Range header DoS in file serving | no — no FileResponse anywhere |
+| CVE-2026-54283 — `request.form()` limits ignored → DoS | **yes** |
+
+`app/routes/media.py` declares `UploadFile = File(...)` and `type: str =
+Form(...)`, so FastAPI calls the vulnerable `request.form()` internally. Worse,
+`get_current_user()` is called *inside* the handler — FastAPI parses the body
+before we check who is asking, so it is reachable without an account.
+
+**The edge mitigation everyone assumed exists does not.** The June rationale
+leans on Caddy's `request_body max_size`. The infra-template does define
+`max_size 100MB`, and PROGRESS.md flagged it "unverified" in June. It is still
+unverified, because it is not there — their own documented probe returns the
+wrong thing:
+
+```
+POST /api/v1/media/upload  Content-Length: 1073741824  ->  HTTP 422
+                                        (expected 413 from Caddy)
+```
+
+422 is our app answering. Caddy never rejected it. Worth chasing separately —
+it is the stated mitigation for three python-multipart CVEs still on the list.
+
+**Fixed properly rather than allowlisted.** `fastapi==0.141.1` pulls starlette
+1.6.0, past the fix version for all three. Verified with Trivy itself rather
+than by reading version numbers:
+
+```
+before (0.46.2): Total: 3 (HIGH: 3, CRITICAL: 0)
+after  (1.6.0):  clean, no findings
+```
+
+Suite 1458 passed — same as before the bump. pip-audit now needs 10 ignores
+instead of 17. `.trivyignore` stays empty, which is the point: an entry there is
+a promise to revisit, and the seven starlette entries are exactly what happens
+when nobody does. Adding three more to a second ledger would have repeated the
+mistake.
+
+`starlette` is now pinned explicitly. fastapi 0.141 asks only for
+`starlette>=0.46.0` with no upper bound, so without a floor a resolver may
+happily reinstall the vulnerable 0.46.2.
+
+One client-visible spec change: media upload's `file` property loses
+`format: "binary"` and gains `contentMediaType: "application/octet-stream"` —
+the OpenAPI 3.1-correct spelling. Flagged to Saikat before merge since he
+generates a client from this.
+
 ## 2026-09-10 — the lint gate was never pinned to anything
 
 Saikat filed #505: our CI pins `ruff==0.15.14`, current is 0.16.6, and running

@@ -29,8 +29,13 @@ def test_pip_audit_uses_strict_mode():
 
 
 def test_pip_audit_ignore_file_baseline_present():
-    """The 14 known-accepted vulns from DEV-10 baseline must be in
-    pip-audit-ignore.txt. Without these, every CI run fails."""
+    """The known-accepted vulns must be in pip-audit-ignore.txt.
+    Without these, every CI run fails.
+
+    Started as DEV-10's 14. The seven starlette IDs came off on
+    2026-09-10 when fastapi 0.141.1 / starlette 1.6.0 landed and there
+    was no longer anything to accept — an entry here is a promise to
+    revisit, so a fixed CVE must leave rather than linger."""
     cfg = REPO / "pip-audit-ignore.txt"
     assert cfg.exists(), "pip-audit-ignore.txt missing"
     body = cfg.read_text()
@@ -48,11 +53,7 @@ def test_pip_audit_ignore_file_baseline_present():
         "CVE-2026-24486",
         "CVE-2026-40347",
         "CVE-2026-42561",
-        # starlette (PYSEC-2026-161 appears once; pip-audit dedupes per
-        # ID even when listed twice in the audit report)
-        "PYSEC-2026-161",
-        "CVE-2025-54121",
-        "CVE-2025-62727",
+        # starlette: intentionally absent — fixed by the 2026-09-10 bump.
     ]
     missing = [cve for cve in expected if cve not in body]
     assert not missing, f"missing baseline CVEs in ignore-list: {missing}"
