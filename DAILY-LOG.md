@@ -1,5 +1,44 @@
 # Daily Log
 
+## 2026-09-11 (evening) — audited the harness; deleted the half that was dead
+
+Rishi asked whether the harness we built is right and worth templating. The
+shipping pipeline is (CI → image → deploy → /health → smoke → auto-rollback,
+Codex advisory, security scans, drills-as-workflows). The governance layer
+around it was still describing the 5-session/CONSTRAINTS world from May.
+
+**Found and fixed in this PR:**
+- `.claude/hooks/post-tool-use.sh` wrote to `yral-rishi-agent-plan-and-discussions/`,
+  deleted in May — it has **exited 1 on every `git commit` since**. Deleted,
+  along with `AUTONOMOUS-OPERATION-CHARTER.md`, the five `session-N` agent
+  files, and the launchd report scripts (all referencing CONSTRAINTS, I14
+  auto-merge, MASTER-STATUS, a 2026-06-07 launch — none exist).
+- `.github/PULL_REQUEST_TEMPLATE.md` asked for B7 line role-comments — the
+  thing rule 3 bans. Rewritten to five questions, one of which is "how did you
+  verify this with real behaviour, not a source-text grep".
+- **CLAUDE.md claimed a deny-list "per ~/.claude/settings.json". No deny block
+  existed anywhere on the Mac** — project or user settings. The only thing
+  stopping `rm -rf` was the auto-mode classifier. The list now lives in the
+  committed `.claude/settings.json` so Mac and the operator box enforce the
+  same rules.
+- CLAUDE.md, docs/DEPLOY.md and deploy.yml all said docs-only merges skip the
+  deploy via a path filter. There is no filter (`workflow_run` cannot have
+  one) — #509, a docs-only PR, deployed at 14:44 yesterday. Corrected the
+  claims to the truth rather than adding a filter in a cleanup PR.
+- Stale session-era comments in `bootstrap/` pointed at deleted docs.
+
+**Found, not fixed here (needs Rishi's yes, or is local to the Mac):**
+- `main` requires a PR but **no status checks** — a red-CI PR merges if
+  someone clicks. deploy.yml's "branch protection enforces this" is false
+  until CI is made a required check. One GitHub setting.
+- Three launchd jobs still loaded on the Mac (`master-status` every 15 min
+  against a missing directory). Untracked `AGENTS.md` (drifted copy of
+  CLAUDE.md) and `.codex/` (broken hook path). Commands handed to Rishi.
+
+**Re-measured today:** 288 test files, 210 read our own source as text, 1,864
+substring assertions, 36 files touch a real HTTP client. #515 (other session)
+is the ratchet that stops that number growing.
+
 ## 2026-09-11 (later still) — went looking for dead code; there is almost none
 
 The roadmap assumed 30K lines of app/ hid a lot of dead weight worth deleting.

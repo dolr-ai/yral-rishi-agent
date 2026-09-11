@@ -25,9 +25,9 @@ Without step 3, the new code sits in storage but isn't actually running. The web
 
 You'll see the result in the GitHub Actions tab — green if all good, red if the auto-rollback fired. Either way, the service stays available.
 
-### What does NOT trigger an auto-deploy
+### Do docs-only PRs deploy?
 
-Docs-only PRs (anything that only touches `**.md`, `docs/**`, `mobile-docs-archive/**`, or `yral-rishi-agent-plan-and-discussions/**`) skip the deploy. No point rolling the servers when the runtime behavior is identical.
+Yes. Every merge to main deploys, including docs-only ones — the deploy fires on `workflow_run`, which cannot filter by path. The rolling restart is harmless (same code, new image tag), just wasted work. A real skip would need a path check inside the CI workflow.
 
 ### What if two PRs merge close together?
 

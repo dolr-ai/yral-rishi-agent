@@ -11,11 +11,7 @@
 # ║    Caddy (currently DEFERRED per A2 — no traffic source yet).              ║
 # ║  - This placeholder configuration validates the deploy shape works +       ║
 # ║    has the listener + cert scaffolding ready when rishi-1/2/3 lands.       ║
-# ║  - Real per-service routes (public-api, orchestrator, hello-world, …)      ║
-# ║    arrive when Sessions 3+4 spawn services, via a future                   ║
-# ║    `generate-caddy-swarm-config.sh` that materializes routes from a        ║
-# ║    template + service registry. Queued as session-1/caddy-swarm-config-    ║
-# ║    generator follow-up.                                                    ║
+# ║  - The real route lives in caddyfile.agent.txt (one service, one route).  ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 {

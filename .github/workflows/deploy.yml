@@ -5,10 +5,10 @@ name: Deploy to production
 # (workflow_dispatch) is kept for emergencies — re-deploy a specific
 # SHA, redeploy after a manual fix, etc.
 #
-# Path-filter ignores docs-only changes: PROGRESS.md, *.md, docs/* etc.
-# A docs-only PR merge does NOT trigger a deploy — the image bytes
-# would change (new git SHA in the tag) but the runtime behavior is
-# identical, so rolling-restarting the swarm would be wasted work.
+# There is NO docs-only path filter: `workflow_run` triggers can't have
+# one, so every merge deploys (a docs-only merge rolls the swarm with
+# identical code — harmless, just wasted). A real skip would have to be
+# a path check inside ci.yml's build job.
 #
 # Safety nets when auto-deploy is on:
 #   1. CI tests must pass before merge (branch protection enforces this)
