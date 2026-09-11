@@ -78,44 +78,6 @@ def _smtp_config() -> dict | None:
 # ─── section builders ────────────────────────────────────────────────────
 
 
-async def _section_etl(pool) -> dict:
-    """Live data: ETL status summary for the last 24h."""
-    try:
-        from services.etl_chat_ai import get_status
-
-        s = await get_status(pool)
-        return {
-            "title": "ETL chat-ai → V2",
-            "lines": [
-                f"Files processed (24h): {s.get('files_processed_24h', 0)}",
-                f"Rows applied (24h):    {s.get('rows_applied_24h', 0)}",
-                f"Rows skipped (24h):    {s.get('skipped_rows_24h', 0)}",
-                f"Heartbeat:             {s.get('heartbeat', 'no signal')}",
-                f"STUCK marker:          {s.get('stuck_marker') or 'none'}",
-            ],
-        }
-    except Exception as e:
-        return {"title": "ETL chat-ai → V2", "lines": [f"[error: {e}]"]}
-
-
-async def _section_integrity(pool) -> dict:
-    """Live data: integrity verifier 24h pass/fail summary."""
-    try:
-        from services.etl_integrity import get_status
-
-        s = await get_status(pool)
-        return {
-            "title": "ETL integrity (4 layers)",
-            "lines": [
-                f"Passes (24h): {s.get('pass_count_24h', 0)}",
-                f"Failures (24h): {s.get('fail_count_24h', 0)}",
-                f"Layers reporting: {len(s.get('latest_per_layer', []))}",
-            ],
-        }
-    except Exception as e:
-        return {"title": "ETL integrity", "lines": [f"[error: {e}]"]}
-
-
 def _section_placeholder(title: str, planned_pr: str) -> dict:
     """Sibling of the dashboard placeholder. Same flip-on-PR-merge
     rule applies — the section converts from a stub to live data when
@@ -164,8 +126,6 @@ async def build_digest(pool) -> dict:
     """
     now = datetime.now(timezone.utc)
     sections = [
-        await _section_etl(pool),
-        await _section_integrity(pool),
         await _section_rate_limits(pool),
         _section_placeholder("Cost circuit breaker", "PR Phase 19.2"),
         _section_placeholder("Weekly safety drill", "PR Phase 24.2"),

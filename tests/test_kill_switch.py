@@ -23,7 +23,6 @@ ALL_LOOPS = (
     "streak",
     "integrity",
     "email_digest",
-    "etl",
 )
 ALL_ENV_KEYS = (
     "GEMINI_BACKGROUND_LOOPS_ENABLED",
@@ -113,16 +112,14 @@ def test_current_state_lists_all_known_loops():
         assert loop in state["loops"], f"{loop} missing from current_state"
 
 
-def test_all_5_new_loops_gated_at_source():
+def test_background_loops_gated_at_source():
     """Source-inspection: each new background loop has its is_enabled
     gate at the top of the loop function. Without this the env flag
     does nothing in production."""
     pairs = (
         ("app/services/memory_consolidation.py", '"memory_consolidation"'),
         ("app/services/streak_tracker.py", '"streak"'),
-        ("app/services/etl_integrity.py", '"integrity"'),
         ("app/services/email_digest.py", '"email_digest"'),
-        ("app/services/etl_chat_ai.py", '"etl"'),
     )
     for path, gate_name in pairs:
         src = _read(path)

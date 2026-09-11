@@ -117,14 +117,6 @@ async def lifespan(app: FastAPI):
 
     streak_task = asyncio.create_task(streak_loop())
 
-    from services.etl_chat_ai import etl_loop
-
-    etl_task = asyncio.create_task(etl_loop())
-
-    from services.etl_integrity import integrity_loop
-
-    integrity_task = asyncio.create_task(integrity_loop())
-
     from services.email_digest import digest_loop
 
     digest_task = asyncio.create_task(digest_loop())
@@ -191,8 +183,6 @@ async def lifespan(app: FastAPI):
     memory_consolidation_task.cancel()
     quality_scoring_task.cancel()
     streak_task.cancel()
-    etl_task.cancel()
-    integrity_task.cancel()
     digest_task.cancel()
     video_ideas_task.cancel()
     cost_alerts_task.cancel()
@@ -227,14 +217,6 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await streak_task
-    except asyncio.CancelledError:
-        pass
-    try:
-        await etl_task
-    except asyncio.CancelledError:
-        pass
-    try:
-        await integrity_task
     except asyncio.CancelledError:
         pass
     try:

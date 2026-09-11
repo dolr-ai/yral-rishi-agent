@@ -46,15 +46,6 @@ def test_dashboard_auto_refresh_meta_tag():
     assert 'meta http-equiv="refresh"' in src
 
 
-def test_dashboard_includes_etl_live_tiles():
-    """Two systems that already exist must surface as live tiles
-    (not placeholders): ETL status + integrity verifier. The dashboard
-    is only useful from day one if at least these are wired."""
-    src = _read("app/routes/admin_dashboard.py")
-    assert "_etl_tile" in src
-    assert "_integrity_tile" in src
-
-
 def test_dashboard_includes_placeholder_tiles_for_planned_systems():
     """Per the rule: 'empty tiles for now' so later PRs just fill in.
     Each placeholder must name its PR so Rishi can trace the roadmap
@@ -99,16 +90,14 @@ def test_no_protective_system_ships_without_tile():
     without a tile here — that's the point. Edit me when filling in.
 
     Counting _placeholder_tile() call sites (one per planned protective
-    system) + the live tile-builder functions: 6 placeholders today +
-    2 live = 8. When a placeholder flips to live, REPLACE the call
-    with a new _xxx_tile() function — don't delete."""
+    system). ETL was retired 2026-09-11 and its two live tiles went with
+    it, so the floor drops from 7 to 6. When a placeholder flips to live,
+    REPLACE the call with a new _xxx_tile() function — don't delete."""
     src = _read("app/routes/admin_dashboard.py")
-    live = src.count("await _etl_tile(") + src.count("await _integrity_tile(")
     placeholders = src.count("_placeholder_tile(")
-    # 6 placeholder definitions = 6 lines; the function def itself
-    # contains the literal too, hence >= 6 here means at least 5
-    # actual call sites. Add the 2 live tiles → ≥ 7 systems surfaced.
-    assert (live + placeholders) >= 7
+    # 6 placeholder definitions = 6 lines; the function def itself contains
+    # the literal too, so >= 6 means at least 5 actual call sites.
+    assert placeholders >= 6
 
 
 def test_html_template_escapes_user_data():
