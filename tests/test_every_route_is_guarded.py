@@ -39,16 +39,29 @@ PUBLIC = {
 GUARDED_STATUSES = {401, 403, 404, 405, 422, 503}
 
 
+def _published_paths(app):
+    """Enumerate from the OpenAPI document, not `app.routes`.
+
+    `app.routes` is FastAPI internals and it is NOT stable across versions:
+    on 0.115 it flattened every included router (111 entries), on 0.141 it
+    reports 35 and omits /health entirely. A test built on it silently covered
+    a third of the surface after the 0.141 bump while still passing. The
+    published spec is both version-stable and the actual contract clients are
+    generated from, so it is the right source.
+    """
+    return app.openapi()["paths"]
+
+
 def _testable_routes(app):
-    for route in app.routes:
-        path = getattr(route, "path", None)
-        methods = getattr(route, "methods", None) or set()
-        if not path or path in PUBLIC:
+    for path, operations in _published_paths(app).items():
+        if path in PUBLIC:
             continue
         if "{" in path:  # needs a concrete id; covered by the per-router suites
             continue
-        for m in sorted(methods & {"GET", "POST", "PATCH", "DELETE", "PUT"}):
-            yield m, path
+        for method in operations:
+            m = method.upper()
+            if m in {"GET", "POST", "PATCH", "DELETE", "PUT"}:
+                yield m, path
 
 
 def _cases():
@@ -80,6 +93,15 @@ def test_the_allowlist_only_names_routes_that_exist():
     public route was renamed or removed."""
     from main import app
 
-    known = {getattr(r, "path", None) for r in app.routes}
+    # Docs/probe routes are real but absent from the spec, so they are
+    # exempt from the staleness check rather than wrongly reported stale.
+    NOT_IN_SPEC = {
+        "/docs",
+        "/redoc",
+        "/openapi.json",
+        "/docs/oauth2-redirect",
+        "/metrics",
+    }
+    known = set(_published_paths(app)) | NOT_IN_SPEC
     stale = {p for p in PUBLIC if p not in known}
     assert not stale, f"PUBLIC names routes that no longer exist: {sorted(stale)}"
