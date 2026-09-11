@@ -1,5 +1,73 @@
 # Daily Log
 
+## 2026-09-11 — deleted personas held their names hostage; the suggested fix would have 500'd
+
+Saikat filed #512 and #513. #512 says deleting an account leaves the persona's
+name permanently taken, and that "there is no delete path in
+`influencer_repo.py` at all". The second half is wrong — `DELETE
+/api/v1/influencers/{id}` and `soft_delete` have existed for a while. Nothing
+was *calling* them. Checked the live rows he reported:
+
+```
+deku       | active | Izuku Midoriya (Deku) | created 2026-08-23
+dekuizuku  | active | Deku                  | created 2026-09-01
+```
+
+Both still active with original display names, so the delete path genuinely
+never ran for them. He then built the missing caller himself (the SpacetimeDB
+`delete_user` procedure), so #512 is closed as superseded.
+
+#513 is the real bug and his diagnosis is right: `get_by_name` has no liveness
+filter. **But his suggested one-line fix would have shipped a 500.** Two things
+aren't visible from the Python:
+
+**`name` carries a table-wide UNIQUE constraint.** Verified on the Patroni
+leader:
+
+```
+ai_influencers_name_key | UNIQUE (name)
+```
+
+and `create` is `ON CONFLICT (id) DO NOTHING` — the primary key, not the name.
+Filtering the app check just moves the failure into the INSERT as an uncaught
+UniqueViolationError. A clean 409 becomes an opaque 500.
+
+**Delete and ban write the same state.** He assumed ban writes something
+distinct; it doesn't — both set `is_active='discontinued'`. So filtering on
+`is_active` would have freed banned handles too. Production: 280 discontinued,
+267 of them `Deleted Bot`, so ~13 banned names would have become
+re-registerable.
+
+**Shipped an additive `deleted_at` column, not a new `is_active` value.** Nine
+queries filter `is_active != 'discontinued'` to exclude both deleted and banned
+rows; a new state would have made every one of them start serving deleted bots.
+The column leaves all nine untouched. `soft_delete` stamps it, `ban`
+deliberately does not, and the table-wide UNIQUE becomes a partial index
+`WHERE deleted_at IS NULL` — so uniqueness stays a database guarantee rather
+than an app check that can race.
+
+Dry-ran the backfill against production read-only before writing it:
+
+```
+backfill would stamp:                     267
+banned, stay name-locked:                  13
+rows that stay in the live index:        3832
+duplicate names among those (must be 0):    0
+```
+
+That last line is the one that matters — a single duplicate would have aborted
+`CREATE UNIQUE INDEX` mid-migration.
+
+Also caught the non-atomic create: the `get_by_name` check and the INSERT are
+two steps, so two creates racing on a name both pass the check and the index
+decides. The loser now gets the same 409 instead of leaking a 500.
+
+pg_dump snapshot taken first per rule 9 — 980 MB,
+`pre-migration-055-influencer-deleted-at-20260911-054522.dump` on rishi-5.
+
+Fixed #512's related gap in the same PR: `GET /api/v1/creator/influencers`
+filtered only on owner, so it served `Deleted Bot` rows.
+
 ## 2026-09-10 (later still) — every VALID influencer concept has been 500ing since Sunday
 
 Saikat couldn't create AI influencers from the new iOS client. Rishi checked the

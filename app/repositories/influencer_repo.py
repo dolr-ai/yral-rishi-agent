@@ -31,7 +31,7 @@ async def get_by_name(pool, name: str) -> dict | None:
                suggested_messages, is_active, is_nsfw, parent_principal_id,
                source, created_at, updated_at, metadata, skill_slug,
                global_rule_overrides, system_instructions_sections, surface
-        FROM ai_influencers WHERE name = $1
+        FROM ai_influencers WHERE name = $1 AND deleted_at IS NULL
         """,
         name,
     )
@@ -275,11 +275,19 @@ async def cache_plain_english_summary(pool, influencer_id: str, summary: dict) -
 
 
 async def soft_delete(pool, influencer_id: str):
+    """Retire a persona and release its name.
+
+    `deleted_at` is what frees the name: the unique index on `name` is partial
+    (`WHERE deleted_at IS NULL`), so a deleted persona stops competing for it
+    while the row stays for history. `ban` below deliberately does NOT set it —
+    a banned handle must not become re-registerable. Both still write
+    `is_active = 'discontinued'`, which is what the nine liveness filters
+    elsewhere key off."""
     await pool.execute(
         """
         UPDATE ai_influencers
         SET is_active = 'discontinued', display_name = 'Deleted Bot',
-            updated_at = NOW()
+            deleted_at = NOW(), updated_at = NOW()
         WHERE id = $1
         """,
         influencer_id,
@@ -287,6 +295,9 @@ async def soft_delete(pool, influencer_id: str):
 
 
 async def ban(pool, influencer_id: str):
+    """Retire a persona but KEEP its name locked. Deliberately does not set
+    `deleted_at` — see soft_delete: that column is what releases the name, and
+    a handle we removed for abuse must not be re-registerable."""
     await pool.execute(
         """
         UPDATE ai_influencers

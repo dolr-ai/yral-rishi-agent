@@ -3,6 +3,8 @@ import logging
 import secrets
 from datetime import datetime
 
+import asyncpg
+
 from fastapi import APIRouter, HTTPException, Request, Query, Header
 from fastapi.responses import JSONResponse
 
@@ -360,7 +362,16 @@ async def create_influencer(body: CreateInfluencerRequest, request: Request):
         "metadata": body.metadata,
     }
 
-    created = await influencer_repo.create(pool, influencer_data)
+    # The get_by_name check above is not atomic — two creates racing on the
+    # same name both pass it, and the partial unique index (migration 055) is
+    # what actually decides. Catch the loser's violation and give it the same
+    # 409 the check would have, instead of leaking a 500.
+    try:
+        created = await influencer_repo.create(pool, influencer_data)
+    except asyncpg.exceptions.UniqueViolationError:
+        raise HTTPException(
+            status_code=409, detail=f"Name '{body.name}' is already taken"
+        ) from None
     if not created:
         raise HTTPException(status_code=500, detail="Failed to create influencer")
 
