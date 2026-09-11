@@ -8,6 +8,23 @@ import sys
 
 from openai import OpenAI
 
+# Was gpt-4o — two generations old, and on the retired chat.completions
+# endpoint. gpt-5.6-sol is current-generation: the flagship for complex
+# professional work.
+#
+# Cost, and it runs on every PR: the diff is capped at 100k chars (~25k tokens)
+# below, so the ceiling is about $0.18 a review at $4/$20 per M in/out, and a
+# normal PR is well under. gpt-6-astra is the stronger model at roughly 2.5x
+# that — deliberately deferred; revisit if this one starts missing things.
+#
+# Reasoning models use the Responses API, not chat.completions, and do not take
+# a temperature. Effort is the dial instead: "high" because the failures worth
+# catching here are subtle (PR #501 shipped a response-model type that 500'd
+# every valid request for four days, and no reviewer ran on it at all).
+MODEL = "gpt-5.6-sol"
+REASONING_EFFORT = "high"
+MAX_OUTPUT_TOKENS = 4000
+
 REVIEW_PROMPT = """You are a code reviewer for yral-rishi-agent, an AI chat backend (FastAPI + asyncpg + Gemini).
 
 Review this PR diff for ONLY these categories:
@@ -60,17 +77,33 @@ def main():
         diff = diff[:100_000] + "\n... (truncated)"
 
     client = OpenAI(api_key=api_key)
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[
-            {"role": "system", "content": REVIEW_PROMPT},
-            {"role": "user", "content": f"PR diff:\n```\n{diff}\n```"},
-        ],
-        temperature=0.1,
-        max_tokens=2000,
+    response = client.responses.create(
+        model=MODEL,
+        instructions=REVIEW_PROMPT,
+        input=f"PR diff:\n```\n{diff}\n```",
+        reasoning={"effort": REASONING_EFFORT},
+        max_output_tokens=MAX_OUTPUT_TOKENS,
     )
 
-    text = response.choices[0].message.content or "[]"
+    # A reasoning model spends max_output_tokens on thinking BEFORE it writes
+    # anything, so a budget that runs out yields status="incomplete" and an
+    # EMPTY output_text — which would fall through below as a cheerful "no
+    # issues found". Say so loudly instead: a review that silently reviewed
+    # nothing is the failure this job exists to prevent.
+    if getattr(response, "status", None) == "incomplete":
+        reason = getattr(
+            getattr(response, "incomplete_details", None), "reason", "unknown"
+        )
+        print(
+            f"Codex review INCOMPLETE ({reason}) — treat this run as no review at all."
+        )
+        if reason == "max_output_tokens":
+            print("Raise MAX_OUTPUT_TOKENS or lower REASONING_EFFORT in this script.")
+        return
+
+    # output_text is the SDK accessor; the raw `output` array's shape varies by
+    # model and is not safe to index blindly.
+    text = response.output_text or "[]"
     start = text.find("[")
     end = text.rfind("]") + 1
     if start < 0 or end <= start:
