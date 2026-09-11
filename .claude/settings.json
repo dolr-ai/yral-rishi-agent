@@ -1,17 +1,22 @@
 {
-  "_comment": "Claude Code settings for the yral-rishi-agent monorepo. Registers our PostToolUse hook so SESSION-N-LOG auto-appends on git commits per I11. Keep this file committed to git so all sessions inherit the same hook config.",
-
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash /Users/rishichadha/Claude\\ Projects/yral-rishi-agent/.claude/hooks/post-tool-use.sh"
-          }
-        ]
-      }
+  "_comment": "Committed so Mac and the operator box enforce the same deny-list. Rule 8 of CLAUDE.md names these; this is where they are actually enforced. Never loosen here without Rishi's yes.",
+  "permissions": {
+    "deny": [
+      "Bash(rm -rf*)",
+      "Bash(rm -fr*)",
+      "Bash(sudo rm*)",
+      "Bash(git push --force*)",
+      "Bash(git push -f*)",
+      "Bash(git push origin main*)",
+      "Bash(docker service rm*)",
+      "Bash(docker stack rm*)",
+      "Bash(docker service scale *=0*)",
+      "Bash(docker swarm leave*)",
+      "Bash(docker node rm*)",
+      "Bash(docker network rm*)",
+      "Bash(docker volume rm*)",
+      "Bash(reboot*)",
+      "Bash(shutdown*)"
     ]
   }
 }
