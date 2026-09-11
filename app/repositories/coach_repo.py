@@ -390,20 +390,3 @@ async def record_application(
         applied_by,
     )
     return dict(row)
-
-
-async def history_for_bot(pool, bot_id: str, limit: int = 20) -> list[dict]:
-    rows = await pool.fetch(
-        """
-        SELECT id, bot_id, coach_conversation_id, coach_message_id,
-               previous_instructions, new_instructions,
-               applied_by, applied_at
-        FROM system_instructions_history
-        WHERE bot_id = $1
-        ORDER BY applied_at DESC
-        LIMIT $2
-        """,
-        bot_id,
-        limit,
-    )
-    return [dict(r) for r in rows]

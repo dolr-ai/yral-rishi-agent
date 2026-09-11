@@ -57,22 +57,3 @@ async def latest_for_bot(pool, bot_id: str) -> dict | None:
         bot_id,
     )
     return dict(row) if row else None
-
-
-async def history_for_bot(pool, bot_id: str, limit: int = 30) -> list[dict]:
-    """Used by the eventual analytics dashboard. Defaults to last 30 scoring
-    runs which at one-per-night is roughly a month."""
-    rows = await pool.fetch(
-        """
-        SELECT id, bot_id, score_overall, score_in_character,
-               score_response_quality, score_engagement,
-               last_n_conversations, sample_size, created_at
-        FROM bot_quality_scores
-        WHERE bot_id = $1
-        ORDER BY created_at DESC
-        LIMIT $2
-        """,
-        bot_id,
-        limit,
-    )
-    return [dict(r) for r in rows]
