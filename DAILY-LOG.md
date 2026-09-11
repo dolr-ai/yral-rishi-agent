@@ -1,5 +1,38 @@
 # Daily Log
 
+## 2026-09-11 (late) — drove the alpha on the Motorola; found the influencer-create dead end
+
+Rishi plugged the moto g96 in and asked me to test the whole app myself. Drove
+it over adb (tap/type/screenshot + the app's own `HTTP` logcat tag, which
+prints every request and status). Nine flows against agent.rishi.yral.com —
+inbox, open conversation, send + streamed reply (2.3 s), discover feed,
+search, videogen providers, profile-image, create steps 1–2 — **all 200**.
+
+**Ours, fixed in this PR:** creating "Meera, Mumbai Local Guide" failed with
+`409 Name 'meera' is already taken` — but only at `/influencers/create`, after
+the app had already created the SpacetimeDB bot account and uploaded the
+avatar (it must: /create needs the bot principal). The user never sees the
+slug, so "Try Again" re-POSTs the same slug and 409s forever, and an orphan
+bot account is left behind. `validate-and-generate-metadata` now settles a
+free slug (`meera-2`, …) before the app commits to anything. Pinned through
+the real route in `tests/test_validate_generate_null_reason.py`.
+
+**Not ours (handed to mobile):**
+- Cold start into a bot account never refreshes an expired JWT — every
+  Bearer call 401s, no auth call, no logout. Switching to the main account
+  heals it (`switchToAccount(main)` calls `refreshTokens()`; the bot branch
+  skips it on purpose). This is "Inbox won't load" after leaving the app on
+  a bot overnight.
+- `update_profile_details` 400 during create (the act-as-bot avatar bug).
+- 409 surfaces as generic "Something went wrong" instead of "name taken".
+- Tara's View Profile shows `elitesuperdeer`, 0 followers + ClassCastException.
+- Home video feed spins forever with zero network; Profile "Error loading
+  videos". Both SpacetimeDB/GCP-side.
+- Conversations and providers are fetched twice per screen open.
+
+**Latency worth a look:** generate-prompt 8.5 s, validate-and-generate 10.9 s
+— both user-facing LLM steps.
+
 ## 2026-09-11 (night) — the code reviewer was two generations behind, on a retired endpoint
 
 Rishi asked to move Codex off an older generation. It was worse than a version

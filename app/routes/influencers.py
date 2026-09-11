@@ -309,7 +309,31 @@ async def validate_and_generate(body: ValidateAndGenerateRequest, request: Reque
     # dropped by some codegen clients — apple/swift-openapi-generator#817),
     # so coalesce to "" — the clients already treat blank as "no avatar".
     result["avatar_url"] = result.get("avatar_url") or ""
+    if result.get("is_valid") and result.get("name"):
+        result["name"] = await _settle_unused_slug(result["name"])
     return result
+
+
+async def _settle_unused_slug(slug: str) -> str:
+    """Return `slug`, or `slug-2`, `slug-3`, … — the first one no influencer holds.
+
+    The app creates the SpacetimeDB bot account and uploads the avatar BEFORE it
+    calls /influencers/create, because /create needs the bot's principal. So a
+    slug collision at /create strands an orphan bot account, and the user has
+    no way out: they never see the slug, only the display name, so "Try Again"
+    409s forever (Motorola, 2026-09-11: "Name 'meera' is already taken"). The
+    slug must be settled here, before anything irreversible has happened.
+    /create keeps its 409 for the two-creates-racing case.
+    """
+    pool = await get_pool()
+    base = slug[
+        :47
+    ]  # leave room for "-NN" inside CreateInfluencerRequest's 50-char cap
+    candidate, n = slug, 2
+    while await influencer_repo.get_by_name(pool, candidate):
+        candidate = f"{base}-{n}"
+        n += 1
+    return candidate
 
 
 @router.post(
