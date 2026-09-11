@@ -34,9 +34,10 @@ from models import (
 
 logger = logging.getLogger(__name__)
 
-# yral-mobile AiInfluencerViewModel.MAX_USERNAME_LENGTH — the client truncates
-# bot usernames to this before sending them to /create.
+# yral-mobile AiInfluencerViewModel.MAX/MIN_USERNAME_LENGTH — the client truncates
+# bot usernames to 15 and pads anything under 3 before sending them to /create.
 CLIENT_USERNAME_MAX_LENGTH = 15
+CLIENT_USERNAME_MIN_LENGTH = 3
 
 router = APIRouter(prefix="/api/v1", tags=["Influencers"])
 
@@ -336,6 +337,11 @@ async def _settle_unused_slug(slug: str) -> str:
     settle in the same alphabet — what we check is exactly what /create gets.
     """
     base = re.sub(r"[^a-z0-9]", "", slug.lower())[:CLIENT_USERNAME_MAX_LENGTH]
+    # The client also pads anything under 3 chars with the bot principal — a
+    # name we could never have checked. Keep the base long enough that its
+    # normaliser leaves our answer untouched.
+    if len(base) < CLIENT_USERNAME_MIN_LENGTH:
+        base = f"{base}bot"
     pool = await get_pool()
     candidate, n = base, 2
     while await influencer_repo.get_by_name(pool, candidate):

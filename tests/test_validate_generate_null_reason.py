@@ -166,3 +166,18 @@ def test_title_case_slug_is_compared_the_way_create_compares_it(monkeypatch):
     )
 
     assert response.json()["name"] == "zaraq2"
+
+
+def test_short_slug_gets_a_floor_so_the_client_does_not_pad_it_itself(monkeypatch):
+    """Review on #522: `d-j` strips to `dj`; the app pads anything under 3 chars
+    with the bot principal — a name we never checked. Hand back ≥3 chars."""
+    client = _client(
+        monkeypatch, dict(_valid_concept_payload(), name="d-j"), taken_slugs={"djbot"}
+    )
+
+    response = client.post(
+        "/api/v1/influencers/validate-and-generate-metadata",
+        json={"concept": "a cheerful travel guide"},
+    )
+
+    assert response.json()["name"] == "djbot2"
