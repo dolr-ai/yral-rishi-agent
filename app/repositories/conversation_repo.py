@@ -1,4 +1,3 @@
-import json
 import uuid
 import logging
 
@@ -259,18 +258,6 @@ async def get_last_messages_batch(pool, conversation_ids: list[str]) -> list[dic
         conversation_ids,
     )
     return [_row_to_dict(r) for r in rows]
-
-
-async def update_metadata(pool, conversation_id: str, metadata: dict):
-    await pool.execute(
-        """
-        UPDATE conversations
-        SET metadata = $1, updated_at = NOW()
-        WHERE id = $2
-        """,
-        json.dumps(metadata),
-        conversation_id,
-    )
 
 
 async def delete(pool, conversation_id: str):

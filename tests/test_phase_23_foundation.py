@@ -99,11 +99,6 @@ def test_skills_module_has_get_helper():
     assert "def get(slug: str)" in src
 
 
-def test_skills_module_has_compatibility_helper():
-    src = _read("app/services/skills.py")
-    assert "def is_archetype_compatible(" in src
-
-
 # ─── soul_file.compose skill layer ────────────────────────────────────────
 
 

@@ -185,11 +185,3 @@ async def fail_stale(pool, *, older_than_seconds: int) -> int:
     if rows:
         logger.warning("videogen: swept %d stale request(s)", len(rows))
     return len(rows)
-
-
-async def get_by_video_id(pool, *, video_id: str) -> dict | None:
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT * FROM videogen_requests WHERE video_id = $1", video_id
-        )
-    return _row(row)
