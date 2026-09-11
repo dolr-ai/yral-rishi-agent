@@ -227,7 +227,7 @@ def _validate_classification(obj: object) -> dict | None:
 async def classify_one(bot: dict) -> dict | None:
     """Run the LLM + parse. Returns the classification dict or None on
     any failure (LLM error, parse error, both-unknown)."""
-    from services import llm_registry
+    from services.llm import llm_registry
 
     messages = _build_classification_messages(bot)
     try:

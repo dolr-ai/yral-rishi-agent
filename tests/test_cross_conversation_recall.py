@@ -31,7 +31,7 @@ def test_get_memories_for_prompt_no_query_falls_back_to_get_all():
     """When called without a query_embedding, must NOT touch semantic_search —
     falls back to get_all_for_user (per-(user, influencer) + global). This
     matters for the proactive-messages flow which has no current user msg."""
-    import services.memory as memory_mod
+    import services.engagement.memory as memory_mod
 
     src = inspect.getsource(memory_mod.get_memories_for_prompt)
     # The function should have both branches visible in source — semantic

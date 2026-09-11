@@ -11,7 +11,7 @@ TypeError at the dict-spread level. Uncaught → FastAPI 500 generic body.
 
 The same defensive `if isinstance(..., str): json.loads(...)` pattern
 already exists in:
-  - `app/services/soul_file.py:_render_global_rules` (the rule-render
+  - `app/services/coach/soul_file.py:_render_global_rules` (the rule-render
     path for chat-send)
   - `app/routes/creator_coach.py:505-514` (the sections-apply path
     landed in Bucket 2 PR-2 #366)

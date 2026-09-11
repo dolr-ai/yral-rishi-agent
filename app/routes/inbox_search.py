@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse
 
 from auth import get_current_user
 from database import get_pool
-from services import inbox_search
+from services.discovery import inbox_search
 
 logger = logging.getLogger(__name__)
 

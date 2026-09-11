@@ -27,7 +27,7 @@ def test_proactive_generate_passes_process_override():
     ai_client call so the cost row lands in `proactive_generation` and
     the LLM_DEFAULTS runpod_vllm routing is honored."""
     src = open(
-        os.path.join(os.path.dirname(__file__), "..", "app", "services", "proactive.py")
+        os.path.join(os.path.dirname(__file__), "..", "app", "services", "engagement", "proactive.py")
     ).read()
     # First call site (legacy proactive loop, around line 171)
     assert 'process_override="proactive_generation"' in src
@@ -41,7 +41,7 @@ def test_ai_client_generate_response_accepts_process_override():
     parameter — without this, the proactive fix above would TypeError at
     runtime ("got an unexpected keyword argument")."""
     src = open(
-        os.path.join(os.path.dirname(__file__), "..", "app", "services", "ai_client.py")
+        os.path.join(os.path.dirname(__file__), "..", "app", "services", "llm", "ai_client.py")
     ).read()
     # Parameter declared on generate_response (not the streaming sibling)
     assert "process_override: str | None = None" in src
@@ -71,7 +71,7 @@ def test_proactive_generation_is_in_async_processes_never_gemini():
     NEVER_GEMINI guard, a future LLM_DEFAULTS bump could silently
     re-route it back to gemini and burn premium $ on background traffic.
     Pin the guard membership."""
-    from services.llm_registry import LLM_DEFAULTS
+    from services.llm.llm_registry import LLM_DEFAULTS
 
     proactive_cfg = LLM_DEFAULTS["proactive_generation"]
     # Primary must be a non-gemini provider
@@ -86,7 +86,7 @@ def test_overrride_skips_nsfw_and_multimodal_heuristic():
     This is the whole point of the override: trust the caller's
     routing intent."""
     src = open(
-        os.path.join(os.path.dirname(__file__), "..", "app", "services", "ai_client.py")
+        os.path.join(os.path.dirname(__file__), "..", "app", "services", "llm", "ai_client.py")
     ).read()
     # The override branch must come BEFORE the is_nsfw branch — otherwise
     # NSFW proactive bots would get re-routed to user_chat_main_nsfw,

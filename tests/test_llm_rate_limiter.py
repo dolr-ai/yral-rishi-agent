@@ -11,8 +11,8 @@ import asyncio
 import httpx
 import pytest
 
-from services import llm_registry
-from services.llm_registry import _RateLimiter, _rate_limiter, _retry_after_seconds
+from services.llm import llm_registry
+from services.llm.llm_registry import _RateLimiter, _rate_limiter, _retry_after_seconds
 
 
 # ─── provider config ────────────────────────────────────────────────────
@@ -93,7 +93,7 @@ _NO_FALLBACK_CFG = {"provider": "hetzner", "model": "m", "timeout_sec": 60.0}
 
 
 def test_call_retries_on_429_then_succeeds(monkeypatch):
-    from services.llm_types import LlmResponse
+    from services.llm.llm_types import LlmResponse
 
     attempts = {"n": 0}
 

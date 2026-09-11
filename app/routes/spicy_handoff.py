@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from amorae_auth import require_amorae_secret
 from auth import get_current_user
-from services import spicy_handoff
+from services.safety import spicy_handoff
 
 logger = logging.getLogger(__name__)
 

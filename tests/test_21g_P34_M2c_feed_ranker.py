@@ -29,7 +29,7 @@ def test_engagement_weights_match_design_doc():
     """Design §4: engagement = 0.40·popularity + 0.25·depth + 0.20·quality
     + 0.15·streak. Pin the literals so a future "let's tune this" PR
     has to consciously edit this test."""
-    src = (REPO / "app" / "services" / "feed_ranker.py").read_text()
+    src = (REPO / "app" / "services" / "discovery" / "feed_ranker.py").read_text()
     assert "W_ENGAGEMENT_POPULARITY = 0.40" in src
     assert "W_ENGAGEMENT_DEPTH = 0.25" in src
     assert "W_ENGAGEMENT_QUALITY = 0.20" in src
@@ -39,7 +39,7 @@ def test_engagement_weights_match_design_doc():
 def test_discovery_weights_match_design_doc():
     """Design §4: discovery = 0.45·newness + 0.30·momentum
     + 0.15·underexposure + 0.10·quality."""
-    src = (REPO / "app" / "services" / "feed_ranker.py").read_text()
+    src = (REPO / "app" / "services" / "discovery" / "feed_ranker.py").read_text()
     assert "W_DISCOVERY_NEWNESS = 0.45" in src
     assert "W_DISCOVERY_MOMENTUM = 0.30" in src
     assert "W_DISCOVERY_UNDEREXPOSURE = 0.15" in src
@@ -47,7 +47,7 @@ def test_discovery_weights_match_design_doc():
 
 
 def test_engagement_weights_sum_to_one():
-    from services.feed_ranker import (
+    from services.discovery.feed_ranker import (
         W_ENGAGEMENT_DEPTH,
         W_ENGAGEMENT_POPULARITY,
         W_ENGAGEMENT_QUALITY,
@@ -64,7 +64,7 @@ def test_engagement_weights_sum_to_one():
 
 
 def test_discovery_weights_sum_to_one():
-    from services.feed_ranker import (
+    from services.discovery.feed_ranker import (
         W_DISCOVERY_MOMENTUM,
         W_DISCOVERY_NEWNESS,
         W_DISCOVERY_QUALITY,
@@ -81,7 +81,7 @@ def test_discovery_weights_sum_to_one():
 
 
 def test_blend_weights_sum_to_one():
-    from services.feed_ranker import W_BLEND_DISCOVERY, W_BLEND_ENGAGEMENT
+    from services.discovery.feed_ranker import W_BLEND_DISCOVERY, W_BLEND_ENGAGEMENT
 
     total = W_BLEND_ENGAGEMENT + W_BLEND_DISCOVERY
     assert abs(total - 1.0) < 1e-9
@@ -110,7 +110,7 @@ def test_kill_switch_feed_ranker_defaults_on():
 
 def test_main_wires_feed_ranker_loop():
     src = (REPO / "app" / "main.py").read_text()
-    assert "from services.feed_ranker import feed_ranker_loop" in src
+    assert "from services.discovery.feed_ranker import feed_ranker_loop" in src
     assert "feed_ranker_task = asyncio.create_task(feed_ranker_loop())" in src
     assert "feed_ranker_task.cancel()" in src
     assert "await feed_ranker_task" in src
@@ -123,7 +123,7 @@ def test_signals_sql_uses_only_select_no_writes():
     2026-06-18: the original mega-CTE was split into 4 chunks to fix
     the DiskFullError. Each chunk needs the same pure-SELECT property
     — pin them collectively by scanning all `_SQL_*` constants."""
-    src = (REPO / "app" / "services" / "feed_ranker.py").read_text()
+    src = (REPO / "app" / "services" / "discovery" / "feed_ranker.py").read_text()
     sql_start = src.index("_SQL_BOTS")
     sql_end = src.index("async def _fetch_signals")
     sql_block = src[sql_start:sql_end]
@@ -150,7 +150,7 @@ def test_signals_sql_chunked_into_four_constants():
     "let's combine these again" refactor has to consciously edit this
     test — and re-verify against the prod DiskFullError that motivated
     the split."""
-    src = (REPO / "app" / "services" / "feed_ranker.py").read_text()
+    src = (REPO / "app" / "services" / "discovery" / "feed_ranker.py").read_text()
     for name in (
         "_SQL_BOTS",
         "_SQL_RECENT_MSGS",
@@ -163,7 +163,7 @@ def test_signals_sql_chunked_into_four_constants():
 def test_signals_sql_filters_to_active_bots():
     """The bots SELECT must filter on is_active='active' so deleted /
     inactive bots don't pollute the ranking."""
-    src = (REPO / "app" / "services" / "feed_ranker.py").read_text()
+    src = (REPO / "app" / "services" / "discovery" / "feed_ranker.py").read_text()
     assert "i.is_active = 'active'" in src
 
 
@@ -171,7 +171,7 @@ def test_signals_sql_references_required_signal_sources():
     """Each of the 4 signal-source tables must appear in exactly one
     chunk. If a future PR drops a chunk, the corresponding signal
     silently defaults to 0/0.5 and the ranking degrades."""
-    src = (REPO / "app" / "services" / "feed_ranker.py").read_text()
+    src = (REPO / "app" / "services" / "discovery" / "feed_ranker.py").read_text()
     # bots chunk references the matview
     assert "influencer_trending_stats" in src
     # recent_msgs chunk reads from messages + conversations
@@ -187,8 +187,8 @@ def test_feed_global_key_matches_m2a_consumer():
     """The producer key MUST match what M2a's `_read_feed_global`
     consumes. If these drift, the M2a endpoint stays on its fallback
     path forever and nobody notices."""
-    src_producer = (REPO / "app" / "services" / "feed_ranker.py").read_text()
-    src_consumer = (REPO / "app" / "services" / "discovery_feed.py").read_text()
+    src_producer = (REPO / "app" / "services" / "discovery" / "feed_ranker.py").read_text()
+    src_consumer = (REPO / "app" / "services" / "discovery" / "discovery_feed.py").read_text()
     assert 'FEED_GLOBAL_KEY = "feed:global"' in src_producer
     assert 'FEED_GLOBAL_KEY = "feed:global"' in src_consumer
 
@@ -199,7 +199,7 @@ def test_feed_global_key_matches_m2a_consumer():
 
 
 def test_rank_percentile_distinct_values():
-    from services.feed_ranker import _rank_percentile
+    from services.discovery.feed_ranker import _rank_percentile
 
     out = _rank_percentile([10.0, 20.0, 30.0, 40.0])
     assert out[10.0] == 0.0
@@ -209,7 +209,7 @@ def test_rank_percentile_distinct_values():
 
 
 def test_rank_percentile_ties_share_position():
-    from services.feed_ranker import _rank_percentile
+    from services.discovery.feed_ranker import _rank_percentile
 
     out = _rank_percentile([10.0, 10.0, 20.0])
     # Two distinct values ⇒ denominator 1; rank 0 / 1.
@@ -220,7 +220,7 @@ def test_rank_percentile_ties_share_position():
 def test_rank_percentile_single_value_returns_05():
     """Single-value input ⇒ 0.5 for all (avoids 0/0 + bias toward
     "everyone tied at 1.0" which would let one signal dominate)."""
-    from services.feed_ranker import _rank_percentile
+    from services.discovery.feed_ranker import _rank_percentile
 
     out = _rank_percentile([42.0, 42.0, 42.0])
     assert out[42.0] == 0.5
@@ -228,7 +228,7 @@ def test_rank_percentile_single_value_returns_05():
 
 def test_momentum_zero_both_returns_zero():
     """Cold catalog: no recent + no prior = zero momentum."""
-    from services.feed_ranker import _compute_momentum
+    from services.discovery.feed_ranker import _compute_momentum
 
     assert _compute_momentum(0, 0) == 0.0
 
@@ -236,14 +236,14 @@ def test_momentum_zero_both_returns_zero():
 def test_momentum_new_bot_with_traffic_returns_one():
     """Zero prior + positive recent = brand-new bot picking up
     traffic, gets max momentum signal."""
-    from services.feed_ranker import _compute_momentum
+    from services.discovery.feed_ranker import _compute_momentum
 
     assert _compute_momentum(50, 0) == 1.0
 
 
 def test_momentum_doubled_traffic_caps_at_one():
     """recent = 2× prior ⇒ ratio capped at 2.0, rescaled to 1.0."""
-    from services.feed_ranker import _compute_momentum
+    from services.discovery.feed_ranker import _compute_momentum
 
     assert _compute_momentum(100, 50) == 1.0
     # Triple-traffic still caps at 1.0 (don't reward outliers more).
@@ -252,7 +252,7 @@ def test_momentum_doubled_traffic_caps_at_one():
 
 def test_momentum_flat_traffic_returns_half():
     """Same recent + prior = 1.0 ratio = 0.5 normalized."""
-    from services.feed_ranker import _compute_momentum
+    from services.discovery.feed_ranker import _compute_momentum
 
     assert _compute_momentum(50, 50) == 0.5
 
@@ -286,13 +286,13 @@ def _signal_row(
 
 
 def test_compute_scores_empty_returns_empty():
-    from services.feed_ranker import compute_scores
+    from services.discovery.feed_ranker import compute_scores
 
     assert compute_scores([]) == []
 
 
 def test_compute_scores_returns_sorted_descending():
-    from services.feed_ranker import compute_scores
+    from services.discovery.feed_ranker import compute_scores
 
     # Three bots: one new + active, one old + popular, one mediocre.
     rows = [
@@ -338,7 +338,7 @@ def test_compute_scores_new_active_beats_old_flat():
     = 75% of discovery). A new, accelerating bot should outrank a
     saturated old one — that's the point of the design's
     'discovery-leaning' blend."""
-    from services.feed_ranker import compute_scores
+    from services.discovery.feed_ranker import compute_scores
 
     rows = [
         _signal_row(
@@ -370,7 +370,7 @@ def test_compute_scores_new_active_beats_old_flat():
 def test_compute_scores_quality_signal_breaks_ties():
     """All else equal, the higher-quality bot wins. Verifies the
     quality channel is wired in both engagement + discovery."""
-    from services.feed_ranker import compute_scores
+    from services.discovery.feed_ranker import compute_scores
 
     rows = [
         _signal_row("high_q", quality=0.95, streak=5),
@@ -384,7 +384,7 @@ def test_compute_scores_single_bot_emits_05_signals():
     """Single-bot catalog ⇒ every rank_percentile lookup returns 0.5
     ⇒ engagement = 0.5, discovery has newness = 1.0 (newest is also
     oldest). Score should be deterministic, no crash."""
-    from services.feed_ranker import compute_scores
+    from services.discovery.feed_ranker import compute_scores
 
     rows = [_signal_row("only")]
     scored = compute_scores(rows)
@@ -465,7 +465,7 @@ class _StubRedis:
 
 
 def _stub_redis(monkeypatch, redis_obj):
-    from services import feed_ranker
+    from services.discovery import feed_ranker
 
     async def fake():
         return redis_obj
@@ -474,7 +474,7 @@ def _stub_redis(monkeypatch, redis_obj):
 
 
 def test_rank_once_happy_path_writes_feed_global(monkeypatch):
-    from services import feed_ranker
+    from services.discovery import feed_ranker
 
     rows = [
         _signal_row("a", conv_count=10, msg_count=100),
@@ -496,7 +496,7 @@ def test_rank_once_happy_path_writes_feed_global(monkeypatch):
 
 
 def test_rank_once_signal_fetch_failure_reports_stage(monkeypatch):
-    from services import feed_ranker
+    from services.discovery import feed_ranker
 
     pool = _StubPool([], raises=True)
     redis = _StubRedis()
@@ -509,7 +509,7 @@ def test_rank_once_signal_fetch_failure_reports_stage(monkeypatch):
 
 
 def test_rank_once_redis_failure_reports_stage(monkeypatch):
-    from services import feed_ranker
+    from services.discovery import feed_ranker
 
     rows = [_signal_row("a")]
     pool = _StubPool(rows)
@@ -526,7 +526,7 @@ def test_rank_once_empty_catalog_writes_empty_list(monkeypatch):
     (an empty list) so M2a's fallback path doesn't fire on a
     momentarily-empty catalog. compute_scores([]) = []; write
     proceeds with []."""
-    from services import feed_ranker
+    from services.discovery import feed_ranker
 
     pool = _StubPool([])
     redis = _StubRedis()
@@ -553,7 +553,7 @@ def test_fetch_signals_dispatches_four_chunked_queries():
     chunk after the initial bots fetch). A "combine them again"
     refactor must edit this test AND re-verify against the prod
     DiskFullError that motivated each split."""
-    from services import feed_ranker
+    from services.discovery import feed_ranker
 
     captured: list[tuple[str, tuple]] = []
 
@@ -602,7 +602,7 @@ def test_fetch_signals_merges_chunks_by_bot_id():
     independent payloads keyed by bot_id; `_fetch_signals` merges
     them into one row per bot with all 9 signal fields. Pin the
     output shape so the Python merge can't silently drop a signal."""
-    from services import feed_ranker
+    from services.discovery import feed_ranker
 
     rows = [
         _signal_row(
@@ -637,7 +637,7 @@ def test_fetch_signals_handles_bot_with_no_messages():
     / `conversations`. The chunk queries return empty for it; the
     Python merge must default those signals to 0 / 0.5 (matching the
     old COALESCE) so compute_scores still ranks it."""
-    from services import feed_ranker
+    from services.discovery import feed_ranker
 
     class _SparsePool:
         async def fetch(self, sql, *args):
@@ -668,7 +668,7 @@ def test_rank_once_respects_max_ranked_cap(monkeypatch):
     """If a future PR sets a 5000-bot catalog, the blob shouldn't
     blow past MAX_RANKED_BOTS. The cap is a defense against an
     accidental Redis-memory spike on a runaway catalog growth event."""
-    from services import feed_ranker
+    from services.discovery import feed_ranker
 
     rows = [
         _signal_row(f"bot_{i:05d}") for i in range(feed_ranker.MAX_RANKED_BOTS + 100)

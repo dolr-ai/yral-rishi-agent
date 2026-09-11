@@ -31,7 +31,7 @@ def _read(rel: str) -> str:
 def test_meta_prompt_requires_all_five_section_fields():
     """The Rule 8 block must say all five fields are REQUIRED so an LLM
     skim-reading the prompt doesn't treat the snapshots as optional."""
-    src = _read("app/services/coach.py")
+    src = _read("app/services/coach/coach.py")
     pos = src.find("8. SECTIONED SOUL FILE")
     rule_block = src[pos : pos + 3000]
     assert "ALL FIVE fields" in rule_block or "all five" in rule_block.lower()
@@ -44,7 +44,7 @@ def test_meta_prompt_documents_mobile_use_for_each_snapshot():
     """Explain WHY each snapshot matters so an LLM that's tempted to
     drop fields sees the consequence. The wording references mobile's
     badge + Apply-button gating per the contract."""
-    src = _read("app/services/coach.py")
+    src = _read("app/services/coach/coach.py")
     pos = src.find("8. SECTIONED SOUL FILE")
     rule_block = src[pos : pos + 3000]
     # Badge text appears once
@@ -167,7 +167,7 @@ def test_snapshot_round_trip_pin():
     """Belt-and-braces: pin the three contract refinement touchpoints
     so a future refactor that touches any single one runs into this
     test instead of breaking the mobile contract silently."""
-    coach_src = _read("app/services/coach.py")
+    coach_src = _read("app/services/coach/coach.py")
     route_src = _read("app/routes/creator_coach.py")
     # 1. META_PROMPT mentions both snapshot fields with MUST language
     assert "section_heading MUST be" in coach_src

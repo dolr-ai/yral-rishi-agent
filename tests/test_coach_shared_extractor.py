@@ -25,7 +25,7 @@ REPO = Path(__file__).resolve().parents[1]
 
 def test_parse_opening_recognizes_plain_json():
     """Legacy path (no fence) still works — no regression."""
-    from services.coach import parse_opening
+    from services.coach.coach import parse_opening
 
     text = '{"greeting": "Hi! Let\'s make Tara funnier.", "suggestions": ["Make her sassier", "Tighten bio", "Add humor"]}'
     parsed = parse_opening(text)
@@ -39,7 +39,7 @@ def test_parse_opening_recognizes_fenced_json():
     """The bug PR-2 fixes. Gemini wraps the opener in ```json fences
     ~5-10% of the time; pre-refactor coach_opening fell back to generic
     on those. Now it parses cleanly."""
-    from services.coach import parse_opening
+    from services.coach.coach import parse_opening
 
     text = (
         "```json\n"
@@ -56,7 +56,7 @@ def test_parse_opening_recognizes_fenced_json():
 
 def test_parse_opening_recognizes_bare_triple_backtick_fence():
     """Same fence handling as proposals."""
-    from services.coach import parse_opening
+    from services.coach.coach import parse_opening
 
     text = (
         "```\n"
@@ -68,7 +68,7 @@ def test_parse_opening_recognizes_bare_triple_backtick_fence():
 
 def test_parse_opening_picks_real_block_when_example_fence_precedes():
     """Like proposals — last fence wins when an example block leads."""
-    from services.coach import parse_opening
+    from services.coach.coach import parse_opening
 
     text = (
         "For reference, the shape is:\n"
@@ -88,7 +88,7 @@ def test_parse_opening_picks_real_block_when_example_fence_precedes():
 
 def test_parse_opening_rejects_missing_greeting():
     """Validator must enforce the shape contract."""
-    from services.coach import parse_opening
+    from services.coach.coach import parse_opening
 
     assert parse_opening('{"suggestions": ["a", "b", "c"]}') is None
     assert parse_opening('{"greeting": "", "suggestions": ["a", "b", "c"]}') is None
@@ -99,7 +99,7 @@ def test_parse_opening_rejects_missing_greeting():
 
 def test_parse_opening_returns_none_on_plain_text():
     """Plain text → caller uses its fallback greeting."""
-    from services.coach import parse_opening
+    from services.coach.coach import parse_opening
 
     assert parse_opening("Hi! Just chat with me.") is None
     assert parse_opening("") is None
@@ -113,7 +113,7 @@ def test_parse_proposal_still_recognizes_fences():
     """Smoke test that the refactor didn't break the fenced-proposal
     behavior PR #337 introduced. Full coverage stays in
     test_coach_parser_fence_robustness.py."""
-    from services.coach import parse_proposal
+    from services.coach.coach import parse_proposal
 
     text = (
         "```json\n"
@@ -126,7 +126,7 @@ def test_parse_proposal_still_recognizes_fences():
 
 
 def test_parse_proposal_still_recognizes_override_shape():
-    from services.coach import parse_proposal
+    from services.coach.coach import parse_proposal
 
     text = (
         '{"summary": "Allow long replies", '
@@ -144,7 +144,7 @@ def test_parse_proposal_still_recognizes_override_shape():
 def test_try_extract_proposal_is_back_compat_shim():
     """External test files + sibling modules import this name. Keep
     it as a thin wrapper so the refactor doesn't ripple churn."""
-    import services.coach as coach_module
+    import services.coach.coach as coach_module
 
     assert hasattr(coach_module, "_try_extract_proposal")
     # And the behavior matches parse_proposal exactly
@@ -158,7 +158,7 @@ def test_try_extract_proposal_is_back_compat_shim():
 def test_shared_extractor_helper_exists():
     """`_iter_json_candidates` is the new single source of truth.
     Both validators (parse_proposal, parse_opening) build on it."""
-    src = (REPO / "app" / "services" / "coach.py").read_text()
+    src = (REPO / "app" / "services" / "coach" / "coach.py").read_text()
     assert "def _iter_json_candidates(" in src
     assert "def parse_proposal(" in src
     assert "def parse_opening(" in src
@@ -168,7 +168,7 @@ def test_coach_opening_route_uses_parse_opening():
     """The route MUST call parse_opening, not a local naive parser.
     Without this wiring the residual generic-greeting leak stays
     open (the whole point of PR-2)."""
-    src = (REPO / "app" / "services" / "coach.py").read_text()
+    src = (REPO / "app" / "services" / "coach" / "coach.py").read_text()
     pos = src.find("async def coach_opening(")
     body = src[pos : pos + 6000]
     assert "parse_opening(text)" in body
@@ -181,7 +181,7 @@ def test_coach_opening_route_uses_parse_opening():
 
 
 def test_iter_json_candidates_handles_empty_input_safely():
-    from services.coach import _iter_json_candidates
+    from services.coach.coach import _iter_json_candidates
 
     assert _iter_json_candidates("") == []
     assert _iter_json_candidates(None) == []  # type: ignore[arg-type]
@@ -190,7 +190,7 @@ def test_iter_json_candidates_handles_empty_input_safely():
 def test_iter_json_candidates_returns_dicts_only():
     """Helper must skip valid-JSON-but-not-dict candidates (a JSON
     array, a number, etc.) — the validators can't operate on those."""
-    from services.coach import _iter_json_candidates
+    from services.coach.coach import _iter_json_candidates
 
     # A JSON array in fenced form
     text = "```json\n[1, 2, 3]\n```"

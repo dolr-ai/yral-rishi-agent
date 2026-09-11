@@ -46,7 +46,7 @@ def test_create_session_default_is_resume():
 
 
 def test_service_has_opening_prompt_and_function():
-    src = _read("app/services/coach.py")
+    src = _read("app/services/coach/coach.py")
     assert "OPENING_PROMPT = " in src
     assert "async def coach_opening(" in src
     # The opening must produce greeting + 3 suggestion strings.
@@ -61,7 +61,7 @@ def test_opening_function_falls_back_safely():
     """LLM may fail or return non-conforming JSON — opening must NEVER
     block session creation. Fallback emits a safe default greeting +
     3 chips so mobile always has something to render."""
-    src = _read("app/services/coach.py")
+    src = _read("app/services/coach/coach.py")
     pos = src.find("async def coach_opening(")
     body = src[pos : pos + 4000]
     assert "non-conforming output" in body
@@ -111,7 +111,7 @@ def test_format_message_surfaces_suggestions():
 
 
 def test_force_proposal_instruction_exists():
-    src = _read("app/services/coach.py")
+    src = _read("app/services/coach/coach.py")
     assert "FORCE_PROPOSAL_INSTRUCTION = " in src
     pos = src.find("FORCE_PROPOSAL_INSTRUCTION = ")
     body = src[pos : pos + 600]
@@ -121,7 +121,7 @@ def test_force_proposal_instruction_exists():
 
 
 def test_coach_reply_accepts_and_uses_force_proposal():
-    src = _read("app/services/coach.py")
+    src = _read("app/services/coach/coach.py")
     pos = src.find("async def coach_reply(")
     body = src[pos : pos + 3000]
     assert "force_proposal: bool = False" in body

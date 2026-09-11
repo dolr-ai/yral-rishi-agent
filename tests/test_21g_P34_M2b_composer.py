@@ -25,7 +25,7 @@ REPO = Path(__file__).resolve().parents[1]
 
 
 def test_composer_symbols_present_in_service():
-    src = (REPO / "app" / "services" / "discovery_feed.py").read_text()
+    src = (REPO / "app" / "services" / "discovery" / "discovery_feed.py").read_text()
     for name in (
         "async def _is_cold_start_user",
         "async def _read_composer_metadata",
@@ -45,7 +45,7 @@ def test_thresholds_match_design_doc():
     """Design doc §4 — 5-conversation threshold for cold-start gating;
     §5 — ≥3 skilled bots on page 1. Pin the literals so a future
     "let's tune this" PR has to consciously edit the test."""
-    src = (REPO / "app" / "services" / "discovery_feed.py").read_text()
+    src = (REPO / "app" / "services" / "discovery" / "discovery_feed.py").read_text()
     assert "COLD_START_CONV_THRESHOLD = 5" in src
     assert "SKILL_GUARANTEE_TOP_N = 3" in src
     # Gender guardrail: at most 60% any single gender in first 10 slots.
@@ -54,7 +54,7 @@ def test_thresholds_match_design_doc():
 
 
 def test_build_feed_page_signature_accepts_user_id():
-    src = (REPO / "app" / "services" / "discovery_feed.py").read_text()
+    src = (REPO / "app" / "services" / "discovery" / "discovery_feed.py").read_text()
     assert "user_id: str | None = None" in src
 
 
@@ -66,7 +66,7 @@ def test_route_passes_user_id_to_service():
 def test_composer_state_surfaced_in_with_metadata():
     """`?with_metadata=true` responses must include `composer_state`
     so Rishi can curl-confirm the cold-start vs warm path."""
-    src = (REPO / "app" / "services" / "discovery_feed.py").read_text()
+    src = (REPO / "app" / "services" / "discovery" / "discovery_feed.py").read_text()
     assert '"composer_state"' in src
     # Three possible values per the design.
     assert '"cold_start"' in src
@@ -78,7 +78,7 @@ def test_pins_stay_above_composer():
     Operator-pinned bots must always lead, regardless of how the
     composer reshuffles for diversity. Pin this by inspecting the
     build_feed_page composition order."""
-    src = (REPO / "app" / "services" / "discovery_feed.py").read_text()
+    src = (REPO / "app" / "services" / "discovery" / "discovery_feed.py").read_text()
     # The composer call must take `shuffled_tail` (not the full list).
     assert "compose_diverse_order(\n        shuffled_tail" in src
 
@@ -106,7 +106,7 @@ def _meta_dict(*rows):
 
 
 def test_skill_guarantee_pulls_three_skilled_to_top():
-    from services.discovery_feed import _apply_skill_guarantee
+    from services.discovery.discovery_feed import _apply_skill_guarantee
 
     ids = ["a", "b", "c", "d", "e", "f"]
     meta = _meta_dict(
@@ -123,7 +123,7 @@ def test_skill_guarantee_pulls_three_skilled_to_top():
 
 
 def test_skill_guarantee_no_op_when_no_skilled_bots():
-    from services.discovery_feed import _apply_skill_guarantee
+    from services.discovery.discovery_feed import _apply_skill_guarantee
 
     ids = ["a", "b", "c"]
     meta = _meta_dict(_bot("a"), _bot("b"), _bot("c"))
@@ -133,7 +133,7 @@ def test_skill_guarantee_no_op_when_no_skilled_bots():
 
 def test_skill_guarantee_partial_when_fewer_than_n_skilled():
     """1 skilled bot + 5 unskilled → 1 skilled at top, no error."""
-    from services.discovery_feed import _apply_skill_guarantee
+    from services.discovery.discovery_feed import _apply_skill_guarantee
 
     ids = ["a", "b", "c", "d", "e"]
     meta = _meta_dict(
@@ -153,7 +153,7 @@ def test_skill_guarantee_partial_when_fewer_than_n_skilled():
 
 
 def test_interleave_by_archetype_round_robins_across_buckets():
-    from services.discovery_feed import _interleave_by_archetype
+    from services.discovery.discovery_feed import _interleave_by_archetype
 
     # 4 companions then 4 advisors → interleaved evenly.
     ids = ["c1", "c2", "c3", "c4", "a1", "a2", "a3", "a4"]
@@ -181,7 +181,7 @@ def test_interleave_by_archetype_round_robins_across_buckets():
 def test_interleave_no_op_when_all_same_archetype():
     """Pre-M1-classification catalog: everyone is 'unknown'. Interleave
     must NOT reorder in that case (single bucket = no diversity to add)."""
-    from services.discovery_feed import _interleave_by_archetype
+    from services.discovery.discovery_feed import _interleave_by_archetype
 
     ids = ["a", "b", "c"]
     meta = _meta_dict(
@@ -196,7 +196,7 @@ def test_interleave_no_op_when_all_same_archetype():
 def test_interleave_handles_uneven_buckets():
     """3 companions, 1 advisor — round-robin drains the small bucket
     first then runs through the remaining companions."""
-    from services.discovery_feed import _interleave_by_archetype
+    from services.discovery.discovery_feed import _interleave_by_archetype
 
     ids = ["c1", "c2", "c3", "a1"]
     meta = _meta_dict(
@@ -219,7 +219,7 @@ def test_gender_guardrail_swaps_when_one_gender_dominates():
     """8 female + 2 male in first 10 = 80% female (> 60% cap). The
     guardrail must swap some females out of the prefix with males
     from the tail until ≤60%."""
-    from services.discovery_feed import _apply_gender_guardrail
+    from services.discovery.discovery_feed import _apply_gender_guardrail
 
     ids = (
         [f"f{i}" for i in range(8)]
@@ -245,7 +245,7 @@ def test_gender_guardrail_does_not_swap_unknown_for_dominance():
     """'unknown' gender should NOT count as dominant — pre-classification
     bots shouldn't be ejected from the prefix even if all 10 first-slot
     bots are 'unknown'."""
-    from services.discovery_feed import _apply_gender_guardrail
+    from services.discovery.discovery_feed import _apply_gender_guardrail
 
     ids = [f"u{i}" for i in range(10)] + ["m1", "m2"]
     meta = _meta_dict(
@@ -261,7 +261,7 @@ def test_gender_guardrail_does_not_swap_unknown_for_dominance():
 def test_gender_guardrail_no_op_when_under_cap():
     """6 female + 4 male in first 10 = 60% female (at the cap, not over).
     The guardrail must NOT swap."""
-    from services.discovery_feed import _apply_gender_guardrail
+    from services.discovery.discovery_feed import _apply_gender_guardrail
 
     ids = [f"f{i}" for i in range(6)] + [f"m{i}" for i in range(4)] + ["m4", "m5"]
     meta = _meta_dict(
@@ -277,7 +277,7 @@ def test_gender_guardrail_no_op_when_under_cap():
 def test_gender_guardrail_gives_up_gracefully_when_no_swap_candidate():
     """All 12 bots are female. Guardrail can't fix dominance; must
     return input unchanged rather than infinite-loop or 5xx."""
-    from services.discovery_feed import _apply_gender_guardrail
+    from services.discovery.discovery_feed import _apply_gender_guardrail
 
     ids = [f"f{i}" for i in range(12)]
     meta = _meta_dict(*[_bot(f"f{i}", gender="female") for i in range(12)])
@@ -291,7 +291,7 @@ def test_gender_guardrail_gives_up_gracefully_when_no_swap_candidate():
 def test_compose_no_op_on_empty_metadata():
     """If metadata read failed / pre-M1 catalog, compose returns
     input unchanged. DORMANT-FIRST property."""
-    from services.discovery_feed import compose_diverse_order
+    from services.discovery.discovery_feed import compose_diverse_order
 
     ids = ["a", "b", "c"]
     out = compose_diverse_order(ids, {}, is_cold_start=True)
@@ -302,7 +302,7 @@ def test_compose_skill_prefix_preserved_through_diversity_pass():
     """The ≥3-skilled prefix must SURVIVE the archetype interleave —
     the interleave should run on the tail only, not the prefix.
     Otherwise the "first 3 slots have skills" promise gets broken."""
-    from services.discovery_feed import compose_diverse_order
+    from services.discovery.discovery_feed import compose_diverse_order
 
     ids = ["s1", "s2", "s3", "x1", "x2", "x3"]
     meta = _meta_dict(
@@ -321,7 +321,7 @@ def test_compose_skill_prefix_preserved_through_diversity_pass():
 def test_compose_cold_start_applies_gender_guardrail():
     """Cold-start: gender guardrail runs after diversity interleave.
     Confirm the dominant gender share drops below the cap."""
-    from services.discovery_feed import compose_diverse_order
+    from services.discovery.discovery_feed import compose_diverse_order
 
     # Need >= 10 to trigger the guardrail (prefix_len=10).
     ids = (
@@ -344,7 +344,7 @@ def test_compose_warm_user_skips_gender_guardrail():
     """Warm users (post-threshold): no gender enforcement per design §5
     ('No gender quota. Personalization drives the mix.'). Same input
     as the cold-start test ⇒ female share STAYS above 0.6."""
-    from services.discovery_feed import compose_diverse_order
+    from services.discovery.discovery_feed import compose_diverse_order
 
     ids = [f"f{i}" for i in range(10)] + [f"m{i}" for i in range(2)]
     meta = _meta_dict(
@@ -373,7 +373,7 @@ class _StubPool:
 
 
 def test_cold_start_when_no_user_id():
-    from services.discovery_feed import _is_cold_start_user
+    from services.discovery.discovery_feed import _is_cold_start_user
 
     pool = _StubPool()
     out = asyncio.run(_is_cold_start_user(pool, None))
@@ -383,7 +383,7 @@ def test_cold_start_when_no_user_id():
 
 
 def test_cold_start_below_threshold():
-    from services.discovery_feed import _is_cold_start_user
+    from services.discovery.discovery_feed import _is_cold_start_user
 
     pool = _StubPool(conv_count=4)
     out = asyncio.run(_is_cold_start_user(pool, "u1"))
@@ -391,7 +391,7 @@ def test_cold_start_below_threshold():
 
 
 def test_warm_at_or_above_threshold():
-    from services.discovery_feed import _is_cold_start_user
+    from services.discovery.discovery_feed import _is_cold_start_user
 
     pool = _StubPool(conv_count=5)
     out = asyncio.run(_is_cold_start_user(pool, "u1"))
@@ -402,7 +402,7 @@ def test_cold_start_fails_open_on_db_error():
     """DB error during cold-start lookup ⇒ assume cold-start (the
     safer default — over-apply the gender guardrail rather than
     under-apply on a fresh user)."""
-    from services.discovery_feed import _is_cold_start_user
+    from services.discovery.discovery_feed import _is_cold_start_user
 
     pool = _StubPool(raises=True)
     out = asyncio.run(_is_cold_start_user(pool, "u1"))
@@ -424,7 +424,7 @@ class _MetaPool:
 
 
 def test_read_composer_metadata_returns_dict_keyed_by_id():
-    from services.discovery_feed import _read_composer_metadata
+    from services.discovery.discovery_feed import _read_composer_metadata
 
     rows = [
         {
@@ -451,7 +451,7 @@ def test_read_composer_metadata_returns_dict_keyed_by_id():
 def test_read_composer_metadata_empty_on_db_error():
     """Fail-open: DB error ⇒ empty dict ⇒ compose_diverse_order no-ops.
     The feed still serves; composition just doesn't fire."""
-    from services.discovery_feed import _read_composer_metadata
+    from services.discovery.discovery_feed import _read_composer_metadata
 
     pool = _MetaPool([], raises=True)
     out = asyncio.run(_read_composer_metadata(pool, ["a", "b"]))
@@ -459,7 +459,7 @@ def test_read_composer_metadata_empty_on_db_error():
 
 
 def test_read_composer_metadata_empty_input_returns_empty():
-    from services.discovery_feed import _read_composer_metadata
+    from services.discovery.discovery_feed import _read_composer_metadata
 
     pool = _MetaPool([])
     out = asyncio.run(_read_composer_metadata(pool, []))

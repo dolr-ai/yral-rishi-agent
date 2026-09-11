@@ -6,7 +6,7 @@ so a future refactor can't silently flatten them.
 
 
 def test_tuning_for_known_archetypes():
-    from services.soul_file import tuning_for, ARCHETYPE_TUNING
+    from services.coach.soul_file import tuning_for, ARCHETYPE_TUNING
 
     for archetype in ("companion", "advisor", "entertainer", "educator", "creator"):
         t = tuning_for(archetype)
@@ -22,7 +22,7 @@ def test_tuning_for_known_archetypes():
 def test_tuning_for_unknown_archetype_returns_none():
     """Unknown / NULL category falls back to config defaults — the lookup
     must return None so the caller knows to use config values."""
-    from services.soul_file import tuning_for
+    from services.coach.soul_file import tuning_for
 
     assert tuning_for(None) is None
     assert tuning_for("") is None
@@ -32,7 +32,7 @@ def test_tuning_for_unknown_archetype_returns_none():
 def test_tuning_for_handles_casing_and_whitespace():
     """Postgres rows may have inconsistent casing; the helper must
     normalize so the contract works regardless of how the DB stored it."""
-    from services.soul_file import tuning_for
+    from services.coach.soul_file import tuning_for
 
     assert tuning_for("COMPANION") == tuning_for("companion")
     assert tuning_for("  Advisor  ") == tuning_for("advisor")
@@ -45,7 +45,7 @@ def test_archetype_prompts_do_not_hardcode_sentence_caps():
     the user's ask. GLOBAL_RULES' soft '1-3 sentences max' is the only
     length guidance now — if a future PR re-adds per-archetype caps, this
     test fails so we don't silently re-introduce the regression."""
-    from services.soul_file import ARCHETYPE_PROMPTS
+    from services.coach.soul_file import ARCHETYPE_PROMPTS
 
     for archetype, body in ARCHETYPE_PROMPTS.items():
         assert "at most 3 sentences" not in body, (
@@ -59,7 +59,7 @@ def test_archetype_prompts_do_not_hardcode_sentence_caps():
 def test_archetype_max_tokens_uniform_and_generous():
     """Rollback target: 1500 across all archetypes. Below 1000 risks cutting
     off useful replies; above 2048 leaves cache-prefix territory."""
-    from services.soul_file import ARCHETYPE_TUNING
+    from services.coach.soul_file import ARCHETYPE_TUNING
 
     for archetype, t in ARCHETYPE_TUNING.items():
         assert 1000 <= t["max_tokens"] <= 2048, (
@@ -76,7 +76,7 @@ def test_educator_prompt_includes_few_shot_example():
     India-specific signal. The English recursion example is sufficient to
     prime the analogies-first behaviour the educator archetype needs.
     """
-    from services.soul_file import ARCHETYPE_PROMPTS
+    from services.coach.soul_file import ARCHETYPE_PROMPTS
 
     educator = ARCHETYPE_PROMPTS["educator"]
     assert "Example exchange" in educator
@@ -92,7 +92,7 @@ def test_global_rules_mirror_any_user_language():
     the rule works for any user-language pair (Hinglish stays handled,
     Spanglish / Singlish / Arabish are now equally handled).
     """
-    from services.soul_file import GLOBAL_RULES
+    from services.coach.soul_file import GLOBAL_RULES
 
     # Core instruction must remain.
     assert "Mirror the user's language exactly" in GLOBAL_RULES, (

@@ -16,8 +16,8 @@ prose because Gemini occasionally violates the JSON-only instruction.
 import json
 import logging
 
-from services import llm_registry
-from services.ai_client import generate_response
+from services.llm import llm_registry
+from services.llm.ai_client import generate_response
 
 logger = logging.getLogger(__name__)
 

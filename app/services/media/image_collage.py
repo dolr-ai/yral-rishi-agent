@@ -53,7 +53,8 @@ import httpx
 
 import config
 from repositories import influencer_collage_repo, user_image_request_repo
-from services import image_blur, replicate, storage
+from services.media import image_blur, storage
+from services.llm import replicate
 
 logger = logging.getLogger(__name__)
 

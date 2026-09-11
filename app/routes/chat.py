@@ -17,20 +17,16 @@ from repositories import (
 )
 import httpx
 
-from services import (
-    ai_client,
-    content_safety,
-    embeddings,
+from services.llm import ai_client, embeddings, replicate
+from services.safety import content_safety
+from services.engagement import (
     memory,
     push_notifications,
     session_memory,
-    skill_parser,
-    skills as skills_catalog,
-    soul_file,
     websocket_manager,
-    storage,
-    replicate,
 )
+from services.coach import skill_parser, skills as skills_catalog, soul_file
+from services.media import storage
 from models import SendMessageResponse, ChatMessage, AssistantError
 
 logger = logging.getLogger(__name__)

@@ -45,7 +45,7 @@ def test_main_wires_discovery_router():
 
 
 def test_service_module_defines_required_symbols():
-    src = (REPO / "app" / "services" / "discovery_feed.py").read_text()
+    src = (REPO / "app" / "services" / "discovery" / "discovery_feed.py").read_text()
     for name in (
         "async def build_feed_page",
         "async def _read_feed_global",
@@ -67,7 +67,7 @@ def test_envelope_shape_matches_design_doc_contract():
     """Design doc §8 — `FeedResponse{influencers[], total_count, offset,
     limit, has_more, feed_generated_at}`. The shape MUST stay byte-
     compatible so mobile parsing doesn't change at cutover."""
-    src = (REPO / "app" / "services" / "discovery_feed.py").read_text()
+    src = (REPO / "app" / "services" / "discovery" / "discovery_feed.py").read_text()
     for k in (
         '"influencers"',
         '"total_count"',
@@ -82,7 +82,7 @@ def test_envelope_shape_matches_design_doc_contract():
 def test_per_bot_keys_match_anshuman():
     """Per-bot subset shipped to mobile — id/name/display_name/
     avatar_url/description/category/created_at."""
-    src = (REPO / "app" / "services" / "discovery_feed.py").read_text()
+    src = (REPO / "app" / "services" / "discovery" / "discovery_feed.py").read_text()
     for k in (
         '"id"',
         '"name"',
@@ -98,7 +98,7 @@ def test_per_bot_keys_match_anshuman():
 def test_with_metadata_surfaces_archetype_and_gender():
     """?with_metadata=true exposes the M1 columns + the rank_source
     tag so Rishi can sanity-check from a browser."""
-    src = (REPO / "app" / "services" / "discovery_feed.py").read_text()
+    src = (REPO / "app" / "services" / "discovery" / "discovery_feed.py").read_text()
     assert '"archetype"' in src
     assert '"gender"' in src
     assert '"rank_source"' in src
@@ -108,7 +108,7 @@ def test_dormant_first_fallback_documented():
     """Design property: feed:global Redis miss → SELECT fallback so
     M2a is usable without M2c. If a future PR removes the fallback,
     mobile e2e testing breaks."""
-    src = (REPO / "app" / "services" / "discovery_feed.py").read_text()
+    src = (REPO / "app" / "services" / "discovery" / "discovery_feed.py").read_text()
     assert "_fallback_active_bot_ids" in src
     assert 'rank_source = "fallback_select"' in src
 
@@ -159,7 +159,7 @@ class _StubPool:
 def _stub_redis_off(monkeypatch):
     """Force `discovery_feed._get_redis` to return None so Redis paths
     degrade open + fallback runs."""
-    from services import discovery_feed
+    from services.discovery import discovery_feed
 
     async def fake():
         return None
@@ -170,7 +170,7 @@ def _stub_redis_off(monkeypatch):
 def test_pin_overlay_inserts_at_rank_slots():
     """Pin at rank 1 lands at index 0; rank 3 lands at index 2 of
     the post-pin list; pre-existing occupant is pushed down."""
-    from services.discovery_feed import _apply_pin_overlay
+    from services.discovery.discovery_feed import _apply_pin_overlay
 
     base = ["a", "b", "c", "d", "e"]
     pins = [
@@ -189,7 +189,7 @@ def test_pin_overlay_inserts_at_rank_slots():
 def test_pin_overlay_deduplicates_pinned_bot_already_in_base():
     """If a pinned bot is also in the base ranking, the base copy
     is removed first so the bot doesn't appear twice."""
-    from services.discovery_feed import _apply_pin_overlay
+    from services.discovery.discovery_feed import _apply_pin_overlay
 
     base = ["a", "P1", "b", "c"]
     pins = [{"influencer_id": "P1", "pinned_rank": 1}]
@@ -203,7 +203,7 @@ def test_pin_overlay_skips_unknown_bots():
     """Stale pin pointing at a deleted/inactive bot: silently drop
     rather than 5xx. The FK protects most cases but the loop between
     unpin and feed serve could see a stale pin."""
-    from services.discovery_feed import _apply_pin_overlay
+    from services.discovery.discovery_feed import _apply_pin_overlay
 
     base = ["a", "b", "c"]
     pins = [{"influencer_id": "GHOST", "pinned_rank": 1}]
@@ -217,7 +217,7 @@ def test_shuffle_is_deterministic_per_session():
     """Same session_id → same order. Different session_id → different
     order. Property is what gives stable pagination within a session
     + variety across sessions."""
-    from services.discovery_feed import _shuffle_for_session
+    from services.discovery.discovery_feed import _shuffle_for_session
 
     ids = [f"bot_{i}" for i in range(50)]
     a1 = _shuffle_for_session(ids, "session_X")
@@ -232,14 +232,14 @@ def test_shuffle_is_deterministic_per_session():
 def test_shuffle_no_op_on_missing_session_id():
     """No session_id ⇒ stable input order. Lets the caller opt out
     of shuffle (e.g. for analytics replays) by omitting the param."""
-    from services.discovery_feed import _shuffle_for_session
+    from services.discovery.discovery_feed import _shuffle_for_session
 
     ids = ["a", "b", "c"]
     assert _shuffle_for_session(ids, "") == ids
 
 
 def test_shape_bot_envelope_minimal():
-    from services.discovery_feed import _shape_bot
+    from services.discovery.discovery_feed import _shape_bot
 
     row = {
         "id": "abc",
@@ -263,7 +263,7 @@ def test_shape_bot_envelope_minimal():
 
 
 def test_shape_bot_envelope_with_metadata():
-    from services.discovery_feed import _shape_bot
+    from services.discovery.discovery_feed import _shape_bot
 
     row = {
         "id": "abc",
@@ -289,7 +289,7 @@ def test_build_feed_page_fallback_when_redis_off(monkeypatch):
     """Smoke test of the full request path with Redis disabled.
     Validates the rank_source flips to fallback_select + the
     envelope is correctly shaped."""
-    from services import discovery_feed
+    from services.discovery import discovery_feed
 
     _stub_redis_off(monkeypatch)
 
@@ -331,7 +331,7 @@ def test_build_feed_page_fallback_when_redis_off(monkeypatch):
 
 
 def test_build_feed_page_pagination_has_more(monkeypatch):
-    from services import discovery_feed
+    from services.discovery import discovery_feed
 
     _stub_redis_off(monkeypatch)
 
@@ -390,7 +390,7 @@ def test_synthetic_latency_under_load_3600_catalog(monkeypatch, capsys):
 
     Add ~15-20ms to the reported p95 for a real-world estimate.
     The 100ms p95 budget includes those round-trips."""
-    from services import discovery_feed
+    from services.discovery import discovery_feed
 
     _stub_redis_off(monkeypatch)
 

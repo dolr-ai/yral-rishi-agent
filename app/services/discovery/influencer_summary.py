@@ -20,7 +20,8 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from services import llm_registry, soul_file
+from services.llm import llm_registry
+from services.coach import soul_file
 
 logger = logging.getLogger(__name__)
 

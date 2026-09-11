@@ -2,7 +2,7 @@
 """Eval harness: run gold prompts through v2 and score via Langfuse.
 
 Usage:
-    cd app && python -m eval.runner --base-url https://agent.rishi.yral.com
+    cd scripts && python -m eval.runner --base-url https://agent.rishi.yral.com
 
 Scores each response on 5 criteria (1-5 scale) using Gemini as judge:
 1. In-character: does the response match the influencer's personality?
@@ -75,7 +75,7 @@ async def run_eval(base_url: str, langfuse_host: str | None = None):
                 )
 
             # Call the generate_response function directly
-            from services import ai_client
+            from services.llm import ai_client
 
             t0 = time.monotonic()
             llm_result = await ai_client.generate_response(
@@ -131,7 +131,7 @@ async def run_eval(base_url: str, langfuse_host: str | None = None):
                 count += 1
 
                 # Post to Langfuse
-                from services import langfuse_tracing
+                from services.ops import langfuse_tracing
 
                 langfuse_tracing.trace_generation(
                     trace_name="eval-gold-prompt",

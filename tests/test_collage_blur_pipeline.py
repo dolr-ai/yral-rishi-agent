@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 
 MODULE_ROUTE = Path(__file__).parent.parent / "app" / "routes" / "request_images.py"
-MODULE_COLLAGE = Path(__file__).parent.parent / "app" / "services" / "image_collage.py"
+MODULE_COLLAGE = Path(__file__).parent.parent / "app" / "services" / "media" / "image_collage.py"
 
 
 def _load(name: str):
@@ -42,7 +42,7 @@ def test_gaussian_blur_roundtrip():
     import io
     from PIL import Image
 
-    ib = _load("services.image_blur")
+    ib = _load("services.media.image_blur")
     # Synthesize a small RGBA image so we exercise the conversion path
     src = Image.new("RGBA", (128, 128), (255, 0, 0, 255))
     buf = io.BytesIO()
@@ -151,7 +151,7 @@ def test_ready_response_signs_each_stored_key():
     old the row is. The earlier bug: signatures baked in at
     generation time expired 15 min later, so rows served hours
     later returned dead URLs. Locking this test prevents regression."""
-    ic = _load("services.image_collage")
+    ic = _load("services.media.image_collage")
 
     signed_calls: list[str] = []
 
@@ -190,7 +190,7 @@ def test_mirror_batch_stores_keys_not_urls():
     delivery URL and never a presigned URL. Storing keys is the
     invariant that makes fresh-signing on read possible."""
     body = (
-        Path(__file__).parent.parent / "app" / "services" / "image_collage.py"
+        Path(__file__).parent.parent / "app" / "services" / "media" / "image_collage.py"
     ).read_text()
     # The clear-side key layout
     assert (
@@ -242,7 +242,7 @@ def test_ready_response_carries_blurred_urls_through():
     so the route's _envelope_for_ready has both arrays to pick from.
     Signing behavior is tested separately in
     test_ready_response_signs_each_stored_key."""
-    ic = _load("services.image_collage")
+    ic = _load("services.media.image_collage")
     row = {
         "theme": "TAARA on Santorini",
         "image_urls": ["collage-clear/tara/2026-07-08/00.jpg"],
@@ -271,7 +271,7 @@ def test_ready_response_forwards_bot_id_and_generation_date():
     Both `bot_id` and `generation_date` MUST make it from the DB row
     into the envelope so the route's `_envelope_for_ready` can echo
     them back."""
-    ic = _load("services.image_collage")
+    ic = _load("services.media.image_collage")
     row = {
         "id": "some-uuid",
         "bot_id": "tara-uuid",
@@ -298,7 +298,7 @@ def test_ready_response_forwards_collage_id_uuid():
     (the opaque UUID) in the chat message so it can refetch via
     ?collage_id=<uuid>. The envelope MUST forward the UUID from the DB
     row; dropping it silently breaks the primary lookup path."""
-    ic = _load("services.image_collage")
+    ic = _load("services.media.image_collage")
     row = {
         "id": "abc-123-uuid",
         "bot_id": "tara-uuid",
@@ -372,7 +372,7 @@ def test_mirror_variant_failure_returns_none_pair_not_exception():
     caller `_run_generation` decides whether the resulting shortfall
     is fatal (clear-side < N) or just a warning (blurred-side <
     clear-side)."""
-    ic = _load("services.image_collage")
+    ic = _load("services.media.image_collage")
 
     class _BoomClient:
         async def get(self, *a, **kw):

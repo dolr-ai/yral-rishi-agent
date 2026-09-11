@@ -40,7 +40,7 @@ def test_count_unanswered_nudge_helper_exists():
 def test_should_nudge_enforces_cap():
     """Regression guard: should_nudge must call count_unanswered_nudge
     and gate on NUDGE_CAP_WITHOUT_REPLY before returning True."""
-    src = _read("app/services/nudge.py")
+    src = _read("app/services/engagement/nudge.py")
     assert "count_unanswered_nudge" in src
     assert "NUDGE_CAP_WITHOUT_REPLY" in src
 

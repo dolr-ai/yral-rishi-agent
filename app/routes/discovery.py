@@ -28,7 +28,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
 from database import get_pool
-from services import discovery_feed, discovery_search
+from services.discovery import discovery_feed, discovery_search
 
 logger = logging.getLogger(__name__)
 

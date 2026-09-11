@@ -3,9 +3,9 @@ import logging
 from typing import Optional
 
 import config
-from services import replicate
-from services import llm_registry
-from services.llm_types import LlmBlockedError
+from services.llm import replicate
+from services.llm import llm_registry
+from services.llm.llm_types import LlmBlockedError
 
 logger = logging.getLogger(__name__)
 

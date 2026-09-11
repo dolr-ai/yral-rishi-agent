@@ -23,7 +23,7 @@ from typing import AsyncIterator
 
 import httpx
 
-from services.llm_types import LlmBlockedError, LlmResponse
+from services.llm.llm_types import LlmBlockedError, LlmResponse
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +76,7 @@ async def _messages_to_gemini_contents(
                 parts.append({"text": content})
         elif isinstance(content, list):
             # OpenAI multimodal content array
-            from services.ai_client import _fetch_and_encode_image
+            from services.llm.ai_client import _fetch_and_encode_image
 
             for item in content:
                 if not isinstance(item, dict):
@@ -368,7 +368,7 @@ async def transcribe(
     # 5 MB. Pre-fix: this called _fetch_image_bytes_and_mime which
     # defaulted to image/jpeg → Gemini rejected audio-as-image → returned
     # no candidates → mobile saw "transcription unavailable."
-    from services.ai_client import _fetch_audio_bytes_and_mime
+    from services.llm.ai_client import _fetch_audio_bytes_and_mime
 
     mime, audio_bytes = await _fetch_audio_bytes_and_mime(audio_url)
     if not mime or not isinstance(audio_bytes, bytes):

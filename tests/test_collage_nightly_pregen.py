@@ -1,4 +1,4 @@
-"""Source-pin + behavior tests for services.collage_nightly_pregen.
+"""Source-pin + behavior tests for services.media.collage_nightly_pregen.
 
 The pre-gen loop spends money (~$0.27 per bot per pass). Every gate
 that stops it from over-spending or from running the wrong bots MUST
@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 MODULE_PATH = (
-    Path(__file__).parent.parent / "app" / "services" / "collage_nightly_pregen.py"
+    Path(__file__).parent.parent / "app" / "services" / "media" / "collage_nightly_pregen.py"
 )
 
 
@@ -71,7 +71,7 @@ def test_seconds_until_next_04_utc_correct_when_before():
 
     import importlib
 
-    m = importlib.import_module("services.collage_nightly_pregen")
+    m = importlib.import_module("services.media.collage_nightly_pregen")
     fake_now = datetime(2026, 7, 8, 2, 30, 0, tzinfo=timezone.utc)  # 02:30 UTC
     with patch.object(m, "datetime") as dt:
         dt.now.return_value = fake_now
@@ -85,7 +85,7 @@ def test_seconds_until_next_04_utc_correct_when_after():
 
     import importlib
 
-    m = importlib.import_module("services.collage_nightly_pregen")
+    m = importlib.import_module("services.media.collage_nightly_pregen")
     fake_now = datetime(2026, 7, 8, 10, 0, 0, tzinfo=timezone.utc)  # 10:00 UTC
     with patch.object(m, "datetime") as dt:
         dt.now.return_value = fake_now
@@ -102,7 +102,7 @@ def test_pregen_skips_bots_with_succeeded_row_today():
 
     import importlib
 
-    m = importlib.import_module("services.collage_nightly_pregen")
+    m = importlib.import_module("services.media.collage_nightly_pregen")
 
     class _Row:
         def __getitem__(self, k):
@@ -122,8 +122,8 @@ def test_pregen_skips_bots_with_succeeded_row_today():
 
         with (
             patch("repositories.influencer_collage_repo.get", new=get_mock),
-            patch("services.theme_generator.generate_daily_theme", new=gen_mock),
-            patch("services.image_collage.orchestrate", new=orchestrate_mock),
+            patch("services.media.theme_generator.generate_daily_theme", new=gen_mock),
+            patch("services.media.image_collage.orchestrate", new=orchestrate_mock),
         ):
             stats = asyncio.run(m.pregen_one_pass(fake_pool))
 
@@ -150,7 +150,7 @@ def test_pregen_generates_when_no_row_exists():
 
     import importlib
 
-    m = importlib.import_module("services.collage_nightly_pregen")
+    m = importlib.import_module("services.media.collage_nightly_pregen")
 
     async def fake_list(pool):
         return [{"id": "tara-uuid", "lora_weights_url": "yral/tara-lora-v1:V"}]
@@ -167,8 +167,8 @@ def test_pregen_generates_when_no_row_exists():
 
         with (
             patch("repositories.influencer_collage_repo.get", new=get_mock),
-            patch("services.theme_generator.generate_daily_theme", new=gen_mock),
-            patch("services.image_collage.orchestrate", new=orchestrate_mock),
+            patch("services.media.theme_generator.generate_daily_theme", new=gen_mock),
+            patch("services.media.image_collage.orchestrate", new=orchestrate_mock),
         ):
             stats = asyncio.run(m.pregen_one_pass(MagicMock()))
 
@@ -196,7 +196,7 @@ def test_pregen_counts_failures_but_continues():
 
     import importlib
 
-    m = importlib.import_module("services.collage_nightly_pregen")
+    m = importlib.import_module("services.media.collage_nightly_pregen")
 
     async def fake_list(pool):
         return [
@@ -216,12 +216,12 @@ def test_pregen_counts_failures_but_continues():
             new=AsyncMock(return_value=None),
         ),
         patch(
-            "services.theme_generator.generate_daily_theme",
+            "services.media.theme_generator.generate_daily_theme",
             new=AsyncMock(
                 return_value="TAARA at Dubai rooftop, editorial swimwear photography, 85mm lens, golden hour, wearing designer swimwear."
             ),
         ),
-        patch("services.image_collage.orchestrate", new=fake_orchestrate),
+        patch("services.media.image_collage.orchestrate", new=fake_orchestrate),
     ):
         stats = asyncio.run(m.pregen_one_pass(MagicMock()))
 

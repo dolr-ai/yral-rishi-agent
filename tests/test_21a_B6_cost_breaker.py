@@ -81,7 +81,7 @@ def test_cost_breaker_module_exposes_5_hard_properties():
     """All five hard properties from the 2026-06-16 brief must be
     discoverable in the module docstring so a future reader sees
     the contract before changing code."""
-    src = (REPO / "app" / "services" / "cost_breaker.py").read_text()
+    src = (REPO / "app" / "services" / "ops" / "cost_breaker.py").read_text()
     assert "DEFAULT OPEN" in src
     assert "FAIL OPEN" in src
     assert "HOT-EDIT KILL SWITCH" in src
@@ -90,7 +90,7 @@ def test_cost_breaker_module_exposes_5_hard_properties():
 
 
 def test_cost_breaker_defines_required_symbols():
-    src = (REPO / "app" / "services" / "cost_breaker.py").read_text()
+    src = (REPO / "app" / "services" / "ops" / "cost_breaker.py").read_text()
     assert "class CostCircuitBreakerOpen" in src
     assert "async def check" in src
     assert "async def get_config" in src
@@ -104,7 +104,7 @@ def test_cost_breaker_defaults_are_default_open():
     """The in-code DEFAULTS fall-through chain must keep the breaker
     OFF when DB + Redis are both unreachable. If this drifts the
     very first deploy on a fresh node could start blocking."""
-    from services import cost_breaker
+    from services.ops import cost_breaker
 
     assert cost_breaker._DEFAULTS["b6_enabled"] == "false"
     assert cost_breaker._DEFAULTS["b6_enforce"] == "false"
@@ -114,9 +114,9 @@ def test_llm_registry_wires_b6_check_before_call():
     """The check MUST live in `_do_complete` — the post-PR-#293
     chokepoint shared by primary + fallback. A middleware-only
     integration would miss the 6 background processes."""
-    src = (REPO / "app" / "services" / "llm_registry.py").read_text()
+    src = (REPO / "app" / "services" / "llm" / "llm_registry.py").read_text()
     assert "async def _do_complete" in src
-    assert "from services import cost_breaker" in src
+    assert "from services.ops import cost_breaker" in src
     assert "await _cb.check(" in src
     assert "_cb.raise_if_blocked(" in src
 
@@ -126,7 +126,7 @@ def test_main_wires_cost_breaker_exception_handler():
     invent a new error code mobile hasn't seen. The handler must
     return 503 + Retry-After (NOT 402 or 429)."""
     src = (REPO / "app" / "main.py").read_text()
-    assert "from services.cost_breaker import CostCircuitBreakerOpen" in src
+    assert "from services.ops.cost_breaker import CostCircuitBreakerOpen" in src
     assert "@app.exception_handler(CostCircuitBreakerOpen)" in src
     assert "status_code=503" in src
     assert 'headers={"Retry-After": str(exc.retry_after_sec)}' in src
@@ -155,7 +155,7 @@ def _stub_module(monkeypatch, cfg: dict, user_daily: float = 0.0, hourly: float 
     """Patch the cost_breaker module IO. Returns a list that
     `_log_event` appends to so the test can assert what shadow rows
     would have been written. No real DB / Redis touched."""
-    from services import cost_breaker as cb
+    from services.ops import cost_breaker as cb
 
     async def fake_get_config():
         return {**cb._DEFAULTS, **cfg}
@@ -181,7 +181,7 @@ def _stub_module(monkeypatch, cfg: dict, user_daily: float = 0.0, hourly: float 
 def test_default_open_disabled_returns_allow(monkeypatch):
     """Hard property #1. b6_enabled=false → ALLOW + reason='disabled'.
     No log event written — disabled means dormant."""
-    from services import cost_breaker as cb
+    from services.ops import cost_breaker as cb
 
     logged = _stub_module(monkeypatch, cfg={"b6_enabled": "false"}, user_daily=99.0)
     result = asyncio.run(cb.check(user_id="u1", process="chat", provider="gemini"))
@@ -193,7 +193,7 @@ def test_default_open_disabled_returns_allow(monkeypatch):
 def test_shadow_mode_logs_but_allows(monkeypatch):
     """Hard property #4. b6_enabled=true + b6_enforce=false + over
     threshold → ALLOW (with reason='shadow') AND log a row."""
-    from services import cost_breaker as cb
+    from services.ops import cost_breaker as cb
 
     logged = _stub_module(
         monkeypatch,
@@ -216,7 +216,7 @@ def test_shadow_mode_logs_but_allows(monkeypatch):
 
 
 def test_enforce_mode_blocks_per_user_daily(monkeypatch):
-    from services import cost_breaker as cb
+    from services.ops import cost_breaker as cb
 
     logged = _stub_module(
         monkeypatch,
@@ -239,7 +239,7 @@ def test_enforce_mode_blocks_global_hourly(monkeypatch):
     """Global-hourly check fires even when user_id=None (background
     process) — that's the only line of defence for the 6 background
     loops."""
-    from services import cost_breaker as cb
+    from services.ops import cost_breaker as cb
 
     logged = _stub_module(
         monkeypatch,
@@ -259,7 +259,7 @@ def test_enforce_mode_blocks_global_hourly(monkeypatch):
 
 
 def test_under_threshold_allows_silently(monkeypatch):
-    from services import cost_breaker as cb
+    from services.ops import cost_breaker as cb
 
     logged = _stub_module(
         monkeypatch,
@@ -281,7 +281,7 @@ def test_under_threshold_allows_silently(monkeypatch):
 def test_process_allowlist_bypasses_check(monkeypatch):
     """Operator escape valve. Allowlisted process bypasses both
     thresholds even in ENFORCE mode."""
-    from services import cost_breaker as cb
+    from services.ops import cost_breaker as cb
 
     logged = _stub_module(
         monkeypatch,
@@ -306,7 +306,7 @@ def test_fail_open_on_inner_exception(monkeypatch):
     error introduces a TypeError, DB raises mid-query, Redis client
     crashes), `check()` MUST return allowed=True. The opposite of
     H2's mistake."""
-    from services import cost_breaker as cb
+    from services.ops import cost_breaker as cb
 
     async def boom(**kw):
         raise RuntimeError("simulated catastrophic failure")
@@ -320,7 +320,7 @@ def test_fail_open_on_inner_exception(monkeypatch):
 def test_fail_open_when_get_config_raises(monkeypatch):
     """get_config itself is wrapped — if Postgres + Redis are both
     down (table missing + Redis crashed), check() returns allow."""
-    from services import cost_breaker as cb
+    from services.ops import cost_breaker as cb
 
     async def boom():
         raise RuntimeError("db + redis both unreachable")
@@ -340,7 +340,7 @@ def test_raise_if_blocked_carries_retry_after():
     """The exception MUST surface retry_after_sec so the FastAPI
     handler can set the header. If this drops, mobile loses the
     'how long to wait' signal and may spin in a tight retry."""
-    from services.cost_breaker import (
+    from services.ops.cost_breaker import (
         CostCircuitBreakerOpen,
         _CheckResult,
         raise_if_blocked,
@@ -356,7 +356,7 @@ def test_raise_if_blocked_carries_retry_after():
 
 
 def test_raise_if_blocked_noop_when_allowed():
-    from services.cost_breaker import _CheckResult, raise_if_blocked
+    from services.ops.cost_breaker import _CheckResult, raise_if_blocked
 
     raise_if_blocked(_CheckResult(True, "disabled"), retry_after_sec=3600)
     raise_if_blocked(_CheckResult(True, "shadow", 2.5, 1.0), retry_after_sec=3600)
@@ -368,7 +368,7 @@ def test_raise_if_blocked_noop_when_allowed():
 
 
 def test_parse_float_fallback_on_garbage():
-    from services.cost_breaker import _parse_float
+    from services.ops.cost_breaker import _parse_float
 
     assert _parse_float(None, 1.0) == 1.0
     assert _parse_float("NaN_for_breakfast", 1.0) == 1.0
@@ -377,7 +377,7 @@ def test_parse_float_fallback_on_garbage():
 
 
 def test_parse_int_fallback_on_garbage():
-    from services.cost_breaker import _parse_int
+    from services.ops.cost_breaker import _parse_int
 
     assert _parse_int(None, 3600) == 3600
     assert _parse_int("not_a_number", 3600) == 3600
@@ -387,7 +387,7 @@ def test_parse_int_fallback_on_garbage():
 
 
 def test_parse_bool_only_true_for_truthy_strings():
-    from services.cost_breaker import _parse_bool
+    from services.ops.cost_breaker import _parse_bool
 
     for truthy in ("true", "True", "TRUE", "1", "yes", "on"):
         assert _parse_bool(truthy) is True, truthy
@@ -396,7 +396,7 @@ def test_parse_bool_only_true_for_truthy_strings():
 
 
 def test_parse_csv_strips_and_ignores_empties():
-    from services.cost_breaker import _parse_csv
+    from services.ops.cost_breaker import _parse_csv
 
     assert _parse_csv("") == ()
     assert _parse_csv(None) == ()

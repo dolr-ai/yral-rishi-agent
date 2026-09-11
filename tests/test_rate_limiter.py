@@ -133,7 +133,7 @@ def test_dashboard_tile_replaces_placeholder():
 def test_email_digest_section_replaces_placeholder():
     """Same rule for the email digest: 19.1 must flip from placeholder
     to live section in the same PR."""
-    src = _read("app/services/email_digest.py")
+    src = _read("app/services/ops/email_digest.py")
     assert "async def _section_rate_limits" in src
     assert "await _section_rate_limits(pool)" in src
     # The placeholder for 19.1 is gone (Cost breaker still has it)

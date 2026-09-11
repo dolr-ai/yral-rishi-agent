@@ -1,8 +1,8 @@
-"""Tests for app/services/soul_file.py."""
+"""Tests for app/services/coach/soul_file.py."""
 
 
 def test_compose_includes_global_rules():
-    from services.soul_file import compose, GLOBAL_RULES
+    from services.coach.soul_file import compose, GLOBAL_RULES
 
     result = compose(system_instructions="You are a fitness coach.")
     assert GLOBAL_RULES in result
@@ -10,14 +10,14 @@ def test_compose_includes_global_rules():
 
 
 def test_compose_includes_archetype():
-    from services.soul_file import compose, ARCHETYPE_PROMPTS
+    from services.coach.soul_file import compose, ARCHETYPE_PROMPTS
 
     result = compose(system_instructions="You are Tara.", category="companion")
     assert ARCHETYPE_PROMPTS["companion"] in result
 
 
 def test_compose_unknown_archetype_skipped():
-    from services.soul_file import compose
+    from services.coach.soul_file import compose
 
     result = compose(system_instructions="You are a bot.", category="nonexistent")
     # Should still have global rules + system_instructions, just no archetype layer
@@ -25,7 +25,7 @@ def test_compose_unknown_archetype_skipped():
 
 
 def test_compose_includes_memories():
-    from services.soul_file import compose
+    from services.coach.soul_file import compose
 
     result = compose(
         system_instructions="You are a coach.",
@@ -36,14 +36,14 @@ def test_compose_includes_memories():
 
 
 def test_compose_empty_memories_no_layer():
-    from services.soul_file import compose
+    from services.coach.soul_file import compose
 
     result = compose(system_instructions="You are a coach.", memories={})
     assert "What you know about this user" not in result
 
 
 def test_compose_deterministic():
-    from services.soul_file import compose
+    from services.coach.soul_file import compose
 
     a = compose("You are X.", category="advisor", memories={"name": "A"})
     b = compose("You are X.", category="advisor", memories={"name": "A"})

@@ -11,14 +11,14 @@ from datetime import datetime, timezone, timedelta
 
 
 def test_remaining_seconds_no_last_message():
-    from services.takeover_helpers import remaining_seconds, TAKEOVER_TIMEOUT_SECONDS
+    from services.engagement.takeover_helpers import remaining_seconds, TAKEOVER_TIMEOUT_SECONDS
 
     assert remaining_seconds(None) == TAKEOVER_TIMEOUT_SECONDS
 
 
 def test_remaining_seconds_creator_just_sent():
     """Creator just sent a message — full 120s remaining."""
-    from services.takeover_helpers import remaining_seconds, TAKEOVER_TIMEOUT_SECONDS
+    from services.engagement.takeover_helpers import remaining_seconds, TAKEOVER_TIMEOUT_SECONDS
 
     now = datetime.now(timezone.utc)
     rem = remaining_seconds(now)
@@ -28,7 +28,7 @@ def test_remaining_seconds_creator_just_sent():
 
 def test_remaining_seconds_creator_silent_past_timeout():
     """Creator silent for 3 min — timer expired."""
-    from services.takeover_helpers import remaining_seconds
+    from services.engagement.takeover_helpers import remaining_seconds
 
     three_min_ago = datetime.now(timezone.utc) - timedelta(minutes=3)
     assert remaining_seconds(three_min_ago) == 0
@@ -36,7 +36,7 @@ def test_remaining_seconds_creator_silent_past_timeout():
 
 def test_remaining_seconds_creator_silent_one_min():
     """Creator silent for 1 min — ~60s remaining (Bug 1: timer keyed on creator)."""
-    from services.takeover_helpers import remaining_seconds
+    from services.engagement.takeover_helpers import remaining_seconds
 
     one_min_ago = datetime.now(timezone.utc) - timedelta(seconds=60)
     rem = remaining_seconds(one_min_ago)
@@ -45,7 +45,7 @@ def test_remaining_seconds_creator_silent_one_min():
 
 def test_remaining_seconds_naive_datetime():
     """Naive datetimes from asyncpg should still work (treated as UTC)."""
-    from services.takeover_helpers import remaining_seconds, TAKEOVER_TIMEOUT_SECONDS
+    from services.engagement.takeover_helpers import remaining_seconds, TAKEOVER_TIMEOUT_SECONDS
 
     naive_now = datetime.utcnow()
     rem = remaining_seconds(naive_now)
@@ -53,7 +53,7 @@ def test_remaining_seconds_naive_datetime():
 
 
 def test_format_msg_for_response():
-    from services.takeover_helpers import format_msg_for_response
+    from services.engagement.takeover_helpers import format_msg_for_response
 
     msg = {
         "id": "msg-123",
@@ -78,7 +78,7 @@ def test_remaining_seconds_ignores_user_activity():
     but the semantic distinction matters: the caller MUST pass creator's
     timestamp, not user's. The route code is updated to do exactly that.
     """
-    from services.takeover_helpers import remaining_seconds, TAKEOVER_TIMEOUT_SECONDS
+    from services.engagement.takeover_helpers import remaining_seconds, TAKEOVER_TIMEOUT_SECONDS
 
     creator_just_now = datetime.now(timezone.utc)
     rem = remaining_seconds(creator_just_now)

@@ -114,7 +114,7 @@ def _body(prompt="a cat"):
 def test_prompt_check_refuses_when_the_model_is_unreachable(monkeypatch):
     """Fails closed. A refusal costs the user a retry; a wrongly-approved video
     is public and permanent."""
-    from services import llm_registry
+    from services.llm import llm_registry
 
     async def boom(**_):
         raise RuntimeError("provider down")
@@ -124,7 +124,7 @@ def test_prompt_check_refuses_when_the_model_is_unreachable(monkeypatch):
 
 
 def test_prompt_check_refuses_on_an_unparseable_verdict(monkeypatch):
-    from services import llm_registry
+    from services.llm import llm_registry
 
     async def waffle(**_):
         return type("R", (), {"content": "Well, it depends on context..."})()
@@ -137,7 +137,7 @@ def test_prompt_check_refuses_on_an_unparseable_verdict(monkeypatch):
     "verdict,expected", [("SAFE", True), ("safe", True), ("UNSAFE", False)]
 )
 def test_prompt_check_reads_the_verdict(monkeypatch, verdict, expected):
-    from services import llm_registry
+    from services.llm import llm_registry
 
     async def answer(**_):
         return type("R", (), {"content": verdict})()

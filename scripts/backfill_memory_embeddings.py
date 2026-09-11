@@ -30,7 +30,7 @@ SLEEP_BETWEEN_BATCHES_SEC = 0.2  # gentle pacing to avoid rate limits
 async def run():
     import database
     from repositories import memory_repo
-    from services import embeddings
+    from services.llm import embeddings
 
     pool = await database.get_pool()
 

@@ -24,7 +24,7 @@ REPO = Path(__file__).resolve().parents[1]
 def test_record_outcome_has_sentry_capture_for_timeouts():
     """_record_outcome must end with a Sentry capture branch gated on
     outcome=='timeout' AND process in the user-facing allow-list."""
-    src = (REPO / "app" / "services" / "llm_registry.py").read_text()
+    src = (REPO / "app" / "services" / "llm" / "llm_registry.py").read_text()
     pos = src.find("async def _record_outcome(")
     assert pos != -1
     end_pos = src.find("\n_USER_FACING_SYNC_PROCESSES", pos)
@@ -39,7 +39,7 @@ def test_record_outcome_has_sentry_capture_for_timeouts():
 def test_user_facing_sync_processes_includes_soul_file_coach():
     """Plan §4 item E pins soul_file_coach as the explicit target.
     A future PR can extend the set; today this is the minimum scope."""
-    from services.llm_registry import _USER_FACING_SYNC_PROCESSES
+    from services.llm.llm_registry import _USER_FACING_SYNC_PROCESSES
 
     assert "soul_file_coach" in _USER_FACING_SYNC_PROCESSES
 
@@ -49,7 +49,7 @@ def test_user_facing_sync_processes_excludes_async_background():
     leak-guard (_check_async_gemini_leak). Including them here would
     fire two Sentry events per timeout — the explicit allow-list
     keeps the new alert narrow."""
-    from services.llm_registry import (
+    from services.llm.llm_registry import (
         ASYNC_PROCESSES_NEVER_GEMINI,
         _USER_FACING_SYNC_PROCESSES,
     )
@@ -64,7 +64,7 @@ def test_user_facing_sync_processes_excludes_async_background():
 def test_capture_is_swallowed_on_sentry_import_failure():
     """Source-pin the try/except wrapping the sentry_sdk import so a
     sentry-side outage can't break the dispatch path."""
-    src = (REPO / "app" / "services" / "llm_registry.py").read_text()
+    src = (REPO / "app" / "services" / "llm" / "llm_registry.py").read_text()
     pos = src.find("async def _record_outcome(")
     end_pos = src.find("\n_USER_FACING_SYNC_PROCESSES", pos)
     body = src[pos : end_pos if end_pos != -1 else pos + 6000]
@@ -86,7 +86,7 @@ def test_capture_fires_on_soul_file_coach_timeout(monkeypatch):
     called. Don't hit the DB — patch get_pool to no-op."""
     import asyncio
 
-    import services.llm_registry as registry
+    import services.llm.llm_registry as registry
 
     captured = []
 
@@ -123,7 +123,7 @@ def test_capture_does_NOT_fire_on_success(monkeypatch):
     """Sanity: success outcomes must NOT fire a Sentry capture."""
     import asyncio
 
-    import services.llm_registry as registry
+    import services.llm.llm_registry as registry
 
     captured = []
     fake_sentry = MagicMock()
@@ -147,7 +147,7 @@ def test_capture_does_NOT_fire_on_non_allowlisted_process(monkeypatch):
     NOT fire this Sentry alert — the existing leak-guard covers it."""
     import asyncio
 
-    import services.llm_registry as registry
+    import services.llm.llm_registry as registry
 
     captured = []
     fake_sentry = MagicMock()
@@ -169,7 +169,7 @@ def test_capture_does_NOT_fire_on_non_allowlisted_process(monkeypatch):
 def test_capture_includes_provider_and_latency_in_message():
     """Sentry message must carry enough context to triage from the
     event alone — process + provider + latency_ms."""
-    src = (REPO / "app" / "services" / "llm_registry.py").read_text()
+    src = (REPO / "app" / "services" / "llm" / "llm_registry.py").read_text()
     pos = src.find("async def _record_outcome(")
     end_pos = src.find("\n_USER_FACING_SYNC_PROCESSES", pos)
     body = src[pos : end_pos if end_pos != -1 else pos + 6000]

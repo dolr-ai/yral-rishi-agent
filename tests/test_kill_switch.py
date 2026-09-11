@@ -117,9 +117,9 @@ def test_background_loops_gated_at_source():
     gate at the top of the loop function. Without this the env flag
     does nothing in production."""
     pairs = (
-        ("app/services/memory_consolidation.py", '"memory_consolidation"'),
-        ("app/services/streak_tracker.py", '"streak"'),
-        ("app/services/email_digest.py", '"email_digest"'),
+        ("app/services/engagement/memory_consolidation.py", '"memory_consolidation"'),
+        ("app/services/engagement/streak_tracker.py", '"streak"'),
+        ("app/services/ops/email_digest.py", '"email_digest"'),
     )
     for path, gate_name in pairs:
         src = _read(path)
@@ -145,7 +145,7 @@ def test_engagement_loop_gates_proactive_and_nudge():
 def test_quality_scorer_loop_gates_pass():
     """scoring_loop must check kill switch BEFORE the score_all_bots_once
     call that fans out to Gemini per bot."""
-    src = _read("app/services/quality_scorer.py")
+    src = _read("app/services/coach/quality_scorer.py")
     assert "from kill_switch import is_enabled" in src
     assert 'is_enabled("quality_scorer")' in src
 
@@ -159,7 +159,7 @@ def test_memory_extract_gates_at_top():
     Phase 25.3 migration: memory.py now calls llm_registry.call() for
     memory_extraction (was direct _call_gemini before). The gate-position
     pin tracks the new call site marker."""
-    src = _read("app/services/memory.py")
+    src = _read("app/services/engagement/memory.py")
     assert "from kill_switch import is_enabled" in src
     assert 'is_enabled("memory_extraction")' in src
     # Pin position: the kill-switch check must come BEFORE the LLM call.

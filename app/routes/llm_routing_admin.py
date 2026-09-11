@@ -27,7 +27,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from auth import get_current_user
 from database import get_pool
-from services import llm_registry
+from services.llm import llm_registry
 
 logger = logging.getLogger(__name__)
 

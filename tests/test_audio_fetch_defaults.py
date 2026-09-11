@@ -19,7 +19,7 @@ def test_audio_helper_exists_with_audio_defaults():
     """Pin the audio-shaped helper. Image and audio helpers stay
     parallel (Rishi's Option B) — neither call site can accidentally
     use the wrong defaults."""
-    src = _read("app/services/ai_client.py")
+    src = _read("app/services/llm/ai_client.py")
     assert "async def _fetch_audio_bytes_and_mime(" in src
     # Audio MIME default — NOT image/jpeg
     assert '"audio/mp4"' in src
@@ -32,7 +32,7 @@ def test_audio_helper_exists_with_audio_defaults():
 def test_audio_helper_uses_audio_specific_timeout():
     """Voice notes are ~MB; image timeout (5s) is too tight for cold
     fetches over 4G. Pin the dedicated _AUDIO_DOWNLOAD_TIMEOUT."""
-    src = _read("app/services/ai_client.py")
+    src = _read("app/services/llm/ai_client.py")
     assert "_AUDIO_DOWNLOAD_TIMEOUT" in src
     # The audio function uses the audio timeout, not the image one
     audio_fn_start = src.find("async def _fetch_audio_bytes_and_mime(")
@@ -63,7 +63,7 @@ def test_image_helper_unchanged_for_image_call_sites():
     gemini.complete still calls _fetch_image_bytes_and_mime for image
     attachments. Pin that the image helper still ships with image
     defaults (image/jpeg, _MAX_IMAGE_BYTES)."""
-    src = _read("app/services/ai_client.py")
+    src = _read("app/services/llm/ai_client.py")
     image_fn_start = src.find("async def _fetch_image_bytes_and_mime(")
     image_fn_body = src[image_fn_start : image_fn_start + 2000]
     assert '"image/jpeg"' in image_fn_body

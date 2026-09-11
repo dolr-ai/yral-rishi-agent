@@ -15,7 +15,8 @@ from auth import get_current_user
 from infra import init_sentry
 from middleware import RequestIdMiddleware
 from rate_limiter import RateLimitMiddleware, hydrate_from_db
-from services import langfuse_tracing, nudge, proactive, websocket_manager
+from services.ops import langfuse_tracing
+from services.engagement import nudge, proactive, websocket_manager
 from routes.chat import router as chat_router
 from routes.chat_v2 import router as chat_v2_router
 from routes.chat_v3 import router as chat_v3_router
@@ -32,7 +33,7 @@ from routes.admin_classification import router as admin_classification_router
 from routes.discovery import router as discovery_router
 from routes.inbox_search import router as inbox_search_router
 from routes.backup_health_admin import router as backup_health_admin_router
-from services.cost_breaker import CostCircuitBreakerOpen
+from services.ops.cost_breaker import CostCircuitBreakerOpen
 from routes.health import router as health_router
 from routes.human_chat import router as human_chat_router
 from routes.influencers import router as influencers_router
@@ -73,7 +74,7 @@ async def lifespan(app: FastAPI):
     # logs a warning and leaves the cache empty (registry falls back
     # to env + LLM_DEFAULTS).
     try:
-        from services import llm_registry
+        from services.llm import llm_registry
 
         pool = await database.get_pool()
         await llm_registry.reload_config_from_db(pool)
@@ -99,39 +100,39 @@ async def lifespan(app: FastAPI):
     # this, Save/Reset on the admin dashboard only updates the cache on
     # the replica that handled the form submit; other replicas drift
     # until next restart. See services/llm_routing_pubsub.py docstring.
-    from services import llm_routing_pubsub
+    from services.llm import llm_routing_pubsub
 
     llm_routing_pubsub_task = asyncio.create_task(llm_routing_pubsub.start_subscriber())
 
     engagement_task = asyncio.create_task(_engagement_loop())
     takeover_sweep_task = asyncio.create_task(_takeover_timeout_sweep())
-    from services.memory_consolidation import consolidation_loop
+    from services.engagement.memory_consolidation import consolidation_loop
 
     memory_consolidation_task = asyncio.create_task(consolidation_loop())
 
-    from services.quality_scorer import scoring_loop
+    from services.coach.quality_scorer import scoring_loop
 
     quality_scoring_task = asyncio.create_task(scoring_loop())
 
-    from services.streak_tracker import streak_loop
+    from services.engagement.streak_tracker import streak_loop
 
     streak_task = asyncio.create_task(streak_loop())
 
-    from services.email_digest import digest_loop
+    from services.ops.email_digest import digest_loop
 
     digest_task = asyncio.create_task(digest_loop())
 
     # Phase 22.3 — nightly video ideas generation per active influencer.
     # Same shape as scoring_loop / streak_loop. Gated by kill_switch
     # "video_ideas" → ENABLE_VIDEO_IDEAS_LOOP.
-    from services.video_ideas import video_ideas_loop
+    from services.media.video_ideas import video_ideas_loop
 
     video_ideas_task = asyncio.create_task(video_ideas_loop())
 
     # Phase 21αβ.H11 — real-time LLM cost alerting (hourly Gemini cost
     # threshold + async error spike). Gated by kill_switch "cost_alerts"
     # → ENABLE_COST_ALERTS.
-    from services.cost_alerts import cost_alerts_loop
+    from services.ops.cost_alerts import cost_alerts_loop
 
     cost_alerts_task = asyncio.create_task(cost_alerts_loop())
 
@@ -139,14 +140,14 @@ async def lifespan(app: FastAPI):
     # (kill_switch ships dormant); Rishi reviews 5 sample labels via
     # POST /admin/discovery/classify-sample then flips
     # ENABLE_INFLUENCER_CLASSIFICATION_LOOP=true to start the backfill.
-    from services.influencer_classification import classification_loop
+    from services.discovery.influencer_classification import classification_loop
 
     classification_task = asyncio.create_task(classification_loop())
 
     # Phase 21γ.P34.M2c — Stage A scoring + feed:global Redis blob.
     # 15-min cadence; consumed by M2a's discovery endpoint. Gated by
     # kill_switch "feed_ranker" → ENABLE_FEED_RANKER_LOOP (defaults ON).
-    from services.feed_ranker import feed_ranker_loop
+    from services.discovery.feed_ranker import feed_ranker_loop
 
     feed_ranker_task = asyncio.create_task(feed_ranker_loop())
 
@@ -155,7 +156,7 @@ async def lifespan(app: FastAPI):
     # the day get an instant response instead of a 45-65s wait. Gated
     # by kill_switch "collage_pregen" → ENABLE_COLLAGE_PREGEN_LOOP,
     # defaults OFF so ops opt-in deliberately.
-    from services.collage_nightly_pregen import collage_pregen_loop
+    from services.media.collage_nightly_pregen import collage_pregen_loop
 
     collage_pregen_task = asyncio.create_task(collage_pregen_loop())
 

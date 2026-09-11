@@ -12,15 +12,11 @@ import config
 from database import get_pool
 from auth import get_current_user
 from repositories import influencer_repo, video_idea_repo
-from services import (
-    moderation,
-    character_generator,
-    google_chat,
-    video_ideas as video_ideas_service,
-    influencer_summary,
-    surface as surface_service,
-)
-from services.character_generator import GeminiSafetyBlocked
+from services.safety import moderation, surface as surface_service
+from services.discovery import character_generator, influencer_summary
+from services.ops import google_chat
+from services.media import video_ideas as video_ideas_service
+from services.discovery.character_generator import GeminiSafetyBlocked
 from models import (
     CreateInfluencerRequest,
     GeneratePromptRequest,

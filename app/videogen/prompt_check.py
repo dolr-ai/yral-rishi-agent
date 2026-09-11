@@ -57,7 +57,7 @@ def _build_messages(body: GenerateRequestBody) -> list[dict]:
 
 async def is_safe(body: GenerateRequestBody) -> bool:
     """True when the request may be generated. False refuses it."""
-    from services import llm_registry
+    from services.llm import llm_registry
 
     try:
         response = await llm_registry.call(

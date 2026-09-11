@@ -4,7 +4,7 @@ Pure-function pins for the parser + the format helpers."""
 
 
 def test_parse_recommendations_clean_json():
-    from services.recommendations import _parse_recommendations
+    from services.discovery.recommendations import _parse_recommendations
 
     text = """[
       {"weakness": "in_character 3.2 — breaks character on philosophy",
@@ -23,7 +23,7 @@ def test_parse_recommendations_clean_json():
 
 def test_parse_recommendations_tolerates_wrapping_prose():
     """LLMs sometimes prefix with 'Here are my recommendations:' etc."""
-    from services.recommendations import _parse_recommendations
+    from services.discovery.recommendations import _parse_recommendations
 
     text = (
         'Here are my recommendations: [{"weakness": "x", '
@@ -35,7 +35,7 @@ def test_parse_recommendations_tolerates_wrapping_prose():
 
 
 def test_parse_recommendations_returns_none_for_garbage():
-    from services.recommendations import _parse_recommendations
+    from services.discovery.recommendations import _parse_recommendations
 
     assert _parse_recommendations("") is None
     assert _parse_recommendations("here are my recommendations") is None
@@ -45,7 +45,7 @@ def test_parse_recommendations_returns_none_for_garbage():
 
 def test_parse_recommendations_drops_invalid_items():
     """If the model emits a mix of valid + invalid items, keep the valid ones."""
-    from services.recommendations import _parse_recommendations
+    from services.discovery.recommendations import _parse_recommendations
 
     text = """[
       {"weakness": "ok", "proposed_edit": "ok", "reasoning": "ok"},
@@ -58,7 +58,7 @@ def test_parse_recommendations_drops_invalid_items():
 
 
 def test_format_quality_score_block_with_data():
-    from services.recommendations import _format_quality_score_block
+    from services.discovery.recommendations import _format_quality_score_block
 
     block = _format_quality_score_block(
         {
@@ -76,6 +76,6 @@ def test_format_quality_score_block_with_data():
 
 
 def test_format_quality_score_block_none_gives_hint():
-    from services.recommendations import _format_quality_score_block
+    from services.discovery.recommendations import _format_quality_score_block
 
     assert "no score yet" in _format_quality_score_block(None).lower()

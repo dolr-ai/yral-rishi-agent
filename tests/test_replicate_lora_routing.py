@@ -17,7 +17,7 @@ httpx, which is not worth the setup for this single-file regression.
 
 from pathlib import Path
 
-MODULE = Path(__file__).parent.parent / "app" / "services" / "replicate.py"
+MODULE = Path(__file__).parent.parent / "app" / "services" / "llm" / "replicate.py"
 
 
 def _slice_generate_batch() -> str:

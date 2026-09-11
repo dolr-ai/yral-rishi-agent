@@ -14,7 +14,7 @@ REPO = Path(__file__).resolve().parents[1]
 
 
 def test_cache_is_fresh_returns_none_when_no_metadata():
-    from services.influencer_summary import cache_is_fresh
+    from services.discovery.influencer_summary import cache_is_fresh
 
     assert cache_is_fresh({}) is None
     assert cache_is_fresh({"metadata": {}}) is None
@@ -26,7 +26,7 @@ def test_cache_is_fresh_returns_cached_when_no_updated_at():
     we trust the cache rather than regenerate on every call. Reasonable
     fallback — only happens for pre-migration rows where updated_at
     wasn't set."""
-    from services.influencer_summary import cache_is_fresh
+    from services.discovery.influencer_summary import cache_is_fresh
 
     cached_summary = {"bullets": [{"text": "x", "category": "personality", "override_target": None}]}
     inf = {
@@ -42,7 +42,7 @@ def test_cache_is_fresh_returns_cached_when_no_updated_at():
 def test_cache_is_fresh_returns_none_when_bot_updated_after_cache():
     """Bot was edited (updated_at advanced) after summary was generated
     → cache is stale, return None so the route regenerates."""
-    from services.influencer_summary import cache_is_fresh
+    from services.discovery.influencer_summary import cache_is_fresh
 
     generated = datetime(2026, 6, 9, 7, 0, 0, tzinfo=timezone.utc)
     updated = generated + timedelta(minutes=5)
@@ -59,7 +59,7 @@ def test_cache_is_fresh_returns_none_when_bot_updated_after_cache():
 
 def test_cache_is_fresh_returns_cached_when_summary_newer_than_update():
     """Common case — bot stable, summary newly generated. Cache hit."""
-    from services.influencer_summary import cache_is_fresh
+    from services.discovery.influencer_summary import cache_is_fresh
 
     updated = datetime(2026, 6, 9, 7, 0, 0, tzinfo=timezone.utc)
     generated = updated + timedelta(minutes=5)
@@ -80,7 +80,7 @@ def test_cache_is_fresh_handles_jsonb_as_string():
     soul_file._render_global_rules."""
     import json
 
-    from services.influencer_summary import cache_is_fresh
+    from services.discovery.influencer_summary import cache_is_fresh
 
     updated = datetime(2026, 6, 9, 7, 0, 0, tzinfo=timezone.utc)
     generated = updated + timedelta(minutes=5)
@@ -99,7 +99,7 @@ def test_cache_is_fresh_handles_jsonb_as_string():
 
 
 def test_validator_accepts_well_formed_summary():
-    from services.influencer_summary import _validate_summary
+    from services.discovery.influencer_summary import _validate_summary
 
     parsed = {
         "bullets": [
@@ -116,7 +116,7 @@ def test_validator_accepts_well_formed_summary():
 
 
 def test_validator_rejects_too_few_bullets():
-    from services.influencer_summary import _validate_summary
+    from services.discovery.influencer_summary import _validate_summary
 
     assert _validate_summary({"bullets": []}) is None
     assert _validate_summary({"bullets": [{"text": "x", "category": "personality"}, {"text": "y", "category": "tone"}]}) is None
@@ -125,7 +125,7 @@ def test_validator_rejects_too_few_bullets():
 def test_validator_drops_unknown_override_target():
     """LLM hallucinates an override slug that isn't in the registry —
     the field gets nulled rather than rejecting the whole bullet."""
-    from services.influencer_summary import _validate_summary
+    from services.discovery.influencer_summary import _validate_summary
 
     parsed = {
         "bullets": [
@@ -143,7 +143,7 @@ def test_validator_drops_unknown_override_target():
 
 
 def test_validator_rejects_bullet_missing_text():
-    from services.influencer_summary import _validate_summary
+    from services.discovery.influencer_summary import _validate_summary
 
     parsed = {
         "bullets": [
@@ -237,7 +237,7 @@ def test_service_uses_soul_file_compose_with_overrides():
     """The summary must reflect the EFFECTIVE prompt (with overrides),
     not just system_instructions. Otherwise bullets would describe
     behavior the bot doesn't actually have."""
-    src = (REPO / "app" / "services" / "influencer_summary.py").read_text()
+    src = (REPO / "app" / "services" / "discovery" / "influencer_summary.py").read_text()
     assert "soul_file.compose(" in src
     assert "global_rule_overrides=inf.get(" in src
 
@@ -245,6 +245,6 @@ def test_service_uses_soul_file_compose_with_overrides():
 def test_service_overrideable_slugs_sourced_from_soul_file():
     """Single source of truth — overrideable list comes from
     GLOBAL_RULES_OVERRIDEABLE. Adding a key there auto-propagates."""
-    src = (REPO / "app" / "services" / "influencer_summary.py").read_text()
+    src = (REPO / "app" / "services" / "discovery" / "influencer_summary.py").read_text()
     assert "GLOBAL_RULES_OVERRIDEABLE" in src
     assert "soul_file" in src

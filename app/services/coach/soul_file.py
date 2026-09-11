@@ -325,7 +325,7 @@ def compose(
     # accommodate a skill — put carve-outs inside this block so other
     # non-skilled influencers stay unaffected.
     if skill_slug:
-        from services import skills as _skills
+        from services.coach import skills as _skills
 
         skill = _skills.get(skill_slug)
         if skill and skill.get("system_prompt_block"):

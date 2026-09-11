@@ -33,7 +33,7 @@ def test_template_constant_defined_in_services_soul_file():
     """The template module-level constant `USER_SEGMENT_PLAN_TEMPLATE`
     is the single source of truth — pin it lives in the services layer
     so the route can import it cleanly."""
-    src = _read("app/services/soul_file.py")
+    src = _read("app/services/coach/soul_file.py")
     assert "USER_SEGMENT_PLAN_TEMPLATE = (" in src
     # Format hole MUST be `{plan_lines}` — both callers depend on this
     # exact key. A rename would silently break compose() at chat time.
@@ -45,7 +45,7 @@ def test_template_constant_contains_canonical_preamble_and_footer():
     deliberate review-gated change, not an accidental edit. The
     preamble + footer are the parts mobile + the LLM both see — they
     can't drift apart."""
-    src = _read("app/services/soul_file.py")
+    src = _read("app/services/coach/soul_file.py")
     assert "**Your current plan for this user:**" in src
     assert "Reference these naturally — don't recite the whole plan back." in src
 
@@ -58,7 +58,7 @@ def test_compose_formats_from_template_constant():
     USER_SEGMENT_PLAN_TEMPLATE.format(plan_lines=...) — NOT a duplicated
     inline string. Pin the call shape so a refactor that hardcodes the
     text back inline (the pre-extraction state) is caught."""
-    src = _read("app/services/soul_file.py")
+    src = _read("app/services/coach/soul_file.py")
     fn_start = src.find("def compose(")
     body = src[fn_start : fn_start + 5000]
     assert "USER_SEGMENT_PLAN_TEMPLATE.format(plan_lines=" in body
@@ -76,7 +76,7 @@ def test_route_imports_template_not_redefines_it():
     `_USER_SEGMENT_TEMPLATE`; this regression guard is the whole point
     of the PR."""
     src = _read("app/routes/soul_file.py")
-    assert "from services.soul_file import USER_SEGMENT_PLAN_TEMPLATE" in src
+    assert "from services.coach.soul_file import USER_SEGMENT_PLAN_TEMPLATE" in src
     # No re-definition under the old or new name in the route file
     assert "USER_SEGMENT_PLAN_TEMPLATE = (" not in src
     assert "_USER_SEGMENT_TEMPLATE = (" not in src
@@ -103,7 +103,7 @@ def test_compose_user_state_output_contains_canonical_preamble_and_footer():
     byte-for-byte from the template constant. If a future PR edits the
     template wording, this test catches the drift at CI time before
     bot owners on the preview page see stale text vs the LLM."""
-    from services import soul_file
+    from services.coach import soul_file
 
     out = soul_file.compose(
         system_instructions="be warm",
@@ -126,7 +126,7 @@ def test_compose_skips_user_state_layer_when_state_empty():
     template constant doesn't suddenly start appearing in flat-bot
     chat prompts. Pin so a future refactor doesn't accidentally
     unconditionally append the L4 block."""
-    from services import soul_file
+    from services.coach import soul_file
 
     out = soul_file.compose(
         system_instructions="be warm",

@@ -6,7 +6,7 @@ Motorola test once Kareena is assigned (23.7).
 
 What we pin here:
   - app/routes/skills.py has the 3 endpoints (GET/POST/PATCH)
-  - app/services/skill_parser.py has the streaming-safe filter
+  - app/services/coach/skill_parser.py has the streaming-safe filter
   - app/routes/chat.py wires the hook on BOTH paths (POST + stream)
   - Influencer SELECTs include skill_slug post-migration 030
   - main.py registers skills_router
@@ -62,7 +62,7 @@ def test_main_registers_skills_router():
 
 
 def test_skill_parser_exists():
-    src = _read("app/services/skill_parser.py")
+    src = _read("app/services/coach/skill_parser.py")
     assert "def parse_skill_state_block(" in src
     assert "class SkillStateStreamFilter" in src
 
@@ -70,7 +70,7 @@ def test_skill_parser_exists():
 def test_parser_strips_block_even_on_json_failure():
     """Parser must always return a cleaned content (so mobile never sees
     the literal tag), even when the JSON inside the block is malformed."""
-    from app.services.skill_parser import parse_skill_state_block
+    from app.services.coach.skill_parser import parse_skill_state_block
 
     # Malformed JSON inside a well-formed block:
     text = "Hi! <skill_state>{not valid json</skill_state> bye"
@@ -81,7 +81,7 @@ def test_parser_strips_block_even_on_json_failure():
 
 
 def test_parser_accepts_only_top_level_object():
-    from app.services.skill_parser import parse_skill_state_block
+    from app.services.coach.skill_parser import parse_skill_state_block
 
     parsed, _ = parse_skill_state_block(
         'before <skill_state>{"setup":{"primary_goal":"lose 5kg"}}</skill_state> after'
@@ -99,7 +99,7 @@ def test_parser_accepts_only_top_level_object():
 def test_parser_handles_markdown_fence():
     """Some models wrap JSON in ```json … ``` even when the system prompt
     says no. The parser must tolerate the fence."""
-    from app.services.skill_parser import parse_skill_state_block
+    from app.services.coach.skill_parser import parse_skill_state_block
 
     text = '<skill_state>```json\n{"setup": {"primary_goal": "x"}}\n```</skill_state>'
     parsed, _ = parse_skill_state_block(text)
@@ -110,7 +110,7 @@ def test_stream_filter_holds_back_partial_tag():
     """Stream filter must NOT leak the first character of <skill_state>
     when it could be the start of the tag. Critical UX guarantee:
     mobile never sees the literal block."""
-    from app.services.skill_parser import SkillStateStreamFilter
+    from app.services.coach.skill_parser import SkillStateStreamFilter
 
     f = SkillStateStreamFilter()
     out = []
@@ -139,7 +139,7 @@ def test_stream_filter_holds_back_partial_tag():
 def test_stream_filter_passthrough_when_no_tag():
     """Without a tag in the stream, every byte must pass through —
     non-skilled influencers must see no behavior change."""
-    from app.services.skill_parser import SkillStateStreamFilter
+    from app.services.coach.skill_parser import SkillStateStreamFilter
 
     f = SkillStateStreamFilter()
     pieces = ["Hello", " world", "!"]

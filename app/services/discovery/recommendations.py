@@ -11,7 +11,7 @@ can hand a recommendation straight to the coach to apply.
 import json
 import logging
 
-from services import llm_registry
+from services.llm import llm_registry
 
 logger = logging.getLogger(__name__)
 

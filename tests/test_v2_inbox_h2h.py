@@ -237,7 +237,7 @@ def test_callers_pass_correct_viewer_to_unread_helpers():
     chat_src = _strip(_read("app/routes/chat.py"))
     human_src = _strip(_read("app/routes/human_chat.py"))
     takeover_src = _strip(_read("app/routes/creator_takeover.py"))
-    proactive_src = _strip(_read("app/services/proactive.py"))
+    proactive_src = _strip(_read("app/services/engagement/proactive.py"))
 
     # POST /read: viewer is the caller (user_id)
     assert "message_repo.mark_as_read(pool,conversation_id,user_id)" in chat_src

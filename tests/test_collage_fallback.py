@@ -72,7 +72,7 @@ def test_orchestrate_calls_fallback_on_failed_and_race_lost():
     the polling-winner-failed branch — must both go through
     _fallback_or_failed. A future refactor that drops either branch
     silently regresses the 2026-07-13 hardening."""
-    src = _read("app/services/image_collage.py")
+    src = _read("app/services/media/image_collage.py")
     # Both hook points call the shared helper.
     assert "_fallback_or_failed(pool, bot_id" in src
     # The state='failed' branch in orchestrate + the poll-winner-failed
@@ -165,7 +165,7 @@ def _install_pool(monkeypatch, pool):
     the storage helper, but _ready_response calls storage.generate_
     presigned_url on each image URL. Stub that so the test doesn't
     hit real S3 / raise on invalid keys."""
-    from services import image_collage, storage
+    from services.media import image_collage, storage
 
     monkeypatch.setattr(image_collage, "_today_utc", lambda: TODAY)
     monkeypatch.setattr(storage, "generate_presigned_url", lambda k: f"signed:{k}")
@@ -176,7 +176,7 @@ def test_fallback_serves_most_recent_succeeded_when_today_failed(monkeypatch):
     """The load-bearing case: today's row is state='failed'; there IS a
     succeeded row from yesterday. Fallback fires — envelope's status is
     'ready' + carries yesterday's row id + generation_date."""
-    from services import image_collage
+    from services.media import image_collage
 
     yesterday = TODAY - timedelta(days=1)
     pool = _StubPool(
@@ -208,7 +208,7 @@ def test_fallback_no_recent_succeeded_returns_failed(monkeypatch):
     outage case), the fallback returns None → orchestrate() bubbles
     the actual 'failed' status. Otherwise a multi-day outage would
     silently look healthy."""
-    from services import image_collage
+    from services.media import image_collage
 
     pool = _StubPool(
         today_row=_make_row("failed", TODAY),
@@ -234,7 +234,7 @@ def test_fallback_window_respects_max_days_config(monkeypatch):
     MAX_DAYS=0 disables the fallback entirely (paranoid switch). Verify
     that (a) the config value is threaded through to the repo's
     within_days arg AND (b) 0 → no fallback (repo returns None)."""
-    from services import image_collage
+    from services.media import image_collage
     import config
 
     monkeypatch.setattr(config, "COLLAGE_FALLBACK_MAX_DAYS", 0)
@@ -272,7 +272,7 @@ def test_fallback_row_id_is_stable_across_calls_same_day(monkeypatch):
     UUID on the message payload for its refetch; a shifting id would
     cause the "chat with me" card to redraw against a different set of
     images per tap."""
-    from services import image_collage
+    from services.media import image_collage
 
     yesterday = TODAY - timedelta(days=1)
     day_before = TODAY - timedelta(days=2)
@@ -316,7 +316,8 @@ def test_elected_generator_failure_also_uses_fallback(monkeypatch):
     tapped Request Images gets 502 while everyone after them (arriving
     to the now-failed row) gets the fallback. Design intent: same UX
     for every requester."""
-    from services import image_collage, replicate
+    from services.media import image_collage
+    from services.llm import replicate
 
     yesterday = TODAY - timedelta(days=1)
     pool = _StubPool(

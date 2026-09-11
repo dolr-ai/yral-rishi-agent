@@ -24,7 +24,7 @@ import logging
 import tempfile
 
 import config
-from services import storage
+from services.media import storage
 
 logger = logging.getLogger(__name__)
 

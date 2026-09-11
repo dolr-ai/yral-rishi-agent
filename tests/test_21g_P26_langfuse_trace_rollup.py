@@ -20,7 +20,7 @@ a regression would bite first.
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-MODULE = REPO / "app" / "services" / "langfuse_tracing.py"
+MODULE = REPO / "app" / "services" / "ops" / "langfuse_tracing.py"
 
 
 def _read(rel: str) -> str:
@@ -110,7 +110,7 @@ def test_trace_generation_posts_input_and_output_on_trace_body(monkeypatch):
 
     # Force auth to a known-non-None state so the early-return guard
     # in _get_auth() doesn't skip the post entirely.
-    from services import langfuse_tracing
+    from services.ops import langfuse_tracing
 
     monkeypatch.setattr(langfuse_tracing, "_auth_header", "Basic fake")
 

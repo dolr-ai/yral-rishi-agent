@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException, Request
 from auth import get_current_user
 from database import get_pool
 from repositories import influencer_repo, wizard_repo
-from services import wizard as wizard_service
+from services.coach import wizard as wizard_service
 
 logger = logging.getLogger(__name__)
 
