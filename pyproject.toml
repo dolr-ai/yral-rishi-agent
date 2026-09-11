@@ -9,7 +9,10 @@
 #
 # This config makes the 71 hand-rolled sys.path blocks redundant; PR5b
 # removes them. See docs/wave1-plan-2026-07-29.md.
-pythonpath = ["app", "watchdog"]
+# tests/ is on the path too so the HTTP harness (tests/http_harness.py) is
+# importable as `http_harness` from any test, without every file hand-rolling
+# a sys.path block — the thing this config exists to prevent.
+pythonpath = ["app", "watchdog", "tests"]
 
 # Only matters when pytest is run with no path argument (CI passes `tests/`
 # explicitly); makes a bare `pytest` do the right thing.
