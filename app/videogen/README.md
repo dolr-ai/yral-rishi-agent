@@ -105,12 +105,17 @@ tick, so stopping and restarting takes effect without a redeploy.
 
 Requires `ffmpeg` in the image for thumbnail extraction.
 
+## How it reaches ComfyUI
+
+ComfyUI listens on `127.0.0.1:18188` on the GPU box and has **no authentication
+of its own**, so it is never exposed publicly. Access is a global Swarm service,
+`deploy/comfyui-tunnel.stack.yml`, holding an SSH tunnel whose key is restricted
+on the GPU box to port-forwarding that one port — no shell, nothing else
+reachable. The app just talks to `COMFYUI_BASE_URL=http://comfyui-tunnel:18188`.
+
 ## Open dependencies
 
-1. **ComfyUI is not reachable from the swarm.** It listens on `127.0.0.1:18188`
-   on the GPU box with **no authentication of its own** — it needs a tunnel and
-   a shared token, and must never be exposed openly.
-2. **`cdn-yral-sfw.yral.com` must serve `VIDEOGEN_S3_BUCKET`**, or generation
+1. **`cdn-yral-sfw.yral.com` must serve `VIDEOGEN_S3_BUCKET`**, or generation
    succeeds and playback 404s. Cloudflare origin change.
 3. **[cluster#190](https://github.com/dolr-ai/yral-bare-metal-kubernetes-cluster/pull/190)**
    must merge and the module be republished. Until then `add_post` and

@@ -1,0 +1,84 @@
+# comfyui-tunnel — how the agent service reaches ComfyUI on the GPU box.
+#
+# ComfyUI runs on rishi-gpu-1 (Vast.ai) bound to 127.0.0.1:18188 and has NO
+# authentication of its own. Exposing it publicly would hand anyone a free GPU,
+# so the only access path is this tunnel: an outbound SSH connection from the
+# swarm that forwards one port and nothing else.
+#
+#   app:  COMFYUI_BASE_URL=http://comfyui-tunnel:18188
+#   here: 18188 -> ssh -> 127.0.0.1:18188 on the GPU box
+#
+# `mode: global` puts one tunnel on every node rather than a single replica,
+# because Swarm reschedules the agent freely — a pinned tunnel would break the
+# first time the agent moved. Each agent then has a tunnel on its own node.
+#
+# The key in the `comfyui_tunnel_key` secret is restricted ON THE GPU BOX to
+# port-forwarding only:
+#   restrict,port-forwarding,permitopen="127.0.0.1:18188",command="/bin/false"
+# so it cannot open a shell or reach anything else. `restrict` alone does NOT
+# block `ssh host <cmd>` — it only blocks pty allocation — which is why the
+# forced command is there.
+#
+# Deploy:
+#   docker secret create comfyui_tunnel_key <path-to-private-key>
+#   docker stack deploy -c deploy/comfyui-tunnel.stack.yml comfyui
+#
+# This file exists so the tunnel is not invisible hand-built infrastructure: it
+# was originally created with `docker service create` directly on the swarm, and
+# a rebuild would have silently lost it.
+
+version: "3.8"
+
+services:
+  comfyui-tunnel:
+    image: alpine:3.20
+    networks:
+      yral-v2-internal:
+        # `docker stack deploy` prefixes service names with the stack name, so
+        # this would otherwise resolve as `comfyui_comfyui-tunnel` and the app's
+        # COMFYUI_BASE_URL would break. The alias pins the short name whatever
+        # the stack is called.
+        aliases:
+          - comfyui-tunnel
+    secrets:
+      - comfyui_tunnel_key
+    # Docker mounts secrets world-readable (0444) and ssh refuses a key that
+    # group or world can read, so take a 0600 private copy before connecting.
+    #
+    # autossh -M 0 disables its own monitoring port and relies on the
+    # ServerAlive probes instead, which is the recommended setup and avoids
+    # opening a second port we would have to reason about.
+    command:
+      - sh
+      - -c
+      - |
+        apk add --no-cache openssh-client autossh >/dev/null || exit 1
+        install -m 600 /run/secrets/comfyui_tunnel_key /tmp/tunnel_key
+        exec autossh -M 0 -N \
+          -o StrictHostKeyChecking=accept-new \
+          -o UserKnownHostsFile=/tmp/known_hosts \
+          -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+          -o ExitOnForwardFailure=yes -o ConnectTimeout=15 \
+          -i /tmp/tunnel_key -p 47225 \
+          -L 0.0.0.0:18188:127.0.0.1:18188 root@93.91.156.105
+    healthcheck:
+      # Proves the forward is actually listening, not just that ssh is running.
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 18188 || exit 1"]
+      interval: 30s
+      retries: 3
+      # Generous: the container installs its packages on every start, so a cold
+      # start is slower than the steady state.
+      start_period: 45s
+    deploy:
+      mode: global
+      restart_policy:
+        condition: any
+        delay: 10s
+
+networks:
+  yral-v2-internal:
+    external: true
+
+secrets:
+  comfyui_tunnel_key:
+    external: true
