@@ -31,18 +31,14 @@ One service. One database. Code in app/.
 - Feature branches only. Never push to main.
 - One PR per concern. Under 400 lines when possible.
 - Before opening PR: "Would a senior engineer say this is overcomplicated?"
-- Destructive commands are denied in the committed `.claude/settings.json` (rm -rf, force-push, docker service/stack rm, scale-to-zero, swarm leave). SSH to prod (rishi-4/5/6) is allowed — use it for ops Rishi has authorized in conversation.
+- Permission deny by default: docker service rm, rm -rf, force-push. SSH to prod (rishi-4/5/6) is allowed for the developer session per ~/.Codex/settings.json IP allowlist — use it for ops Rishi has authorized in conversation.
 
 ## Deploy process (NEVER bypass)
 1. Open PR with changes.
 2. Wait for CI green + Codex review.
 3. Wait for Rishi explicit approval ("merge it" / "approved").
 4. Merge PR to main.
-5. The merge IS the deploy — there is no manual step. CI builds and pushes the
-   image, then deploy.yml fires on `workflow_run`, rolling-restarts the swarm,
-   polls /health for 2 min, and auto-triggers Rollback if it doesn't come back.
-   Every merge deploys, docs-only ones included (there is no path filter —
-   `workflow_run` can't have one).
+5. Only THEN build image and deploy.
 
 No exceptions for "hotfixes." A genuine hotfix is a small PR with fast review,
 not a direct push. Direct deploys from unmerged branches cause source/runtime
@@ -53,13 +49,8 @@ drift and skip Codex review.
 
 ## Parked work — PARKED.md
 
-One file. Everything we stopped mid-way and mean to return to: blocked items,
-known problems, sized plans, and decisions worth not re-arguing.
+One file. Everything we stopped mid-way and mean to return to. Add a row when
+you park something; delete it when it's done.
 
-Add a row when you park something. Delete the row when it's done. A row
-untouched for three months isn't parked, it's declined — delete it.
-
-Do NOT reintroduce a progress tracker or a daily diary. Both existed until
-2026-09-11, nobody read them, and keeping them current cost more than it
-returned. The history is git log and merged PR descriptions, which get written
-anyway.
+Do NOT reintroduce a progress tracker or a daily diary — both existed until
+2026-09-11 and nobody read them. git log and merged PRs are the history.

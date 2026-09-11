@@ -167,5 +167,5 @@ jobs:
             esac
           )"
           echo ""
-          echo "If GREEN: record drill timestamp in DAILY-LOG.md + flip 21αβ.H4 → ✅ in PROGRESS.md"
+          echo "If GREEN: record the drill timestamp in the commit or PR."
           echo "If FAIL: see docs/runbooks/patroni-failover-drill.md § Recovery"

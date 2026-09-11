@@ -56,7 +56,7 @@ The drill log itself shows row counts:
 [walg-drill 2026-06-11T15:00:00Z] ─── drill PASSED ───
 ```
 
-When GREEN, record the timestamp in DAILY-LOG.md so the cutover checklist (H6) can be marked done.
+When GREEN, record the timestamp in the commit or PR.
 
 ---
 
