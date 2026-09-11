@@ -233,7 +233,7 @@ async def get_lora_trigger_word(pool, influencer_id: str) -> str | None:
     """Return the LoRA trigger word for a bot from
     `ai_influencers.metadata.lora_trigger_word`, else None.
 
-    Used by services.theme_generator: without a trigger word, the LoRA
+    Used by services.media.theme_generator: without a trigger word, the LoRA
     can't lock identity → generic-lookalike outputs ship (2026-07-06
     bug). Per-bot metadata beats a hardcoded Python dict — new bots
     don't need a code push, and Rishi can rename triggers hot-editably.
