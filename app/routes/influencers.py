@@ -309,7 +309,34 @@ async def validate_and_generate(body: ValidateAndGenerateRequest, request: Reque
     # dropped by some codegen clients — apple/swift-openapi-generator#817),
     # so coalesce to "" — the clients already treat blank as "no avatar".
     result["avatar_url"] = result.get("avatar_url") or ""
+    if result.get("is_valid") and result.get("name"):
+        result["name"] = await _settle_unused_slug(result["name"])
     return result
+
+
+async def _settle_unused_slug(slug: str) -> str:
+    """Return `slug`, or `slug-2`, `slug-3`, … — the first one no influencer holds.
+
+    The app creates the SpacetimeDB bot account and uploads the avatar BEFORE it
+    calls /influencers/create, because /create needs the bot's principal. So a
+    slug collision at /create strands an orphan bot account, and the user has
+    no way out: they never see the slug, only the display name, so "Try Again"
+    409s forever (Motorola, 2026-09-11: "Name 'meera' is already taken"). The
+    slug must be settled here, before anything irreversible has happened.
+    /create keeps its 409 for the two-creates-racing case.
+    """
+    # /create lowercases the name before its own check (CreateInfluencerRequest.
+    # lowercase_name), so compare — and return — what /create will actually see.
+    slug = slug.lower()
+    pool = await get_pool()
+    candidate, n = slug[:50], 2
+    while await influencer_repo.get_by_name(pool, candidate):
+        suffix = f"-{n}"
+        # Trim the base to the suffix so the result always fits
+        # CreateInfluencerRequest's 50-char cap, however many digits n grows to.
+        candidate = f"{slug[: 50 - len(suffix)]}{suffix}"
+        n += 1
+    return candidate
 
 
 @router.post(

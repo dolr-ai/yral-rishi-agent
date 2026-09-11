@@ -34,17 +34,25 @@ def _valid_concept_payload():
     }
 
 
-def _client(monkeypatch, payload):
+def _client(monkeypatch, payload, taken_slugs=()):
     from main import app
     from routes import influencers
 
     async def fake_generate(concept):
         return payload
 
+    async def fake_pool():
+        return object()
+
+    async def fake_get_by_name(pool, name):
+        return {"name": name} if name in taken_slugs else None
+
     monkeypatch.setattr(influencers, "get_current_user", lambda request: "user-1")
     monkeypatch.setattr(
         influencers.character_generator, "validate_and_generate_metadata", fake_generate
     )
+    monkeypatch.setattr(influencers, "get_pool", fake_pool)
+    monkeypatch.setattr(influencers.influencer_repo, "get_by_name", fake_get_by_name)
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -93,3 +101,66 @@ def test_reason_stays_a_plain_not_required_string_in_the_published_spec():
     assert schema["properties"]["reason"]["type"] == "string"
     assert "anyOf" not in schema["properties"]["reason"]
     assert "reason" not in schema.get("required", [])
+
+
+def test_taken_slug_is_settled_before_the_app_commits_to_it(monkeypatch):
+    """Motorola 2026-09-11: the LLM proposed slug `meera`, /create 409'd — but
+    only after the app had already created the SpacetimeDB bot account and
+    uploaded the avatar. The user never sees the slug, so "Try Again" could
+    never succeed. validate must hand back a slug that is actually free."""
+    client = _client(
+        monkeypatch, _valid_concept_payload(), taken_slugs={"zara", "zara-2"}
+    )
+
+    response = client.post(
+        "/api/v1/influencers/validate-and-generate-metadata",
+        json={"concept": "a cheerful travel guide"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["name"] == "zara-3"
+
+
+def test_free_slug_is_returned_untouched(monkeypatch):
+    client = _client(monkeypatch, _valid_concept_payload())
+
+    response = client.post(
+        "/api/v1/influencers/validate-and-generate-metadata",
+        json={"concept": "a cheerful travel guide"},
+    )
+
+    assert response.json()["name"] == "zara"
+
+
+def test_suffixed_slug_never_exceeds_the_create_request_cap(monkeypatch):
+    """Codex on #521: a fixed 47-char base overflows at `-100`. The base must
+    shrink with the suffix so /create's 50-char rule can't reject validate's answer."""
+    long_slug = "a" * 50
+    payload = dict(_valid_concept_payload(), name=long_slug)
+    taken = {long_slug} | {
+        f"{long_slug[: 50 - len(f'-{n}')]}-{n}" for n in range(2, 120)
+    }
+    client = _client(monkeypatch, payload, taken_slugs=taken)
+
+    response = client.post(
+        "/api/v1/influencers/validate-and-generate-metadata",
+        json={"concept": "a cheerful travel guide"},
+    )
+
+    name = response.json()["name"]
+    assert name.endswith("-120") and len(name) == 50
+
+
+def test_title_case_slug_is_compared_the_way_create_compares_it(monkeypatch):
+    """/create lowercases before checking; validate must too, or "Meera" passes
+    here and 409s there — after the bot account already exists."""
+    client = _client(
+        monkeypatch, dict(_valid_concept_payload(), name="Zara"), taken_slugs={"zara"}
+    )
+
+    response = client.post(
+        "/api/v1/influencers/validate-and-generate-metadata",
+        json={"concept": "a cheerful travel guide"},
+    )
+
+    assert response.json()["name"] == "zara-2"
