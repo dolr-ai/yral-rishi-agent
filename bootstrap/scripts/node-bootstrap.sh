@@ -103,12 +103,9 @@ set -euo pipefail
 
 # ───────────────────────────── Constants ────────────────────────────────────
 
-# Three encrypted Swarm overlay networks. Names come VERBATIM from
-# CONSTRAINTS C3 (Saikat directive 2026-04-23). When CONSTRAINTS C3 and
-# V2_INFRASTRUCTURE_AND_CLUSTER_ARCHITECTURE_CURRENT.md disagreed (the
-# infra doc used `yral-agent-*-overlay`), CONSTRAINTS won per the
-# CURRENT-TRUTH.md authority chain — fix landed via PR aligning all
-# Session-1 stack files to the CONSTRAINTS C3 names + DEP-003 resolved.
+# Three encrypted Swarm overlay networks. Names are Saikat's directive
+# (2026-04-23) and are referenced verbatim by every stack file — renaming
+# one means renaming it everywhere.
 PUBLIC_WEB_OVERLAY_NAME="yral-v2-public-web"
 INTERNAL_SERVICE_OVERLAY_NAME="yral-v2-internal"
 DATA_PLANE_OVERLAY_NAME="yral-v2-data-plane"

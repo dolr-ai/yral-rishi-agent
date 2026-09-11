@@ -229,9 +229,8 @@ confirm_clickhouse_bind_mount_directory_exists_on_langfuse_node() {
     # circuits this check. Default is verify-on. Bypass exists because the
     # verifier ssh-hops as rishi-deploy from this manager to the langfuse
     # node, and rishi-deploy on cluster managers lacks intra-cluster SSH
-    # keys today (a node-bootstrap.sh gap tracked as session-1/intra-
-    # cluster-ssh-for-rishi-deploy follow-up). When that follow-up lands
-    # the verifier works natively and THIS bypass should be deprecated.
+    # keys today (a node-bootstrap.sh gap). If that is ever fixed the
+    # verifier works natively and THIS bypass should be deprecated.
     # Only operators who have verified the bind-mount out-of-band (host
     # stat + container view + service-Running check) should set this.
     if [[ "${YRAL_LANGFUSE_SKIP_PREFLIGHT_BIND_MOUNT_VERIFY:-false}" == "true" ]]; then
