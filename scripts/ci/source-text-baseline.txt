@@ -1,0 +1,5 @@
+536  # source-text assertions against app/**.py
+#
+# RATCHET: this number may fall, never rise. See
+# scripts/ci/check_source_text_assertions.py for what is counted and why.
+# Measured 2026-09-11 against 145 test files / 3,191 total assertions.

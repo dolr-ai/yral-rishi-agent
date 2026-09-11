@@ -1,5 +1,48 @@
 # Daily Log
 
+## 2026-09-11 (later) — audited the test suite; it is 39% covered and 38% substring-matching
+
+Measured rather than guessed. `pytest --cov=app`:
+
+```
+routes             681/2982    22%   <- the surface users actually touch
+services          2171/4773    45%
+repositories       180/436     41%
+eval                 0/71       0%
+TOTAL             3770/9575    39%
+```
+
+Routes are the least-covered layer, which is backwards — it is the only layer a
+user reaches directly, and every bug found this month lived there. chat.py 15%,
+influencers.py 20%, creator_coach.py 9%.
+
+**1,213 of 3,191 assertions (38%) are substring matches against our own source.**
+I had said 1,283 from a loose regex; an AST pass first gave 533, which was wrong
+the other way because it missed `src = _read("app/services/x.py")` — content
+arriving through a helper rather than a direct `read_text()`. Tracing helpers
+gives 1,213. The original estimate was about right; the intermediate one was not.
+
+Not all of them are wrong. By target: 510 read `app/` Python, 51 migrations, 36
+workflow YAML, 17 docs, 11 shell. Reading a workflow YAML as text is legitimate —
+the file IS the artifact. The `app/` ones are the problem: **536 assertions
+across 42 files**.
+
+The number that surprised me most: of 145 test files, **2 drive real HTTP and 5
+touch a real Postgres**. The testcontainers harness in conftest.py has been
+there since July and four files use it.
+
+Shipped two ratchets, both verified to fail on the thing they guard:
+
+- `scripts/ci/check_source_text_assertions.py` in the lint job — blocks NEW
+  source-text assertions against app/. Baseline 536, may fall, never rise.
+  Confirmed it fails on an added one and ignores a behavioural one.
+- `--cov-fail-under=39` in the test job. A floor against backsliding, not a
+  target. CI runs integration tests that skip locally, so the real CI number
+  will be a little higher — floor set conservatively, to be raised once the
+  first run reports it.
+
+Full findings in docs/test-quality-audit-2026-09-11.md.
+
 ## 2026-09-11 — deleted personas held their names hostage; the suggested fix would have 500'd
 
 Saikat filed #512 and #513. #512 says deleting an account leaves the persona's
