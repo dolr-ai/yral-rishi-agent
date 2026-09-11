@@ -46,7 +46,7 @@ requires_fastapi = pytest.mark.skipif(
 def test_spawn_helper_present_in_websocket_manager():
     """The helper must exist with the documented shape — a future
     refactor that drops it will reintroduce the GC race."""
-    src = (REPO / "app" / "services" / "websocket_manager.py").read_text()
+    src = (REPO / "app" / "services" / "engagement" / "websocket_manager.py").read_text()
     assert "_BACKGROUND_TASKS: set[asyncio.Task] = set()" in src
     assert "def spawn(coro)" in src
     assert "_BACKGROUND_TASKS.add(task)" in src
@@ -76,7 +76,7 @@ def test_chat_routes_use_spawn_not_bare_create_task():
 def test_spawn_returns_running_task_and_retains_reference():
     """The returned Task must be live; the module-level set must
     contain it until the coro completes."""
-    from services import websocket_manager
+    from services.engagement import websocket_manager
 
     async def _run():
         async def _payload():
@@ -108,7 +108,7 @@ def test_spawn_survives_caller_scope_exit_and_gc_pressure():
     run. If the spawn helper works, the flag flips; if a future
     refactor reverts spawn to bare create_task, the GC kills the
     task and the flag stays False."""
-    from services import websocket_manager
+    from services.engagement import websocket_manager
 
     flipped = []  # mutable so closure can write to it without nonlocal
 
@@ -145,7 +145,7 @@ def test_spawn_survives_caller_scope_exit_and_gc_pressure():
 def test_spawn_concurrent_tasks_all_complete():
     """Multiple spawn()'d tasks fired back-to-back must all complete
     + all get discarded from the retention set."""
-    from services import websocket_manager
+    from services.engagement import websocket_manager
 
     counter = [0]
 
@@ -172,7 +172,7 @@ def test_spawn_does_not_swallow_exceptions():
     semantics. Spawn is purely a retention helper, not an error
     handler. A future PR that wraps the inner coro in a try/except
     would change debugging visibility."""
-    from services import websocket_manager
+    from services.engagement import websocket_manager
 
     async def _run():
         async def _payload():

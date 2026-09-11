@@ -46,7 +46,7 @@ import logging
 
 import config
 from repositories import influencer_collage_repo, influencer_repo
-from services import llm_registry
+from services.llm import llm_registry
 
 logger = logging.getLogger(__name__)
 

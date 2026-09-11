@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 
-MODULE = Path(__file__).parent.parent / "app" / "services" / "theme_generator.py"
+MODULE = Path(__file__).parent.parent / "app" / "services" / "media" / "theme_generator.py"
 
 
 def _src() -> str:
@@ -93,7 +93,7 @@ def test_validator_rejects_missing_trigger():
 
     import importlib
 
-    tg = importlib.import_module("services.theme_generator")
+    tg = importlib.import_module("services.media.theme_generator")
     assert (
         tg._validate_theme(
             "Tara at Capri beach in a bikini, editorial swimwear photography, "
@@ -108,7 +108,7 @@ def test_validator_rejects_forbidden_words():
 
     import importlib
 
-    tg = importlib.import_module("services.theme_generator")
+    tg = importlib.import_module("services.media.theme_generator")
     bad = "TAARA at a Milan hotel suite in sheer lingerie, editorial photography, dusk, 85mm lens"
     assert tg._validate_theme(bad, trigger="TAARA") is None, (
         "validator accepted a theme containing 'lingerie' — filter will trip"
@@ -119,7 +119,7 @@ def test_validator_rejects_no_clothing_anchor():
 
     import importlib
 
-    tg = importlib.import_module("services.theme_generator")
+    tg = importlib.import_module("services.media.theme_generator")
     bad = "TAARA on a Santorini clifftop at blue hour, editorial photography, 85mm lens, shallow depth of field"
     # no bikini/swimsuit/slip/kaftan/etc. → reject
     assert tg._validate_theme(bad, trigger="TAARA") is None, (
@@ -137,7 +137,7 @@ def test_validator_rejects_truncated_theme_ending_in_comma():
 
     import importlib
 
-    tg = importlib.import_module("services.theme_generator")
+    tg = importlib.import_module("services.media.theme_generator")
     truncated = "TAARA in a designer cutout swimsuit,"
     assert tg._validate_theme(truncated, trigger="TAARA") is None, (
         "validator accepted the exact 2026-07-08 truncated theme — this is a regression"
@@ -151,7 +151,7 @@ def test_validator_rejects_theme_missing_editorial_qualifier():
 
     import importlib
 
-    tg = importlib.import_module("services.theme_generator")
+    tg = importlib.import_module("services.media.theme_generator")
     bad = (
         "TAARA on a Bali beach in a high-fashion bikini, playful pose "
         "with wind-swept hair, golden hour glow, 85mm lens, shallow "
@@ -169,7 +169,7 @@ def test_validator_rejects_theme_missing_lens_qualifier():
 
     import importlib
 
-    tg = importlib.import_module("services.theme_generator")
+    tg = importlib.import_module("services.media.theme_generator")
     bad = (
         "TAARA at a Milan runway backstage in a couture cocktail dress, "
         "confident pose behind the scenes, editorial fashion photography, "
@@ -185,7 +185,7 @@ def test_validator_accepts_good_theme():
 
     import importlib
 
-    tg = importlib.import_module("services.theme_generator")
+    tg = importlib.import_module("services.media.theme_generator")
     good = (
         "TAARA on a Santorini clifftop infinity pool at blue hour, "
         "wearing a designer cutout bikini, cinematic confident pose "
@@ -202,7 +202,7 @@ def test_generate_daily_theme_falls_back_on_llm_exception():
 
     import importlib
 
-    tg = importlib.import_module("services.theme_generator")
+    tg = importlib.import_module("services.media.theme_generator")
 
     class _FakePool:
         pass
@@ -246,7 +246,7 @@ def test_generate_daily_theme_falls_back_after_two_invalid_llm_outputs():
 
     import importlib
 
-    tg = importlib.import_module("services.theme_generator")
+    tg = importlib.import_module("services.media.theme_generator")
 
     class _Resp:
         def __init__(self, content):
@@ -293,7 +293,7 @@ def test_bot_without_trigger_word_falls_back_immediately():
 
     import importlib
 
-    tg = importlib.import_module("services.theme_generator")
+    tg = importlib.import_module("services.media.theme_generator")
 
     call_mock = AsyncMock()
     with patch.object(tg.llm_registry, "call", new=call_mock):
@@ -332,7 +332,7 @@ def test_db_trigger_word_beats_hardcoded_fallback():
 
     import importlib
 
-    tg = importlib.import_module("services.theme_generator")
+    tg = importlib.import_module("services.media.theme_generator")
 
     class _Resp:
         def __init__(self, content):
@@ -378,7 +378,7 @@ def test_fallback_map_still_used_when_db_empty():
 
     import importlib
 
-    tg = importlib.import_module("services.theme_generator")
+    tg = importlib.import_module("services.media.theme_generator")
 
     tara = "qi6gd-esmrx-v2oyd-7fwhm-ibfs5-trflm-xm3iy-xq6d3-3hmwu-jb7tk-5qe"
 
@@ -406,7 +406,7 @@ def test_llm_defaults_registers_collage_theme_generator_on_gemini():
 
     import importlib
 
-    llm_registry = importlib.import_module("services.llm_registry")
+    llm_registry = importlib.import_module("services.llm.llm_registry")
     assert "collage_theme_generator" in llm_registry.LLM_DEFAULTS, (
         "collage_theme_generator missing from LLM_DEFAULTS — call() "
         "will not route correctly"

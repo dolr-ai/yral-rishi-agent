@@ -6,13 +6,13 @@ import time
 import httpx
 
 import config
-from services import langfuse_tracing
+from services.ops import langfuse_tracing
 
 # Phase 25.3b: types moved to llm_types.py to break the ai_client →
 # registry → gemini → ai_client circular import. Re-exported here so
 # existing chat.py imports (`ai_client.ERROR_MESSAGES`,
 # `ai_client.LlmResponse`, etc.) keep working unchanged.
-from services.llm_types import (
+from services.llm.llm_types import (
     ERROR_MESSAGES,
     LlmBlockedError,
     LlmResponse,
@@ -41,7 +41,7 @@ _IMAGE_DOWNLOAD_TIMEOUT = 5.0
 
 async def _fetch_image_bytes_and_mime(url: str) -> tuple[str, bytes] | tuple[None, str]:
     if not (url.startswith("http://") or url.startswith("https://")):
-        from services import storage as _storage
+        from services.media import storage as _storage
 
         presigned = _storage.generate_presigned_url(url)
         if not presigned:
@@ -97,7 +97,7 @@ async def _fetch_audio_bytes_and_mime(
     self-documenting at the call site. No risk of accidental cross-use.
     """
     if not (url.startswith("http://") or url.startswith("https://")):
-        from services import storage as _storage
+        from services.media import storage as _storage
 
         presigned = _storage.generate_presigned_url(url)
         if not presigned:
@@ -185,8 +185,8 @@ async def generate_response_stream(
     chat right now" on every NSFW send (Rishi could not talk to Tara
     in prod 2026-06-25).
     """
-    from services import llm_registry
-    from services.soul_file import tuning_for
+    from services.llm import llm_registry
+    from services.coach.soul_file import tuning_for
 
     tuning = tuning_for(archetype) or {}
     temperature = tuning.get("temperature", config.GEMINI_TEMPERATURE)
@@ -421,8 +421,8 @@ async def generate_response(
     `proactive_generation` to runpod_vllm. Fixed 2026-06-11 after Rishi
     noticed proactive_generation showing 0 calls in the dashboard.
     """
-    from services import llm_registry
-    from services.soul_file import tuning_for
+    from services.llm import llm_registry
+    from services.coach.soul_file import tuning_for
 
     _tuning = tuning_for(archetype) or {}
     _temperature = _tuning.get("temperature", config.GEMINI_TEMPERATURE)
@@ -593,13 +593,13 @@ async def transcribe_audio(audio_url: str) -> str | None:
     then run the SSRF check on the resolved URL.
     """
     if audio_url and not audio_url.startswith("http"):
-        from services import storage
+        from services.media import storage
 
         audio_url = storage.generate_presigned_url(audio_url)
     if not audio_url or not _is_safe_url(audio_url):
         logger.error(f"Audio URL blocked (SSRF protection): {(audio_url or '')[:50]}")
         return None
-    from services import llm_registry
+    from services.llm import llm_registry
 
     try:
         result = await llm_registry.call_transcribe(

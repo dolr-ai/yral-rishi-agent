@@ -69,8 +69,8 @@ def test_all_three_call_sites_use_get_redis_url():
     repo = Path(__file__).resolve().parent.parent
     for path in (
         "app/rate_limiter.py",
-        "app/services/session_memory.py",
-        "app/services/websocket_manager.py",
+        "app/services/engagement/session_memory.py",
+        "app/services/engagement/websocket_manager.py",
     ):
         src = (repo / path).read_text()
         assert "from redis_config import get_redis_url" in src, f"{path} missing import"

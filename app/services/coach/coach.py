@@ -32,8 +32,8 @@ import logging
 import re
 
 import config
-from services import llm_registry
-from services.soul_file import GLOBAL_RULES_OVERRIDEABLE, _coerce_sections
+from services.llm import llm_registry
+from services.coach.soul_file import GLOBAL_RULES_OVERRIDEABLE, _coerce_sections
 
 logger = logging.getLogger(__name__)
 

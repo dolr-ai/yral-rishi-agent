@@ -144,7 +144,7 @@ async def _llm_routing_tile(pool) -> dict:
     plus a count of how many are overridden vs default. The full hot-swap
     UI lives at /admin/llm-routing; this tile is the at-a-glance summary."""
     try:
-        from services import llm_registry
+        from services.llm import llm_registry
 
         process_names = llm_registry.PROCESS_NAMES
         # Count overrides actually in effect (DB or env)
@@ -232,7 +232,7 @@ async def _llm_primary_failures_tile(pool) -> dict:
       (level:warning AND message:'LLM fallback activated' > 10 / 5 min)
     is the cross-replica page-Rishi signal."""
     try:
-        from services import llm_registry
+        from services.llm import llm_registry
 
         counts = llm_registry.primary_failure_counts_last_hour()
         if not counts:
@@ -276,7 +276,7 @@ async def _email_digest_tile(pool) -> dict:
     """Last digest run summary — tells Rishi at a glance whether
     today's 02:30 UTC cron fired AND whether SMTP delivered."""
     try:
-        from services.email_digest import get_latest_digest
+        from services.ops.email_digest import get_latest_digest
 
         row = await get_latest_digest(pool)
         if row is None:
@@ -535,7 +535,7 @@ async def email_digest_preview(request: Request):
     _check_auth_flexible(request)
     pool = await database.get_pool()
 
-    from services.email_digest import (
+    from services.ops.email_digest import (
         get_latest_digest,
         send_digest_now,
         render_html,

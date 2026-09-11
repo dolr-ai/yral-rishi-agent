@@ -78,7 +78,7 @@ async def _try_set_nx(key: str, ttl_sec: int) -> bool:
     Fail-closed-on-alert (better to drop an alert than fire 5 of them
     every 5 min during an outage)."""
     try:
-        from services.session_memory import _get_redis
+        from services.engagement.session_memory import _get_redis
 
         redis = await _get_redis()
         if redis is None:

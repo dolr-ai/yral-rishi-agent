@@ -43,7 +43,7 @@ def test_classify_outcome_covers_all_categories():
     """The outcome enum is what dashboards filter on. Pin every category
     that _classify_outcome can emit so a future refactor doesn't silently
     coalesce them."""
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     fn_start = src.find("def _classify_outcome(")
     fn_body = src[fn_start : fn_start + 2000]
     # Six categories: rate_limit / server_error / timeout / parse_error / blocked / other
@@ -61,7 +61,7 @@ def test_classify_outcome_covers_all_categories():
 def test_classify_outcome_dispatches_by_exception_type():
     """The mapping (exception type → outcome) is the dashboard's
     correctness contract. Pin the load-bearing instanceof checks."""
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     fn_start = src.find("def _classify_outcome(")
     fn_body = src[fn_start : fn_start + 2000]
     assert "LlmBlockedError" in fn_body
@@ -74,21 +74,21 @@ def test_classify_outcome_dispatches_by_exception_type():
 
 
 def test_record_outcome_helper_exists():
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     assert "async def _record_outcome(" in src
 
 
 def test_record_outcome_truncates_error_message_at_500():
     """Per Rishi's spec: error_message truncated to 500 chars. Pin the
     slice so an unbounded error doesn't blow up the row."""
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     fn_start = src.find("async def _record_outcome(")
     fn_body = src[fn_start : fn_start + 3500]
     assert "[:500]" in fn_body
 
 
 def test_record_outcome_writes_outcome_and_error_columns():
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     fn_start = src.find("async def _record_outcome(")
     fn_body = src[fn_start : fn_start + 3500]
     assert "outcome" in fn_body
@@ -100,7 +100,7 @@ def test_record_outcome_writes_outcome_and_error_columns():
 def test_record_cost_now_delegates_to_record_outcome():
     """Back-compat: _record_cost stays as the success-path entry point
     but now writes through _record_outcome with outcome='success'."""
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     fn_start = src.find("async def _record_cost(")
     fn_body = src[fn_start : fn_start + 1500]
     assert "_record_outcome" in fn_body
@@ -119,7 +119,7 @@ def test_call_records_failure_on_exception():
     twice — once for primary, once for fallback). The failure-recording
     behaviour is asserted in _do_complete's body; call() must still
     re-raise when no fallback path saves the request."""
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     do_start = src.find("async def _do_complete(")
     call_start = src.find("async def call(\n    *,")
     do_body = src[do_start:call_start]
@@ -135,7 +135,7 @@ def test_call_records_failure_on_exception():
 
 
 def test_call_stream_records_failure_on_exception():
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     stream_start = src.find("async def call_stream(")
     transcribe_start = src.find("async def call_transcribe(")
     stream_body = src[stream_start:transcribe_start]
@@ -145,7 +145,7 @@ def test_call_stream_records_failure_on_exception():
 
 
 def test_call_transcribe_records_failure_on_exception():
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     transcribe_start = src.find("async def call_transcribe(")
     transcribe_body = src[transcribe_start : transcribe_start + 4000]
     assert "except Exception as exc:" in transcribe_body
@@ -157,7 +157,7 @@ def test_failure_rows_have_cost_usd_zero():
     """Failure rows must have cost_usd=0 (we didn't pay for them).
     _record_outcome computes cost from token counts, and failure paths
     pass tokens=0 implicitly (the default kwarg)."""
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     fn_start = src.find("async def _record_outcome(")
     fn_body = src[fn_start : fn_start + 3500]
     # The defaults on the signature: input_tokens=0, output_tokens=0

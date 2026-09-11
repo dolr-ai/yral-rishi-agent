@@ -15,7 +15,7 @@ REPO = Path(__file__).resolve().parents[1]
 
 def test_save_verbs_classified_as_save():
     """The exact phrasings Saikat used + the common variants."""
-    from services.coach_intent import classify_intent
+    from services.coach.coach_intent import classify_intent
 
     cases = [
         "save",
@@ -43,7 +43,7 @@ def test_save_verbs_classified_as_save():
 
 
 def test_discard_verbs_classified_as_discard():
-    from services.coach_intent import classify_intent
+    from services.coach.coach_intent import classify_intent
 
     for msg in (
         "discard",
@@ -59,7 +59,7 @@ def test_discard_verbs_classified_as_discard():
 
 
 def test_undo_verbs_classified_as_undo():
-    from services.coach_intent import classify_intent
+    from services.coach.coach_intent import classify_intent
 
     for msg in (
         "undo",
@@ -77,7 +77,7 @@ def test_undo_verbs_classified_as_undo():
 def test_unmatched_returns_none():
     """Edit requests + questions + greetings must NOT classify. The
     fall-through to None means the normal Coach flow runs."""
-    from services.coach_intent import classify_intent
+    from services.coach.coach_intent import classify_intent
 
     for msg in (
         "make her sassier",
@@ -95,7 +95,7 @@ def test_unmatched_returns_none():
 def test_word_boundary_prevents_false_positives():
     """`save` inside `savings` etc. must NOT match — that'd misclassify
     real edit requests about saving time / money."""
-    from services.coach_intent import classify_intent
+    from services.coach.coach_intent import classify_intent
 
     for msg in (
         "savings",
@@ -118,7 +118,7 @@ def test_long_messages_dont_match_even_with_verb():
     """The 50-char cap is the false-positive guard for messages like
     'I want to save time on these long replies — can you make them
     shorter?' which would otherwise match `\\bsave\\b`."""
-    from services.coach_intent import classify_intent
+    from services.coach.coach_intent import classify_intent
 
     long_msg = (
         "I want to save time on these long replies — can you make them shorter please?"
@@ -131,7 +131,7 @@ def test_non_string_input_returns_none():
     """Defensive — the route reads `body.get('content')` which could
     be None or a non-string from a buggy client. Classifier must not
     raise on weird input."""
-    from services.coach_intent import classify_intent
+    from services.coach.coach_intent import classify_intent
 
     assert classify_intent(None) is None
     assert classify_intent(123) is None  # type: ignore[arg-type]
@@ -143,7 +143,7 @@ def test_non_string_input_returns_none():
 
 def test_route_imports_classifier():
     src = (REPO / "app" / "routes" / "creator_coach.py").read_text()
-    assert "from services import coach_intent" in src
+    assert "from services.coach import coach_intent" in src
 
 
 def test_route_checks_intent_before_llm_call():

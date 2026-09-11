@@ -29,7 +29,8 @@ from pydantic import BaseModel
 import config
 from auth import get_current_user
 from database import get_pool
-from services import image_collage, subscription_stub, theme_generator
+from services.media import image_collage, theme_generator
+from services.safety import subscription_stub
 
 
 class RequestImagesBody(BaseModel):

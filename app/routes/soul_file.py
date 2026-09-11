@@ -33,7 +33,7 @@ from fastapi import APIRouter, HTTPException, Request
 from auth import get_current_user
 from database import get_pool
 from repositories import influencer_repo
-from services.soul_file import USER_SEGMENT_PLAN_TEMPLATE
+from services.coach.soul_file import USER_SEGMENT_PLAN_TEMPLATE
 
 logger = logging.getLogger(__name__)
 
@@ -383,8 +383,8 @@ def _build_engagement_schedule(skill_slug: str | None) -> dict:
     constant). Bot-owner-configurable cadence is explicitly DROPPED
     per Rishi 2026-06-12.
     """
-    from services import nudge as _nudge
-    from services import skills as _skills
+    from services.engagement import nudge as _nudge
+    from services.coach import skills as _skills
 
     skill_checkins = None
     if skill_slug and (sk := _skills.get(skill_slug)):
@@ -434,8 +434,8 @@ async def get_system_prompt_preview(bot_id: str, request: Request):
 
     from fastapi.responses import JSONResponse
 
-    from services import skills as _skills
-    from services import soul_file as _sf
+    from services.coach import skills as _skills
+    from services.coach import soul_file as _sf
 
     user_id = get_current_user(request)
     pool = await get_pool()

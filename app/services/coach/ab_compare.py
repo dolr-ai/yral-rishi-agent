@@ -13,7 +13,7 @@ on noise.
 import asyncio
 import logging
 
-from services.quality_scorer import _judge_pair
+from services.coach.quality_scorer import _judge_pair
 
 logger = logging.getLogger(__name__)
 

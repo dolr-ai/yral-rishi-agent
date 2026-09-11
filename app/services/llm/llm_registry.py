@@ -33,7 +33,7 @@ from collections import deque
 from threading import Lock
 from typing import Any
 
-from services.llm_types import LlmResponse
+from services.llm.llm_types import LlmResponse
 
 logger = logging.getLogger(__name__)
 
@@ -687,7 +687,7 @@ async def _broadcast_invalidate(reason: str) -> None:
     invalidation, which is the bug we accept-as-degraded when Redis
     is unreachable. Log + move on."""
     try:
-        from services import llm_routing_pubsub
+        from services.llm import llm_routing_pubsub
 
         await llm_routing_pubsub.publish_invalidate(reason=reason)
     except Exception as e:
@@ -809,7 +809,7 @@ def _classify_outcome(exception: BaseException) -> str:
 
     import httpx
 
-    from services.llm_types import LlmBlockedError
+    from services.llm.llm_types import LlmBlockedError
 
     if isinstance(exception, LlmBlockedError):
         return "blocked"
@@ -1028,7 +1028,7 @@ async def _do_complete(
     # every exception internally + returns allowed=True on any error.
     # See app/services/cost_breaker.py docstring + design doc
     # docs/b6-cost-circuit-breaker-design-2026-06-16.md.
-    from services import cost_breaker as _cb
+    from services.ops import cost_breaker as _cb
 
     _cb_result = await _cb.check(user_id=user_id, process=process, provider=provider)
     if not _cb_result.allowed:

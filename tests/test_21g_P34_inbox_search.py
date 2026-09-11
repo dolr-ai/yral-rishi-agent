@@ -57,7 +57,7 @@ def test_main_wires_inbox_search_router():
 
 
 def test_service_module_exposes_required_symbols():
-    src = (REPO / "app" / "services" / "inbox_search.py").read_text()
+    src = (REPO / "app" / "services" / "discovery" / "inbox_search.py").read_text()
     for name in (
         "async def search",
         "def _build_subtitle",
@@ -72,27 +72,27 @@ def test_service_module_exposes_required_symbols():
 def test_sql_filters_to_caller_user_id():
     """Privacy: SQL MUST filter `c.user_id = $1`. If a future PR
     drops this clause, every user sees every conversation. Critical."""
-    src = (REPO / "app" / "services" / "inbox_search.py").read_text()
+    src = (REPO / "app" / "services" / "discovery" / "inbox_search.py").read_text()
     assert "c.user_id = $1" in src
 
 
 def test_sql_filters_to_active_bots():
     """Don't surface conversations whose bot was deactivated."""
-    src = (REPO / "app" / "services" / "inbox_search.py").read_text()
+    src = (REPO / "app" / "services" / "discovery" / "inbox_search.py").read_text()
     assert "i.is_active = 'active'" in src
 
 
 def test_sql_filters_to_ai_chat_conversations():
     """Exclude human_chat conversations — inbox search is for the
     AI-bot inbox only. Human chats live in a separate UI."""
-    src = (REPO / "app" / "services" / "inbox_search.py").read_text()
+    src = (REPO / "app" / "services" / "discovery" / "inbox_search.py").read_text()
     assert "c.conversation_type = 'ai_chat'" in src
 
 
 def test_sql_pure_select_no_writes():
     """Replica safety — same property as discovery_search +
     feed_ranker. Inbox search reads only."""
-    src = (REPO / "app" / "services" / "inbox_search.py").read_text()
+    src = (REPO / "app" / "services" / "discovery" / "inbox_search.py").read_text()
     sql_block = src[src.index("_SEARCH_SQL") : src.index("# ─── envelope")]
     for forbidden in (
         "INSERT ",
@@ -115,7 +115,7 @@ def test_sql_concat_matches_brief():
     archetype` (NOT the broader discovery_search concat which
     includes name + description). Inbox UI ranks by what the user
     actually sees in their chat list."""
-    src = (REPO / "app" / "services" / "inbox_search.py").read_text()
+    src = (REPO / "app" / "services" / "discovery" / "inbox_search.py").read_text()
     concat = src[src.index("_CONCAT_SQL = ") : src.index("_SEARCH_SQL = ")]
     assert "display_name" in concat
     assert "category" in concat
@@ -137,7 +137,7 @@ def test_envelope_keys_symmetric_with_discovery_search():
     dict-key set, not the source text (the SQL alias reads are
     legit `row.get("influencer_display_name")` calls — they're
     row-dict keys, not wire keys)."""
-    from services.inbox_search import _shape_result
+    from services.discovery.inbox_search import _shape_result
 
     shaped = _shape_result(
         {
@@ -168,7 +168,7 @@ def test_order_by_similarity_then_recency_then_volume():
     silently swap the tiebreaker order. Anchor the search inside
     the _SEARCH_SQL block specifically — the module docstring also
     mentions ORDER BY rationale + we don't want to false-match there."""
-    src = (REPO / "app" / "services" / "inbox_search.py").read_text()
+    src = (REPO / "app" / "services" / "discovery" / "inbox_search.py").read_text()
     sql_block = src[src.index("_SEARCH_SQL = f") : src.index("# ─── envelope")]
     order_clause = sql_block[sql_block.index("ORDER BY") : sql_block.index("LIMIT $3")]
     assert "sim DESC" in order_clause
@@ -186,19 +186,19 @@ def test_order_by_similarity_then_recency_then_volume():
 
 
 def test_build_subtitle_archetype_and_category():
-    from services.inbox_search import _build_subtitle
+    from services.discovery.inbox_search import _build_subtitle
 
     assert _build_subtitle("companion", "Lifestyle") == "companion · Lifestyle"
 
 
 def test_build_subtitle_unknown_archetype_renders_literal():
-    from services.inbox_search import _build_subtitle
+    from services.discovery.inbox_search import _build_subtitle
 
     assert _build_subtitle("unknown", "Travel") == "unknown · Travel"
 
 
 def test_build_subtitle_no_category_drops_separator():
-    from services.inbox_search import _build_subtitle
+    from services.discovery.inbox_search import _build_subtitle
 
     assert _build_subtitle("advisor", None) == "advisor"
     assert _build_subtitle("advisor", "") == "advisor"
@@ -206,7 +206,7 @@ def test_build_subtitle_no_category_drops_separator():
 
 
 def test_build_subtitle_none_archetype_falls_back():
-    from services.inbox_search import _build_subtitle
+    from services.discovery.inbox_search import _build_subtitle
 
     assert _build_subtitle(None, "Lifestyle") == "unknown · Lifestyle"
     assert _build_subtitle(None, None) == "unknown"
@@ -216,7 +216,7 @@ def test_shape_result_full_row():
     """SQL row uses prefixed aliases (`influencer_display_name`) as
     asyncpg row-dict keys; wire shape exposes the unprefixed
     discovery-search-symmetric names (`display_name`)."""
-    from services.inbox_search import _shape_result
+    from services.discovery.inbox_search import _shape_result
 
     row = {
         "conversation_id": "c1",
@@ -247,7 +247,7 @@ def test_shape_result_handles_missing_aggregates():
     messages, brand new), the COALESCE in SQL produces
     last_message_at=c.created_at + message_count=0. Shape must
     surface those without crashing."""
-    from services.inbox_search import _shape_result
+    from services.discovery.inbox_search import _shape_result
 
     row = {
         "conversation_id": "c1",
@@ -286,7 +286,7 @@ class _StubPool:
 def test_search_empty_q_short_circuits_to_empty_results():
     """Per brief: empty q returns {results:[], count:0}, NOT 422.
     Mobile sends q="" while debouncing."""
-    from services import inbox_search
+    from services.discovery import inbox_search
 
     pool = _StubPool()
     out = asyncio.run(inbox_search.search(pool, "user1", "", 20))
@@ -296,7 +296,7 @@ def test_search_empty_q_short_circuits_to_empty_results():
 
 
 def test_search_whitespace_q_short_circuits():
-    from services import inbox_search
+    from services.discovery import inbox_search
 
     pool = _StubPool()
     out = asyncio.run(inbox_search.search(pool, "user1", "   ", 20))
@@ -304,7 +304,7 @@ def test_search_whitespace_q_short_circuits():
 
 
 def test_search_none_q_short_circuits():
-    from services import inbox_search
+    from services.discovery import inbox_search
 
     pool = _StubPool()
     out = asyncio.run(inbox_search.search(pool, "user1", None, 20))
@@ -313,7 +313,7 @@ def test_search_none_q_short_circuits():
 
 def test_search_q_lowercased_before_query():
     """Match expression is LOWER(...); query side must lowercase too."""
-    from services import inbox_search
+    from services.discovery import inbox_search
 
     pool = _StubPool(rows=[])
     asyncio.run(inbox_search.search(pool, "user1", "TaRa SmItH", 10))
@@ -324,7 +324,7 @@ def test_search_q_lowercased_before_query():
 def test_search_q_length_capped_at_100():
     """Defense in depth: even if route Pydantic is bypassed, service
     caps q length."""
-    from services import inbox_search
+    from services.discovery import inbox_search
 
     pool = _StubPool(rows=[])
     asyncio.run(inbox_search.search(pool, "user1", "a" * 500, 10))
@@ -335,7 +335,7 @@ def test_search_user_id_passed_as_first_arg():
     """Privacy: user_id binds $1 in the WHERE clause. Verify the
     service threads it through correctly so a refactor can't
     accidentally drop user-scoping."""
-    from services import inbox_search
+    from services.discovery import inbox_search
 
     pool = _StubPool(rows=[])
     asyncio.run(inbox_search.search(pool, "user-xyz", "tara", 5))
@@ -343,7 +343,7 @@ def test_search_user_id_passed_as_first_arg():
 
 
 def test_search_happy_path_shapes_envelope():
-    from services import inbox_search
+    from services.discovery import inbox_search
 
     rows = [
         {
@@ -385,7 +385,7 @@ def test_search_happy_path_shapes_envelope():
 
 
 def test_search_no_results_returns_empty_envelope():
-    from services import inbox_search
+    from services.discovery import inbox_search
 
     pool = _StubPool(rows=[])
     out = asyncio.run(inbox_search.search(pool, "user1", "nonsensequery", 20))
@@ -396,7 +396,7 @@ def test_search_db_error_propagates():
     """Route translates to 503; service raises. Pin the propagation
     so a future fail-open refactor doesn't accidentally hide
     catastrophic errors as 200-empty."""
-    from services import inbox_search
+    from services.discovery import inbox_search
 
     pool = _StubPool(raises=True)
     try:

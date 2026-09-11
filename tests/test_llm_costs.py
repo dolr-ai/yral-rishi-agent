@@ -65,7 +65,7 @@ def test_migration_027_explains_cost_basis_split():
 
 
 def test_record_cost_helper_exists():
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     assert "async def _record_cost(" in src
 
 
@@ -74,7 +74,7 @@ def test_record_cost_reads_rates_from_PROVIDERS():
     insert. That keeps internal_vllm's synthetic $0.00005/1k tunable
     without a code change. (25.5b: cost math moved into _record_outcome;
     _record_cost is now a thin shim that delegates.)"""
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     rec_fn_start = src.find("async def _record_outcome(")
     rec_fn_body = src[rec_fn_start : rec_fn_start + 3500]
     assert "PROVIDERS.get(provider)" in rec_fn_body
@@ -86,7 +86,7 @@ def test_record_cost_splits_real_vs_synthetic_via_cost_basis_column():
     """The cost_basis column is what powers the dashboard's "real $ vs
     compute share" split. Pin that the helper reads cost_basis from
     PROVIDERS and writes it as a column."""
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     rec_fn_start = src.find("async def _record_outcome(")
     rec_fn_body = src[rec_fn_start : rec_fn_start + 3500]
     assert "cost_basis" in rec_fn_body
@@ -96,7 +96,7 @@ def test_record_cost_is_best_effort_swallows_db_errors():
     """If migration 027 hasn't been applied or DB is temporarily down,
     cost recording MUST NOT break the LLM call. Pin the try/except
     pattern + the warning log."""
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     rec_fn_start = src.find("async def _record_outcome(")
     rec_fn_body = src[rec_fn_start : rec_fn_start + 3500]
     assert "try:" in rec_fn_body
@@ -116,7 +116,7 @@ def test_call_records_cost_after_success():
     between primary and fallback attempts (per the Saikat-primary /
     Anshuman-fallback routing policy). The behavior under test still
     exists; we just look for it in _do_complete() now."""
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     do_start = src.find("async def _do_complete(")
     call_start = src.find("async def call(\n    *,")
     do_body = src[do_start:call_start]
@@ -127,7 +127,7 @@ def test_call_records_cost_after_success():
 def test_call_stream_records_cost_after_stream_completes():
     """Streaming counterpart must tally tokens from the 'usage' yield
     (Anshuman gist quirk) then record after the stream drains."""
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     stream_start = src.find("async def call_stream(")
     transcribe_start = src.find("async def call_transcribe(")
     stream_body = src[stream_start:transcribe_start]
@@ -139,7 +139,7 @@ def test_call_stream_records_cost_after_stream_completes():
 
 
 def test_call_transcribe_records_cost():
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     transcribe_start = src.find("async def call_transcribe(")
     transcribe_body = src[transcribe_start : transcribe_start + 2500]
     assert "await _record_cost(" in transcribe_body
@@ -149,7 +149,7 @@ def test_all_3_dispatch_functions_accept_attribution_kwargs():
     """user_id / conversation_id / request_id are the attribution
     columns. All 3 dispatch functions accept them as optional kwargs
     so callers can pass them when known."""
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     for fn in (
         "async def call(",
         "async def call_stream(",

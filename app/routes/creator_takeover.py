@@ -16,8 +16,8 @@ from fastapi import APIRouter, HTTPException, Request
 from auth import get_current_user
 from database import get_pool
 from repositories import conversation_repo, message_repo, takeover_repo
-from services import websocket_manager
-from services.takeover_helpers import (
+from services.engagement import websocket_manager
+from services.engagement.takeover_helpers import (
     format_msg_for_response,
     remaining_seconds,
 )

@@ -143,7 +143,7 @@ async def generate_for_one_bot(pool, bot: dict) -> list[dict]:
     """Run the per-bot LLM call + write the batch. Returns the inserted
     rows (may be empty on LLM failure or parse failure)."""
     from repositories import video_idea_repo
-    from services import llm_registry
+    from services.llm import llm_registry
 
     bot_id = bot["id"]
     today = date.today()

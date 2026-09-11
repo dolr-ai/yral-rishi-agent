@@ -10,8 +10,9 @@ import json
 import logging
 
 from repositories import memory_repo
-from services import embeddings, session_memory
-from services import llm_registry
+from services.llm import embeddings
+from services.engagement import session_memory
+from services.llm import llm_registry
 import config
 
 logger = logging.getLogger(__name__)

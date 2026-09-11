@@ -52,7 +52,7 @@ async def _judge_pair(
 ) -> dict | None:
     """Run one LLM-as-judge call via the registry. Returns parsed scores or
     None on failure."""
-    from services import llm_registry
+    from services.llm import llm_registry
 
     prompt = JUDGE_PROMPT.format(
         bot_archetype=bot_archetype or "general",

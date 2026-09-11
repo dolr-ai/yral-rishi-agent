@@ -17,7 +17,7 @@ from pydantic import BaseModel
 
 import config
 from auth import get_current_user
-from services import profile_storage
+from services.media import profile_storage
 
 logger = logging.getLogger(__name__)
 

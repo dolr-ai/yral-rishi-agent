@@ -10,7 +10,7 @@ def test_message_types_complete_and_ordered():
     """Spec: question / observation / story / light_topic. If a refactor
     drops one or renames, the type-hint dict-lookup would KeyError silently
     on Gemini's side — this test catches it locally first."""
-    from services.proactive import PROACTIVE_MESSAGE_TYPES, TYPE_HINTS
+    from services.engagement.proactive import PROACTIVE_MESSAGE_TYPES, TYPE_HINTS
 
     expected = {"question", "observation", "story", "light_topic"}
     assert set(PROACTIVE_MESSAGE_TYPES) == expected
@@ -24,7 +24,7 @@ def test_archetype_tones_cover_all_archetypes():
     """If a new archetype lands in soul_file but not here, proactive falls
     back to generic tone — not broken, but worth surfacing as the system
     drifts. Pins the current set to make the drift visible."""
-    from services.proactive import ARCHETYPE_TONE
+    from services.engagement.proactive import ARCHETYPE_TONE
 
     expected = {"companion", "advisor", "entertainer", "creator", "educator"}
     assert set(ARCHETYPE_TONE.keys()) == expected
@@ -43,7 +43,7 @@ def test_proactive_prompt_carries_anti_recitation_guard():
     """The PROACTIVE_PROMPT now embeds the same anti-recitation language as
     Task 1's soul_file L4 change — proactive messages also went into the
     "lead with personal facts" regression. Guard against accidental softening."""
-    from services.proactive import PROACTIVE_PROMPT
+    from services.engagement.proactive import PROACTIVE_PROMPT
 
     assert "DO NOT lead with them" in PROACTIVE_PROMPT
     assert "DO NOT recite" in PROACTIVE_PROMPT

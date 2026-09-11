@@ -142,7 +142,7 @@ def test_path_b_skill_checkins_cadence_sourced_from_registry():
     # And the registry today defines the value as 6 (a deliberate
     # number per skills.py docstring) — pin so a registry edit is a
     # deliberate review-gated change
-    from services.skills import SKILLS
+    from services.coach.skills import SKILLS
 
     assert SKILLS["nutrition_coach"]["default_cadence_hours"] == 6
 
@@ -180,7 +180,7 @@ def test_first_turn_nudge_idle_minutes_sourced_from_nudge_constant():
       2. The preview helper reads it (not a magic number)
     A future PR that drops the constant + bumps the default to 7 must
     have the preview reflect 7 automatically."""
-    nudge_src = _read("app/services/nudge.py")
+    nudge_src = _read("app/services/engagement/nudge.py")
     assert "DEFAULT_INITIAL_IDLE_MINUTES = " in nudge_src
     route_src = ROUTE.read_text()
     fn_pos = route_src.find("def _build_engagement_schedule(")
@@ -196,7 +196,7 @@ def test_first_turn_nudge_value_matches_should_nudge_default():
     constant + made `should_nudge`'s default reference it. If either
     drifts, bot owners would see one value on the preview + a
     different threshold actually firing."""
-    src = _read("app/services/nudge.py")
+    src = _read("app/services/engagement/nudge.py")
     assert "idle_minutes: int = DEFAULT_INITIAL_IDLE_MINUTES" in src
 
 

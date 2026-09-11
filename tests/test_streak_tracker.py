@@ -7,14 +7,14 @@ the deploy verification step.
 
 def test_interval_is_daily():
     """24h cycle. Below this we'd thrash the DB; above it streaks lag a day."""
-    from services.streak_tracker import STREAK_UPDATE_INTERVAL_SEC
+    from services.engagement.streak_tracker import STREAK_UPDATE_INTERVAL_SEC
 
     assert STREAK_UPDATE_INTERVAL_SEC == 24 * 60 * 60
 
 
 def test_initial_delay_avoids_startup_thrash():
     """5 min startup delay so rolling deploys don't fire an immediate scan."""
-    from services.streak_tracker import INITIAL_DELAY_SEC
+    from services.engagement.streak_tracker import INITIAL_DELAY_SEC
 
     assert INITIAL_DELAY_SEC >= 60
 
@@ -22,7 +22,7 @@ def test_initial_delay_avoids_startup_thrash():
 def test_streak_block_silent_below_3():
     """Streaks 0-2 days are not interesting enough to mention; an empty
     block keeps the proactive prompt clean."""
-    from services.proactive import _streak_block
+    from services.engagement.proactive import _streak_block
 
     assert _streak_block(0) == ""
     assert _streak_block(1) == ""
@@ -30,7 +30,7 @@ def test_streak_block_silent_below_3():
 
 
 def test_streak_block_mentions_3_day_streak_optionally():
-    from services.proactive import _streak_block
+    from services.engagement.proactive import _streak_block
 
     block = _streak_block(3)
     assert "3 days in a row" in block
@@ -40,7 +40,7 @@ def test_streak_block_mentions_3_day_streak_optionally():
 def test_streak_block_warmly_acknowledges_7_plus():
     """7+ days is a real signal; prompt nudges Gemini to acknowledge it
     without going overboard."""
-    from services.proactive import _streak_block
+    from services.engagement.proactive import _streak_block
 
     block = _streak_block(7)
     assert "7 days in a row" in block
@@ -57,7 +57,7 @@ def _read_streak_source():
     from pathlib import Path
 
     repo = Path(__file__).resolve().parents[1]
-    return (repo / "app/services/streak_tracker.py").read_text()
+    return (repo / "app/services/engagement/streak_tracker.py").read_text()
 
 
 def test_streak_loop_logs_exception_type_and_repr():
@@ -97,7 +97,7 @@ def test_chunked_under_500_to_avoid_lock_storm():
     """The whole point of the deadlock fix is bounding the lock set per
     transaction. If CHUNK_SIZE drifts up to thousands, the deadlock
     pattern returns."""
-    from services.streak_tracker import CHUNK_SIZE
+    from services.engagement.streak_tracker import CHUNK_SIZE
 
     assert 0 < CHUNK_SIZE <= 500, (
         "CHUNK_SIZE must stay ≤500 — larger batches recreate the lock "
@@ -110,7 +110,7 @@ def test_per_statement_timeout_caps_a_hot_row():
     """A 10s ceiling per statement prevents a single hot conversation
     row from stalling the whole pass for the original 5-minute
     statement-timeout window."""
-    from services.streak_tracker import STATEMENT_TIMEOUT_MS
+    from services.engagement.streak_tracker import STATEMENT_TIMEOUT_MS
 
     assert STATEMENT_TIMEOUT_MS <= 30_000, (
         "STATEMENT_TIMEOUT_MS must stay ≤30s — bigger windows lose the "
@@ -126,7 +126,7 @@ def test_update_sql_uses_skip_locked_with_deterministic_order():
     contract. Deterministic order = all writers take locks in the same
     sequence, so no cycle. SKIP LOCKED = we yield to concurrent writers
     instead of waiting (those rows roll forward to the next 24h pass)."""
-    from services.streak_tracker import _UPDATE_CHUNK_SQL, _RESET_CHUNK_SQL
+    from services.engagement.streak_tracker import _UPDATE_CHUNK_SQL, _RESET_CHUNK_SQL
 
     for sql in (_UPDATE_CHUNK_SQL, _RESET_CHUNK_SQL):
         normalized = " ".join(sql.split()).lower()

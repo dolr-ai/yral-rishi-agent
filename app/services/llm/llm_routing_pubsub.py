@@ -135,7 +135,7 @@ async def start_subscriber():
         # module import time (llm_registry imports nothing from here,
         # but main.py imports both).
         from database import get_pool
-        from services import llm_registry
+        from services.llm import llm_registry
 
         async for raw_message in pubsub.listen():
             if raw_message.get("type") != "message":

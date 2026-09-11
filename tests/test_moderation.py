@@ -1,8 +1,8 @@
-"""Tests for app/services/moderation.py — guardrail append/strip."""
+"""Tests for app/services/safety/moderation.py — guardrail append/strip."""
 
 
 def test_with_guardrails_appends():
-    from services.moderation import with_guardrails, STYLE_PROMPT, MODERATION_PROMPT
+    from services.safety.moderation import with_guardrails, STYLE_PROMPT, MODERATION_PROMPT
 
     original = "You are a helpful fitness coach."
     result = with_guardrails(original)
@@ -12,7 +12,7 @@ def test_with_guardrails_appends():
 
 
 def test_strip_guardrails_removes():
-    from services.moderation import with_guardrails, strip_guardrails
+    from services.safety.moderation import with_guardrails, strip_guardrails
 
     original = "You are a helpful fitness coach."
     guarded = with_guardrails(original)
@@ -21,7 +21,7 @@ def test_strip_guardrails_removes():
 
 
 def test_strip_guardrails_idempotent():
-    from services.moderation import strip_guardrails
+    from services.safety.moderation import strip_guardrails
 
     plain = "Just a plain string."
     assert strip_guardrails(plain) == plain

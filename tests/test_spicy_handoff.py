@@ -106,7 +106,7 @@ def test_ticket_ttl_matches_contract():
     """Contract §1 + design §4.7 lock the ~60s TTL. A longer window
     widens the leak-a-URL blast radius; a shorter one races the
     browser hop and would 401 legitimate users."""
-    from services.spicy_handoff import TICKET_TTL_SEC
+    from services.safety.spicy_handoff import TICKET_TTL_SEC
 
     assert TICKET_TTL_SEC == 60
 
@@ -116,7 +116,7 @@ def test_mint_uses_setex_not_plain_set():
     would leave the ticket alive forever (Redis has no default TTL) —
     that would silently keep tickets valid for hours if the SETEX line
     was ever refactored to SET."""
-    src = _read("app/services/spicy_handoff.py")
+    src = _read("app/services/safety/spicy_handoff.py")
     assert "redis.setex(" in src
 
 
@@ -124,7 +124,7 @@ def test_exchange_uses_atomic_getdel():
     """Single-use enforcement lives ENTIRELY in the GETDEL atomicity.
     A GET+DEL pair would race and let two concurrent exchanges each
     return the payload. Pin the atomic op."""
-    src = _read("app/services/spicy_handoff.py")
+    src = _read("app/services/safety/spicy_handoff.py")
     assert "redis.getdel(" in src, (
         "single-use requires atomic GETDEL; separate GET + DEL races"
     )
@@ -155,7 +155,7 @@ class _StubRedis:
 
 
 def _install_stub(monkeypatch, stub):
-    from services import spicy_handoff
+    from services.safety import spicy_handoff
 
     async def _fake_get_redis():
         return stub
@@ -165,7 +165,7 @@ def _install_stub(monkeypatch, stub):
 
 @requires_fastapi
 def test_mint_generates_unique_high_entropy_tickets(monkeypatch):
-    from services import spicy_handoff
+    from services.safety import spicy_handoff
 
     stub = _StubRedis()
     _install_stub(monkeypatch, stub)
@@ -187,7 +187,7 @@ def test_mint_generates_unique_high_entropy_tickets(monkeypatch):
 
 @requires_fastapi
 def test_mint_stores_full_identity_payload(monkeypatch):
-    from services import spicy_handoff
+    from services.safety import spicy_handoff
 
     stub = _StubRedis()
     _install_stub(monkeypatch, stub)
@@ -213,7 +213,7 @@ def test_mint_raises_when_redis_unavailable(monkeypatch):
     """The route layer converts this into a 503 so the app surfaces
     a real error. Silent degrade-open would land the user on the
     brand with a ticket that will never exchange."""
-    from services import spicy_handoff
+    from services.safety import spicy_handoff
 
     async def _no_redis():
         return None
@@ -231,7 +231,7 @@ def test_mint_raises_when_redis_unavailable(monkeypatch):
 def test_exchange_returns_payload_and_consumes_ticket(monkeypatch):
     """Happy path + single-use pin: the same ticket exchanged twice
     returns the payload on call 1 and None on call 2."""
-    from services import spicy_handoff
+    from services.safety import spicy_handoff
 
     stub = _StubRedis()
     _install_stub(monkeypatch, stub)
@@ -251,7 +251,7 @@ def test_exchange_returns_payload_and_consumes_ticket(monkeypatch):
 
 @requires_fastapi
 def test_exchange_returns_none_for_unknown_ticket(monkeypatch):
-    from services import spicy_handoff
+    from services.safety import spicy_handoff
 
     stub = _StubRedis()
     _install_stub(monkeypatch, stub)
@@ -267,7 +267,7 @@ def test_exchange_returns_none_when_redis_errors(monkeypatch):
     """The route maps None to 401 (bounce user back to landing).
     Redis blowing up must NOT propagate as a 500 — that would leak
     infrastructure details to amorae."""
-    from services import spicy_handoff
+    from services.safety import spicy_handoff
 
     stub = _StubRedis()
     _install_stub(monkeypatch, stub)
@@ -285,7 +285,7 @@ def test_exchange_returns_none_when_redis_errors(monkeypatch):
 def test_exchange_returns_none_on_malformed_payload(monkeypatch):
     """Belt-and-braces: if Redis somehow returns non-JSON, we log +
     return None. Never raise, never return a partially-parsed dict."""
-    from services import spicy_handoff
+    from services.safety import spicy_handoff
 
     class _BadPayloadRedis:
         async def setex(self, *a, **k):

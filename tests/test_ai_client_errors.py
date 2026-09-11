@@ -10,7 +10,7 @@ import pytest
 
 def test_error_messages_exhaustive():
     """Every retryable code is in ERROR_MESSAGES; every error code is classified."""
-    from services.ai_client import ERROR_MESSAGES, RETRYABLE_CODES
+    from services.llm.ai_client import ERROR_MESSAGES, RETRYABLE_CODES
 
     for code in RETRYABLE_CODES:
         assert code in ERROR_MESSAGES, f"{code} retryable but no message defined"
@@ -24,7 +24,7 @@ def test_error_messages_exhaustive():
 
 
 def test_llm_blocked_error_carries_reason():
-    from services.ai_client import LlmBlockedError
+    from services.llm.ai_client import LlmBlockedError
 
     err = LlmBlockedError("blockReason=PROHIBITED_CONTENT")
     assert err.reason == "blockReason=PROHIBITED_CONTENT"

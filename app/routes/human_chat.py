@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Request, Query
 from database import get_pool
 from auth import get_current_user
 from repositories import message_repo
-from services import websocket_manager, push_notifications
+from services.engagement import websocket_manager, push_notifications
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ def _format_message(msg: dict) -> dict:
         media_urls = None
 
     if media_urls:
-        from services import storage
+        from services.media import storage
 
         media_urls = [storage.generate_presigned_url(u) for u in media_urls if u]
         if not any(media_urls):
@@ -35,7 +35,7 @@ def _format_message(msg: dict) -> dict:
 
     audio_url = msg.get("audio_url")
     if audio_url and not audio_url.startswith("http"):
-        from services import storage
+        from services.media import storage
 
         audio_url = storage.generate_presigned_url(audio_url)
 

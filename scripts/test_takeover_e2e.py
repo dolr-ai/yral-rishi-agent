@@ -32,7 +32,7 @@ async def run():
         message_repo,
         takeover_repo,
     )
-    from services import ai_client
+    from services.llm import ai_client
 
     pool = await database.get_pool()
 

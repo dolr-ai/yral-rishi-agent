@@ -22,7 +22,7 @@ from fastapi import APIRouter, HTTPException, Request
 from auth import get_current_user
 from database import get_pool
 from repositories import influencer_repo, skill_state_repo
-from services import skills as skills_catalog
+from services.coach import skills as skills_catalog
 
 logger = logging.getLogger(__name__)
 

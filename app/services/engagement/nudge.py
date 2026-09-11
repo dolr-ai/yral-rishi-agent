@@ -11,7 +11,7 @@ Nudge triggers:
 import logging
 
 from repositories import message_repo, influencer_repo
-from services import llm_registry
+from services.llm import llm_registry
 import config
 
 logger = logging.getLogger(__name__)

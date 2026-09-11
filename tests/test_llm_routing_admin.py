@@ -39,7 +39,7 @@ def test_migration_026_documents_rule_9():
 def test_registry_db_override_precedence():
     """DB override > env override > LLM_DEFAULTS. Pin the precedence
     order in the registry source."""
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     # The override block uses _db_overrides as the highest-priority source
     assert "_db_overrides" in src
     # Env override is only honored when there's no DB pin (per the
@@ -51,7 +51,7 @@ def test_registry_reload_from_db_handles_missing_table():
     """Rule 9 — code deploys before migration applies. The reload
     must not crash on missing table; log warning and leave cache
     empty. Falls through to env + LLM_DEFAULTS."""
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     assert "reload_config_from_db" in src
     # The try/except around the SQL is what makes deploys safe
     # pre-migration. Pin both halves.
@@ -62,7 +62,7 @@ def test_registry_reload_from_db_handles_missing_table():
 def test_registry_upsert_validates_process_and_provider():
     """upsert_override must reject unknown processes + providers so
     typos in the admin endpoint don't poison the registry."""
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     assert "upsert_override" in src
     assert "unknown process" in src
     assert "unknown provider" in src

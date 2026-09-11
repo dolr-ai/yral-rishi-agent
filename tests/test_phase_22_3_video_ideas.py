@@ -50,7 +50,7 @@ def test_kill_switch_registers_video_ideas():
 
 
 def test_registry_registers_video_idea_generation():
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     assert '"video_idea_generation"' in src
     pos = src.find('"video_idea_generation":')
     body = src[pos : pos + 700]
@@ -112,14 +112,14 @@ def test_mark_used_is_idempotent_for_already_used():
 
 
 def test_service_exposes_three_required_surfaces():
-    src = _read("app/services/video_ideas.py")
+    src = _read("app/services/media/video_ideas.py")
     assert "async def generate_for_one_bot(" in src
     assert "async def generate_all_once(" in src
     assert "async def video_ideas_loop(" in src
 
 
 def test_loop_gates_on_kill_switch():
-    src = _read("app/services/video_ideas.py")
+    src = _read("app/services/media/video_ideas.py")
     pos = src.find("async def video_ideas_loop(")
     body = src[pos : pos + 2000]
     assert 'is_enabled("video_ideas")' in body
@@ -131,7 +131,7 @@ def test_loop_gates_on_kill_switch():
 def test_generate_all_skips_bots_with_existing_batch():
     """Re-running the cron in-day must not double-write. Pin the
     `bot_has_batch_for_date` guard."""
-    src = _read("app/services/video_ideas.py")
+    src = _read("app/services/media/video_ideas.py")
     pos = src.find("async def generate_all_once(")
     body = src[pos : pos + 2000]
     assert 'bot_has_batch_for_date(pool, bot["id"], today)' in body
@@ -149,7 +149,7 @@ def test_active_bots_filter_recent_traffic():
     gets distinct active influencer_ids from the messages window
     (no DISTINCT-after-join sort), Step 2 hydrates ai_influencers
     fields by IN-list. Pin both probes are present."""
-    src = _read("app/services/video_ideas.py")
+    src = _read("app/services/media/video_ideas.py")
     assert "ACTIVE_BOT_WINDOW_DAYS" in src
     pos = src.find("async def _list_active_bots(")
     body = src[pos : pos + 1800]
@@ -175,7 +175,7 @@ def test_max_tokens_sized_for_multi_byte_scripts():
     character vs Latin. 1024 was too small (2026-06-04 cold-start bug:
     Rishi's principal got a truncated mid-string Hindi response).
     Pin 4096+ so the regression can't sneak back."""
-    src = _read("app/services/video_ideas.py")
+    src = _read("app/services/media/video_ideas.py")
     pos = src.find('process="video_idea_generation"')
     body = src[pos : pos + 1500]
     # Pin max_tokens=4096 (or anything >=4096); reject smaller values.
@@ -194,7 +194,7 @@ def test_extract_idea_array_recovers_truncated_response():
     response could still truncate. The parser should recover whatever
     complete ideas precede the truncation by closing the array at
     the last complete `}`."""
-    from app.services.video_ideas import _extract_idea_array
+    from app.services.media.video_ideas import _extract_idea_array
 
     # Three complete ideas, then truncation mid-string on the fourth.
     truncated = (
@@ -214,7 +214,7 @@ def test_extract_idea_array_recovers_truncated_response():
 def test_extract_idea_array_strict_path_still_works():
     """The strict (non-truncated) path must keep working — regression
     guard for the new truncation-tolerant branch."""
-    from app.services.video_ideas import _extract_idea_array
+    from app.services.media.video_ideas import _extract_idea_array
 
     clean = '[{"hook": "h1", "idea_text": "i1"}, {"hook": "h2", "idea_text": "i2"}]'
     result = _extract_idea_array(clean)
@@ -224,7 +224,7 @@ def test_extract_idea_array_strict_path_still_works():
 
 def test_extract_idea_array_returns_none_on_garbage():
     """No `[` at all → None (not [])."""
-    from app.services.video_ideas import _extract_idea_array
+    from app.services.media.video_ideas import _extract_idea_array
 
     assert _extract_idea_array("totally not json") is None
     assert _extract_idea_array("") is None
@@ -233,7 +233,7 @@ def test_extract_idea_array_returns_none_on_garbage():
 def test_generation_prompt_constrains_json_shape():
     """The LLM is told to emit a bare JSON array with the expected
     object shape. Pin so a future contributor doesn't loosen it."""
-    src = _read("app/services/video_ideas.py")
+    src = _read("app/services/media/video_ideas.py")
     pos = src.find("GENERATION_PROMPT")
     body = src[pos : pos + 3000]
     assert '"hook"' in body
@@ -283,7 +283,7 @@ def test_route_post_used_exists_and_is_owner_only():
 
 def test_main_registers_video_ideas_loop():
     src = _read("app/main.py")
-    assert "from services.video_ideas import video_ideas_loop" in src
+    assert "from services.media.video_ideas import video_ideas_loop" in src
     assert "video_ideas_task = asyncio.create_task(video_ideas_loop())" in src
     # Symmetric cancel + await on shutdown
     assert "video_ideas_task.cancel()" in src

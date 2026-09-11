@@ -31,7 +31,7 @@ def test_kill_switch_registers_skill_proactive():
 
 
 def test_proactive_exposes_three_skill_helpers():
-    src = _read("app/services/proactive.py")
+    src = _read("app/services/engagement/proactive.py")
     assert "async def find_due_skill_events(" in src
     assert "async def generate_skill_checkin(" in src
     assert "async def send_skill_checkin(" in src
@@ -41,7 +41,7 @@ def test_find_due_skill_events_thin_wraps_repo():
     """The engagement loop must talk to ONE find_due_* surface;
     find_due_skill_events is a thin pass-through to the repo so we
     don't fork the partial-index query that makes it cheap."""
-    src = _read("app/services/proactive.py")
+    src = _read("app/services/engagement/proactive.py")
     pos = src.find("async def find_due_skill_events(")
     body = src[pos : pos + 400]
     assert "skill_state_repo.list_due(pool" in body
@@ -51,7 +51,7 @@ def test_skill_checkin_uses_soul_file_composer():
     """The check-in prompt must go through compose() so the skill
     layer + user_skill_state plan layer end up in the system prompt.
     Otherwise the bot would speak as a generic check-in template."""
-    src = _read("app/services/proactive.py")
+    src = _read("app/services/engagement/proactive.py")
     pos = src.find("async def generate_skill_checkin(")
     body = src[pos : pos + 2000]
     assert "soul_file.compose(" in body
@@ -63,7 +63,7 @@ def test_send_skill_checkin_advances_schedule():
     """If we don't advance next_event_at after delivery, the loop
     fires the same row every tick — a flood. Pin the mark_event_fired
     call so a refactor can't drop it."""
-    src = _read("app/services/proactive.py")
+    src = _read("app/services/engagement/proactive.py")
     pos = src.find("async def send_skill_checkin(")
     body = src[pos : pos + 4500]
     assert "skill_state_repo.mark_event_fired(" in body
@@ -79,7 +79,7 @@ def test_send_skill_checkin_handles_no_conversation():
     block pushed the happy-path mark_event_fired call past 4500 chars
     while leaving both call sites intact — the brittle fixed window
     masked that. Function-end slicing is robust to future doc growth."""
-    src = _read("app/services/proactive.py")
+    src = _read("app/services/engagement/proactive.py")
     pos = src.find("async def send_skill_checkin(")
     end = src.find("\nasync def ", pos + 1)
     body = src[pos:end] if end != -1 else src[pos:]
@@ -93,7 +93,7 @@ def test_send_skill_checkin_handles_no_conversation():
 def test_skill_checkin_falls_through_on_unknown_slug():
     """A state row with an orphan skill_slug (catalog removed it)
     must not 500 — log + skip."""
-    src = _read("app/services/proactive.py")
+    src = _read("app/services/engagement/proactive.py")
     pos = src.find("async def send_skill_checkin(")
     body = src[pos : pos + 4500]
     assert "unknown skill_slug" in body
@@ -142,7 +142,7 @@ def test_engagement_loop_summary_mentions_skill_check_ins():
 
 
 def test_proactive_imports_skill_state_repo_and_skills_catalog():
-    src = _read("app/services/proactive.py")
+    src = _read("app/services/engagement/proactive.py")
     assert "skill_state_repo" in src
     assert "skills as skills_catalog" in src
     assert "soul_file" in src

@@ -170,7 +170,8 @@ class _StubPool:
 
 
 def _install(monkeypatch, pool, batch_urls):
-    from services import image_collage, replicate
+    from services.media import image_collage
+    from services.llm import replicate
 
     async def fake_batch(prompt, n, lora_weights_url=None):
         return list(batch_urls)
@@ -208,7 +209,7 @@ def _install(monkeypatch, pool, batch_urls):
 
 @requires_fastapi
 def test_rate_limit_second_request_same_day_rejected(monkeypatch):
-    from services import image_collage
+    from services.media import image_collage
 
     pool = _StubPool(_CollageState(), _RateState())
     _install(monkeypatch, pool, batch_urls=[f"u{i}" for i in range(6)])
@@ -232,7 +233,7 @@ def test_rate_limit_second_request_same_day_rejected(monkeypatch):
 def test_rate_limit_scoped_per_bot(monkeypatch):
     """One request per (user, bot, day). Same user for a DIFFERENT
     bot on the same day must still be accepted."""
-    from services import image_collage
+    from services.media import image_collage
 
     pool = _StubPool(_CollageState(), _RateState())
     _install(monkeypatch, pool, batch_urls=[f"u{i}" for i in range(6)])
@@ -260,7 +261,8 @@ def test_cache_hit_serves_without_new_generation(monkeypatch):
     """A pre-existing state='succeeded' row must return "ready"
     without ever calling replicate.generate_batch. This is the
     common-case Phase-0 path (Tara pre-generated)."""
-    from services import image_collage, replicate
+    from services.media import image_collage
+    from services.llm import replicate
 
     collage = _CollageState()
     collage.row = {
@@ -301,7 +303,8 @@ def test_race_lock_only_one_generates(monkeypatch):
     """Two requesters, no cache: exactly ONE calls generate_batch;
     the other polls the shared reservation row and reads back the
     winner's URLs."""
-    from services import image_collage, replicate
+    from services.media import image_collage
+    from services.llm import replicate
 
     pool = _StubPool(_CollageState(), _RateState())
     batch_calls = {"n": 0}
@@ -360,7 +363,7 @@ def test_content_safety_refusal_marks_failed(monkeypatch):
     """Replicate safety refusal manifests as generate_batch returning
     fewer URLs than requested — design §2.5. The row must land in
     state='failed' and the response reflects the failure."""
-    from services import image_collage
+    from services.media import image_collage
 
     pool = _StubPool(_CollageState(), _RateState())
     _install(monkeypatch, pool, batch_urls=["u1", "u2"])  # short of 6
@@ -380,7 +383,8 @@ def test_budget_hard_cap_blocks_generation(monkeypatch):
     COLLAGE_DAILY_BUDGET_HARD_USD. Pin that the guard trips + marks
     the row failed with reason='budget_hard_cap'."""
     import config
-    from services import image_collage, replicate
+    from services.media import image_collage
+    from services.llm import replicate
 
     collage = _CollageState()
     # Simulate today's ledger already having a $200 succeeded row from
@@ -421,7 +425,7 @@ def test_subscription_stub_yral_team_hardcoded(monkeypatch):
     The route reads config.YRAL_TEAM_PRINCIPALS via the stub, so a
     change to the allowlist is a single-source config edit."""
     import config
-    from services import subscription_stub
+    from services.safety import subscription_stub
 
     monkeypatch.setattr(config, "YRAL_TEAM_PRINCIPALS", frozenset({"team-1"}))
 
@@ -482,7 +486,7 @@ def test_get_collage_returns_signed_urls_not_bucket_keys(monkeypatch):
     from datetime import datetime, timezone
 
     from routes.request_images import get_collage
-    from services import storage
+    from services.media import storage
 
     class _RowPool:
         """Minimal stub — returns a raw succeeded row for the

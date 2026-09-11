@@ -27,7 +27,7 @@ def test_process_names_include_renamed_entries():
       recommendations → soul_file_recommendations
     Pin both new names in the registry source and confirm the old names
     are gone."""
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     assert '"ai_influencer_wizard_simulation"' in src
     assert '"soul_file_recommendations"' in src
     # Old names must not ship — would mean stale registry vs design doc
@@ -40,7 +40,7 @@ def test_process_names_include_renamed_entries():
 def test_process_names_tuple_has_eleven_entries():
     """Design doc Decision 2 locks the count at 11. If a future PR adds
     a process without updating the doc, this catches it."""
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     # Count entries in the PROCESS_NAMES tuple. The tuple sits at module
     # scope; we look for the literal string entries inside it.
     expected = (
@@ -66,7 +66,7 @@ def test_process_names_tuple_has_eleven_entries():
 def test_providers_table_carries_design_doc_caps():
     """Caps from design doc Decision 3: gemini=20, openai/openrouter/
     together=10, internal_vllm=5, ollama=2."""
-    src = _strip_ws(_read("app/services/llm_registry.py"))
+    src = _strip_ws(_read("app/services/llm/llm_registry.py"))
     # Each provider entry sets concurrency_cap to the design-doc value.
     # We pin via the (provider-key, cap) co-location pattern.
     assert '"gemini":{"concurrency_cap":20' in src
@@ -82,7 +82,7 @@ def test_providers_table_carries_design_doc_caps():
 def test_internal_vllm_provider_spec_matches_design_doc():
     """The internal_vllm provider must carry Anshuman's spec verbatim:
     base_url, secret name, synthetic cost basis, thinking-mode disable."""
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     assert '"https://model.ansuman.yral.com/v1"' in src
     assert "/run/secrets/INTERNAL_VLLM_API_KEY" in src
     # Cost basis from Q4 design doc "Cost basis" section
@@ -99,7 +99,7 @@ def test_no_real_api_key_committed():
     """No actual API key material in the registry source. The registry
     only encodes secret NAMES; resolution is via file-first
     /run/secrets/<NAME> + env fallback."""
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     # A real API key would have a long random-looking literal. Confirm
     # we're only referencing names (uppercase identifiers ending in
     # _API_KEY) and paths, never literal hex/random strings.
@@ -114,7 +114,7 @@ def test_env_override_pattern_present():
     """Q3: LLM_PROCESS__<UPPER_NAME>=<provider>/<model> overrides the
     default registry entry. Pin that the override-resolution code path
     is present and reads the right env-key shape."""
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     assert "LLM_PROCESS__" in src
     assert "process.upper()" in src
     # The provider/model split is what tells us the env value format is
@@ -129,7 +129,7 @@ def test_semaphore_is_per_provider_via_lazy_cache():
     """Per-provider asyncio.Semaphore lives in a lazy dict so we avoid
     binding to an event-loop at module-import time. Pin both the cache
     + the lazy-init shape."""
-    src = _strip_ws(_read("app/services/llm_registry.py"))
+    src = _strip_ws(_read("app/services/llm/llm_registry.py"))
     assert "_semaphores:dict[str,asyncio.Semaphore]" in src
     assert "asyncio.Semaphore(cap)" in src
 
@@ -146,7 +146,7 @@ def test_gemini_dispatch_uses_dedicated_client():
     25.3b note: NotImplementedError appears elsewhere in the file
     (call_transcribe raises it for non-Gemini providers). The
     constraint here is that GEMINI's call() dispatch isn't gated by it."""
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     assert 'provider == "gemini"' in src
     assert "from services.llm_clients import gemini" in src
     assert "client_module.complete" in src
@@ -187,7 +187,7 @@ def test_llm_defaults_uses_production_gemini_model():
     """The defaults must reflect what production actually runs today
     (gemini-2.5-flash, per config.GEMINI_MODEL). Aspirational model
     names like 2.0-flash are NOT the production reality."""
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     assert "gemini-2.5-flash" in src
     # gemini-2.0-flash was the placeholder I had in 25.2 scaffolding;
     # must be gone now.
@@ -197,7 +197,7 @@ def test_llm_defaults_uses_production_gemini_model():
 def test_llm_defaults_constant_name():
     """Per Rishi 2026-06-02 spec: the constant is named LLM_DEFAULTS,
     not DEFAULT_REGISTRY (which was my 25.2 placeholder)."""
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     assert "LLM_DEFAULTS" in src
     # The placeholder name must NOT ship
     assert "DEFAULT_REGISTRY" not in src
@@ -210,7 +210,7 @@ def test_call_accepts_extra_body_param():
     """character_generator passes Gemini-specific safetySettings via
     extra_body. Per-invocation extra_body must merge over provider
     default (caller wins on key collision)."""
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     assert "extra_body: dict | None = None" in src
     assert "merged_extra" in src or "caller wins" in src
 
@@ -223,16 +223,16 @@ def test_simple_callers_migrated_to_registry():
     instead of the legacy ai_client._call_gemini import. Any future
     refactor that re-introduces _call_gemini in these files is a smell."""
     for path in (
-        "app/services/memory.py",
-        "app/services/coach.py",
-        "app/services/nudge.py",
-        "app/services/recommendations.py",
-        "app/services/character_generator.py",
-        "app/services/quality_scorer.py",
+        "app/services/engagement/memory.py",
+        "app/services/coach/coach.py",
+        "app/services/engagement/nudge.py",
+        "app/services/discovery/recommendations.py",
+        "app/services/discovery/character_generator.py",
+        "app/services/coach/quality_scorer.py",
     ):
         src = _read(path)
         # No more direct legacy import
-        assert "from services.ai_client import _call_gemini" not in src, (
+        assert "from services.llm.ai_client import _call_gemini" not in src, (
             f"{path}: still imports legacy _call_gemini"
         )
         # Registry import present
@@ -245,7 +245,7 @@ def test_wizard_intake_and_draft_migrated_preview_deferred():
     """Wizard has 3 LLM calls; intake + draft migrate, preview stays on
     generate_response because it needs the archetype tuning path
     (intentionally part of 25.3b chat-orchestration scope)."""
-    src = _read("app/services/wizard.py")
+    src = _read("app/services/coach/wizard.py")
     # The intake + draft prompts now go through the registry
     assert "llm_registry.call(" in src
     assert src.count('process="ai_influencer_wizard_simulation"') >= 2
@@ -262,7 +262,7 @@ def test_registry_dispatches_to_openai_compatible_for_non_gemini():
     all go through the openai_compatible client. The single dispatch
     path is what gives us symmetry — adding a provider is one row in
     PROVIDERS, no new client module."""
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     assert "from services.llm_clients import openai_compatible" in src
     # The dispatch uses a `client_module` indirection after 25.3 to
     # uniformly call either gemini.complete or openai_compatible.complete

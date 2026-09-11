@@ -13,7 +13,7 @@ import logging
 import uuid
 
 import config
-from services import storage
+from services.media import storage
 
 logger = logging.getLogger(__name__)
 

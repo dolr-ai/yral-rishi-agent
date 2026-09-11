@@ -21,7 +21,7 @@ REPO = Path(__file__).resolve().parents[1]
 
 def test_extract_recognises_system_instructions_edit():
     """Legacy proposal shape still parses (no regression)."""
-    from services.coach import _try_extract_proposal
+    from services.coach.coach import _try_extract_proposal
 
     text = (
         'Some preamble.\n'
@@ -39,7 +39,7 @@ def test_extract_recognises_system_instructions_edit():
 
 def test_extract_recognises_override_proposal():
     """The new shape — proposed_global_rule_override blob."""
-    from services.coach import _try_extract_proposal
+    from services.coach.coach import _try_extract_proposal
 
     text = (
         '{"summary": "Allow long replies for Stap Sister", '
@@ -56,7 +56,7 @@ def test_extract_rejects_unknown_override_key():
     """Defense against an LLM hallucinating an override slug that
     isn't actually overrideable. `character_consistency` is in the
     FIXED list (non-overrideable) — should NOT be accepted."""
-    from services.coach import _try_extract_proposal
+    from services.coach.coach import _try_extract_proposal
 
     text = (
         '{"summary": "...", '
@@ -71,7 +71,7 @@ def test_extract_rejects_plain_text_with_no_proposal():
     """When Coach replies with just a question (the override-ask turn),
     no JSON proposal block — extract must return None so persistence
     skips proposed_changes."""
-    from services.coach import _try_extract_proposal
+    from services.coach.coach import _try_extract_proposal
 
     plain = (
         "That's a platform-wide rule — want me to override "
@@ -86,7 +86,7 @@ def test_extract_rejects_plain_text_with_no_proposal():
 def test_meta_prompt_includes_platform_constraints_section():
     """The platform-constraints section is what gives Coach the
     awareness PR-B is supposed to add. Without it, Rule 5 is dead text."""
-    src = (REPO / "app" / "services" / "coach.py").read_text()
+    src = (REPO / "app" / "services" / "coach" / "coach.py").read_text()
     assert "PLATFORM CONSTRAINTS" in src
     assert "Overrideable platform rules" in src
     assert "Non-overrideable platform rules" in src
@@ -96,7 +96,7 @@ def test_meta_prompt_has_ask_first_rule():
     """Rule 5 — Coach must ASK before flipping an override. Without
     this rule, Coach would silently emit override proposals on first
     turn, defeating the user-consent UX Rishi specified."""
-    src = (REPO / "app" / "services" / "coach.py").read_text()
+    src = (REPO / "app" / "services" / "coach" / "coach.py").read_text()
     # Rule 5 keyword markers
     assert "PLATFORM RULE OVERRIDE" in src
     assert "FIRST TURN" in src or "first turn" in src
@@ -108,7 +108,7 @@ def test_meta_prompt_documents_override_proposal_shape():
     must be in the prompt so Coach actually emits it correctly. We
     search past the module docstring's first mention of the override
     column to find the actual META_PROMPT shape spec."""
-    src = (REPO / "app" / "services" / "coach.py").read_text()
+    src = (REPO / "app" / "services" / "coach" / "coach.py").read_text()
     assert "proposed_global_rule_override" in src
     # The shape spec lives inside META_PROMPT — narrow the search to
     # that prompt block.
@@ -123,8 +123,8 @@ def test_meta_prompt_documents_override_proposal_shape():
 def test_meta_prompt_overrideable_rules_sourced_from_soul_file():
     """Single source of truth — overrideable list comes from
     GLOBAL_RULES_OVERRIDEABLE. Helper function exists to render it."""
-    src = (REPO / "app" / "services" / "coach.py").read_text()
-    assert "from services.soul_file import GLOBAL_RULES_OVERRIDEABLE" in src
+    src = (REPO / "app" / "services" / "coach" / "coach.py").read_text()
+    assert "from services.coach.soul_file import GLOBAL_RULES_OVERRIDEABLE" in src
     assert "_format_overrideable_rules" in src
     # And the META_PROMPT consumes the formatted output via .format(overrideable_rules=...)
     assert "{overrideable_rules}" in src
@@ -140,7 +140,7 @@ def test_coach_reply_returns_4_tuple():
     proposed_section_change). The PR-B's 4-tuple invariant — at least
     one None per non-proposal turn — still holds; just check the
     section slot lives in the return shape."""
-    src = (REPO / "app" / "services" / "coach.py").read_text()
+    src = (REPO / "app" / "services" / "coach" / "coach.py").read_text()
     # 5-tuple shape: str + 4×(str|None or dict|None) — pinned by counting
     # the | None tokens within the coach_reply return-type annotation.
     pos = src.find("async def coach_reply(")

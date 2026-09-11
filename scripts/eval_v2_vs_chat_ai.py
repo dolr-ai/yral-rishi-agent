@@ -26,7 +26,7 @@ from pathlib import Path
 
 import httpx
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # eval/ lives beside this script
 
 
 def mint_jwt(sub: str = "eval-runner") -> str:
@@ -122,7 +122,7 @@ async def send_one(
 async def judge(user_message: str, expected: str, response: str) -> dict | None:
     """Use Gemini as the judge — same model as production. Returns the
     parsed scores dict or None if the model didn't emit valid JSON."""
-    from services import ai_client
+    from services.llm import ai_client
 
     judge_input = JUDGE_PROMPT.format(
         user_message=user_message, expected=expected, response=response

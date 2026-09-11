@@ -53,7 +53,7 @@ def test_nsfw_gate_not_yielding_no_provider_before_call():
     not chat with Tara in prod 2026-06-25. A future refactor that puts
     the gate back must edit this test AND re-verify against the prod
     breakage that motivated removing it."""
-    src = (REPO / "app" / "services" / "ai_client.py").read_text()
+    src = (REPO / "app" / "services" / "llm" / "ai_client.py").read_text()
     pos = src.find("async def generate_response_stream(")
     end = src.find("\nasync def ", pos + 1)
     body = src[pos:end] if end != -1 else src[pos:]
@@ -96,8 +96,8 @@ def test_nsfw_stream_yields_text_then_done_with_real_content():
          fires and the assistant message gets persisted.
       3. NOT yield ('error', ...).
     Mobile's SSE contract is preserved end-to-end."""
-    from services import ai_client, llm_registry
-    from services.llm_types import LlmResponse
+    from services.llm import ai_client, llm_registry
+    from services.llm.llm_types import LlmResponse
 
     captured_process = {}
 
@@ -170,8 +170,8 @@ def test_nsfw_stream_handles_empty_reply_without_yielding_text():
     SSE token. Still yield ('done', ...) so the stream terminates
     cleanly; chat.py's downstream `not full_text.strip()` check then
     surfaces the empty-reply TRANSIENT error."""
-    from services import ai_client, llm_registry
-    from services.llm_types import LlmResponse
+    from services.llm import ai_client, llm_registry
+    from services.llm.llm_types import LlmResponse
 
     async def fake_call(*, process, messages, temperature, max_tokens):
         return LlmResponse(

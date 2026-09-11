@@ -185,7 +185,7 @@ async def get_soul_file(influencer_id: str, request: Request):
     if inf.get("parent_principal_id") != user_id:
         raise HTTPException(status_code=403, detail="Not your influencer")
 
-    from services.moderation import strip_guardrails
+    from services.safety.moderation import strip_guardrails
 
     return {
         "influencer_id": influencer_id,
@@ -283,7 +283,7 @@ async def get_recommendations(influencer_id: str, request: Request):
     )
     sample_replies = [dict(r) for r in rows]
 
-    from services import recommendations as rec_service
+    from services.discovery import recommendations as rec_service
 
     recs = await rec_service.generate_recommendations(
         bot_name=inf.get("display_name") or inf.get("name") or "this bot",
@@ -359,7 +359,7 @@ async def compare_variants(influencer_id: str, request: Request):
         raise HTTPException(status_code=403, detail="Not your influencer")
 
     from repositories import variant_repo
-    from services import ab_compare
+    from services.coach import ab_compare
 
     variant_b = await variant_repo.get_variant_b(pool, influencer_id)
     if not variant_b:

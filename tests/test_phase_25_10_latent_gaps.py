@@ -23,7 +23,7 @@ def test_registry_call_gates_on_supports_chat():
     _do_complete() helper that backs both primary and fallback dispatches
     in call(). Behaviour preserved; assertion updated to look at the
     helper's body."""
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     # Find the _do_complete() function body — the gate now lives here.
     do_pos = src.find("async def _do_complete(")
     next_def = src.find("\nasync def ", do_pos + 1)

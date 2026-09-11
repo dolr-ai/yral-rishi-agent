@@ -23,7 +23,7 @@ def _read(p: str) -> str:
 def test_llm_routing_pubsub_module_exists():
     """The new module is the central piece. It defines the channel name,
     the publish helper, and the subscriber task."""
-    src = _read("app/services/llm_routing_pubsub.py")
+    src = _read("app/services/llm/llm_routing_pubsub.py")
     assert 'LLM_ROUTING_CHANNEL = "llm_routing_invalidate"' in src
     assert "async def publish_invalidate(" in src
     assert "async def start_subscriber(" in src
@@ -33,17 +33,17 @@ def test_pubsub_subscriber_reloads_registry_cache():
     """On every received message, the subscriber must call
     `llm_registry.reload_config_from_db` so the local replica picks up
     whatever the publishing replica wrote."""
-    src = _read("app/services/llm_routing_pubsub.py")
+    src = _read("app/services/llm/llm_routing_pubsub.py")
     start = src.find("async def start_subscriber(")
     body = src[start:]
-    assert "from services import llm_registry" in body
+    assert "from services.llm import llm_registry" in body
     assert "reload_config_from_db" in body
 
 
 def test_pubsub_graceful_redis_unavailable():
     """If Redis is unreachable, the subscriber must log + return
     cleanly — NOT crash the app. Mirrors websocket_manager's pattern."""
-    src = _read("app/services/llm_routing_pubsub.py")
+    src = _read("app/services/llm/llm_routing_pubsub.py")
     sub_start = src.find("async def start_subscriber(")
     body = src[sub_start:]
     assert "if not redis:" in body
@@ -62,7 +62,7 @@ def test_upsert_override_broadcasts_invalidate():
     """Every successful Save on the dashboard must broadcast a
     cache-invalidate message so the other replicas refresh too. Without
     this, the original 2026-06-08 bug returns."""
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     start = src.find("async def upsert_override(")
     end = src.find("\n\n\nasync def delete_override(")
     body = src[start:end]
@@ -75,7 +75,7 @@ def test_upsert_override_broadcasts_invalidate():
 def test_delete_override_broadcasts_invalidate():
     """Reset on the dashboard is just as critical to broadcast as Save —
     other replicas need to clear their cache too."""
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     start = src.find("async def delete_override(")
     body = src[start:]
     # Stop reading at the next top-level function.
@@ -89,7 +89,7 @@ def test_broadcast_helper_is_non_fatal_on_redis_error():
     """If Redis is down, a Save should still succeed locally — only the
     cross-replica propagation degrades. Pin that the broadcast helper
     catches and logs, doesn't re-raise."""
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     start = src.find("async def _broadcast_invalidate(")
     end = src.find("\n\n\nasync def upsert_override(")
     body = src[start:end]

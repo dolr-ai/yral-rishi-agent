@@ -17,7 +17,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 
-# Behavioural tests need to import services.proactive, which transitively
+# Behavioural tests need to import services.engagement.proactive, which transitively
 # pulls in httpx via ai_client. CI has httpx; the local dev box often
 # doesn't. Skip gracefully there.
 try:
@@ -33,7 +33,7 @@ requires_httpx = pytest.mark.skipif(
 
 
 def _read_proactive_source() -> str:
-    return (REPO / "app" / "services" / "proactive.py").read_text()
+    return (REPO / "app" / "services" / "engagement" / "proactive.py").read_text()
 
 
 # ─── behavioural — the math ─────────────────────────────────────────────
@@ -43,7 +43,7 @@ def _read_proactive_source() -> str:
 def test_backoff_zero_or_one_unanswered_returns_base():
     """Either no proactive history (fresh) or one we just sent and the
     user might still reply — stay at base cadence."""
-    from services.proactive import _backoff_cadence
+    from services.engagement.proactive import _backoff_cadence
 
     assert _backoff_cadence(6, 0) == 6
     assert _backoff_cadence(6, 1) == 6
@@ -53,7 +53,7 @@ def test_backoff_zero_or_one_unanswered_returns_base():
 def test_backoff_doubles_each_round():
     """The brief's explicit ladder for the default 6h cadence:
     6h → 12h → 24h → 48h → 96h, then capped at weekly."""
-    from services.proactive import _backoff_cadence
+    from services.engagement.proactive import _backoff_cadence
 
     assert _backoff_cadence(6, 2) == 12
     assert _backoff_cadence(6, 3) == 24
@@ -66,7 +66,7 @@ def test_backoff_caps_at_weekly_but_never_hard_stops():
     """Locked decision: slow down, never hard-stop. Even after many
     unanswered rounds the cadence must remain finite (= continue to
     fire at the cap), not return infinity or 0."""
-    from services.proactive import (
+    from services.engagement.proactive import (
         _backoff_cadence,
         SKILL_CHECKIN_BACKOFF_CAP_HOURS,
     )
@@ -87,7 +87,7 @@ def test_backoff_caps_at_weekly_but_never_hard_stops():
 def test_backoff_scales_with_base_cadence():
     """If a skill ships with a non-default cadence (e.g. 12h), the
     doubling pattern still applies relative to that base."""
-    from services.proactive import _backoff_cadence
+    from services.engagement.proactive import _backoff_cadence
 
     assert _backoff_cadence(12, 1) == 12
     assert _backoff_cadence(12, 2) == 24
@@ -99,7 +99,7 @@ def test_backoff_user_reply_resets_to_base():
     """When the user replies, the "since last user reply" SQL returns 0
     for the next check-in. The cadence must drop straight back to base
     — no lingering memory of the prior unanswered streak."""
-    from services.proactive import _backoff_cadence
+    from services.engagement.proactive import _backoff_cadence
 
     # Simulate: 4 unanswered → cadence 48h. User replies. Next check-in
     # sees count=0 → back to base.

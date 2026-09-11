@@ -66,7 +66,7 @@ def test_migration_043_has_squawk_preamble():
 
 
 def test_service_module_exposes_required_symbols():
-    src = (REPO / "app" / "services" / "discovery_search.py").read_text()
+    src = (REPO / "app" / "services" / "discovery" / "discovery_search.py").read_text()
     for name in (
         "async def search",
         "def _build_subtitle",
@@ -82,7 +82,7 @@ def test_service_concat_expression_matches_migration():
     """The SELECT concat expression must be byte-identical to the
     migration's index expression — otherwise the planner won't pick
     the GIN index and the query slows to a sequential scan."""
-    svc = (REPO / "app" / "services" / "discovery_search.py").read_text()
+    svc = (REPO / "app" / "services" / "discovery" / "discovery_search.py").read_text()
     mig = (REPO / "migrations" / "043_ai_influencers_search_index.sql").read_text()
     # Both contain the same column ordering with same separators.
     for token in (
@@ -99,7 +99,7 @@ def test_service_concat_expression_matches_migration():
 def test_service_sql_pure_select_no_writes():
     """Same replica-safety property as M2c. The search SQL must
     contain no write keywords."""
-    src = (REPO / "app" / "services" / "discovery_search.py").read_text()
+    src = (REPO / "app" / "services" / "discovery" / "discovery_search.py").read_text()
     sql_block = src[src.index("_SEARCH_SQL") : src.index("# ─── envelope")]
     for forbidden in (
         "INSERT ",
@@ -118,7 +118,7 @@ def test_service_sql_pure_select_no_writes():
 
 
 def test_service_filters_to_active_bots():
-    src = (REPO / "app" / "services" / "discovery_search.py").read_text()
+    src = (REPO / "app" / "services" / "discovery" / "discovery_search.py").read_text()
     assert "i.is_active = 'active'" in src
 
 
@@ -149,7 +149,7 @@ def test_envelope_keys_match_addendum():
     category, created_at, kind, subtitle. The first 7 mirror the
     feed envelope so mobile parsers can share code; kind + subtitle
     are search-specific."""
-    src = (REPO / "app" / "services" / "discovery_search.py").read_text()
+    src = (REPO / "app" / "services" / "discovery" / "discovery_search.py").read_text()
     for k in (
         '"id"',
         '"name"',
@@ -167,7 +167,7 @@ def test_envelope_keys_match_addendum():
 def test_kind_always_influencer_for_now():
     """Addendum: `kind` field is future-proofing for user-search.
     Today every search result is an influencer."""
-    src = (REPO / "app" / "services" / "discovery_search.py").read_text()
+    src = (REPO / "app" / "services" / "discovery" / "discovery_search.py").read_text()
     assert '"kind": "influencer"' in src
 
 
@@ -177,7 +177,7 @@ def test_kind_always_influencer_for_now():
 
 
 def test_build_subtitle_archetype_and_category():
-    from services.discovery_search import _build_subtitle
+    from services.discovery.discovery_search import _build_subtitle
 
     assert _build_subtitle("companion", "Lifestyle") == "companion · Lifestyle"
 
@@ -185,14 +185,14 @@ def test_build_subtitle_archetype_and_category():
 def test_build_subtitle_unknown_archetype_renders_literal():
     """Per addendum: 'unknown' archetype renders as literal 'unknown'.
     Mobile UX team handles visual treatment."""
-    from services.discovery_search import _build_subtitle
+    from services.discovery.discovery_search import _build_subtitle
 
     assert _build_subtitle("unknown", "Food & Drink") == "unknown · Food & Drink"
 
 
 def test_build_subtitle_no_category_drops_separator():
     """Empty category → just the archetype (no trailing ' · ')."""
-    from services.discovery_search import _build_subtitle
+    from services.discovery.discovery_search import _build_subtitle
 
     assert _build_subtitle("advisor", None) == "advisor"
     assert _build_subtitle("advisor", "") == "advisor"
@@ -200,14 +200,14 @@ def test_build_subtitle_no_category_drops_separator():
 
 
 def test_build_subtitle_none_archetype_falls_back():
-    from services.discovery_search import _build_subtitle
+    from services.discovery.discovery_search import _build_subtitle
 
     assert _build_subtitle(None, "Lifestyle") == "unknown · Lifestyle"
     assert _build_subtitle(None, None) == "unknown"
 
 
 def test_shape_result_includes_kind_and_subtitle():
-    from services.discovery_search import _shape_result
+    from services.discovery.discovery_search import _shape_result
 
     row = {
         "id": "abc",
@@ -230,7 +230,7 @@ def test_shape_result_includes_kind_and_subtitle():
 def test_shape_result_unclassified_bot_shows_unknown_subtitle():
     """Pre-M1-classification bots have archetype='unknown' in the
     DB. Subtitle should render 'unknown · <category>'."""
-    from services.discovery_search import _shape_result
+    from services.discovery.discovery_search import _shape_result
 
     row = {
         "id": "abc",
@@ -307,7 +307,7 @@ class _StubAcquire:
 def test_search_empty_q_short_circuits_to_empty_results():
     """Per addendum: empty `q` returns `{"results": [], "count": 0}`,
     NOT 422. Mobile sends `?q=` while the user types."""
-    from services import discovery_search
+    from services.discovery import discovery_search
 
     pool = _StubPool(_StubConn())  # should never get hit
     out = asyncio.run(discovery_search.search(pool, "", 20))
@@ -315,7 +315,7 @@ def test_search_empty_q_short_circuits_to_empty_results():
 
 
 def test_search_whitespace_q_short_circuits():
-    from services import discovery_search
+    from services.discovery import discovery_search
 
     pool = _StubPool(_StubConn())
     out = asyncio.run(discovery_search.search(pool, "   ", 20))
@@ -323,7 +323,7 @@ def test_search_whitespace_q_short_circuits():
 
 
 def test_search_none_q_short_circuits():
-    from services import discovery_search
+    from services.discovery import discovery_search
 
     pool = _StubPool(_StubConn())
     out = asyncio.run(discovery_search.search(pool, None, 20))
@@ -333,7 +333,7 @@ def test_search_none_q_short_circuits():
 def test_search_happy_path_sets_threshold_then_fetches():
     """The SET LOCAL must fire BEFORE the SELECT so the similarity
     threshold is in effect for the trgm `%` filter."""
-    from services import discovery_search
+    from services.discovery import discovery_search
 
     rows = [
         {
@@ -366,7 +366,7 @@ def test_search_happy_path_sets_threshold_then_fetches():
 def test_search_q_lowercased_before_query():
     """Index expression is LOWER(...); query side must also lowercase
     so the case-insensitive match actually works."""
-    from services import discovery_search
+    from services.discovery import discovery_search
 
     conn = _StubConn(rows=[])
     pool = _StubPool(conn)
@@ -377,7 +377,7 @@ def test_search_q_lowercased_before_query():
 def test_search_q_length_capped_at_100():
     """Defense in depth: even if the route's Pydantic validator is
     bypassed, the service caps q length to bound similarity calc cost."""
-    from services import discovery_search
+    from services.discovery import discovery_search
 
     conn = _StubConn(rows=[])
     pool = _StubPool(conn)
@@ -389,7 +389,7 @@ def test_search_q_length_capped_at_100():
 def test_search_raises_on_db_error():
     """DB errors propagate; the route layer translates to 503. This
     matches M2a's catastrophic-only error envelope."""
-    from services import discovery_search
+    from services.discovery import discovery_search
 
     conn = _StubConn(raises_on_fetch=True)
     pool = _StubPool(conn)
@@ -402,7 +402,7 @@ def test_search_raises_on_db_error():
 
 
 def test_search_no_results_returns_empty_envelope():
-    from services import discovery_search
+    from services.discovery import discovery_search
 
     conn = _StubConn(rows=[])
     pool = _StubPool(conn)

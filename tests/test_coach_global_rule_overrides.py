@@ -26,7 +26,7 @@ def test_render_default_includes_all_overrideable_rules():
     """With no overrides, every overrideable rule must render. Otherwise
     a future migration that adds an override key would silently disable
     behavior on existing bots."""
-    from services.soul_file import (
+    from services.coach.soul_file import (
         GLOBAL_RULES_OVERRIDEABLE,
         _render_global_rules,
     )
@@ -39,7 +39,7 @@ def test_render_default_includes_all_overrideable_rules():
 def test_render_drops_response_length_when_override_set():
     """Saikat's case: bot opts out of '1-3 sentences max'. The line
     must NOT appear in the rendered output."""
-    from services.soul_file import (
+    from services.coach.soul_file import (
         GLOBAL_RULES_OVERRIDEABLE,
         _render_global_rules,
     )
@@ -53,7 +53,7 @@ def test_render_drops_response_length_when_override_set():
 def test_render_drops_language_mirror_when_override_set():
     """Other example from Rishi's spec — bot pinned to a specific
     language regardless of user's language."""
-    from services.soul_file import (
+    from services.coach.soul_file import (
         GLOBAL_RULES_OVERRIDEABLE,
         _render_global_rules,
     )
@@ -67,7 +67,7 @@ def test_fixed_rules_never_drop_under_overrides():
     """The three FIXED rules (in-character, no AI mention, warm tone)
     are non-negotiable platform behavior. No override key should remove
     them — even a malformed override blob with their text as the key."""
-    from services.soul_file import GLOBAL_RULES_FIXED, _render_global_rules
+    from services.coach.soul_file import GLOBAL_RULES_FIXED, _render_global_rules
 
     # Try to "override" everything — fixed rules must still appear.
     rendered = _render_global_rules(
@@ -87,7 +87,7 @@ def test_render_accepts_json_string_form():
     (see app/routes/influencers.py:59 for the pattern). The renderer
     must handle both — otherwise call sites would each need to
     json.loads() before passing."""
-    from services.soul_file import (
+    from services.coach.soul_file import (
         GLOBAL_RULES_OVERRIDEABLE,
         _render_global_rules,
     )
@@ -100,7 +100,7 @@ def test_render_handles_malformed_json_safely():
     """If the JSONB blob is somehow malformed (manual SQL write, partial
     write), the renderer must fall back to the platform defaults rather
     than crash chat-send. Defensive: garbage in → safe output."""
-    from services.soul_file import (
+    from services.coach.soul_file import (
         GLOBAL_RULES_OVERRIDEABLE,
         _render_global_rules,
     )
@@ -114,7 +114,7 @@ def test_render_handles_malformed_json_safely():
 def test_compose_passes_through_overrides():
     """End-to-end: compose() with an override produces a system prompt
     that doesn't carry the dropped rule. The Saikat reproduction case."""
-    from services.soul_file import GLOBAL_RULES_OVERRIDEABLE, compose
+    from services.coach.soul_file import GLOBAL_RULES_OVERRIDEABLE, compose
 
     sys_instructions = "You give long, thoughtful, multi-paragraph replies."
     prompt = compose(
@@ -131,7 +131,7 @@ def test_legacy_global_rules_constant_unchanged_in_shape():
     """Backward-compat: the GLOBAL_RULES module constant kept its shape
     (text format with preamble + dashed bullets). Anything that imported
     GLOBAL_RULES before PR-A still sees a usable string."""
-    from services.soul_file import GLOBAL_RULES
+    from services.coach.soul_file import GLOBAL_RULES
 
     assert GLOBAL_RULES.startswith("You are an AI personality on the YRAL")
     assert "Mirror the user's language" in GLOBAL_RULES
@@ -174,5 +174,5 @@ def test_proactive_passes_overrides_to_compose():
     """Skill proactive check-ins also go through compose() — they must
     respect the override too (a bot with 'long_allowed' shouldn't get
     1-3 sentence check-ins)."""
-    src = (REPO / "app" / "services" / "proactive.py").read_text()
+    src = (REPO / "app" / "services" / "engagement" / "proactive.py").read_text()
     assert "global_rule_overrides=inf.get(" in src

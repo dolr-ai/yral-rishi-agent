@@ -4,7 +4,7 @@
 def test_memory_to_embed_text_shape():
     """Embed-text format is stable — same format used at write AND query time
     must produce embeddings in the same vector space."""
-    from services.embeddings import memory_to_embed_text
+    from services.llm.embeddings import memory_to_embed_text
 
     assert memory_to_embed_text("identity", "name", "Rahul") == "identity: name = Rahul"
     assert (
@@ -17,7 +17,7 @@ def test_embedding_dim_constant():
     """Gemini text-embedding-004 is 768-dim. If this changes, the column
     type in migration 008 must change too — and all existing embeddings
     become invalid."""
-    from services.embeddings import EMBEDDING_DIM
+    from services.llm.embeddings import EMBEDDING_DIM
 
     assert EMBEDDING_DIM == 768
 

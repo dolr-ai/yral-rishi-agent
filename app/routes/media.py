@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
 
 from auth import get_current_user
-from services import storage
+from services.media import storage
 
 logger = logging.getLogger(__name__)
 

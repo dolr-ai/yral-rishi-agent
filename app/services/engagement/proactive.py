@@ -28,14 +28,9 @@ from repositories import (
     message_repo,
     skill_state_repo,
 )
-from services import (
-    ai_client,
-    memory,
-    push_notifications,
-    skills as skills_catalog,
-    soul_file,
-    websocket_manager,
-)
+from services.llm import ai_client
+from services.engagement import memory, push_notifications, websocket_manager
+from services.coach import skills as skills_catalog, soul_file
 
 logger = logging.getLogger(__name__)
 

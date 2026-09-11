@@ -54,7 +54,7 @@ def test_migration_030_adds_skill_slug_to_ai_influencers():
 
 
 def test_skills_catalog_ships_nutrition_coach():
-    src = _read("app/services/skills.py")
+    src = _read("app/services/coach/skills.py")
     assert '"nutrition_coach":' in src
     # All required keys per design doc
     for key in (
@@ -76,7 +76,7 @@ def test_skills_state_schema_has_setup_runtime_split():
     """state_schema is documentation — convention is split into setup
     (onboarding) and runtime (mutated by system). Pin both halves so
     a future skill author follows the same shape."""
-    src = _read("app/services/skills.py")
+    src = _read("app/services/coach/skills.py")
     assert '"setup":' in src
     assert '"runtime":' in src
 
@@ -84,7 +84,7 @@ def test_skills_state_schema_has_setup_runtime_split():
 def test_skills_nutrition_coach_archetype_compatibility():
     """nutrition_coach declares advisor + educator compatible; NOT
     companion (the companion archetype prompt forbids medical advice)."""
-    src = _read("app/services/skills.py")
+    src = _read("app/services/coach/skills.py")
     schema_pos = src.find('"nutrition_coach":')
     body = src[schema_pos : schema_pos + 5000]
     assert '"advisor"' in body
@@ -95,7 +95,7 @@ def test_skills_module_has_get_helper():
     """get(slug) is the catalog-lookup primitive used by soul_file and
     routes. Pin it so a future "convert dict to DB table" refactor
     can swap the implementation without changing call sites."""
-    src = _read("app/services/skills.py")
+    src = _read("app/services/coach/skills.py")
     assert "def get(slug: str)" in src
 
 
@@ -106,7 +106,7 @@ def test_soul_file_compose_accepts_skill_kwargs():
     """compose() gained skill_slug + user_skill_state kwargs. Both
     optional — non-skilled influencers (the majority today) keep the
     same signature behavior."""
-    src = _read("app/services/soul_file.py")
+    src = _read("app/services/coach/soul_file.py")
     assert "skill_slug: str | None = None" in src
     assert "user_skill_state: dict | None = None" in src
 
@@ -114,7 +114,7 @@ def test_soul_file_compose_accepts_skill_kwargs():
 def test_soul_file_compose_layer_order_skill_after_archetype():
     """Layer order per design: GLOBAL → ARCHETYPE → SKILL → PER_INF →
     USER_STATE → MEMORIES. Skill AFTER archetype so its carve-outs win."""
-    src = _read("app/services/soul_file.py")
+    src = _read("app/services/coach/soul_file.py")
     fn_start = src.find("def compose(")
     body = src[fn_start : fn_start + 5000]
     # The archetype lookup must come before the skill lookup
@@ -127,7 +127,7 @@ def test_soul_file_compose_layer_order_skill_after_archetype():
 def test_soul_file_compose_user_state_includes_setup_and_runtime():
     """user_skill_state layer must render BOTH setup and runtime halves
     so the bot grounds its reply in the full plan, not just onboarding."""
-    src = _read("app/services/soul_file.py")
+    src = _read("app/services/coach/soul_file.py")
     fn_start = src.find("def compose(")
     body = src[fn_start : fn_start + 5000]
     assert '"setup"' in body and '"runtime"' in body
@@ -144,7 +144,7 @@ def test_soul_file_compose_skill_layer_no_global_rules_edit():
     """GLOBAL_RULES must stay byte-identical post-Phase-23 so
     non-skilled influencers (the majority) aren't affected. Pin the
     canonical first line."""
-    src = _read("app/services/soul_file.py")
+    src = _read("app/services/coach/soul_file.py")
     assert "You are an AI personality on the YRAL social platform" in src
 
 
@@ -194,7 +194,7 @@ def test_registry_has_no_skill_specific_processes():
     process so a future "let me just add nutrition_coach_chat for
     cleaner accounting" PR runs into this test instead of growing
     the registry surface."""
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     forbidden = (
         "skill_chat",
         "nutrition_coach_chat",
@@ -215,7 +215,7 @@ def test_registry_explicitly_documents_skill_routing_decision():
     """The reasoning for why skills don't get their own process must
     be visible in the registry source (the place a future contributor
     will look when tempted to add one). Don't bury this in a doc."""
-    src = _read("app/services/llm_registry.py")
+    src = _read("app/services/llm/llm_registry.py")
     # Phrasing-tolerant pin: both 'user_chat_main' and a skill mention
     # appear in the explanatory comment block we just added.
     assert "skilled influencers" in src.lower() or "skill content" in src.lower()

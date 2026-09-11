@@ -54,7 +54,7 @@ def test_fallback_path_carries_structured_sentry_tags():
     tags — that's what a Sentry alert rule filters on. A refactor that
     drops the tags reduces the alert to a noisy free-text-message
     match and operators lose the per-process / per-provider dimension."""
-    src = (REPO / "app" / "services" / "llm_registry.py").read_text()
+    src = (REPO / "app" / "services" / "llm" / "llm_registry.py").read_text()
     pos = src.find("LLM fallback activated:")
     assert pos != -1, "fallback Sentry message moved or removed"
     # Scan a generous window around the capture site.
@@ -75,7 +75,7 @@ def test_record_primary_failure_runs_before_fallback_attempt():
     """The counter increment must precede the fallback _do_complete()
     call — otherwise a slow fallback that itself fails could mask the
     primary failure entirely from the dashboard."""
-    src = (REPO / "app" / "services" / "llm_registry.py").read_text()
+    src = (REPO / "app" / "services" / "llm" / "llm_registry.py").read_text()
     rec_pos = src.find("_record_primary_failure(process, provider)")
     # Find the SECOND _do_complete call (the fallback attempt).
     first_complete = src.find("return await _do_complete(")
@@ -94,7 +94,7 @@ def test_record_primary_failure_runs_before_fallback_attempt():
 def test_counter_increments_and_drains_with_time_window():
     """Recording several primary failures bumps the count; entries
     older than _PRIMARY_FAILURE_WINDOW_SEC trim out on read."""
-    from services import llm_registry
+    from services.llm import llm_registry
 
     # Clean slate.
     with llm_registry._PRIMARY_FAILURES_LOCK:
@@ -126,7 +126,7 @@ def test_counter_increments_and_drains_with_time_window():
 @requires_httpx
 def test_counter_bounded_per_key_to_cap_memory():
     """A runaway outage must not grow the deque unbounded."""
-    from services import llm_registry
+    from services.llm import llm_registry
 
     with llm_registry._PRIMARY_FAILURES_LOCK:
         llm_registry._PRIMARY_FAILURES.clear()
@@ -153,8 +153,8 @@ def test_call_records_failure_alerts_then_serves_via_fallback(monkeypatch):
     capture fires with enriched tags → fallback _do_complete serves
     the request → caller gets a normal LlmResponse (task 4 is alerting
     ONLY; task 9 removes the fallback)."""
-    from services import llm_registry
-    from services.llm_types import LlmResponse
+    from services.llm import llm_registry
+    from services.llm.llm_types import LlmResponse
 
     # Clean slate.
     with llm_registry._PRIMARY_FAILURES_LOCK:
@@ -272,7 +272,7 @@ def test_call_records_failure_alerts_then_serves_via_fallback(monkeypatch):
 def test_dashboard_tile_reports_zero_when_no_failures():
     """Quiet state — the tile must report `ok` so the dashboard's
     traffic-light reads green."""
-    from services import llm_registry
+    from services.llm import llm_registry
     from routes.admin_dashboard import _llm_primary_failures_tile
 
     with llm_registry._PRIMARY_FAILURES_LOCK:
@@ -287,7 +287,7 @@ def test_dashboard_tile_reports_zero_when_no_failures():
 def test_dashboard_tile_escalates_with_failure_count():
     """Per the brief: low counts read as `warn`, high counts as `fail`
     so the ADHD traffic-light prioritizes the right tile."""
-    from services import llm_registry
+    from services.llm import llm_registry
     from routes.admin_dashboard import _llm_primary_failures_tile
 
     with llm_registry._PRIMARY_FAILURES_LOCK:

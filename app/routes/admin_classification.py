@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 
 import config
 from database import get_pool
-from services.influencer_classification import (
+from services.discovery.influencer_classification import (
     apply_admin_override,
     classify_sample,
 )

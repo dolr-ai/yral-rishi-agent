@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 
-from services.llm_registry import (
+from services.llm.llm_registry import (
     ASYNC_PROCESSES_NEVER_GEMINI,
     LLM_DEFAULTS,
     PROVIDERS,
@@ -136,7 +136,7 @@ def test_leak_guard_fires_on_async_process_to_gemini(caplog):
     at runtime, the leak guard must log at ERROR level. This catches
     the 2026-06-08 class of bug — DB cache fails to load, code default
     falls through to gemini, money silently bleeds."""
-    caplog.set_level(logging.ERROR, logger="services.llm_registry")
+    caplog.set_level(logging.ERROR, logger="services.llm.llm_registry")
     _check_async_gemini_leak("quality_scorer", "gemini")
     msgs = [r.getMessage() for r in caplog.records]
     assert any("ASYNC PROCESS HIT GEMINI" in m for m in msgs), (
@@ -150,7 +150,7 @@ def test_leak_guard_fires_on_async_process_to_gemini(caplog):
 def test_leak_guard_silent_on_sync_user_facing_to_gemini(caplog):
     """Legit user_chat_main → gemini is the WHOLE POINT of gemini —
     do not noise-alert on it. False positives kill alerting credibility."""
-    caplog.set_level(logging.ERROR, logger="services.llm_registry")
+    caplog.set_level(logging.ERROR, logger="services.llm.llm_registry")
     _check_async_gemini_leak("user_chat_main", "gemini")
     msgs = [r.getMessage() for r in caplog.records]
     assert not any("ASYNC PROCESS" in m for m in msgs), (
@@ -160,7 +160,7 @@ def test_leak_guard_silent_on_sync_user_facing_to_gemini(caplog):
 
 def test_leak_guard_silent_on_async_to_runpod_vllm(caplog):
     """Async → runpod_vllm is the intended state. Silent."""
-    caplog.set_level(logging.ERROR, logger="services.llm_registry")
+    caplog.set_level(logging.ERROR, logger="services.llm.llm_registry")
     _check_async_gemini_leak("quality_scorer", "runpod_vllm")
     msgs = [r.getMessage() for r in caplog.records]
     assert not any("ASYNC PROCESS" in m for m in msgs)
@@ -168,7 +168,7 @@ def test_leak_guard_silent_on_async_to_runpod_vllm(caplog):
 
 def test_leak_guard_silent_on_async_to_internal_vllm(caplog):
     """Async → internal_vllm is the fallback state. Also intended; silent."""
-    caplog.set_level(logging.ERROR, logger="services.llm_registry")
+    caplog.set_level(logging.ERROR, logger="services.llm.llm_registry")
     _check_async_gemini_leak("quality_scorer", "internal_vllm")
     msgs = [r.getMessage() for r in caplog.records]
     assert not any("ASYNC PROCESS" in m for m in msgs)

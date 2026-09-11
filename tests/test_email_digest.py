@@ -14,7 +14,7 @@ def test_digest_target_is_08_ist():
     """ADHD rule: digest lands before Rishi's work window. 08:00 IST
     = 02:30 UTC. If this shifts accidentally, the email starts arriving
     too early/late."""
-    src = _read("app/services/email_digest.py")
+    src = _read("app/services/ops/email_digest.py")
     assert "DIGEST_TARGET_HOUR_UTC = 2" in src
     assert "DIGEST_TARGET_MINUTE_UTC = 30" in src
 
@@ -22,7 +22,7 @@ def test_digest_target_is_08_ist():
 def test_digest_target_email_is_rishi():
     """Default recipient is Rishi's address. SMTP config can override
     DIGEST_TO_EMAIL via env, but the default stays."""
-    src = _read("app/services/email_digest.py")
+    src = _read("app/services/ops/email_digest.py")
     assert (
         'DIGEST_TO_EMAIL = os.environ.get("DIGEST_TO_EMAIL", "rishi@gobazzinga.io")'
         in src
@@ -32,7 +32,7 @@ def test_digest_target_email_is_rishi():
 def test_digest_renders_both_plain_and_html():
     """Plain-text body is most reliable; HTML body is easier to skim.
     Email clients pick best."""
-    src = _read("app/services/email_digest.py")
+    src = _read("app/services/ops/email_digest.py")
     assert "def render_plain" in src
     assert "def render_html" in src
 
@@ -42,7 +42,7 @@ def test_digest_has_placeholder_sections_for_remaining_planned_systems():
     ships, its placeholder flips to a live section IN THE SAME PR (per
     the ADHD-observability memory rule). This test lists only the
     systems still NOT YET shipped."""
-    src = _read("app/services/email_digest.py")
+    src = _read("app/services/ops/email_digest.py")
     # Phase 19.1 (rate limits) shipped in PR #232 — flipped to live
     # _section_rate_limits. Update this list as more flip.
     for planned in (
@@ -59,7 +59,7 @@ def test_digest_builds_even_without_smtp():
     """The cron loop must keep building + recording digests even when
     SMTP isn't configured yet — so the preview endpoint works from
     day one, and when SMTP is wired later we don't lose historical days."""
-    src = _read("app/services/email_digest.py")
+    src = _read("app/services/ops/email_digest.py")
     assert "SMTP_HOST not configured" in src
     # The function path that records the run must run regardless of
     # whether SMTP send succeeded
@@ -69,14 +69,14 @@ def test_digest_builds_even_without_smtp():
 def test_digest_idempotent_per_date():
     """If the loop wakes twice in the 02:30-02:35 window, it must NOT
     send two emails. The for_date check enforces single-fire."""
-    src = _read("app/services/email_digest.py")
+    src = _read("app/services/ops/email_digest.py")
     assert "WHERE for_date = $1 LIMIT 1" in src
 
 
 def test_digest_history_bounded():
     """The runs table grows by one row per day. Trim cap keeps it
     bounded so it doesn't grow unbounded over months."""
-    src = _read("app/services/email_digest.py")
+    src = _read("app/services/ops/email_digest.py")
     assert "DIGEST_HISTORY_KEEP = 30" in src
     assert "DELETE FROM email_digest_runs" in src
 
@@ -84,7 +84,7 @@ def test_digest_history_bounded():
 def test_main_py_wires_digest_loop():
     """If the create_task line is missing, the cron never runs. Pin it."""
     src = _read("app/main.py")
-    assert "from services.email_digest import digest_loop" in src
+    assert "from services.ops.email_digest import digest_loop" in src
     assert "digest_task = asyncio.create_task(digest_loop())" in src
     # Shutdown cleanup symmetry — without await the cancel doesn't fully
     # drain and we get noisy shutdown logs
@@ -122,7 +122,7 @@ def test_record_run_parses_rendered_at_to_datetime():
     The SQL ::timestamptz cast doesn't save us — asyncpg validates
     param types client-side before Postgres sees the cast. Must pass
     a datetime instance, not a string."""
-    src = _read("app/services/email_digest.py")
+    src = _read("app/services/ops/email_digest.py")
     # The helper that converts string → tz-aware datetime
     assert "def _parse_rendered_at" in src
     # And the call site uses it instead of passing the raw string
@@ -133,5 +133,5 @@ def test_record_run_parses_rendered_at_to_datetime():
 
 def test_subject_prefix_makes_filtering_easy():
     """Rishi can set a Gmail filter on the prefix to bypass spam."""
-    src = _read("app/services/email_digest.py")
+    src = _read("app/services/ops/email_digest.py")
     assert 'DIGEST_SUBJECT_PREFIX = "[yral-rishi-agent]"' in src

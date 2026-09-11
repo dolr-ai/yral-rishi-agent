@@ -81,7 +81,7 @@ async def pregen_one_pass(pool) -> dict:
     Isolated from the loop so tests can assert behavior without
     dealing with timers."""
     from repositories import influencer_collage_repo
-    from services import image_collage, theme_generator
+    from services.media import image_collage, theme_generator
 
     today = _today_utc()
     candidates = await _list_pregen_candidates(pool)

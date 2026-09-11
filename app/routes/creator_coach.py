@@ -14,8 +14,8 @@ from fastapi import APIRouter, HTTPException, Request
 from auth import get_current_user
 from database import get_pool
 from repositories import coach_repo, influencer_repo, quality_score_repo
-from services import coach as coach_service
-from services import coach_intent
+from services.coach import coach as coach_service
+from services.coach import coach_intent
 
 logger = logging.getLogger(__name__)
 
@@ -568,7 +568,7 @@ async def apply_coach_proposal(
         # superseded it), refuse with 409 stale_proposal — same shape as
         # the section_not_editable branch so mobile can surface either
         # case via one error path.
-        from services.coach import section_body_sha256 as _sha
+        from services.coach.coach import section_body_sha256 as _sha
 
         live_body = target_section.get("body") or ""
         live_sha = _sha(live_body)

@@ -9,7 +9,7 @@ verification step.
 def test_scoring_constants_in_sensible_range():
     """Sample 20 conversations and 3 turn pairs each. Above these the
     nightly Gemini judge cost balloons; below them the score is noisy."""
-    from services.quality_scorer import (
+    from services.coach.quality_scorer import (
         SAMPLE_CONVERSATIONS,
         TURN_PAIRS_PER_CONVERSATION,
         JUDGE_CONCURRENCY,
@@ -23,7 +23,7 @@ def test_scoring_constants_in_sensible_range():
 def test_initial_delay_avoids_startup_thrash():
     """Loop sleeps ~15 min before the first pass so a rolling deploy doesn't
     immediately fire a big batch of Gemini calls."""
-    from services.quality_scorer import INITIAL_DELAY_SEC, SCORING_INTERVAL_SEC
+    from services.coach.quality_scorer import INITIAL_DELAY_SEC, SCORING_INTERVAL_SEC
 
     assert INITIAL_DELAY_SEC >= 60
     assert SCORING_INTERVAL_SEC == 24 * 60 * 60
@@ -32,7 +32,7 @@ def test_initial_delay_avoids_startup_thrash():
 def test_coach_format_quality_score_with_real_row():
     """Coach renders the latest score into the META_PROMPT. The block must
     surface all four scores + the sample-size context."""
-    from services.coach import _format_quality_score
+    from services.coach.coach import _format_quality_score
 
     score = {
         "score_overall": 3.82,
@@ -54,7 +54,7 @@ def test_coach_format_quality_score_with_real_row():
 def test_coach_format_quality_score_none_gives_hint():
     """When the bot hasn't been scored yet the coach gets a placeholder so
     the META_PROMPT format-string still substitutes cleanly."""
-    from services.coach import _format_quality_score
+    from services.coach.coach import _format_quality_score
 
     out = _format_quality_score(None)
     assert "no score yet" in out.lower()
