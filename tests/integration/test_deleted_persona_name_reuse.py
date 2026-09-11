@@ -49,7 +49,7 @@ async def _insert(conn, name, *, deleted=False, banned=False):
         name,
         "Deleted Bot" if deleted else "Probe",
         "discontinued" if (deleted or banned) else "active",
-        datetime.now(timezone.utc).replace(tzinfo=None) if deleted else None,
+        datetime.now(timezone.utc) if deleted else None,
     )
 
 

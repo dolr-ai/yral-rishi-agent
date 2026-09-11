@@ -24,8 +24,12 @@ SET lock_timeout = '3s';
 SET statement_timeout = '60s';
 
 -- NULL = not deleted. Ban does not set this; only soft_delete does.
+-- timestamptz, not timestamp: `timestamp` drops the UTC offset, and this
+-- column decides whether a name is claimable — an ambiguous instant is not
+-- something to hang that on. Matches 054's claimed_at; the older columns on
+-- this table predate the convention.
 ALTER TABLE ai_influencers
-    ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP;
+    ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 
 -- Backfill the personas already soft-deleted. `display_name = 'Deleted Bot'`
 -- is what soft_delete writes and ban does not, so it distinguishes the two
