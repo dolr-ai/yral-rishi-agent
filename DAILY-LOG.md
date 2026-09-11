@@ -1,5 +1,23 @@
 # Daily Log
 
+## 2026-09-11 (night) — #521 verified on the phone; the client rewrites our slug
+
+Merged and deployed #521, then re-ran the Meera create on the Motorola:
+validate returned `meera-2`, `/create` returned **201**, bot `51b9ba8b…` exists
+with avatar. Fix confirmed end-to-end.
+
+But the stored name is `meera2`, not `meera-2`: yral-mobile's
+`normalizeBotUsername` keeps only letters/digits and caps at 15 chars, then
+sends that as `name`. So #521 checked a name /create never received — it
+worked because `meera2` happened to be free. This PR settles the name in the
+client's alphabet (`[a-z0-9]`, ≤15) so the check and the create agree exactly.
+
+Also seen on this run: bot creation auto-fires `POST /api/v2/videogen/generate`
+(a starter video, 7.5 s) — GPU spend on every new bot, worth knowing. The
+first Create Profile press after the preview produced an error sheet with zero
+network calls and no telemetry; the second press went through. Mobile-side,
+not reproduced.
+
 ## 2026-09-11 (late) — drove the alpha on the Motorola; found the influencer-create dead end
 
 Rishi plugged the moto g96 in and asked me to test the whole app myself. Drove
