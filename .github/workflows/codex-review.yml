@@ -39,7 +39,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install openai
+      # Pinned, not bare `pip install openai`: this SDK went 1.x -> 3.x and
+      # moved reviews onto the Responses API. An unpinned bump would change the
+      # call surface under CI with no code change on our side — the same
+      # failure the ruff pin exists to prevent (issue #505).
+      - run: pip install openai==3.13.0
       - name: Run Codex review
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_CODEX_API_KEY }}

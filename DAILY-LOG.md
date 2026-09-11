@@ -1,5 +1,44 @@
 # Daily Log
 
+## 2026-09-11 (night) — the code reviewer was two generations behind, on a retired endpoint
+
+Rishi asked to move Codex off an older generation. It was worse than a version
+bump: `.github/scripts/codex-review.py` called `gpt-4o` — a 2024 model — through
+`chat.completions`, which current reasoning models no longer use. And the
+workflow ran a bare `pip install openai`, unpinned, which is the same hole the
+ruff pin exists to close (#505).
+
+Checked the model lineup against OpenAI's own docs rather than my training data,
+which ends in May: current flagships are `gpt-6-astra` and the `gpt-5.6` family
+(sol/terra/luna). Took `gpt-6-astra`.
+
+Cost, since this runs on every PR: the diff is capped at 100k chars (~25k
+tokens), so the ceiling is ~$0.35 a review at $10/$50 per M in/out. A normal PR
+is well under. `gpt-5.6-sol` is the same generation at about a third the price
+and is a one-line change if that ceiling is unwanted.
+
+Migration, verified against the installed SDK (3.13.0) rather than assumed:
+
+```
+has responses.create : True
+  model, instructions, input, max_output_tokens, reasoning : all present
+Response has output_text: True
+```
+
+Then exercised the script with the network call stubbed but the REAL signature
+enforced — a wrong parameter name or response accessor fails the test. Diff in,
+findings out, formatted PR comment.
+
+**The bug I nearly shipped.** A reasoning model spends `max_output_tokens` on
+thinking before it writes anything. Exhaust the budget and you get
+`status="incomplete"` with an EMPTY `output_text` — which the existing code
+would have read as `"[]"` and printed "Codex review: no issues found". A
+reviewer that reviewed nothing, reporting success. Exactly the failure this
+whole day has been about. It now detects `incomplete`, names the reason, and
+returns without pretending. Tested.
+
+`pip install openai==3.13.0` pinned alongside.
+
 ## 2026-09-11 (evening) — audited the harness; deleted the half that was dead
 
 Rishi asked whether the harness we built is right and worth templating. The
