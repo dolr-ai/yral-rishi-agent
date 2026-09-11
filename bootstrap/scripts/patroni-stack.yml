@@ -259,7 +259,7 @@ services:
     # max_parallel_workers_per_gather (currently temp-mitigated to
     # 0 while awaiting this planned redeploy) + max_parallel_workers.
     # Rollout: requires stack redeploy → planned window; sequenced by
-    # update_config above. See DAILY-LOG.md 2026-07-13.
+    # update_config above. See the 2026-07-13 commits (git log).
     shm_size: 2g
     volumes:
       - type: bind

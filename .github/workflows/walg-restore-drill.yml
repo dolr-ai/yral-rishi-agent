@@ -146,7 +146,6 @@ jobs:
             esac
           )"
           echo ""
-          echo "If GREEN: record the timestamp in DAILY-LOG.md so the cutover"
-          echo "checklist (H6) can be marked done."
+          echo "If GREEN: record the timestamp in the commit or PR."
           echo "If FAIL: read scripts/walg_restore_drill.sh exit-code map +"
           echo "scripts/walg_restore_drill.sh top comment to diagnose."

@@ -121,8 +121,7 @@ redis-cli -h redis-sentinel-1 -p 26379 SENTINEL replicas mymaster
 - [ ] All 3 Redis nodes healthy (1 new primary + 2 replicas including the previously-killed node)
 - [ ] No alpha-soak Sentry alerts fired during the drill
 - [ ] WebSocket Phase B smoke completed (3 tabs all received post-promotion message)
-- [ ] DAILY-LOG.md entry added
-- [ ] PROGRESS.md row 21αβ.H5 flipped ⏳ → ✅
+- [ ] Result recorded in the commit/PR
 
 ## What this drill does NOT cover
 
