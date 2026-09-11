@@ -119,3 +119,56 @@ def test_index_is_partial_and_the_table_wide_constraint_is_gone(pg_dsn):
     assert indexdef is not None, "migration 055 did not create the partial index"
     assert "WHERE (deleted_at IS NULL)" in indexdef, indexdef
     assert old_constraint == 0, "the table-wide UNIQUE on name is back — #513 returns"
+
+
+def test_restoring_a_deleted_persona_re_enters_name_uniqueness(pg_dsn):
+    """unban() must clear deleted_at, not just is_active.
+
+    Found reviewing this migration rather than from a report: ban() never sets
+    deleted_at, so ban -> unban is unaffected — but unban is reachable for a
+    SOFT-DELETED row, and restoring is_active while leaving deleted_at set
+    would put a live persona outside the partial index. Its name would still
+    read as free and a second live persona could take it.
+    """
+    name = f"probe-{uuid.uuid4().hex[:12]}"
+
+    async def _check(conn):
+        await _insert(conn, name, deleted=True)
+        # The real unban statement.
+        await conn.execute(
+            """
+            UPDATE ai_influencers
+            SET is_active = 'active', deleted_at = NULL, updated_at = NOW()
+            WHERE name = $1
+            """,
+            name,
+        )
+        # Back in the index: a second live persona must NOT be able to take it.
+        with pytest.raises(asyncpg.exceptions.UniqueViolationError):
+            await _insert(conn, name)
+
+    _run(pg_dsn, _check)
+
+
+def test_name_lookup_prefers_the_live_row_over_the_deleted_one(pg_dsn):
+    """A name can now belong to one deleted row AND one live row, so
+    get_by_id_or_name's `LIMIT 1` was a coin flip. Admin ban/unban must land
+    on the live persona."""
+    name = f"probe-{uuid.uuid4().hex[:12]}"
+
+    async def _check(conn):
+        await _insert(conn, name, deleted=True)
+        await _insert(conn, name)
+        return await conn.fetchrow(
+            """
+            SELECT is_active, deleted_at FROM ai_influencers
+            WHERE id = $1 OR name = $1
+            ORDER BY (deleted_at IS NULL) DESC, created_at DESC
+            LIMIT 1
+            """,
+            name,
+        )
+
+    row = _run(pg_dsn, _check)
+    assert row["deleted_at"] is None, "name lookup resolved to the DELETED row"
+    assert row["is_active"] == "active"

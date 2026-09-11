@@ -502,6 +502,18 @@ async def admin_unban(
             inf["id"], inf.get("display_name", "Unknown")
         )
         return _format_influencer_detail(updated)
+    except asyncpg.exceptions.UniqueViolationError:
+        # Soft-deleted personas release their name, so someone may have taken
+        # it while this one was gone. Refuse rather than resurrect a duplicate
+        # — this is the one place migration 055's partial index can bite an
+        # admin, and a 500 would not say why.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Cannot restore '{inf.get('name')}' — the name is now held by "
+                "another live persona. Rename that one first."
+            ),
+        ) from None
     except Exception as e:
         await google_chat.notify_influencer_unban_failed(inf["id"], str(e))
         raise HTTPException(status_code=500, detail=f"Unban failed: {e}")
