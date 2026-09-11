@@ -139,15 +139,3 @@ def get(slug: str) -> dict | None:
     Centralized so the catalog can later swap from dict-lookup to a
     DB-backed read (Phase 7.5 extension) without changing call sites."""
     return SKILLS.get(slug)
-
-
-def is_archetype_compatible(skill_slug: str, archetype: str | None) -> bool:
-    """Soft compatibility check used by the influencer-create UI.
-    Returns True if the skill declares the archetype as compatible,
-    False otherwise (including if either side is unknown). Runtime
-    enforcement is intentionally absent — see SKILLS["nutrition_coach"]
-    docstring for why."""
-    skill = SKILLS.get(skill_slug)
-    if not skill:
-        return False
-    return (archetype or "").lower().strip() in skill.get("compatible_archetypes", [])

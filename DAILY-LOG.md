@@ -39,6 +39,43 @@ around it was still describing the 5-session/CONSTRAINTS world from May.
 substring assertions, 36 files touch a real HTTP client. #515 (other session)
 is the ratchet that stops that number growing.
 
+## 2026-09-11 (later still) — went looking for dead code; there is almost none
+
+The roadmap assumed 30K lines of app/ hid a lot of dead weight worth deleting.
+It does not. That assumption was mine and it was wrong.
+
+`vulture app/ --min-confidence 80` finds exactly **one** thing. Rigorous
+cross-repo reference checking finds **8 unreferenced functions, 91 lines —
+0.3% of app/**. The codebase is not bloated with dead code; it is live code
+that is under-tested, which is a different problem with a different fix.
+
+Both of my 0%-coverage deletion candidates turned out to be live:
+
+- `variant_repo.py` — 7 call sites in routes/creator.py plus chat.py and
+  ab_compare.py. It reads 0% because those are lazy in-function imports, so
+  the module never loads during tests. A coverage gap, not dead code.
+- `app/eval/gold_prompts.py` — imported by scripts/eval_v2_vs_chat_ai.py.
+  `runner.py` is a standalone eval harness, unused since May but working, and
+  chat-quality eval is on the roadmap. Deleting it would destroy real work.
+
+0% coverage is not evidence of dead code. It means nothing exercises it.
+
+Deleted the 8 verified-unreferenced helpers (checked across app/, tests/,
+scripts/, watchdog/, infra/, and for string-based dynamic dispatch). Removing
+`update_metadata` orphaned a `json` import — ruff caught the cascade.
+
+One deletion broke a test, and the test is the story:
+
+```python
+def test_skills_module_has_compatibility_helper():
+    src = _read("app/services/skills.py")
+    assert "def is_archetype_compatible(" in src
+```
+
+A function nobody calls, kept alive by a test that only greps its signature.
+That is the source-text problem in one case: the test made dead code look
+covered. Both are gone.
+
 ## 2026-09-11 (later) — audited the test suite; it is 39% covered and 38% substring-matching
 
 Measured rather than guessed. `pytest --cov=app`:

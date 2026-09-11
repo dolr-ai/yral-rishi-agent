@@ -169,20 +169,6 @@ async def broadcast_new_message(
     await _publish(user_id, event)
 
 
-async def broadcast_conversation_read(user_id: str, conversation_id: str, read_at: str):
-    event = json.dumps(
-        {
-            "event": "conversation_read",
-            "data": {
-                "conversation_id": conversation_id,
-                "unread_count": 0,
-                "read_at": read_at,
-            },
-        }
-    )
-    await _publish(user_id, event)
-
-
 async def broadcast_typing_status(
     user_id: str,
     conversation_id: str,

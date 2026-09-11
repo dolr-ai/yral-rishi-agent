@@ -56,7 +56,7 @@ async def _resolve_theme(pool, influencer_id: str) -> str:
     return await theme_generator.generate_daily_theme(pool, influencer_id)
 
 
-def _resolve_lora(pool_result_row) -> str | None:
+def _resolve_lora() -> str | None:
     """Placeholder for the Phase 0 LoRA URL wiring. Session 6 flips
     config.COLLAGE_LORA_WEIGHTS_URL once Tara's LoRA training
     completes; per-bot column plumbing is a Phase 1 concern (the
@@ -129,7 +129,7 @@ async def request_images(
     user_id = get_current_user(request)
     pool = await get_pool()
     theme = await _resolve_theme(pool, influencer_id)
-    lora = _resolve_lora(None)
+    lora = _resolve_lora()
     is_subscribed = body.is_subscribed if body else None
 
     result = await image_collage.orchestrate(

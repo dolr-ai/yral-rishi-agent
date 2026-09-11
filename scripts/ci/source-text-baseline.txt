@@ -1,4 +1,4 @@
-536  # source-text assertions against app/**.py
+535  # source-text assertions against app/**.py
 #
 # RATCHET: this number may fall, never rise. See
 # scripts/ci/check_source_text_assertions.py for what is counted and why.
