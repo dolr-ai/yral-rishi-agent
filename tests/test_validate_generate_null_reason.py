@@ -109,7 +109,7 @@ def test_taken_slug_is_settled_before_the_app_commits_to_it(monkeypatch):
     uploaded the avatar. The user never sees the slug, so "Try Again" could
     never succeed. validate must hand back a slug that is actually free."""
     client = _client(
-        monkeypatch, _valid_concept_payload(), taken_slugs={"zara", "zara-2"}
+        monkeypatch, _valid_concept_payload(), taken_slugs={"zara", "zara2"}
     )
 
     response = client.post(
@@ -118,7 +118,7 @@ def test_taken_slug_is_settled_before_the_app_commits_to_it(monkeypatch):
     )
 
     assert response.status_code == 200, response.text
-    assert response.json()["name"] == "zara-3"
+    assert response.json()["name"] == "zara3"
 
 
 def test_free_slug_is_returned_untouched(monkeypatch):
@@ -132,15 +132,15 @@ def test_free_slug_is_returned_untouched(monkeypatch):
     assert response.json()["name"] == "zara"
 
 
-def test_suffixed_slug_never_exceeds_the_create_request_cap(monkeypatch):
-    """Codex on #521: a fixed 47-char base overflows at `-100`. The base must
-    shrink with the suffix so /create's 50-char rule can't reject validate's answer."""
-    long_slug = "a" * 50
-    payload = dict(_valid_concept_payload(), name=long_slug)
-    taken = {long_slug} | {
-        f"{long_slug[: 50 - len(f'-{n}')]}-{n}" for n in range(2, 120)
-    }
-    client = _client(monkeypatch, payload, taken_slugs=taken)
+def test_settled_name_fits_the_clients_15_char_username_cap(monkeypatch):
+    """The app keeps only [a-z0-9] and truncates to 15 before calling /create.
+    If we settled a longer name, the app would truncate it and /create would
+    check something we never did. Settle inside the same 15-char alphabet."""
+    long_slug = "mumbai-local-train-guide"  # 24 chars, with hyphens
+    taken = {"mumbailocaltrai"} | {f"mumbailocaltra{n}" for n in range(2, 10)}
+    client = _client(
+        monkeypatch, dict(_valid_concept_payload(), name=long_slug), taken_slugs=taken
+    )
 
     response = client.post(
         "/api/v1/influencers/validate-and-generate-metadata",
@@ -148,14 +148,16 @@ def test_suffixed_slug_never_exceeds_the_create_request_cap(monkeypatch):
     )
 
     name = response.json()["name"]
-    assert name.endswith("-120") and len(name) == 50
+    assert name == "mumbailocaltr10" and len(name) == 15
 
 
 def test_title_case_slug_is_compared_the_way_create_compares_it(monkeypatch):
     """/create lowercases before checking; validate must too, or "Meera" passes
     here and 409s there — after the bot account already exists."""
     client = _client(
-        monkeypatch, dict(_valid_concept_payload(), name="Zara"), taken_slugs={"zara"}
+        monkeypatch,
+        dict(_valid_concept_payload(), name="Zara-Q"),
+        taken_slugs={"zaraq"},
     )
 
     response = client.post(
@@ -163,4 +165,19 @@ def test_title_case_slug_is_compared_the_way_create_compares_it(monkeypatch):
         json={"concept": "a cheerful travel guide"},
     )
 
-    assert response.json()["name"] == "zara-2"
+    assert response.json()["name"] == "zaraq2"
+
+
+def test_short_slug_gets_a_floor_so_the_client_does_not_pad_it_itself(monkeypatch):
+    """Review on #522: `d-j` strips to `dj`; the app pads anything under 3 chars
+    with the bot principal — a name we never checked. Hand back ≥3 chars."""
+    client = _client(
+        monkeypatch, dict(_valid_concept_payload(), name="d-j"), taken_slugs={"djbot"}
+    )
+
+    response = client.post(
+        "/api/v1/influencers/validate-and-generate-metadata",
+        json={"concept": "a cheerful travel guide"},
+    )
+
+    assert response.json()["name"] == "djbot2"
