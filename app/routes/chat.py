@@ -246,7 +246,7 @@ def _format_conversation(
     }
 
     # Phase 5.6: streak fields. The daily background job in
-    # services.streak_tracker updates these; mobile reads them to render a
+    # services.engagement.streak_tracker updates these; mobile reads them to render a
     # streak badge. Defaults (0/0/None) work fine for conversations on rows
     # written before migration 014.
     last_streak_date = conv.get("last_streak_date")
