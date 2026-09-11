@@ -27,6 +27,9 @@ jobs:
       - run: pip install -r requirements-lint.txt
       - run: ruff check app/ infra/
       - run: ruff format --check app/ infra/
+      # Blocks NEW tests that assert against our own source as text
+      # (`assert "def foo" in src` passes whether or not foo works).
+      - run: python scripts/ci/check_source_text_assertions.py
 
   test:
     runs-on: ubuntu-latest
@@ -40,7 +43,12 @@ jobs:
       # under tests/integration/ run against a real pgvector Postgres. The
       # GitHub runner already has a Docker daemon for testcontainers to use.
       - run: pip install -r requirements.txt -r requirements-test.txt pytest
-      - run: pytest tests/ -v
+      # Coverage is a RATCHET, not a target. --cov-fail-under is a floor that
+      # may rise and must never fall: it exists to stop backsliding, not to
+      # chase a number (tests written to touch lines are how a suite ends up
+      # 39% covered and still missing a 500 on its main path for four days).
+      # Raise the floor in the PR that earns it.
+      - run: pytest tests/ -v --cov=app --cov-report=term-missing --cov-fail-under=39
         env:
           DATABASE_URL: "postgresql://test:test@localhost:5432/test"
 
