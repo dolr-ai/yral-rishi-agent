@@ -325,6 +325,9 @@ async def _settle_unused_slug(slug: str) -> str:
     slug must be settled here, before anything irreversible has happened.
     /create keeps its 409 for the two-creates-racing case.
     """
+    # /create lowercases the name before its own check (CreateInfluencerRequest.
+    # lowercase_name), so compare — and return — what /create will actually see.
+    slug = slug.lower()
     pool = await get_pool()
     candidate, n = slug[:50], 2
     while await influencer_repo.get_by_name(pool, candidate):

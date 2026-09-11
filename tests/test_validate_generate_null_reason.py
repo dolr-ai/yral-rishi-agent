@@ -149,3 +149,18 @@ def test_suffixed_slug_never_exceeds_the_create_request_cap(monkeypatch):
 
     name = response.json()["name"]
     assert name.endswith("-120") and len(name) == 50
+
+
+def test_title_case_slug_is_compared_the_way_create_compares_it(monkeypatch):
+    """/create lowercases before checking; validate must too, or "Meera" passes
+    here and 409s there — after the bot account already exists."""
+    client = _client(
+        monkeypatch, dict(_valid_concept_payload(), name="Zara"), taken_slugs={"zara"}
+    )
+
+    response = client.post(
+        "/api/v1/influencers/validate-and-generate-metadata",
+        json={"concept": "a cheerful travel guide"},
+    )
+
+    assert response.json()["name"] == "zara-2"

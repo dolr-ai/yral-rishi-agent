@@ -861,7 +861,7 @@ a substring match.
 | 5 | **Billing** — see the locked decision below | ⏳ Not started | Last, and not as a rewrite |
 | 6 | **Structural hygiene, mechanised** — enforce the CLAUDE.md symmetry rules in CI, real dead-code tooling (not ad-hoc grep), scheduled audit | ⏳ Not started | Ongoing once #1–#3 land |
 | 2a | **First adb-driven alpha pass (2026-09-11)** — 9 flows on the Motorola, all 200; found + fixed the influencer-create slug dead end (this PR); 6 mobile-side findings handed over in DAILY-LOG | ✅ Done | The manual version of #2; the driver lives in the session scratchpad and should become `scripts/alpha_smoke.py` |
-| 6a | **Harness audit** — deleted the dead May-era governance layer (charter, 5 session agents, commit hook that exited 1 on every commit, launchd report scripts, PR template asking for role-comments); committed the deny-list that CLAUDE.md claimed existed; corrected the false "docs-only merges skip deploy" claim in 3 places | 🔄 In PR | Found 2026-09-11 while asking "is this harness worth templating". Follow-ups: make CI a required check on `main` (none are today), and a real docs-only skip inside ci.yml if we want one |
+| 6a | **Harness audit** — deleted the dead May-era governance layer (charter, 5 session agents, commit hook that exited 1 on every commit, launchd report scripts, PR template asking for role-comments); committed the deny-list that CLAUDE.md claimed existed; corrected the false "docs-only merges skip deploy" claim in 3 places | ✅ Done (#519) | Found 2026-09-11 while asking "is this harness worth templating". Follow-ups: make CI a required check on `main` (none are today), and a real docs-only skip inside ci.yml if we want one |
 
 ### Decision locked 2026-09-10 — billing: absorb, do NOT rewrite
 
