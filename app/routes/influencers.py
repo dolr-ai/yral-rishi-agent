@@ -326,12 +326,12 @@ async def _settle_unused_slug(slug: str) -> str:
     /create keeps its 409 for the two-creates-racing case.
     """
     pool = await get_pool()
-    base = slug[
-        :47
-    ]  # leave room for "-NN" inside CreateInfluencerRequest's 50-char cap
-    candidate, n = slug, 2
+    candidate, n = slug[:50], 2
     while await influencer_repo.get_by_name(pool, candidate):
-        candidate = f"{base}-{n}"
+        suffix = f"-{n}"
+        # Trim the base to the suffix so the result always fits
+        # CreateInfluencerRequest's 50-char cap, however many digits n grows to.
+        candidate = f"{slug[: 50 - len(suffix)]}{suffix}"
         n += 1
     return candidate
 

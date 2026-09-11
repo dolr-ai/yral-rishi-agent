@@ -130,3 +130,22 @@ def test_free_slug_is_returned_untouched(monkeypatch):
     )
 
     assert response.json()["name"] == "zara"
+
+
+def test_suffixed_slug_never_exceeds_the_create_request_cap(monkeypatch):
+    """Codex on #521: a fixed 47-char base overflows at `-100`. The base must
+    shrink with the suffix so /create's 50-char rule can't reject validate's answer."""
+    long_slug = "a" * 50
+    payload = dict(_valid_concept_payload(), name=long_slug)
+    taken = {long_slug} | {
+        f"{long_slug[: 50 - len(f'-{n}')]}-{n}" for n in range(2, 120)
+    }
+    client = _client(monkeypatch, payload, taken_slugs=taken)
+
+    response = client.post(
+        "/api/v1/influencers/validate-and-generate-metadata",
+        json={"concept": "a cheerful travel guide"},
+    )
+
+    name = response.json()["name"]
+    assert name.endswith("-120") and len(name) == 50
