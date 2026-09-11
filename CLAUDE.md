@@ -31,7 +31,7 @@ One service. One database. Code in app/.
 - Feature branches only. Never push to main.
 - One PR per concern. Under 400 lines when possible.
 - Before opening PR: "Would a senior engineer say this is overcomplicated?"
-- Permission deny by default: docker service rm, rm -rf, force-push. SSH to prod (rishi-4/5/6) is allowed for the developer session per ~/.claude/settings.json IP allowlist — use it for ops Rishi has authorized in conversation.
+- Destructive commands are denied in the committed `.claude/settings.json` (rm -rf, force-push, docker service/stack rm, scale-to-zero, swarm leave). SSH to prod (rishi-4/5/6) is allowed — use it for ops Rishi has authorized in conversation.
 
 ## Deploy process (NEVER bypass)
 1. Open PR with changes.
@@ -41,7 +41,8 @@ One service. One database. Code in app/.
 5. The merge IS the deploy — there is no manual step. CI builds and pushes the
    image, then deploy.yml fires on `workflow_run`, rolling-restarts the swarm,
    polls /health for 2 min, and auto-triggers Rollback if it doesn't come back.
-   Docs-only merges skip the deploy via a path filter.
+   Every merge deploys, docs-only ones included (there is no path filter —
+   `workflow_run` can't have one).
 
 No exceptions for "hotfixes." A genuine hotfix is a small PR with fast review,
 not a direct push. Direct deploys from unmerged branches cause source/runtime

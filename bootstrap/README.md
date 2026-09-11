@@ -8,4 +8,4 @@ Includes:
 - `scripts/swarm-init.sh`, `apply-node-labels.sh`, `generate-caddy-snippets.sh`, etc.
 - UFW firewall rules
 
-See `yral-rishi-agent-plan-and-discussions/V2_TEMPLATE_AND_CLUSTER_PLAN.md` for the design.
+The cluster it builds is described in `docs/runbooks/` and CLAUDE.md's Architecture section.
