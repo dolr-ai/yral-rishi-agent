@@ -29,6 +29,18 @@ the real route in `tests/test_validate_generate_null_reason.py`.
 - Home video feed spins forever with zero network; Profile "Error loading
   videos". Both SpacetimeDB/GCP-side.
 - Conversations and providers are fetched twice per screen open.
+- Account switcher labels most bots (and, intermittently, the main profile)
+  by raw principal instead of name — the UUID-only rows look like orphans
+  from exactly the create dead end fixed here.
+- Takeover UI says "Take over as regalpeppyfrog" / "Reply as regalpeppyfrog…" —
+  that's the *user's* name; the creator takes over as the bot.
+
+**Also verified end-to-end (all 200):** creator side — bot inbox → conversation
+→ `human-creator-takeover` → `human-creator-messages` → `human-creator-release`
+(the app polls creator messages every ~3.5 s while taken over). Coach is not
+reachable in the alpha: `SoulFileCoachEnabled` defaultValue=false, by design.
+Sentry showed nothing new during the window (the asyncpg `TimeoutError` at
+main.py:289 last fired before the session; 372 events since May).
 
 **Latency worth a look:** generate-prompt 8.5 s, validate-and-generate 10.9 s
 — both user-facing LLM steps.
