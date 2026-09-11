@@ -93,83 +93,6 @@ def _humanize_seconds(sec: int | None) -> str:
     return f"{sec // 86400}d ago"
 
 
-async def _etl_tile(pool) -> dict:
-    """Live ETL status — already wired today (PR #210-#226)."""
-    try:
-        from services.etl_chat_ai import get_status
-
-        s = await get_status(pool)
-    except Exception as e:
-        return {
-            "title": "ETL chat-ai → V2",
-            "status": "fail",
-            "primary": "endpoint error",
-            "details": str(e)[:200],
-            "link": "/admin/etl-status",
-        }
-
-    age = s.get("heartbeat_age_sec")
-    stale = s.get("heartbeat_stale")
-    stuck = s.get("stuck_marker")
-    if stuck:
-        status = "fail"
-        primary = "STUCK marker present"
-    elif stale:
-        status = "warn"
-        primary = "Heartbeat stale"
-    else:
-        status = "ok"
-        primary = f"Heartbeat {_humanize_seconds(age)}"
-
-    return {
-        "title": "ETL chat-ai → V2",
-        "status": status,
-        "primary": primary,
-        "details": (
-            f"24h: {s.get('files_processed_24h', 0)} files, "
-            f"{s.get('rows_applied_24h', 0)} rows applied, "
-            f"{s.get('skipped_rows_24h', 0)} skipped"
-        ),
-        "link": "/admin/etl-status",
-    }
-
-
-async def _integrity_tile(pool) -> dict:
-    """Live integrity verifier — also already wired."""
-    try:
-        from services.etl_integrity import get_status
-
-        s = await get_status(pool)
-    except Exception as e:
-        return {
-            "title": "ETL integrity (4 layers)",
-            "status": "fail",
-            "primary": "endpoint error",
-            "details": str(e)[:200],
-            "link": "/admin/etl-integrity",
-        }
-
-    fail = s.get("fail_count_24h", 0)
-    passed = s.get("pass_count_24h", 0)
-    if fail > 0:
-        status = "warn" if fail < 10 else "fail"
-        primary = f"{fail} failures / {passed} passes (24h)"
-    elif passed == 0:
-        status = "off"
-        primary = "Loop running, no results yet"
-    else:
-        status = "ok"
-        primary = f"{passed} passes (24h)"
-
-    return {
-        "title": "ETL integrity (4 layers)",
-        "status": status,
-        "primary": primary,
-        "details": "tick / hourly / sample / sentinel verifiers",
-        "link": "/admin/etl-integrity",
-    }
-
-
 async def _rate_limit_tile(pool) -> dict:
     """Phase 19.1 live tile — current limits + 24h rejection count."""
     try:
@@ -510,8 +433,6 @@ async def admin_dashboard(request: Request):
 
     # Live tiles (already-shipped systems)
     tiles = [
-        await _etl_tile(pool),
-        await _integrity_tile(pool),
         await _llm_routing_tile(pool),
         await _llm_primary_failures_tile(pool),
         await _collage_fallback_tile(pool),

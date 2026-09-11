@@ -4,7 +4,6 @@ Source-inspection + pure-function tests. The live behavior (real Redis
 + real requests crossing limit boundaries) is exercised after deploy
 via a small load script."""
 
-from datetime import datetime, timezone
 from pathlib import Path
 
 
