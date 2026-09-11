@@ -143,12 +143,6 @@ A: No. It uses Docker Swarm's rolling update (1 replica at a time by default). S
 **Q: How long does a deploy take?**
 A: Typically 60-120 seconds end-to-end. The image is already in GHCR; the workflow just instructs the servers to pull and swap.
 
-## Related PROGRESS.md items
-
-- `21α.0` (was: "Auto-deploy from CI build to swarm service") — closed by this workflow
-- `21αβ.H3` (hardening-window auto-deploy mechanism) — closed by this workflow
-- `21αβ.H10` (Phase 19.6 dashboard additions) — separate; this workflow doesn't add a dashboard tile yet
-
 ## Related memory
 
 - `feedback-production-safety-strategy` — 4-layer prod safety (safe deploys / safe migrations / backup verify / monitoring). This workflow is the "safe deploys" layer.

@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import secrets
 from datetime import datetime
 
@@ -28,6 +29,11 @@ from models import (
 )
 
 logger = logging.getLogger(__name__)
+
+# yral-mobile AiInfluencerViewModel.MAX/MIN_USERNAME_LENGTH — the client truncates
+# bot usernames to 15 and pads anything under 3 before sending them to /create.
+CLIENT_USERNAME_MAX_LENGTH = 15
+CLIENT_USERNAME_MIN_LENGTH = 3
 
 router = APIRouter(prefix="/api/v1", tags=["Influencers"])
 
@@ -311,26 +317,32 @@ async def validate_and_generate(body: ValidateAndGenerateRequest, request: Reque
 
 
 async def _settle_unused_slug(slug: str) -> str:
-    """Return `slug`, or `slug-2`, `slug-3`, … — the first one no influencer holds.
+    """Return the first username no influencer holds: `meera`, then `meera2`, `meera3`, …
 
     The app creates the SpacetimeDB bot account and uploads the avatar BEFORE it
     calls /influencers/create, because /create needs the bot's principal. So a
-    slug collision at /create strands an orphan bot account, and the user has
-    no way out: they never see the slug, only the display name, so "Try Again"
+    name collision at /create strands an orphan bot account, and the user has
+    no way out: they never see the name, only the display name, so "Try Again"
     409s forever (Motorola, 2026-09-11: "Name 'meera' is already taken"). The
-    slug must be settled here, before anything irreversible has happened.
+    name must be settled here, before anything irreversible has happened.
     /create keeps its 409 for the two-creates-racing case.
+
+    The client does not send our slug verbatim: yral-mobile's
+    `normalizeBotUsername` keeps only letters and digits and caps at 15 chars,
+    then sends THAT as `name` (`meera-2` arrived at /create as `meera2`). So we
+    settle in the same alphabet — what we check is exactly what /create gets.
     """
-    # /create lowercases the name before its own check (CreateInfluencerRequest.
-    # lowercase_name), so compare — and return — what /create will actually see.
-    slug = slug.lower()
+    base = re.sub(r"[^a-z0-9]", "", slug.lower())[:CLIENT_USERNAME_MAX_LENGTH]
+    # The client also pads anything under 3 chars with the bot principal — a
+    # name we could never have checked. Keep the base long enough that its
+    # normaliser leaves our answer untouched.
+    if len(base) < CLIENT_USERNAME_MIN_LENGTH:
+        base = f"{base}bot"
     pool = await get_pool()
-    candidate, n = slug[:50], 2
+    candidate, n = base, 2
     while await influencer_repo.get_by_name(pool, candidate):
-        suffix = f"-{n}"
-        # Trim the base to the suffix so the result always fits
-        # CreateInfluencerRequest's 50-char cap, however many digits n grows to.
-        candidate = f"{slug[: 50 - len(suffix)]}{suffix}"
+        suffix = str(n)
+        candidate = f"{base[: CLIENT_USERNAME_MAX_LENGTH - len(suffix)]}{suffix}"
         n += 1
     return candidate
 
