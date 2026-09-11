@@ -47,8 +47,10 @@ jobs:
       # may rise and must never fall: it exists to stop backsliding, not to
       # chase a number (tests written to touch lines are how a suite ends up
       # 39% covered and still missing a 500 on its main path for four days).
-      # Raise the floor in the PR that earns it.
-      - run: pytest tests/ -v --cov=app --cov-report=term-missing --cov-fail-under=39
+      # Raise the floor in the PR that earns it. 40 is CI's real number
+      # (40.06%): higher than a local run, because the integration tests need
+      # Docker and skip on a laptop. Calibrate here, not from a local figure.
+      - run: pytest tests/ -v --cov=app --cov-report=term-missing --cov-fail-under=40
         env:
           DATABASE_URL: "postgresql://test:test@localhost:5432/test"
 

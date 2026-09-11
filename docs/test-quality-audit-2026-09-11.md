@@ -74,8 +74,10 @@ DB:   tests/integration/{surface_column,target_markets_column,
 1. **Source-text ratchet** — `scripts/ci/check_source_text_assertions.py`, wired
    into the lint job. Blocks NEW source-text assertions against `app/`. Baseline
    536, may fall, never rise.
-2. **Coverage ratchet** — `--cov-fail-under` in the test job. A floor against
-   backsliding, not a target to chase.
+2. **Coverage ratchet** — `--cov-fail-under=40` in the test job. A floor against
+   backsliding, not a target to chase. 40 is CI's number, not a laptop's: the
+   integration tests need Docker, so a local run reports ~39.4% and CI 40.06%.
+   Calibrate the floor from CI.
 
 ## What to do next, in order
 
