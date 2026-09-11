@@ -9,18 +9,19 @@ import sys
 from openai import OpenAI
 
 # Was gpt-4o — two generations old, and on the retired chat.completions
-# endpoint. gpt-6-astra is the current flagship for reasoning and code work.
+# endpoint. gpt-5.6-sol is current-generation: the flagship for complex
+# professional work.
 #
-# Cost: the diff is capped at 100k chars (~25k tokens) below, so the ceiling is
-# about $0.35 a review at $10/$50 per M in/out; a normal PR runs well under
-# that. If that is more than the review is worth, `gpt-5.6-sol` is the same
-# generation at roughly a third the price — change this one line.
+# Cost, and it runs on every PR: the diff is capped at 100k chars (~25k tokens)
+# below, so the ceiling is about $0.18 a review at $4/$20 per M in/out, and a
+# normal PR is well under. gpt-6-astra is the stronger model at roughly 2.5x
+# that — deliberately deferred; revisit if this one starts missing things.
 #
 # Reasoning models use the Responses API, not chat.completions, and do not take
 # a temperature. Effort is the dial instead: "high" because the failures worth
 # catching here are subtle (PR #501 shipped a response-model type that 500'd
 # every valid request for four days, and no reviewer ran on it at all).
-MODEL = "gpt-6-astra"
+MODEL = "gpt-5.6-sol"
 REASONING_EFFORT = "high"
 MAX_OUTPUT_TOKENS = 4000
 

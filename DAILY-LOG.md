@@ -10,12 +10,12 @@ ruff pin exists to close (#505).
 
 Checked the model lineup against OpenAI's own docs rather than my training data,
 which ends in May: current flagships are `gpt-6-astra` and the `gpt-5.6` family
-(sol/terra/luna). Took `gpt-6-astra`.
+(sol/terra/luna). Rishi picked `gpt-5.6-sol` — current generation, astra
+deferred.
 
 Cost, since this runs on every PR: the diff is capped at 100k chars (~25k
-tokens), so the ceiling is ~$0.35 a review at $10/$50 per M in/out. A normal PR
-is well under. `gpt-5.6-sol` is the same generation at about a third the price
-and is a one-line change if that ceiling is unwanted.
+tokens), so the ceiling is ~$0.18 a review at $4/$20 per M in/out, and a normal
+PR is well under. astra is ~2.5x that; revisit if sol starts missing things.
 
 Migration, verified against the installed SDK (3.13.0) rather than assumed:
 
