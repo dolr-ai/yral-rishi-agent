@@ -29,7 +29,7 @@ async def list_my_influencers(request: Request):
         FROM ai_influencers i
         LEFT JOIN conversations c ON i.id = c.influencer_id
         LEFT JOIN messages m ON c.id = m.conversation_id
-        WHERE i.parent_principal_id = $1
+        WHERE i.parent_principal_id = $1 AND i.deleted_at IS NULL
         GROUP BY i.id
         ORDER BY i.created_at DESC
         """,

@@ -3,6 +3,8 @@ import logging
 import secrets
 from datetime import datetime
 
+import asyncpg
+
 from fastapi import APIRouter, HTTPException, Request, Query, Header
 from fastapi.responses import JSONResponse
 
@@ -360,7 +362,16 @@ async def create_influencer(body: CreateInfluencerRequest, request: Request):
         "metadata": body.metadata,
     }
 
-    created = await influencer_repo.create(pool, influencer_data)
+    # The get_by_name check above is not atomic — two creates racing on the
+    # same name both pass it, and the partial unique index (migration 055) is
+    # what actually decides. Catch the loser's violation and give it the same
+    # 409 the check would have, instead of leaking a 500.
+    try:
+        created = await influencer_repo.create(pool, influencer_data)
+    except asyncpg.exceptions.UniqueViolationError:
+        raise HTTPException(
+            status_code=409, detail=f"Name '{body.name}' is already taken"
+        ) from None
     if not created:
         raise HTTPException(status_code=500, detail="Failed to create influencer")
 
@@ -491,6 +502,18 @@ async def admin_unban(
             inf["id"], inf.get("display_name", "Unknown")
         )
         return _format_influencer_detail(updated)
+    except asyncpg.exceptions.UniqueViolationError:
+        # Soft-deleted personas release their name, so someone may have taken
+        # it while this one was gone. Refuse rather than resurrect a duplicate
+        # — this is the one place migration 055's partial index can bite an
+        # admin, and a 500 would not say why.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Cannot restore '{inf.get('name')}' — the name is now held by "
+                "another live persona. Rename that one first."
+            ),
+        ) from None
     except Exception as e:
         await google_chat.notify_influencer_unban_failed(inf["id"], str(e))
         raise HTTPException(status_code=500, detail=f"Unban failed: {e}")
