@@ -154,7 +154,7 @@ jobs:
             esac
           )"
           echo ""
-          echo "If GREEN: record drill timestamp in DAILY-LOG.md + flip 21αβ.H5 → ✅"
+          echo "If GREEN: record the drill timestamp in the commit or PR."
           echo "If CRITICAL (5): pub/sub regression. File P0. See runbook § Recovery."
           echo "Other FAIL: see scripts/redis_sentinel_failover_drill.sh exit-code map"
           echo ""

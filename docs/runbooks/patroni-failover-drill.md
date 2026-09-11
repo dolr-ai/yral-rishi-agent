@@ -68,7 +68,7 @@ bash /tmp/patroni_failover_drill.sh
 
 | Code | Meaning | Operator action |
 |---|---|---|
-| 0 | PASS — failover + promotion + switchback all clean, /health disruption ≤30s | Record timestamp in DAILY-LOG.md, flip 21αβ.H4 → ✅ in PROGRESS.md |
+| 0 | PASS — failover + promotion + switchback all clean, /health disruption ≤30s | Note the timestamp and disruption window in the PR or commit message |
 | 1 | Prereqs missing (patronictl, curl, pg_dump, jq not found) | Install missing tool; rerun |
 | 2 | Pre-drill `pg_dump` failed | DO NOT retry the drill until pg_dump works (no safety net) |
 | 3 | Promotion never observed within 120s | Cluster may be stuck mid-failover. Check `patronictl list`. If stuck: revert via `patronictl resume <pre_leader>` — see "Recovery" below |
@@ -117,8 +117,8 @@ We have never had to do this. The graceful-failover-with-sync-candidate path has
 - [ ] Original leader is the leader again (the switchback worked)
 - [ ] `/admin/backup-health` still GREEN
 - [ ] `/health` returns 200 from `https://agent.rishi.yral.com/health`
-- [ ] DAILY-LOG.md entry added: timestamp, exit code, disruption window, operator name
-- [ ] PROGRESS.md row 21αβ.H4 flipped ⏳ → ✅ with the drill date + workflow run URL
+- [ ] Timestamp, exit code, disruption window and operator recorded in the commit/PR
+- [ ] Drill date + workflow run URL recorded in the commit/PR
 
 ## What this drill does NOT cover
 
