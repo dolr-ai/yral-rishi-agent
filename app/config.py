@@ -263,19 +263,20 @@ COMFYUI_ATTEMPTS = _env_int("COMFYUI_ATTEMPTS", 3)
 
 # Finished videos — a dedicated Storj bucket, reusing the same gateway
 # credentials as chat media and profile pictures (only the bucket differs).
-# Storj rather than the Hetzner bucket behind today's CDN for the reason
-# profile pictures chose it: the Hetzner credentials also reach the DB-backup
-# bucket, and a public-facing upload path should not hold those.
+# Storj rather than the Hetzner bucket for the reason profile pictures chose
+# it: the Hetzner credentials also reach the DB-backup bucket, and a
+# public-facing upload path should not hold those.
 #
 # THE KEY LAYOUT IS THE CONTRACT, not this URL. The app never reads a video URL
 # from us — it builds one itself from the post's video_uid and creator:
-#     https://cdn-yral-sfw.yral.com/{principal}/{video_id}.mp4
-# So a generated video only plays once that CDN hostname serves this bucket.
-# Until it does, generation works end-to-end and playback 404s. That is a
-# Cloudflare origin change, not a code change — see app/videogen/README.md.
+#     https://cdn.rishi.yral.com/{principal}/{video_id}.mp4
+# cdn.rishi.yral.com is OUR hostname (Cloudflare CNAME → Storj link-share for
+# this bucket), decided 2026-09-12 with Saikat: the company's
+# cdn-yral-sfw.yral.com stays on the Hetzner bucket and we never write there.
+# Videos from before the switch are not served; those bots are being retired.
 VIDEOGEN_S3_BUCKET = _env("VIDEOGEN_S3_BUCKET", "yral-videos")
 VIDEOGEN_PUBLIC_URL_BASE = _env(
-    "VIDEOGEN_PUBLIC_URL_BASE", "https://cdn-yral-sfw.yral.com"
+    "VIDEOGEN_PUBLIC_URL_BASE", "https://cdn.rishi.yral.com"
 )
 
 # Poll cadence and the giving-up point. Generation runs a couple of minutes;
