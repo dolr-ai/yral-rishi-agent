@@ -41,8 +41,8 @@ a beat before the draft appears and the user watches their video vanish.
 URL from us; it builds one from the post's `video_uid` and creator:
 
 ```
-https://cdn-yral-sfw.yral.com/{principal}/{video_id}.mp4
-https://cdn-yral-sfw.yral.com/{principal}/{video_id}-thumbnail.png
+https://cdn.rishi.yral.com/{principal}/{video_id}.mp4
+https://cdn.rishi.yral.com/{principal}/{video_id}-thumbnail.png
 ```
 
 Changing bucket or provider is config plus a CDN origin change. Changing the key
@@ -110,8 +110,10 @@ Requires `ffmpeg` in the image for thumbnail extraction.
 1. **ComfyUI is not reachable from the swarm.** It listens on `127.0.0.1:18188`
    on the GPU box with **no authentication of its own** — it needs a tunnel and
    a shared token, and must never be exposed openly.
-2. **`cdn-yral-sfw.yral.com` must serve `VIDEOGEN_S3_BUCKET`**, or generation
-   succeeds and playback 404s. Cloudflare origin change.
+2. ~~`cdn-yral-sfw.yral.com` must serve `VIDEOGEN_S3_BUCKET`~~ — resolved 2026-09-12
+   by moving to our own hostname: `cdn.rishi.yral.com` is a Cloudflare CNAME to the
+   Storj link-share for `yral-videos`. The company hostname stays on Hetzner (Saikat's
+   call); the app's two hard-coded hostname constants move with it (yral-mobile PR).
 3. **[cluster#190](https://github.com/dolr-ai/yral-bare-metal-kubernetes-cluster/pull/190)**
    must merge and the module be republished. Until then `add_post` and
    `update_post_status` are admin-only and return `Unauthorized`; the video is
