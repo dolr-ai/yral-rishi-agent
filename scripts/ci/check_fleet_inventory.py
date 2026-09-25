@@ -102,7 +102,12 @@ def check_inventory_is_sane(nodes):
     for site in sorted({node[1] for node in nodes}):
         in_site = [n for n in nodes if n[1] == site]
         site_managers = [n for n in in_site if n[2] == "manager"]
-        if len(in_site) >= MINIMUM_MANAGERS and len(site_managers) < MINIMUM_MANAGERS:
+        if not site_managers:
+            problems.append(
+                f"site {site} has {len(in_site)} node(s) and NO manager; a "
+                "Swarm with no manager cannot orchestrate anything"
+            )
+        elif len(in_site) >= MINIMUM_MANAGERS and len(site_managers) < MINIMUM_MANAGERS:
             problems.append(
                 f"site {site} has {len(in_site)} nodes but only "
                 f"{len(site_managers)} manager(s); it needs at least "

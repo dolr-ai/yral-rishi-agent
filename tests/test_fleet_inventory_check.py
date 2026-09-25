@@ -114,3 +114,12 @@ def test_a_site_too_thin_for_quorum_fails(tmp_path):
     result = run(build_repo(tmp_path, inventory=thin))
     assert result.returncode == 1
     assert "hetzner-de" in result.stdout
+
+
+def test_a_site_with_no_manager_at_all_fails(tmp_path):
+    """Codex review on #530: a small site could previously skip manager checks
+    entirely, so a worker-only Swarm — which can orchestrate nothing — passed."""
+    workers_only = INVENTORY.replace("  manager  ", "  worker   ")
+    result = run(build_repo(tmp_path, inventory=workers_only))
+    assert result.returncode == 1
+    assert "NO manager" in result.stdout

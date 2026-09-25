@@ -133,3 +133,13 @@ def test_a_second_site_is_not_reported_as_missing():
     result = run(IN_SYNC)
     assert result.returncode == 0, result.stdout
     assert "rishi-in-1" not in result.stdout
+
+
+def test_sites_flag_lists_every_site():
+    """The drift workflow iterates this instead of hardcoding one site, so a
+    second cluster cannot go unchecked (Codex review on #530)."""
+    result = subprocess.run(
+        [sys.executable, str(CHECKER), "--sites"], capture_output=True, text=True, cwd=REPO
+    )
+    assert result.returncode == 0
+    assert "hetzner-de" in result.stdout.split()

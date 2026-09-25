@@ -112,6 +112,11 @@ def main():
     # so the job can READ the inventory instead of `source`-ing it: sourcing
     # runs whatever the file contains, and that job is holding an SSH key to
     # every production node.
+    if len(sys.argv) > 1 and sys.argv[1] == "--sites":
+        nodes = parse_inventory(INVENTORY.read_text())
+        print(" ".join(sorted({n["site"] for n in nodes.values()})))
+        return 0
+
     if len(sys.argv) > 1 and sys.argv[1] in ("--managers", "--ssh-user"):
         nodes = parse_inventory(INVENTORY.read_text())
         wanted_site = sys.argv[3] if len(sys.argv) > 3 and sys.argv[2] == "--site" else None
