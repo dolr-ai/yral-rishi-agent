@@ -30,6 +30,9 @@ jobs:
       # Blocks NEW tests that assert against our own source as text
       # (`assert "def foo" in src` passes whether or not foo works).
       - run: python scripts/ci/check_source_text_assertions.py
+      # Blocks a server address appearing in CI that servers.config doesn't
+      # list. This is what keeps the fleet inventory true.
+      - run: python scripts/ci/check_fleet_inventory.py
 
   test:
     runs-on: ubuntu-latest
