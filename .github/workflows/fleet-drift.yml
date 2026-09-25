@@ -1,0 +1,87 @@
+name: Fleet drift
+
+# Does the live Swarm still match servers.config?
+#
+# servers.config is only the source of truth if something breaks when reality
+# stops agreeing with it. Its previous version sat wrong on every line for five
+# months precisely because nothing ever compared the two. This is that
+# comparison, and it is the reason the file can be trusted.
+#
+# Read-only: it runs `docker node inspect` and nothing else. It cannot join,
+# remove, drain or promote a node. Convergence is deliberately manual — see the
+# REMOVING A NODE section of servers.config for why.
+#
+# This workflow takes its own host list FROM servers.config, so it is also the
+# file's first real consumer. Adding a node there is enough for the check to
+# start covering it.
+
+on:
+  schedule:
+    # 04:15 UTC daily — after the 03:45 backup monitor, before the working day.
+    - cron: "15 4 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "servers.config"
+      - "scripts/ci/check_fleet_drift.py"
+      - ".github/workflows/fleet-drift.yml"
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: Read the live Swarm and compare it against servers.config
+        run: |
+          set -euo pipefail
+
+          # The host list comes from the inventory itself, not from a literal
+          # pasted into this file — that duplication is what rotted last time.
+          set -a
+          source ./servers.config
+          set +a
+
+          SSH_OPTS="-i ~/.ssh/deploy_key -o ConnectTimeout=15 -o BatchMode=yes"
+          READ_NODES='docker node ls --format "{{.Hostname}}" | while read -r h; do
+              docker node inspect "$h" --format "{{.Description.Hostname}} {{.Spec.Role}} {{.Status.State}} {{.Spec.Availability}} {{.Status.Addr}}"
+          done'
+
+          # Any manager can answer. Try each so one rebooted box is not an
+          # outage of the check itself — a monitor that goes quiet when a node
+          # is down is a monitor that fails exactly when it is needed.
+          STATE=""
+          for host in ${FLEET_MANAGER_IPS}; do
+            echo "── asking ${host} ──"
+            ssh-keyscan -T 10 -H "${host}" >> ~/.ssh/known_hosts 2>/dev/null || true
+            if STATE=$(ssh ${SSH_OPTS} "${SWARM_USER}@${host}" "${READ_NODES}" 2>/dev/null) \
+               && [ -n "${STATE}" ]; then
+              echo "✓ answered by ${host}"
+              break
+            fi
+            echo "✗ ${host} did not answer; trying the next manager"
+            STATE=""
+          done
+
+          if [ -z "${STATE}" ]; then
+            echo "::error::No manager answered. Either every manager is unreachable, or the addresses in servers.config are wrong. Both are worth waking up for."
+            exit 1
+          fi
+
+          echo "── live Swarm ──"
+          echo "${STATE}"
+          echo
+
+          echo "${STATE}" | python scripts/ci/check_fleet_drift.py
