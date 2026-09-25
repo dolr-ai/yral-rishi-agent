@@ -64,8 +64,10 @@ jobs:
           # scripts that want it, but sourcing executes whatever the file
           # contains, and this job is holding a key to every production node.
           # Reading it as data keeps that key out of reach of the file.
-          MANAGERS=$(python scripts/ci/check_fleet_drift.py --managers)
-          SWARM_USER=$(python scripts/ci/check_fleet_drift.py --ssh-user)
+          # Which site this run checks. Each site is its own Swarm.
+          SITE=hetzner-de
+          MANAGERS=$(python scripts/ci/check_fleet_drift.py --managers --site "$SITE")
+          SWARM_USER=$(python scripts/ci/check_fleet_drift.py --ssh-user --site "$SITE")
 
           SSH_OPTS="-i ~/.ssh/deploy_key -o ConnectTimeout=15 -o BatchMode=yes"
           READ_NODES='docker node ls --format "{{.Hostname}}" | while read -r h; do
@@ -97,4 +99,4 @@ jobs:
           echo "${STATE}"
           echo
 
-          echo "${STATE}" | python scripts/ci/check_fleet_drift.py
+          echo "${STATE}" | python scripts/ci/check_fleet_drift.py --site "$SITE"
