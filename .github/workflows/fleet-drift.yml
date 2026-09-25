@@ -34,6 +34,10 @@ on:
 jobs:
   drift:
     runs-on: ubuntu-latest
+    # Same gate the other key-holding workflows use. The `production`
+    # environment has no branch policy set today, so this buys nothing
+    # mechanically yet — it is here so that setting one covers this job too.
+    environment: production
     permissions:
       contents: read
     steps:
