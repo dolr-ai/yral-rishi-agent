@@ -104,3 +104,24 @@ def test_reports_every_difference_not_just_the_first():
     result = run(broken)
     assert result.returncode == 1
     assert "2 difference(s)" in result.stdout
+
+
+def run_flag(flag):
+    return subprocess.run(
+        [sys.executable, str(CHECKER), flag], capture_output=True, text=True, cwd=REPO
+    )
+
+
+def test_managers_flag_prints_the_manager_addresses():
+    """The drift workflow reads the inventory with this instead of sourcing it,
+    so that a job holding the production SSH key never executes the file."""
+    result = run_flag("--managers")
+    assert result.returncode == 0
+    printed = result.stdout.split()
+    assert printed == ["138.201.128.108", "88.99.160.251", "162.55.88.112"]
+
+
+def test_ssh_user_flag_prints_the_manager_account():
+    result = run_flag("--ssh-user")
+    assert result.returncode == 0
+    assert result.stdout.strip() == "rishi-deploy"

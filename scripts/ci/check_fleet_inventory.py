@@ -67,8 +67,20 @@ def check_inventory_is_sane(nodes):
         except ipaddress.AddressValueError:
             problems.append(f"{hostname}: {address!r} is not a valid IPv4 address")
             continue
-        if parsed.is_private or parsed.is_loopback:
-            problems.append(f"{hostname}: {address} is not a public address")
+        # Same exclusions the repo scan uses below. A multicast or reserved
+        # address in this table is a typo that would otherwise be accepted and
+        # then SSH'd to, so reject anything that cannot be a real server.
+        if (
+            parsed.is_private
+            or parsed.is_loopback
+            or parsed.is_multicast
+            or parsed.is_reserved
+            or parsed.is_link_local
+            or parsed.is_unspecified
+        ):
+            problems.append(
+                f"{hostname}: {address} is not a routable public address"
+            )
 
     for column, label in ((0, "hostname"), (3, "address")):
         seen = [node[column] for node in nodes]

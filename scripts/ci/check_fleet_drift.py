@@ -41,8 +41,8 @@ def parse_inventory(text):
         fields = line.split()
         if len(fields) != 4:
             sys.exit(f"FAIL: servers.config row is not 4 columns: {line!r}")
-        hostname, role, _ssh_user, address = fields
-        nodes[hostname] = {"role": role, "address": address}
+        hostname, role, ssh_user, address = fields
+        nodes[hostname] = {"role": role, "ssh_user": ssh_user, "address": address}
     return nodes
 
 
@@ -107,6 +107,24 @@ def compare(expected, actual):
 
 
 def main():
+    # Two read-only queries the workflow uses to find the cluster. They exist
+    # so the job can READ the inventory instead of `source`-ing it: sourcing
+    # runs whatever the file contains, and that job is holding an SSH key to
+    # every production node.
+    if len(sys.argv) > 1 and sys.argv[1] in ("--managers", "--ssh-user"):
+        nodes = parse_inventory(INVENTORY.read_text())
+        if sys.argv[1] == "--managers":
+            managers = [n for n in nodes.values() if n["role"] == "manager"]
+            if not managers:
+                sys.exit("FAIL: servers.config lists no managers")
+            print(" ".join(node["address"] for node in managers))
+        else:
+            users = {node["ssh_user"] for node in nodes.values() if node["role"] == "manager"}
+            if len(users) != 1:
+                sys.exit(f"FAIL: managers disagree on ssh_user: {sorted(users)}")
+            print(users.pop())
+        return 0
+
     swarm_text = sys.stdin.read()
     if not swarm_text.strip():
         sys.exit("FAIL: no swarm state on stdin — could not reach a manager?")

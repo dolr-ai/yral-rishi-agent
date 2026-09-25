@@ -89,3 +89,11 @@ def test_the_real_inventory_in_this_repo_passes():
         [sys.executable, str(CHECKER)], capture_output=True, text=True, cwd=REPO
     )
     assert result.returncode == 0, result.stdout
+
+
+def test_rejects_an_address_that_cannot_be_a_real_server(tmp_path):
+    """Codex review on #529: 224.0.0.1 is multicast, not a host we can SSH to."""
+    multicast = INVENTORY.replace("138.201.137.181", "224.0.0.1")
+    result = run(build_repo(tmp_path, inventory=multicast))
+    assert result.returncode == 1
+    assert "not a routable public address" in result.stdout
