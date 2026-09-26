@@ -64,37 +64,48 @@ jobs:
           # scripts that want it, but sourcing executes whatever the file
           # contains, and this job is holding a key to every production node.
           # Reading it as data keeps that key out of reach of the file.
-          MANAGERS=$(python scripts/ci/check_fleet_drift.py --managers)
-          SWARM_USER=$(python scripts/ci/check_fleet_drift.py --ssh-user)
+          # Every site in the inventory, not a hardcoded one — a second site
+          # whose drift is never checked is a second site that quietly rots.
+          SITES=$(python scripts/ci/check_fleet_drift.py --sites)
+          echo "sites to check: ${SITES}"
 
           SSH_OPTS="-i ~/.ssh/deploy_key -o ConnectTimeout=15 -o BatchMode=yes"
           READ_NODES='docker node ls --format "{{.Hostname}}" | while read -r h; do
               docker node inspect "$h" --format "{{.Description.Hostname}} {{.Spec.Role}} {{.Status.State}} {{.Spec.Availability}} {{.Status.Addr}}"
           done'
 
-          # Any manager can answer. Try each so one rebooted box is not an
-          # outage of the check itself — a monitor that goes quiet when a node
-          # is down is a monitor that fails exactly when it is needed.
-          STATE=""
-          for host in ${MANAGERS}; do
-            echo "── asking ${host} ──"
-            ssh-keyscan -T 10 -H "${host}" >> ~/.ssh/known_hosts 2>/dev/null || true
-            if STATE=$(ssh ${SSH_OPTS} "${SWARM_USER}@${host}" "${READ_NODES}" 2>/dev/null) \
-               && [ -n "${STATE}" ]; then
-              echo "✓ answered by ${host}"
-              break
-            fi
-            echo "✗ ${host} did not answer; trying the next manager"
+          FAILED=0
+          for SITE in ${SITES}; do
+            echo "════════ site: ${SITE} ════════"
+            MANAGERS=$(python scripts/ci/check_fleet_drift.py --managers --site "${SITE}")
+            SWARM_USER=$(python scripts/ci/check_fleet_drift.py --ssh-user --site "${SITE}")
+
+            # Any manager can answer. Try each so one rebooted box is not an
+            # outage of the check itself — a monitor that goes quiet when a node
+            # is down is a monitor that fails exactly when it is needed.
             STATE=""
+            for host in ${MANAGERS}; do
+              echo "── asking ${host} ──"
+              ssh-keyscan -T 10 -H "${host}" >> ~/.ssh/known_hosts 2>/dev/null || true
+              if STATE=$(ssh ${SSH_OPTS} "${SWARM_USER}@${host}" "${READ_NODES}" 2>/dev/null) \
+                 && [ -n "${STATE}" ]; then
+                echo "✓ answered by ${host}"
+                break
+              fi
+              echo "✗ ${host} did not answer; trying the next manager"
+              STATE=""
+            done
+
+            if [ -z "${STATE}" ]; then
+              echo "::error::No manager answered in site ${SITE}. Either every manager there is unreachable, or the addresses in servers.config are wrong. Both are worth waking up for."
+              FAILED=1
+              continue
+            fi
+
+            echo "── live Swarm (${SITE}) ──"
+            echo "${STATE}"
+            echo "${STATE}" | python scripts/ci/check_fleet_drift.py --site "${SITE}" || FAILED=1
+            echo
           done
 
-          if [ -z "${STATE}" ]; then
-            echo "::error::No manager answered. Either every manager is unreachable, or the addresses in servers.config are wrong. Both are worth waking up for."
-            exit 1
-          fi
-
-          echo "── live Swarm ──"
-          echo "${STATE}"
-          echo
-
-          echo "${STATE}" | python scripts/ci/check_fleet_drift.py
+          exit ${FAILED}

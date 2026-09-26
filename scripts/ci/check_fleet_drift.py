@@ -39,10 +39,11 @@ def parse_inventory(text):
         if not line or line.startswith("#"):
             continue
         fields = line.split()
-        if len(fields) != 4:
-            sys.exit(f"FAIL: servers.config row is not 4 columns: {line!r}")
-        hostname, role, ssh_user, address = fields
-        nodes[hostname] = {"role": role, "ssh_user": ssh_user, "address": address}
+        if len(fields) != 6:
+            sys.exit(f"FAIL: servers.config row is not 6 columns: {line!r}")
+        hostname, site, role, ssh_user, address, labels = fields
+        nodes[hostname] = {"site": site, "role": role, "ssh_user": ssh_user,
+                           "address": address, "labels": labels}
     return nodes
 
 
@@ -111,8 +112,16 @@ def main():
     # so the job can READ the inventory instead of `source`-ing it: sourcing
     # runs whatever the file contains, and that job is holding an SSH key to
     # every production node.
+    if len(sys.argv) > 1 and sys.argv[1] == "--sites":
+        nodes = parse_inventory(INVENTORY.read_text())
+        print(" ".join(sorted({n["site"] for n in nodes.values()})))
+        return 0
+
     if len(sys.argv) > 1 and sys.argv[1] in ("--managers", "--ssh-user"):
         nodes = parse_inventory(INVENTORY.read_text())
+        wanted_site = sys.argv[3] if len(sys.argv) > 3 and sys.argv[2] == "--site" else None
+        if wanted_site:
+            nodes = {h: n for h, n in nodes.items() if n["site"] == wanted_site}
         if sys.argv[1] == "--managers":
             managers = [n for n in nodes.values() if n["role"] == "manager"]
             if not managers:
@@ -125,11 +134,24 @@ def main():
             print(users.pop())
         return 0
 
+    # Sites are separate Swarms. Comparing one site's live nodes against the
+    # whole inventory would report every node of every OTHER site as missing,
+    # so the caller says which site this swarm state came from.
+    site = None
+    if "--site" in sys.argv:
+        index = sys.argv.index("--site")
+        if index + 1 < len(sys.argv):
+            site = sys.argv[index + 1]
+
     swarm_text = sys.stdin.read()
     if not swarm_text.strip():
         sys.exit("FAIL: no swarm state on stdin — could not reach a manager?")
 
     expected = parse_inventory(INVENTORY.read_text())
+    if site:
+        expected = {h: n for h, n in expected.items() if n["site"] == site}
+        if not expected:
+            sys.exit(f"FAIL: servers.config lists no nodes for site {site!r}")
     actual = parse_swarm(swarm_text)
     drift = compare(expected, actual)
 

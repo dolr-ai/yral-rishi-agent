@@ -27,7 +27,7 @@ rishi-6 manager ready active 162.55.88.112
 
 def run(swarm_state):
     return subprocess.run(
-        [sys.executable, str(CHECKER)],
+        [sys.executable, str(CHECKER), "--site", "hetzner-de"],
         input=swarm_state,
         capture_output=True,
         text=True,
@@ -108,7 +108,8 @@ def test_reports_every_difference_not_just_the_first():
 
 def run_flag(flag):
     return subprocess.run(
-        [sys.executable, str(CHECKER), flag], capture_output=True, text=True, cwd=REPO
+        [sys.executable, str(CHECKER), flag, "--site", "hetzner-de"],
+        capture_output=True, text=True, cwd=REPO,
     )
 
 
@@ -125,3 +126,20 @@ def test_ssh_user_flag_prints_the_manager_account():
     result = run_flag("--ssh-user")
     assert result.returncode == 0
     assert result.stdout.strip() == "rishi-deploy"
+
+
+def test_a_second_site_is_not_reported_as_missing():
+    """Each site is its own Swarm. Querying one must not flag the other's nodes."""
+    result = run(IN_SYNC)
+    assert result.returncode == 0, result.stdout
+    assert "rishi-in-1" not in result.stdout
+
+
+def test_sites_flag_lists_every_site():
+    """The drift workflow iterates this instead of hardcoding one site, so a
+    second cluster cannot go unchecked (Codex review on #530)."""
+    result = subprocess.run(
+        [sys.executable, str(CHECKER), "--sites"], capture_output=True, text=True, cwd=REPO
+    )
+    assert result.returncode == 0
+    assert "hetzner-de" in result.stdout.split()

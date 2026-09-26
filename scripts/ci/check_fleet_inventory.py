@@ -45,10 +45,11 @@ def parse_inventory(text):
         if not line or line.startswith("#"):
             continue
         fields = line.split()
-        if len(fields) != 4:
+        if len(fields) != 6:
             sys.exit(
-                f"FAIL: servers.config line {number}: expected 4 columns "
-                f"(hostname role ssh_user public_ipv4), found {len(fields)}: {line!r}"
+                f"FAIL: servers.config line {number}: expected 6 columns "
+                f"(hostname site role ssh_user public_ipv4 labels), "
+                f"found {len(fields)}: {line!r}"
             )
         nodes.append(tuple(fields))
     return nodes
@@ -59,9 +60,16 @@ def check_inventory_is_sane(nodes):
     if not nodes:
         problems.append("FLEET_NODES is empty")
 
-    for hostname, role, _ssh_user, address in nodes:
+    for hostname, _site, role, _ssh_user, address, labels in nodes:
         if role not in ROLES:
             problems.append(f"{hostname}: role {role!r} is not one of {sorted(ROLES)}")
+        if labels != "-":
+            for pair in labels.split(","):
+                if pair.count("=") != 1 or not all(pair.split("=")):
+                    problems.append(
+                        f"{hostname}: label {pair!r} is not key=value "
+                        "(use '-' for no labels)"
+                    )
         try:
             parsed = ipaddress.IPv4Address(address)
         except ipaddress.AddressValueError:
@@ -82,18 +90,29 @@ def check_inventory_is_sane(nodes):
                 f"{hostname}: {address} is not a routable public address"
             )
 
-    for column, label in ((0, "hostname"), (3, "address")):
+    for column, label in ((0, "hostname"), (4, "address")):
         seen = [node[column] for node in nodes]
         for value in sorted(set(seen)):
             if seen.count(value) > 1:
                 problems.append(f"duplicate {label}: {value}")
 
-    managers = [node for node in nodes if node[1] == "manager"]
-    if len(managers) < MINIMUM_MANAGERS:
-        problems.append(
-            f"only {len(managers)} manager(s); Swarm needs at least "
-            f"{MINIMUM_MANAGERS} to survive losing one"
-        )
+    # Quorum is per SITE, not fleet-wide: sites are separate Swarms, so three
+    # managers spread across two sites protects neither of them.
+    managers = [node for node in nodes if node[2] == "manager"]
+    for site in sorted({node[1] for node in nodes}):
+        in_site = [n for n in nodes if n[1] == site]
+        site_managers = [n for n in in_site if n[2] == "manager"]
+        if not site_managers:
+            problems.append(
+                f"site {site} has {len(in_site)} node(s) and NO manager; a "
+                "Swarm with no manager cannot orchestrate anything"
+            )
+        elif len(in_site) >= MINIMUM_MANAGERS and len(site_managers) < MINIMUM_MANAGERS:
+            problems.append(
+                f"site {site} has {len(in_site)} nodes but only "
+                f"{len(site_managers)} manager(s); it needs at least "
+                f"{MINIMUM_MANAGERS} to survive losing one"
+            )
     return problems, managers
 
 
@@ -132,7 +151,7 @@ def main():
 
     nodes = parse_inventory(INVENTORY.read_text())
     problems, managers = check_inventory_is_sane(nodes)
-    known = {node[3] for node in nodes}
+    known = {node[4] for node in nodes}
     unregistered = find_unregistered_addresses(known)
 
     for problem in problems:
@@ -146,17 +165,22 @@ def main():
         print("Add the server to servers.config, or correct the address above.")
         return 1
 
-    print(
-        f"servers.config: {len(nodes)} nodes "
-        f"({len(managers)} managers, {len(nodes) - len(managers)} workers), "
-        "every address referenced in CI is registered."
-    )
-    if len(managers) % 2 == 0:
-        print(
-            f"NOTE: {len(managers)} managers is an even number. Raft needs a "
-            f"majority, so {len(managers)} tolerates the same number of "
-            f"failures as {len(managers) - 1}. An odd count is the usual choice."
-        )
+    sites = sorted({node[1] for node in nodes})
+    print(f"servers.config: {len(nodes)} nodes across {len(sites)} site(s); "
+          "every address referenced in CI is registered.")
+    for site in sites:
+        in_site = [n for n in nodes if n[1] == site]
+        m = sum(1 for n in in_site if n[2] == "manager")
+        print(f"  {site}: {len(in_site)} nodes ({m} managers, {len(in_site) - m} workers)")
+    # Evenness matters per site, because each site is its own Raft group.
+    for site in sites:
+        count = sum(1 for n in nodes if n[1] == site and n[2] == "manager")
+        if count > 1 and count % 2 == 0:
+            print(
+                f"NOTE: site {site} has {count} managers, an even number. Raft "
+                f"needs a majority, so {count} tolerates the same number of "
+                f"failures as {count - 1}. An odd count is the usual choice."
+            )
     return 0
 
 
