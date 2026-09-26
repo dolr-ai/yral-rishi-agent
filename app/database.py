@@ -1,3 +1,4 @@
+import asyncio
 import os
 import asyncpg
 import logging
@@ -5,6 +6,12 @@ import logging
 logger = logging.getLogger(__name__)
 
 _pool: asyncpg.Pool | None = None
+
+# Serialises pool CREATION, not pool use. Without it, every coroutine that
+# calls get_pool() while _pool is None builds its own pool — and only the last
+# assignment survives. The rest keep their connections open forever with no
+# reference left to close them. See get_pool().
+_pool_lock = asyncio.Lock()
 
 
 def _read_database_url() -> str:
@@ -62,23 +69,44 @@ async def _connect_with_failover(url: str, hosts, **kwargs) -> asyncpg.Connectio
 
 
 async def get_pool() -> asyncpg.Pool:
+    """The one pool, created once however many callers ask at the same moment.
+
+    The lock is the whole point. `_pool` is None on first use and again after
+    any failure, and several background loops call this concurrently — the
+    takeover sweep, the feed ranker, the classifier. Unguarded, they all found
+    `_pool is None`, all ran `create_pool`, and all but the last leaked a live
+    pool that nothing could ever close. On 2026-09-25 that filled both Postgres
+    replicas with 98 idle connections and took the service down: new pools
+    could not be created at all, so /health's database check failed while
+    /health/live kept saying the container was fine.
+    """
     global _pool
     if _pool is not None:
         return _pool
 
-    url = _read_database_url()
-    hosts = _host_list(url)
-    logger.info("Creating database connection pool (%d hosts)...", len(hosts))
+    async with _pool_lock:
+        # Re-check inside the lock: while we waited, another caller may have
+        # finished. Returning here is what stops the second pool being built.
+        if _pool is not None:
+            return _pool
 
-    async def _connect(*_args, **kwargs):
-        return await _connect_with_failover(url, hosts, **kwargs)
+        url = _read_database_url()
+        hosts = _host_list(url)
+        logger.info("Creating database connection pool (%d hosts)...", len(hosts))
 
-    _pool = await asyncpg.create_pool(
-        min_size=2,
-        max_size=10,
-        command_timeout=60,
-        connect=_connect,
-    )
+        async def _connect(*_args, **kwargs):
+            return await _connect_with_failover(url, hosts, **kwargs)
+
+        pool = await asyncpg.create_pool(
+            min_size=2,
+            max_size=10,
+            command_timeout=60,
+            connect=_connect,
+        )
+        # Publish only once fully built. If create_pool raises, `_pool` stays
+        # None and the next caller retries — with nothing half-created left
+        # holding connections.
+        _pool = pool
 
     logger.info("Database connection pool created successfully")
     return _pool
@@ -86,10 +114,11 @@ async def get_pool() -> asyncpg.Pool:
 
 async def close_pool():
     global _pool
-    if _pool is not None:
-        await _pool.close()
-        _pool = None
-        logger.info("Database connection pool closed")
+    async with _pool_lock:
+        if _pool is not None:
+            await _pool.close()
+            _pool = None
+            logger.info("Database connection pool closed")
 
 
 async def check_db_health() -> bool:
