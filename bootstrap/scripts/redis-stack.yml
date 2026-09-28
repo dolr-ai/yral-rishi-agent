@@ -1,0 +1,45 @@
+# redis-stack.yml — one Redis that can run on any server.
+#
+# Replaces redis-sentinel-stack.yml (a pinned primary, a pinned replica and
+# three pinned Sentinels). The Sentinels never protected anything: every app
+# connects straight to `redis-primary`, never asks a Sentinel, so a Sentinel
+# failover would have promoted a replica nobody talks to.
+#
+# What we keep in Redis all rebuilds itself — caches with expiry, rate-limit
+# counters, pub/sub, the last few memory keys per conversation. So one copy is
+# enough: if its server dies, the swarm starts it elsewhere in seconds and it
+# starts empty. The `redis-primary` alias keeps every existing REDIS_URL valid.
+#
+# Deploy:  REDIS_PASSWORD_SECRET=<swarm secret name> \
+#          docker stack deploy -c redis-stack.yml redis
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7.2-alpine
+    command:
+      - sh
+      - -c
+      - |
+        exec redis-server \
+          --requirepass "$$(cat /run/secrets/redis-password)" \
+          --maxmemory 8gb --maxmemory-policy allkeys-lru \
+          --save "" --appendonly no
+    secrets:
+      - source: redis_password
+        target: redis-password
+    networks:
+      yral-v2-data-plane:
+        aliases: [redis-primary]
+    deploy:
+      replicas: 1
+      restart_policy: { condition: any, delay: 2s }
+
+secrets:
+  redis_password:
+    external: true
+    name: "${REDIS_PASSWORD_SECRET:?}"
+
+networks:
+  yral-v2-data-plane:
+    external: true
