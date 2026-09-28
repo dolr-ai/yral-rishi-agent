@@ -80,7 +80,10 @@ services:
       # Cluster-wide settings must go in bootstrap.dcs: Patroni ignores env
       # vars for them. Synchronous mode = a commit is acknowledged only once a
       # second copy has it, so a failover never loses an acknowledged write.
-      SPILO_CONFIGURATION: '{"bootstrap":{"dcs":{"synchronous_mode":true,"synchronous_mode_strict":false,"maximum_lag_on_failover":1048576}},"postgresql":{"pg_hba":["local all all trust","host all all 127.0.0.1/32 md5","host all all ::1/128 md5","local replication standby trust","host replication standby 10.0.3.0/24 md5","hostnossl all all all reject","hostssl all all all md5"]}}'
+      # Strict = if no second copy is available, writes wait instead of
+      # quietly going unprotected. With 3 copies that only happens when two
+      # are down at once, which the fleet is designed never to do.
+      SPILO_CONFIGURATION: '{"bootstrap":{"dcs":{"synchronous_mode":true,"synchronous_mode_strict":true,"maximum_lag_on_failover":1048576}},"postgresql":{"pg_hba":["local all all trust","host all all 127.0.0.1/32 md5","host all all ::1/128 md5","local replication standby trust","host replication standby 10.0.3.0/24 md5","hostnossl all all all reject","hostssl all all all md5"]}}'
       # Backups: set WALG_S3_PREFIX + AWS_* to archive. Left unset here so a
       # test cluster can never write into the production backup path.
       WALG_S3_PREFIX: "${WALG_S3_PREFIX:-}"
