@@ -47,11 +47,15 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Set up SSH key
+      # One key per site. Sites are different providers built by different
+      # people, so they do not share an SSH identity: Hetzner answers to the CI
+      # key, Azure to the key Saikat installed. Add a secret when adding a site.
+      - name: Set up SSH keys (one per site)
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/key_hetzner-de
+          echo "${{ secrets.AZURE_SSH_KEY }}"  > ~/.ssh/key_azure-in
+          chmod 600 ~/.ssh/key_*
 
       - name: Read the live Swarm and compare it against servers.config
         run: |
@@ -69,7 +73,8 @@ jobs:
           SITES=$(python scripts/ci/check_fleet_drift.py --sites)
           echo "sites to check: ${SITES}"
 
-          SSH_OPTS="-i ~/.ssh/deploy_key -o ConnectTimeout=15 -o BatchMode=yes"
+          # (the -i key is chosen per site inside the loop)
+          SSH_BASE="-o ConnectTimeout=15 -o BatchMode=yes"
           READ_NODES='docker node ls --format "{{.Hostname}}" | while read -r h; do
               docker node inspect "$h" --format "{{.Description.Hostname}} {{.Spec.Role}} {{.Status.State}} {{.Spec.Availability}} {{.Status.Addr}}"
           done'
@@ -79,6 +84,11 @@ jobs:
             echo "════════ site: ${SITE} ════════"
             MANAGERS=$(python scripts/ci/check_fleet_drift.py --managers --site "${SITE}")
             SWARM_USER=$(python scripts/ci/check_fleet_drift.py --ssh-user --site "${SITE}")
+            SSH_OPTS="-i ~/.ssh/key_${SITE} ${SSH_BASE}"
+            if [ ! -s ~/.ssh/key_${SITE} ]; then
+              echo "::error::No SSH key secret for site ${SITE} — add AZURE_SSH_KEY-style secret named for the site."
+              FAILED=1; continue
+            fi
 
             # Any manager can answer. Try each so one rebooted box is not an
             # outage of the check itself — a monitor that goes quiet when a node
