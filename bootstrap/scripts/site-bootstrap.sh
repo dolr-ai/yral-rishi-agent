@@ -58,21 +58,23 @@ sudo ufw --force enable >/dev/null
 # ── Swarm ─────────────────────────────────────────────────────────────────
 # Advertise the PRIVATE address. Advertising the public one sends overlay
 # traffic out to the internet and back — and past the MTU wall.
+# `sudo docker`, because the usermod above only takes effect at next login:
+# on a fresh machine this shell is not yet in the docker group.
 case "$MODE" in
     init)
-        docker swarm init --advertise-addr "$PRIVATE_IP" --listen-addr 0.0.0.0:2377 >/dev/null
+        sudo docker swarm init --advertise-addr "$PRIVATE_IP" --listen-addr 0.0.0.0:2377 >/dev/null
         echo "site $SITE initialised on $PRIVATE_IP"
         echo "manager join token (for the other nodes):"
-        docker swarm join-token -q manager
+        sudo docker swarm join-token -q manager
         ;;
     join)
         : "${JOIN:?JOIN is required for join (e.g. 172.16.0.4:2377)}"
         : "${TOKEN:?TOKEN is required for join}"
-        docker swarm join --token "$TOKEN" --advertise-addr "$PRIVATE_IP" \
+        sudo docker swarm join --token "$TOKEN" --advertise-addr "$PRIVATE_IP" \
             --listen-addr 0.0.0.0:2377 "$JOIN" >/dev/null
         echo "joined site $SITE via $JOIN as $PRIVATE_IP"
         ;;
     *) echo "unknown mode: $MODE (init|join)" >&2; exit 2 ;;
 esac
 
-echo "$(hostname): docker=$(docker --version | cut -d, -f1) ufw=$(sudo ufw status | head -1) swarm=$(docker info --format '{{.Swarm.LocalNodeState}}')"
+echo "$(hostname): docker=$(sudo docker --version | cut -d, -f1) ufw=$(sudo ufw status | head -1) swarm=$(sudo docker info --format '{{.Swarm.LocalNodeState}}')"
