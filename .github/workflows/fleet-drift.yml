@@ -51,11 +51,19 @@ jobs:
       # people, so they do not share an SSH identity: Hetzner answers to the CI
       # key, Azure to the key Saikat installed. Add a secret when adding a site.
       - name: Set up SSH keys (one per site)
+        env:
+          KEY_HETZNER_DE: ${{ secrets.DEPLOY_SSH_KEY }}
+          KEY_AZURE_IN: ${{ secrets.AZURE_SSH_KEY }}
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/key_hetzner-de
-          echo "${{ secrets.AZURE_SSH_KEY }}"  > ~/.ssh/key_azure-in
-          chmod 600 ~/.ssh/key_*
+          # An unset secret is "", and `echo ""` still writes a newline: a
+          # non-empty file that the missing-key check below would accept.
+          # So a key file exists only when its secret does.
+          write_key_if_set() {
+            if [ -n "$1" ]; then echo "$1" > ~/.ssh/key_"$2"; chmod 600 ~/.ssh/key_"$2"; fi
+          }
+          write_key_if_set "${KEY_HETZNER_DE}" hetzner-de
+          write_key_if_set "${KEY_AZURE_IN}"   azure-in
 
       - name: Read the live Swarm and compare it against servers.config
         run: |
