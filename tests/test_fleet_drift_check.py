@@ -8,6 +8,7 @@ The IN_SYNC fixture below is the real output of `docker node inspect` across
 the live fleet on 2026-09-25, so these test the format we actually receive.
 """
 
+import shutil
 import subprocess
 import sys
 import pathlib
@@ -143,3 +144,44 @@ def test_sites_flag_lists_every_site():
     )
     assert result.returncode == 0
     assert "hetzner-de" in result.stdout.split()
+
+
+
+def run_against(tmp_path, inventory, swarm_state, site):
+    """Run the real script against a throwaway inventory, not the repo's."""
+    (tmp_path / "scripts" / "ci").mkdir(parents=True)
+    shutil.copy(CHECKER, tmp_path / "scripts" / "ci" / CHECKER.name)
+    (tmp_path / "servers.config").write_text(inventory)
+    return subprocess.run(
+        [sys.executable, str(tmp_path / "scripts" / "ci" / CHECKER.name), "--site", site],
+        input=swarm_state, capture_output=True, text=True,
+    )
+
+
+INDIA = """\
+FLEET_NODES="
+in-1  azure-in  manager  rishi  20.0.0.1  node_role=edge,swarm_addr=172.16.0.4
+in-2  azure-in  manager  rishi  20.0.0.2  node_role=edge,swarm_addr=172.16.0.6
+in-3  azure-in  manager  rishi  20.0.0.3  node_role=compute,swarm_addr=172.16.0.7
+"
+"""
+
+
+def test_swarm_addr_is_what_the_swarm_is_compared_against(tmp_path):
+    """A cloud node advertises its PRIVATE address inside the swarm while
+    public_ipv4 is where SSH reaches it. Without swarm_addr the checker
+    reported every India node as "moved" the first time it ran (2026-09-28)."""
+    live = ("in-1 manager ready active 172.16.0.4\n"
+            "in-2 manager ready active 172.16.0.6\n"
+            "in-3 manager ready active 172.16.0.7\n")
+    result = run_against(tmp_path, INDIA, live, "azure-in")
+    assert result.returncode == 0, result.stdout
+
+
+def test_swarm_addr_still_catches_a_node_that_actually_moved(tmp_path):
+    moved = ("in-1 manager ready active 172.16.0.99\n"
+             "in-2 manager ready active 172.16.0.6\n"
+             "in-3 manager ready active 172.16.0.7\n")
+    result = run_against(tmp_path, INDIA, moved, "azure-in")
+    assert result.returncode == 1
+    assert "in-1" in result.stdout and "172.16.0.99" in result.stdout

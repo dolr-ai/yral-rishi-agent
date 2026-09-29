@@ -42,8 +42,16 @@ def parse_inventory(text):
         if len(fields) != 6:
             sys.exit(f"FAIL: servers.config row is not 6 columns: {line!r}")
         hostname, site, role, ssh_user, address, labels = fields
+        # A cloud node advertises its PRIVATE address inside its swarm, while
+        # public_ipv4 is where SSH reaches it. `swarm_addr=` in the labels says
+        # which address the swarm will report, so the two are not confused.
+        swarm_addr = address
+        for pair in labels.split(","):
+            if pair.startswith("swarm_addr="):
+                swarm_addr = pair.split("=", 1)[1]
         nodes[hostname] = {"site": site, "role": role, "ssh_user": ssh_user,
-                           "address": address, "labels": labels}
+                           "address": address, "swarm_addr": swarm_addr,
+                           "labels": labels}
     return nodes
 
 
@@ -91,10 +99,10 @@ def compare(expected, actual):
                 f"{hostname} is a {have['role']} in the Swarm but "
                 f"servers.config says {want['role']}."
             )
-        if want["address"] != have["address"]:
+        if want["swarm_addr"] != have["address"]:
             drift.append(
                 f"{hostname} answers on {have['address']} but servers.config "
-                f"says {want['address']}. An address changed underneath us."
+                f"says {want['swarm_addr']}. An address changed underneath us."
             )
         if have["state"] != HEALTHY_STATE:
             drift.append(f"{hostname} is {have['state']}, not {HEALTHY_STATE}.")
