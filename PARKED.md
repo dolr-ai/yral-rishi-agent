@@ -21,6 +21,8 @@ Delete it.
 
 | What | Detail |
 |---|---|
+| **pgbouncer is unused** | 2026-09-28: no client connects through `yral-v2-patroni_pgbouncer` (checked `pg_stat_activity` on the leader), and its `DB_HOST` is only `patroni-rishi-4`, which is a replica. Remove it with the data-plane move |
+| **Redis Sentinels protect nothing** | Every app connects straight to `redis-primary`; none asks a Sentinel. A Sentinel failover would promote a replica nobody talks to. Replaced by `redis-stack.yml` (one copy, moves anywhere) |
 | **1 FK violation in production** | The weekly restore drill reports `fk_violations=1` — orphan rows in `yral_agent_db`. Harmless to backups, but it's real inconsistency. See `~/yral-backups/drill.log` on rishi-4 |
 | **93 WAL segments permanently lost** | Timeline 61, from the 2026-09-09 → 09-11 archiving outage. Point-in-time recovery inside that window is gone for good. Nightly `pg_dump`s still cover it at daily granularity. Nothing to fix — recorded so nobody re-investigates |
 | **`weekly-security-drill` fails every Sunday** | Fails at step 13, *"Open / update tracking issue"* — a token permission. The gitleaks/pip-audit/Trivy scans all pass. Six weeks of an alarm about the wrong thing |
@@ -35,6 +37,7 @@ Delete it.
 
 | What | Why | Size |
 |---|---|---|
+| **Move production onto the dynamic data plane** | `postgres-stack.yml` + `redis-stack.yml` proven on azure-in 2026-09-28 (crash failover ~6 s, no acknowledged write lost, wiped copy self-rebuilds). Prod cutover: pg_dump first (rule 9) → new Consul-based Patroni as a standby of the old cluster → brief write pause, promote → give `postgres-primary` the old `patroni-rishi-4/5/6` names as aliases so no DSN changes → remove etcd, old Patroni, pgbouncer, Sentinels. Redis: copy edge-issuer's certificate keys across before the swap. Needs Rishi: `docker stack rm` is denied, and a quiet window | 1 day + window |
 | **HTTP + real-DB test harness** | The single biggest lever on quality. `routes/` is 22% covered — the only layer a user reaches, and where every bug in Sept lived. Only 2 of 145 test files drive real HTTP; 5 touch a real Postgres. Pattern to copy: `tests/test_validate_generate_null_reason.py` (drives the real route, fails on the unfixed code). Start with `influencers.py` | weeks |
 | **Convert source-text tests by risk** | 535 assertions grep our own source and pass whether or not the code works. Ratcheted by `scripts/ci/check_source_text_assertions.py` so it can only fall. Target `chat.py` (15%), `influencers.py` (20%), `creator_coach.py` (9%) — ~120 assertions that matter more than the other 400 | weeks |
 | **Unwind #501's plain-default conversions** | #504 collapses `anyOf:[T,null]` at publication, so distorting Python types is no longer needed. Each remaining conversion is a latent copy of the Sentry #602 bug (a `None` at runtime against a non-nullable model → 500) | days |

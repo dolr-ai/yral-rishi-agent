@@ -1,0 +1,134 @@
+# postgres-stack.yml — Postgres that lives wherever the swarm has room.
+#
+# Replaces patroni-stack.yml, which pinned one etcd and one Patroni member to
+# each of rishi-4/5/6 by hostname. A pinned member dies with its server and
+# nothing takes its place. Here nothing is pinned:
+#
+#   consul            3 copies, at most one per server. Leader election for
+#                     Patroni. Servers find each other by asking swarm DNS for
+#                     `tasks.consul`, and autopilot drops a dead server as soon
+#                     as a replacement joins — so membership follows the fleet.
+#                     etcd can't do this: it must be told its exact members.
+#   patroni           3 copies, at most one per server. A copy that lands on a
+#                     server with no data clones itself from the leader. That
+#                     is the whole re-homing story: kill a server, the swarm
+#                     starts the copy elsewhere, it rebuilds, done.
+#   postgres-primary  The one address apps use. HAProxy asks every Patroni copy
+#                     "are you the leader?" every 2s and forwards only there, so
+#                     a failover never needs a config change in any app.
+#
+# Survives losing one of three copies (a majority must remain to elect a
+# leader). Copies are spread across sites so one site going dark costs at most
+# one. See memory: fleet resilience requirements.
+#
+# Deploy (on a manager; passwords come from the environment, as before):
+#   PGPASSWORD_SUPERUSER=… PGPASSWORD_STANDBY=… PGPASSWORD_ADMIN=… \
+#   docker stack deploy -c postgres-stack.yml postgres
+version: "3.9"
+
+x-spread-one-per-server: &spread_one_per_server
+  max_replicas_per_node: 1
+  preferences:
+    - spread: node.labels.site
+
+services:
+  consul:
+    image: hashicorp/consul:1.19
+    hostname: "consul-{{.Node.Hostname}}"
+    # Bind to this task's address on the data-plane overlay only; a task also
+    # has a gateway-bridge interface, and gossiping on that would split the
+    # cluster.
+    command: >
+      agent -server -bootstrap-expect=3 -retry-join=tasks.consul
+      -client=0.0.0.0
+      -bind='{{ GetAllInterfaces | include "network" "10.0.3.0/24" | attr "address" }}'
+    environment:
+      # min_quorum stops autopilot from pruning below 3 while a replacement is
+      # still starting. The raft multiplier gives cross-continent members
+      # (130 ms apart) room before they're declared dead.
+      CONSUL_LOCAL_CONFIG: >-
+        {"leave_on_terminate": true, "ui_config": {"enabled": false},
+         "autopilot": {"cleanup_dead_servers": true, "min_quorum": 3},
+         "performance": {"raft_multiplier": 5}}
+    volumes:
+      - consul-data:/consul/data
+    networks: [yral-v2-data-plane]
+    deploy:
+      replicas: 3
+      placement: *spread_one_per_server
+      update_config: { parallelism: 1, delay: 30s, order: stop-first }
+      restart_policy: { condition: any, delay: 5s }
+
+  patroni:
+    image: ghcr.io/dolr-ai/yral-rishi-patroni-pgvector:5950fdc096e45f277d6dd5c4ce5edd07e8c226a8
+    hostname: "patroni-{{.Node.Hostname}}"
+    environment:
+      SCOPE: yral-v2-postgres
+      PGVERSION: "15"
+      CONSUL_HOST: consul
+      CONSUL_PORT: "8500"
+      # No connect address is set: Spilo advertises this task's own overlay
+      # IP, which is exactly what should change when the task moves.
+      PATRONI_RESTAPI_LISTEN: 0.0.0.0:8008
+      PATRONI_POSTGRESQL_LISTEN: 0.0.0.0:5432
+      # A copy returning with old data after a failover is rebuilt, not trusted.
+      PATRONI_POSTGRESQL_REMOVE_DATA_DIRECTORY_ON_DIVERGED_TIMELINES: "true"
+      PATRONI_POSTGRESQL_REMOVE_DATA_DIRECTORY_ON_REWIND_FAILURE: "true"
+      PGPASSWORD_SUPERUSER: "${PGPASSWORD_SUPERUSER:?}"
+      PGPASSWORD_STANDBY: "${PGPASSWORD_STANDBY:?}"
+      PGPASSWORD_ADMIN: "${PGPASSWORD_ADMIN:?}"
+      # Cluster-wide settings must go in bootstrap.dcs: Patroni ignores env
+      # vars for them. Synchronous mode = a commit is acknowledged only once a
+      # second copy has it, so a failover never loses an acknowledged write.
+      # Strict = if no second copy is available, writes wait instead of
+      # quietly going unprotected. With 3 copies that only happens when two
+      # are down at once, which the fleet is designed never to do.
+      SPILO_CONFIGURATION: '{"bootstrap":{"dcs":{"synchronous_mode":true,"synchronous_mode_strict":true,"maximum_lag_on_failover":1048576}},"postgresql":{"pg_hba":["local all all trust","host all all 127.0.0.1/32 md5","host all all ::1/128 md5","local replication standby trust","host replication standby 10.0.3.0/24 md5","hostnossl all all all reject","hostssl all all all md5"]}}'
+      # Backups: set WALG_S3_PREFIX + AWS_* to archive. Left unset here so a
+      # test cluster can never write into the production backup path.
+      WALG_S3_PREFIX: "${WALG_S3_PREFIX:-}"
+      USE_WALG_BACKUP: "${USE_WALG_BACKUP:-false}"
+      USE_WALG_RESTORE: "${USE_WALG_BACKUP:-false}"
+    volumes:
+      - patroni-data:/home/postgres/pgdata
+    shm_size: 2g
+    networks: [yral-v2-data-plane]
+    healthcheck:
+      test: ["CMD-SHELL", "curl --silent --fail http://localhost:8008/liveness || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+    deploy:
+      replicas: 3
+      placement: *spread_one_per_server
+      resources:
+        limits: { cpus: "2", memory: 4G }
+        reservations: { cpus: "0.5", memory: 1G }
+      # One copy at a time, and wait for it to rejoin before the next.
+      update_config: { parallelism: 1, delay: 90s, monitor: 120s, order: stop-first, failure_action: pause }
+      restart_policy: { condition: any, delay: 5s }
+
+  postgres-primary:
+    image: haproxy:3.0-alpine
+    configs:
+      - source: postgres_primary_haproxy
+        target: /usr/local/etc/haproxy/haproxy.cfg
+    networks: [yral-v2-data-plane]
+    deploy:
+      replicas: 2
+      placement: { max_replicas_per_node: 1 }
+      restart_policy: { condition: any, delay: 2s }
+
+configs:
+  postgres_primary_haproxy:
+    file: ./postgres-primary-haproxy.cfg
+    name: postgres_primary_haproxy_v1
+
+volumes:
+  consul-data:
+  patroni-data:
+
+networks:
+  yral-v2-data-plane:
+    external: true
