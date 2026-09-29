@@ -68,4 +68,3 @@ def test_the_private_key_is_never_written_into_the_config():
     nodes = nodes_by_name()
     config = mesh.render_config(nodes["rishi-4"], list(nodes.values()), KEYS)
     assert "PrivateKey" not in config
-    assert f"private-key {mesh.PRIVATE_KEY_PATH}" in config

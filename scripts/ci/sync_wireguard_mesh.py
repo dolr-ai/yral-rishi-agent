@@ -91,7 +91,6 @@ def render_config(local, peers, public_keys):
         f"Address = {local['mesh_addr']}/32",
         f"ListenPort = {MESH_PORT}",
         f"MTU = {MESH_MTU}",
-        f"PostUp = wg set %i private-key {PRIVATE_KEY_PATH}",
     ]
     for peer in peers:
         if peer["hostname"] == local["hostname"] or peer["hostname"] not in public_keys:
@@ -142,9 +141,17 @@ def apply_on(node, config, peers):
         for p in peers
         if p["hostname"] != node["hostname"]
     )
+    # The private key is spliced in ON the node, straight from its key file,
+    # so it never crosses the wire. It must be in the config itself: `wg
+    # syncconf` treats a config with no PrivateKey as "remove the key", which
+    # would silently drop every tunnel on the next peer update. printf is a
+    # shell builtin, so the key never shows up in the process list either.
+    conf = f"/etc/wireguard/{MESH_INTERFACE}.conf"
     command = (
-        f"sudo tee /etc/wireguard/{MESH_INTERFACE}.conf >/dev/null && "
-        f"sudo chmod 600 /etc/wireguard/{MESH_INTERFACE}.conf && "
+        f"sudo tee {conf}.new >/dev/null && "
+        f'sudo sh -c \'umask 077; {{ sed -n "1,/^\\[Interface\\]/p" {conf}.new; '
+        f'printf "PrivateKey = %s\\n" "$(cat {PRIVATE_KEY_PATH})"; '
+        f'sed "1,/^\\[Interface\\]/d" {conf}.new; }} > {conf} && rm {conf}.new\' && '
         f"if sudo ufw status | grep -q 'Status: active'; then {allow_peers} "
         f"sudo ufw allow in on {MESH_INTERFACE} comment 'wg mesh' >/dev/null; fi && "
         f"if ip link show {MESH_INTERFACE} >/dev/null 2>&1; then "
