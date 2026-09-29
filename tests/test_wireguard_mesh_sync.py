@@ -68,3 +68,69 @@ def test_the_private_key_is_never_written_into_the_config():
     nodes = nodes_by_name()
     config = mesh.render_config(nodes["rishi-4"], list(nodes.values()), KEYS)
     assert "PrivateKey" not in config
+
+
+def test_apply_script_writes_a_whole_config_and_leaves_no_temp_files(tmp_path):
+    # Runs the real node-side script against a temp root, with stand-ins for
+    # ufw / ip / systemctl / flock, and checks the file it leaves behind.
+    import os
+    import subprocess
+
+    nodes = nodes_by_name()
+    root = tmp_path / "etc" / "wireguard"
+    root.mkdir(parents=True)
+    (root / "mesh.key").write_text("FAKEPRIVATE=\n")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    for tool, body in {
+        "ufw": "echo 'Status: active'",
+        "ip": "exit 1",
+        "systemctl": "exit 0",
+        "flock": "exit 0",
+    }.items():
+        (fake_bin / tool).write_text(f"#!/bin/sh\n{body}\n")
+        (fake_bin / tool).chmod(0o755)
+    config = mesh.render_config(nodes["india-1"], list(nodes.values()), KEYS)
+    script = mesh.render_apply_script(nodes["india-1"], config, list(nodes.values()))
+    result = subprocess.run(
+        ["bash", "-s"],
+        input=script.replace("/etc/wireguard", str(root)),
+        text=True,
+        capture_output=True,
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+    assert result.returncode == 0, result.stderr
+    written = (root / "wg-mesh.conf").read_text().splitlines()
+    assert written[written.index("[Interface]") + 1] == "PrivateKey = FAKEPRIVATE="
+    assert written.count("[Peer]") == 3
+    assert [f for f in os.listdir(root) if f.startswith(".wg-mesh")] == []
+
+
+def test_a_transient_failure_stops_the_run_instead_of_dropping_the_node(monkeypatch):
+    import subprocess
+
+    def unreachable(node, command, stdin=None):
+        return subprocess.CompletedProcess(
+            [], 255, "", "ssh: connect to host: Connection timed out"
+        )
+
+    monkeypatch.setattr(mesh, "run_on", unreachable)
+    node = nodes_by_name()["india-1"]
+    try:
+        mesh.ensure_key_and_read_public_half(node)
+    except mesh.TransientFailure:
+        return
+    raise AssertionError("a timeout must stop the run, not remove the node")
+
+
+def test_a_node_without_our_key_is_left_out_not_fatal(monkeypatch):
+    import subprocess
+
+    def denied(node, command, stdin=None):
+        return subprocess.CompletedProcess(
+            [], 255, "", "deploy@x: Permission denied (publickey)."
+        )
+
+    monkeypatch.setattr(mesh, "run_on", denied)
+    key, problem = mesh.ensure_key_and_read_public_half(nodes_by_name()["rishi-1"])
+    assert key is None and "SSH key" in problem

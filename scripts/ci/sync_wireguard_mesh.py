@@ -116,49 +116,85 @@ def run_on(node, command, stdin=None):
     )
 
 
+# A node we can NEVER manage (no passwordless sudo, or our key isn't on it)
+# is left out on purpose and reported. Anything else — a timeout, a refused
+# connection — may be a blip, and dropping that node from everyone's peer
+# list would cut it off the mesh. So those stop the whole run instead.
+NOT_MANAGEABLE_EXIT = 42
+NOT_MANAGEABLE_SSH = "Permission denied (publickey"
+
+
+class TransientFailure(Exception):
+    pass
+
+
 def ensure_key_and_read_public_half(node):
     result = run_on(
         node,
         (
-            "sudo -n true || exit 42; "
+            f"sudo -n true || exit {NOT_MANAGEABLE_EXIT}; "
             "command -v wg >/dev/null || sudo apt-get install -y -qq wireguard-tools >/dev/null; "
             f"sudo sh -c 'umask 077; [ -s {PRIVATE_KEY_PATH} ] || wg genkey > {PRIVATE_KEY_PATH}; wg pubkey < {PRIVATE_KEY_PATH}'"
         ),
     )
-    if result.returncode == 42:
+    if result.returncode == NOT_MANAGEABLE_EXIT:
         return None, "needs passwordless sudo (ask the server's owner)"
+    if NOT_MANAGEABLE_SSH in result.stderr:
+        return None, "our SSH key is not on it"
     if result.returncode != 0:
-        return None, result.stderr.strip()[-300:]
+        raise TransientFailure(f"{node['hostname']}: {result.stderr.strip()[-300:]}")
     return result.stdout.strip(), None
 
 
-def apply_on(node, config, peers):
-    # The firewall opens the WireGuard port only to known peers, and lets
-    # everything arriving through the tunnel in: it is already authenticated
-    # by the peer's key, and the swarm's own ports ride inside it.
-    allow_peers = " ".join(
-        f"sudo ufw allow from {endpoint_for(p, node)} to any port {MESH_PORT} proto udp comment 'wg mesh' >/dev/null;"
+def render_apply_script(node, config, peers):
+    """The shell script that runs on the node, as root, under a lock.
+
+    The lock stops two runs racing. The config is built in a unique temp
+    file and swapped in with one rename, so the live file is never half
+    written. The private key is spliced in here, on the node, straight from
+    its key file — it never crosses the wire, and printf is a shell builtin
+    so it never shows up in the process list. It must be in the config
+    itself: `wg syncconf` reads a config with no PrivateKey as "remove the
+    key", which would drop every tunnel.
+
+    The firewall opens the WireGuard port only to known peers, and lets
+    everything arriving through the tunnel in: it is already authenticated by
+    the peer's key, and the swarm's own ports ride inside it.
+    """
+    conf = f"/etc/wireguard/{MESH_INTERFACE}.conf"
+    allow_peers = "\n".join(
+        f"  ufw allow from {endpoint_for(p, node)} to any port {MESH_PORT} proto udp comment 'wg mesh' >/dev/null"
         for p in peers
         if p["hostname"] != node["hostname"]
     )
-    # The private key is spliced in ON the node, straight from its key file,
-    # so it never crosses the wire. It must be in the config itself: `wg
-    # syncconf` treats a config with no PrivateKey as "remove the key", which
-    # would silently drop every tunnel on the next peer update. printf is a
-    # shell builtin, so the key never shows up in the process list either.
-    conf = f"/etc/wireguard/{MESH_INTERFACE}.conf"
-    command = (
-        f"sudo tee {conf}.new >/dev/null && "
-        f'sudo sh -c \'umask 077; {{ sed -n "1,/^\\[Interface\\]/p" {conf}.new; '
-        f'printf "PrivateKey = %s\\n" "$(cat {PRIVATE_KEY_PATH})"; '
-        f'sed "1,/^\\[Interface\\]/d" {conf}.new; }} > {conf} && rm {conf}.new\' && '
-        f"if sudo ufw status | grep -q 'Status: active'; then {allow_peers} "
-        f"sudo ufw allow in on {MESH_INTERFACE} comment 'wg mesh' >/dev/null; fi && "
-        f"if ip link show {MESH_INTERFACE} >/dev/null 2>&1; then "
-        f"sudo bash -c 'wg syncconf {MESH_INTERFACE} <(wg-quick strip {MESH_INTERFACE})'; "
-        f"else sudo systemctl enable --now wg-quick@{MESH_INTERFACE} >/dev/null; fi"
+    return f"""set -e
+umask 077
+exec 9>/etc/wireguard/.mesh.lock
+flock 9
+tmp=$(mktemp /etc/wireguard/.{MESH_INTERFACE}.XXXXXX)
+trap 'rm -f "$tmp" "$tmp.body"' EXIT
+cat > "$tmp.body" <<'WG_MESH_CONFIG'
+{config}WG_MESH_CONFIG
+{{ sed -n '1,/^\\[Interface\\]/p' "$tmp.body"
+  printf 'PrivateKey = %s\\n' "$(cat {PRIVATE_KEY_PATH})"
+  sed '1,/^\\[Interface\\]/d' "$tmp.body"; }} > "$tmp"
+mv -f "$tmp" {conf}
+if ufw status | grep -q 'Status: active'; then
+{allow_peers}
+  ufw allow in on {MESH_INTERFACE} comment 'wg mesh' >/dev/null
+fi
+if ip link show {MESH_INTERFACE} >/dev/null 2>&1; then
+  wg syncconf {MESH_INTERFACE} <(wg-quick strip {MESH_INTERFACE})
+else
+  systemctl enable --now wg-quick@{MESH_INTERFACE} >/dev/null
+fi
+"""
+
+
+def apply_on(node, config, peers):
+    result = run_on(
+        node, "sudo bash -s", stdin=render_apply_script(node, config, peers)
     )
-    result = run_on(node, command, stdin=config)
     return result.returncode == 0, result.stderr.strip()[-300:]
 
 
@@ -168,12 +204,18 @@ def main():
     nodes = parse_inventory(INVENTORY.read_text())
 
     public_keys = {}
-    for node in nodes:
-        key, problem = ensure_key_and_read_public_half(node) if apply else (None, None)
-        if key:
-            public_keys[node["hostname"]] = key
-        elif problem:
-            print(f"✗ {node['hostname']}: left out of the mesh — {problem}")
+    if apply:
+        try:
+            for node in nodes:
+                key, problem = ensure_key_and_read_public_half(node)
+                if key:
+                    public_keys[node["hostname"]] = key
+                else:
+                    print(f"✗ {node['hostname']}: left out of the mesh — {problem}")
+        except TransientFailure as failure:
+            sys.exit(
+                f"STOPPED, nothing changed: could not reach {failure}. Re-run when it answers."
+            )
 
     targets = [n for n in nodes if (not site or n["site"] == site)]
     members = [n for n in nodes if n["hostname"] in public_keys] if apply else nodes
