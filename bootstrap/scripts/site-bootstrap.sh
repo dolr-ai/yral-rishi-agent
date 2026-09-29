@@ -10,6 +10,8 @@
 #
 # Run ON the machine, as a user with passwordless sudo:
 #
+# Every run also needs FLEET_CI_PUBLIC_KEY="$(cat bootstrap/fleet-ci-key.pub)".
+#
 #   first node:   SITE=azure-in PRIVATE_IP=172.16.0.4 PRIVATE_SUBNET=172.16.0.0/24 \
 #                 PUBLIC_PEERS="20.219.222.27 20.235.107.58" bash site-bootstrap.sh init
 #   other nodes:  SITE=azure-in PRIVATE_IP=172.16.0.6 PRIVATE_SUBNET=172.16.0.0/24 \
@@ -30,6 +32,18 @@ if ! command -v docker >/dev/null 2>&1; then
     curl -fsSL https://get.docker.com | sudo sh >/tmp/docker-install.log 2>&1
     sudo usermod -aG docker "$(whoami)"
 fi
+
+# ── Fleet access ──────────────────────────────────────────────────────────
+# CI (deploys, the nightly drift check) reaches every server with one fleet
+# key, whatever the provider. Its public half lives in the repo next to this
+# script; pass it in so a new node is reachable the moment it exists.
+: "${FLEET_CI_PUBLIC_KEY:?FLEET_CI_PUBLIC_KEY is required (contents of bootstrap/fleet-ci-key.pub)}"
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
+touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
+# authorized_keys files often lack a final newline; appending onto the last
+# key's line would silently break both keys.
+[ -s ~/.ssh/authorized_keys ] && [ -n "$(tail -c1 ~/.ssh/authorized_keys)" ] && echo >> ~/.ssh/authorized_keys
+grep -qF "$FLEET_CI_PUBLIC_KEY" ~/.ssh/authorized_keys || echo "$FLEET_CI_PUBLIC_KEY" >> ~/.ssh/authorized_keys
 
 # ── Firewall ──────────────────────────────────────────────────────────────
 # Public: only what the site publishes. Swarm ports ride the PRIVATE subnet, so
