@@ -109,7 +109,12 @@ services:
       interval: 30s
       timeout: 5s
       retries: 5
-      start_period: 120s
+      # Building a copy (restoring or cloning ~11 GB, possibly across
+      # continents) takes far longer than minutes, and /liveness fails while it
+      # runs. A short start period got copies killed mid-build in a loop, which
+      # would also stop a copy from ever re-homing after its server dies.
+      # Failures here don't count until the copy has passed once.
+      start_period: 3h
     deploy:
       replicas: 3
       placement: *spread_one_per_server
