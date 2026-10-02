@@ -23,6 +23,9 @@ on:
       - "migrations/**"
       - "scripts/**"
       - "tests/**"
+      # A dependency bump changes what runs in production, and `review` is a
+      # required check: without this, a requirements-only PR can never merge.
+      - "requirements*.txt"
 
 permissions:
   contents: read
