@@ -62,6 +62,22 @@ services:
   patroni:
     image: ghcr.io/dolr-ai/yral-rishi-patroni-pgvector:5950fdc096e45f277d6dd5c4ce5edd07e8c226a8
     hostname: "patroni-{{.Node.Hostname}}"
+    # A copy interrupted while building itself (restore or clone) leaves a
+    # data dir with no pg_control, and Patroni just waits forever on it
+    # ("system ID is invalid; consider doing reinitialize"). pg_control is
+    # written last by both a WAL-G restore and pg_basebackup, and every dir
+    # that has ever run has one, so a dir without it is never real data:
+    # clear it and the copy rebuilds. Then the image's own start command.
+    command:
+      - /bin/sh
+      - -c
+      - |
+        d=/home/postgres/pgdata/pgroot/data
+        if [ -d "$$d" ] && [ -n "$$(ls -A "$$d")" ] && [ ! -f "$$d/global/pg_control" ]; then
+          echo "half-built copy in $$d (no pg_control): clearing it so it rebuilds"
+          rm -rf "$$d"
+        fi
+        exec /bin/sh /launch.sh init
     environment:
       SCOPE: yral-v2-postgres
       PGVERSION: "15"
