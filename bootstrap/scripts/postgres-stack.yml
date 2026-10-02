@@ -66,16 +66,19 @@ services:
     # data dir with no pg_control, and Patroni just waits forever on it
     # ("system ID is invalid; consider doing reinitialize"). pg_control is
     # written last by both a WAL-G restore and pg_basebackup, and every dir
-    # that has ever run has one, so a dir without it is never real data:
-    # clear it and the copy rebuilds. Then the image's own start command.
+    # that has ever run has one, so a dir without it can't start as-is.
+    # It's moved aside, not deleted: if a primary ever lost just that file,
+    # the rest stays recoverable by hand. One slot only, so a repeating
+    # failure can't fill the disk. Then the image's own start command.
     command:
       - /bin/sh
       - -c
       - |
         d=/home/postgres/pgdata/pgroot/data
         if [ -d "$$d" ] && [ -n "$$(ls -A "$$d")" ] && [ ! -f "$$d/global/pg_control" ]; then
-          echo "half-built copy in $$d (no pg_control): clearing it so it rebuilds"
-          rm -rf "$$d"
+          echo "half-built copy in $$d (no pg_control): moving it to $$d.half-built so it rebuilds"
+          rm -rf "$$d.half-built"
+          mv "$$d" "$$d.half-built"
         fi
         exec /bin/sh /launch.sh init
     environment:
