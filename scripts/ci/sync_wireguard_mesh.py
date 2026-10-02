@@ -20,7 +20,7 @@ left out of everyone's peer list until it can be.
 
 Prints the plan by default and changes nothing. --apply writes the config and
 brings the interface up; `wg syncconf` updates peers without dropping live
-tunnels.
+tunnels, then each peer's route is (re)added.
 
 Run:  python scripts/ci/sync_wireguard_mesh.py [--site azure-in] [--apply]
 """
@@ -185,6 +185,11 @@ if ufw status | grep -q 'Status: active'; then
 fi
 if ip link show {MESH_INTERFACE} >/dev/null 2>&1; then
   wg syncconf {MESH_INTERFACE} <(wg-quick strip {MESH_INTERFACE})
+  # syncconf adds peers but not their routes (only wg-quick up does), so a
+  # peer added to a live interface would be unreachable without this.
+  for addr in $(wg show {MESH_INTERFACE} allowed-ips | cut -f2 | grep -v none); do
+    ip route replace "$addr" dev {MESH_INTERFACE}
+  done
 else
   systemctl enable --now wg-quick@{MESH_INTERFACE} >/dev/null
 fi

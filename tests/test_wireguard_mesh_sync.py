@@ -106,6 +106,41 @@ def test_apply_script_writes_a_whole_config_and_leaves_no_temp_files(tmp_path):
     assert [f for f in os.listdir(root) if f.startswith(".wg-mesh")] == []
 
 
+def test_a_peer_added_to_a_live_interface_gets_a_route(tmp_path):
+    # 2026-10-01: India's interface was already up, so syncconf added the
+    # Hetzner peers but no routes, and mesh traffic leaked out of eth0.
+    import os
+    import subprocess
+
+    nodes = nodes_by_name()
+    root = tmp_path / "etc" / "wireguard"
+    root.mkdir(parents=True)
+    (root / "mesh.key").write_text("FAKEPRIVATE=\n")
+    routes = tmp_path / "routes"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    for tool, body in {
+        "ufw": "echo 'Status: inactive'",
+        "flock": "exit 0",
+        "wg-quick": "exit 0",
+        "wg": 'if [ "$3" = allowed-ips ]; then printf "K4\\t100.96.1.4/32\\nK1\\t100.96.1.1/32\\nKX\\t(none)\\n"; fi',
+        "ip": f'if [ "$1" = route ]; then echo "$3" >> {routes}; fi',
+    }.items():
+        (fake_bin / tool).write_text(f"#!/bin/sh\n{body}\n")
+        (fake_bin / tool).chmod(0o755)
+    config = mesh.render_config(nodes["india-1"], list(nodes.values()), KEYS)
+    script = mesh.render_apply_script(nodes["india-1"], config, list(nodes.values()))
+    result = subprocess.run(
+        ["bash", "-s"],
+        input=script.replace("/etc/wireguard", str(root)),
+        text=True,
+        capture_output=True,
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert routes.read_text().split() == ["100.96.1.4/32", "100.96.1.1/32"]
+
+
 def test_a_transient_failure_stops_the_run_instead_of_dropping_the_node(monkeypatch):
     import subprocess
 
