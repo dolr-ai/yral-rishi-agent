@@ -67,23 +67,22 @@ services:
     # ("system ID is invalid; consider doing reinitialize"). pg_control is
     # written last by both a WAL-G restore and pg_basebackup, and every dir
     # that has ever run has one, so a dir without it can't start as-is.
-    # The first time, it's moved aside, not deleted: if a primary ever lost
-    # just that file, the rest stays recoverable by hand, and that set-aside
-    # copy is never touched again. Once the slot is taken, the dir can only
-    # be Patroni's own rebuild (it started empty after the move), so a failed
-    # rebuild is cleared. Disk stays bounded. Then the image's start command.
+    # It's moved aside, never deleted: a primary that lost just that file
+    # would still be recoverable by hand, and no rule can safely tell that
+    # case from a half-finished rebuild. At most 3 are kept so a repeating
+    # failure can't fill the disk; past that, the dir is left for a human.
+    # Then the image's own start command.
     command:
       - /bin/sh
       - -c
       - |
         d=/home/postgres/pgdata/pgroot/data
         if [ -d "$$d" ] && [ -n "$$(ls -A "$$d")" ] && [ ! -f "$$d/global/pg_control" ]; then
-          if [ -e "$$d.half-built" ]; then
-            echo "failed rebuild in $$d (no pg_control); $$d.half-built kept as-is: clearing the rebuild"
-            rm -rf "$$d"
+          if [ "$$(ls -d "$$d".half-built-* 2>/dev/null | wc -l)" -lt 3 ]; then
+            echo "half-built copy in $$d (no pg_control): moving it aside so it rebuilds"
+            mv "$$d" "$$d.half-built-$$(date +%Y%m%d%H%M%S)"
           else
-            echo "half-built copy in $$d (no pg_control): moving it to $$d.half-built so it rebuilds"
-            mv "$$d" "$$d.half-built"
+            echo "half-built copy in $$d, and 3 copies are already set aside: leaving it for a human"
           fi
         fi
         exec /bin/sh /launch.sh init
