@@ -89,6 +89,17 @@ services:
       WALG_S3_PREFIX: "${WALG_S3_PREFIX:-}"
       USE_WALG_BACKUP: "${USE_WALG_BACKUP:-false}"
       USE_WALG_RESTORE: "${USE_WALG_BACKUP:-false}"
+      # Standby mode: set STANDBY_WALG_S3_PREFIX and this cluster builds itself
+      # from another cluster's backups and keeps replaying its WAL, read-only,
+      # until promoted (remove standby_cluster with `patronictl edit-config`).
+      # This is how the new swarm takes over from the old one with no network
+      # link between them. Reads the other cluster's backups, never writes.
+      STANDBY_WALG_S3_PREFIX: "${STANDBY_WALG_S3_PREFIX:-}"
+      STANDBY_AWS_ACCESS_KEY_ID: "${STANDBY_AWS_ACCESS_KEY_ID:-}"
+      STANDBY_AWS_SECRET_ACCESS_KEY: "${STANDBY_AWS_SECRET_ACCESS_KEY:-}"
+      STANDBY_AWS_ENDPOINT: "${STANDBY_AWS_ENDPOINT:-}"
+      STANDBY_AWS_REGION: "${STANDBY_AWS_REGION:-}"
+      STANDBY_AWS_S3_FORCE_PATH_STYLE: "${STANDBY_AWS_S3_FORCE_PATH_STYLE:-}"
     volumes:
       - patroni-data:/home/postgres/pgdata
     shm_size: 2g
