@@ -28,6 +28,7 @@ from services.llm.llm_types import LlmBlockedError, LlmResponse
 
 logger = logging.getLogger(__name__)
 
+
 async def _messages_to_gemini_contents(
     messages: list[dict],
 ) -> tuple[list[dict], dict | None]:
