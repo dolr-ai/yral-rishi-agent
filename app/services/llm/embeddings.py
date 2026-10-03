@@ -23,7 +23,6 @@ logger = logging.getLogger(__name__)
 # require a schema migration and reindex.
 EMBEDDING_MODEL = "gemini-embedding-001"
 EMBEDDING_DIM = 768
-GEMINI_NATIVE_URL = "https://generativelanguage.googleapis.com/v1beta"
 EMBEDDING_TIMEOUT = 10.0
 
 
@@ -39,12 +38,23 @@ async def embed_text(text: str) -> list[float] | None:
     if not text:
         return None
 
-    url = f"{GEMINI_NATIVE_URL}/models/{EMBEDDING_MODEL}:embedContent"
-    payload = {
-        "model": f"models/{EMBEDDING_MODEL}",
-        "content": {"parts": [{"text": text}]},
-        "outputDimensionality": EMBEDDING_DIM,
-    }
+    # Vertex rejects API keys on :embedContent ("Expected OAuth2 access
+    # token") but accepts them on :predict, which takes the same model and
+    # dimension in a different envelope. Same 768 dims either way, so stored
+    # vectors stay comparable.
+    if config.GEMINI_VERTEX_PROJECT:
+        url = f"{config.GEMINI_NATIVE_URL}/models/{EMBEDDING_MODEL}:predict"
+        payload = {
+            "instances": [{"content": text}],
+            "parameters": {"outputDimensionality": EMBEDDING_DIM},
+        }
+    else:
+        url = f"{config.GEMINI_NATIVE_URL}/models/{EMBEDDING_MODEL}:embedContent"
+        payload = {
+            "model": f"models/{EMBEDDING_MODEL}",
+            "content": {"parts": [{"text": text}]},
+            "outputDimensionality": EMBEDDING_DIM,
+        }
     try:
         async with httpx.AsyncClient(timeout=EMBEDDING_TIMEOUT) as http:
             response = await http.post(
@@ -55,7 +65,11 @@ async def embed_text(text: str) -> list[float] | None:
             )
             response.raise_for_status()
         data = response.json()
-        values = (data.get("embedding") or {}).get("values")
+        if config.GEMINI_VERTEX_PROJECT:
+            predictions = data.get("predictions") or [{}]
+            values = (predictions[0].get("embeddings") or {}).get("values")
+        else:
+            values = (data.get("embedding") or {}).get("values")
         if not values or len(values) != EMBEDDING_DIM:
             logger.warning(
                 f"embed_text: unexpected response shape (len={len(values) if values else 0})"
