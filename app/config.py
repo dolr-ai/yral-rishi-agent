@@ -47,6 +47,26 @@ GEMINI_MAX_TOKENS = _env_int("GEMINI_MAX_TOKENS", 2048)
 GEMINI_TEMPERATURE = _env_float("GEMINI_TEMPERATURE", 0.7)
 GEMINI_TIMEOUT = _env_int("GEMINI_TIMEOUT", 60)
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
+# Where native Gemini calls go. AI Studio's Gemini API bills a prepaid
+# balance; Vertex bills the Google Cloud account, where our startup credits
+# are. Same models, same request shape, and one auth key (an API key bound
+# to a service account) works for both. Set the GCP project to use Vertex.
+# The location should be near the servers: measured 2026-10-03, embeddings
+# took ~0.2 s from Germany via `global` and from India via `asia-south1`,
+# but 2.4 s from India via `global`.
+GEMINI_VERTEX_PROJECT = _env("GEMINI_VERTEX_PROJECT")
+GEMINI_VERTEX_LOCATION = _env("GEMINI_VERTEX_LOCATION", "global")
+_VERTEX_HOST = (
+    "aiplatform.googleapis.com"
+    if GEMINI_VERTEX_LOCATION == "global"
+    else f"{GEMINI_VERTEX_LOCATION}-aiplatform.googleapis.com"
+)
+GEMINI_NATIVE_URL = (
+    f"https://{_VERTEX_HOST}/v1/projects/{GEMINI_VERTEX_PROJECT}"
+    f"/locations/{GEMINI_VERTEX_LOCATION}/publishers/google"
+    if GEMINI_VERTEX_PROJECT
+    else "https://generativelanguage.googleapis.com/v1beta"
+)
 
 # Number of prior conversation turns sent as context to the LLM on every
 # chat reply. Bumped 10 → 30 (2026-06-04 Rishi) so bots remember within-

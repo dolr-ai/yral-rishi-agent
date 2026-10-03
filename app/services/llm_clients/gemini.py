@@ -23,11 +23,10 @@ from typing import AsyncIterator
 
 import httpx
 
+import config
 from services.llm.llm_types import LlmBlockedError, LlmResponse
 
 logger = logging.getLogger(__name__)
-
-GEMINI_NATIVE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
 
 async def _messages_to_gemini_contents(
@@ -203,7 +202,7 @@ async def complete(
     if extra_body:
         payload.update(extra_body)
 
-    url = f"{GEMINI_NATIVE_URL}/models/{model}:generateContent"
+    url = f"{config.GEMINI_NATIVE_URL}/models/{model}:generateContent"
     started = time.monotonic()
 
     # Retry on transient errors (5xx, network). Same shape as
@@ -304,7 +303,7 @@ async def complete_stream(
     if extra_body:
         payload.update(extra_body)
 
-    url = f"{GEMINI_NATIVE_URL}/models/{model}:streamGenerateContent"
+    url = f"{config.GEMINI_NATIVE_URL}/models/{model}:streamGenerateContent"
 
     async with httpx.AsyncClient(timeout=timeout) as http:
         async with http.stream(
@@ -389,7 +388,7 @@ async def transcribe(
             }
         ]
     }
-    url = f"{GEMINI_NATIVE_URL}/models/{model}:generateContent"
+    url = f"{config.GEMINI_NATIVE_URL}/models/{model}:generateContent"
 
     async with httpx.AsyncClient(timeout=timeout) as http:
         response = await http.post(
