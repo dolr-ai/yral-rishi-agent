@@ -18,3 +18,10 @@ doesn't exist yet.
 
 **Rolling the edge:** use stop-first. It allows one copy per server, so
 start-first hangs when every server already holds one.
+
+**`s3.rishi.yral.com` inside the swarm:** the edge has the network alias
+`s3.rishi.yral.com` on `yral-v2-public-web`, so apps in the swarm reach Garage
+through the edge over the overlay instead of the public IPs. From inside
+Azure, a VM can't always reach another VM's public IP (india-1 → india-3:443
+timed out), which would have made a third of the agent's uploads hang. Set with:
+`docker service update --network-rm yral-v2-public-web --network-add name=yral-v2-public-web,alias=caddy-edge-ingress,alias=s3.rishi.yral.com yral-v2-edge-caddy_caddy-edge-ingress`
