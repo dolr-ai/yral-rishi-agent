@@ -28,3 +28,11 @@ root_domain   = ".s3.garage"
 
 [admin]
 api_bind_addr = "[::]:3903"
+
+# Public files (bot profile pictures) are read without a key through this
+# endpoint: the edge serves cdn.rishi.yral.com/<bucket>/<file> by asking for
+# Host <bucket>.web.garage. Only buckets switched on with
+# `garage bucket website --allow <bucket>` answer here.
+[s3_web]
+bind_addr   = "[::]:3902"
+root_domain = ".web.garage"

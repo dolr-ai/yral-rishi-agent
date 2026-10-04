@@ -60,7 +60,10 @@ services:
       # after a restart. Keep it with the data, on the same server.
       - garage-meta:/var/lib/garage/meta
       - garage-data:/var/lib/garage/data
-    networks: [yral-v2-data-plane]
+    # data-plane: peers, Consul and the apps. public-web: the edge, which
+    # serves s3.rishi.yral.com (signed links the app opens) and
+    # cdn.rishi.yral.com (public files).
+    networks: [yral-v2-data-plane, yral-v2-public-web]
     deploy:
       mode: global
       update_config: { parallelism: 1, delay: 30s, order: stop-first, failure_action: pause }
@@ -69,7 +72,7 @@ services:
 configs:
   garage_toml:
     file: ./garage.toml
-    name: garage_toml_v3
+    name: garage_toml_v4
 
 secrets:
   garage_rpc_secret:
@@ -83,4 +86,6 @@ volumes:
 
 networks:
   yral-v2-data-plane:
+    external: true
+  yral-v2-public-web:
     external: true
