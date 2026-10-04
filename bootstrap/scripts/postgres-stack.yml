@@ -110,7 +110,14 @@ services:
       SPILO_CONFIGURATION: '{"bootstrap":{"dcs":{"synchronous_mode":true,"synchronous_mode_strict":true,"maximum_lag_on_failover":1048576}},"postgresql":{"pg_hba":["local all all trust","host all all 127.0.0.1/32 md5","host all all ::1/128 md5","local replication standby trust","host replication standby 10.0.3.0/24 md5","hostnossl all all all reject","hostssl all all all md5"]}}'
       # Backups: set WALG_S3_PREFIX + AWS_* to archive. Left unset here so a
       # test cluster can never write into the production backup path.
+      # The AWS_* lines must be here: without them a redeploy from this file
+      # drops the backup credentials and archiving stops without an error.
       WALG_S3_PREFIX: "${WALG_S3_PREFIX:-}"
+      AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID:-}"
+      AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY:-}"
+      AWS_ENDPOINT: "${AWS_ENDPOINT:-}"
+      AWS_REGION: "${AWS_REGION:-}"
+      AWS_S3_FORCE_PATH_STYLE: "${AWS_S3_FORCE_PATH_STYLE:-}"
       USE_WALG_BACKUP: "${USE_WALG_BACKUP:-false}"
       USE_WALG_RESTORE: "${USE_WALG_BACKUP:-false}"
       # Standby mode: set STANDBY_WALG_S3_PREFIX and this cluster builds itself
