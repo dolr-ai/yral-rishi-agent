@@ -1,0 +1,30 @@
+# Garage settings for garage-stack.yml. Secrets come from files (see the stack).
+metadata_dir = "/var/lib/garage/meta"
+data_dir     = "/var/lib/garage/data"
+db_engine    = "lmdb"
+# Each object on 3 servers; reads and writes need 2 of them.
+replication_factor = 3
+
+rpc_bind_addr = "[::]:3901"
+# No fixed public address: each copy announces its own IP on the data-plane
+# overlay, which changes whenever the swarm restarts or moves it.
+rpc_public_addr_subnet = "10.0.3.0/24"
+
+# Peers find each other in the postgres stack's Consul instead of a fixed list,
+# so a new server's copy joins without anyone editing this file.
+[consul_discovery]
+api              = "catalog"
+consul_http_addr = "http://consul:8500"
+# Plain HTTP inside the encrypted overlay. Without this the HTTP client tries
+# to load a certificate store, which the minimal Garage image doesn't have,
+# and refuses to start ("builder error").
+tls_skip_verify  = true
+service_name     = "garage-rpc"
+
+[s3_api]
+api_bind_addr = "[::]:3900"
+s3_region     = "garage"
+root_domain   = ".s3.garage"
+
+[admin]
+api_bind_addr = "[::]:3903"
