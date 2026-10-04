@@ -182,7 +182,7 @@ while IFS= read -r FILE; do
         DUMP_TS=$(date -u +%Y%m%dT%H%M%SZ)
         DUMP_NAME="pre-migration-${BASENAME%.sql}-${DUMP_TS}.sql.gz"
         DUMP_LOCAL="/tmp/${DUMP_NAME}"
-        S3_PREFIX="${PRE_MIGRATION_DUMP_S3_PREFIX:-s3://rishi-yral/yral-rishi-agent-pre-migration-dumps}"
+        S3_PREFIX="${PRE_MIGRATION_DUMP_S3_PREFIX:-s3://postgres-backups/pre-migration-dumps}"
 
         echo "[migrations]   pg_dump → ${DUMP_NAME}"
 
@@ -200,9 +200,10 @@ while IFS= read -r FILE; do
             exit 1
         fi
 
-        # Upload to S3 (Hetzner Object Storage). Uses the AWS_*
-        # credentials already mounted into the patroni container for
-        # WAL-G. Endpoint + region pinned for Hetzner hel1.
+        # Upload to our S3 (Garage), using the AWS_* settings the patroni
+        # container already has for WAL-G. AWS_ENDPOINT is expanded INSIDE
+        # the container: expanded here it would be this server's (unset)
+        # value, and the upload silently went to the old fallback store.
         if ! docker exec "$LOCAL_C" \
             sh -c "command -v aws >/dev/null 2>&1"; then
             echo "[migrations] FATAL: 'aws' CLI not present in patroni container — pre-migration dump cannot be uploaded"
@@ -210,8 +211,8 @@ while IFS= read -r FILE; do
         fi
 
         if ! docker exec "$LOCAL_C" \
-            aws --endpoint-url "${AWS_ENDPOINT:-https://hel1.your-objectstorage.com}" \
-                s3 cp "${DUMP_LOCAL}" "${S3_PREFIX}/${DUMP_NAME}" 2>&1; then
+            sh -c 'aws --endpoint-url "$AWS_ENDPOINT" --region "$AWS_REGION" s3 cp "$1" "$2"' _ \
+                "${DUMP_LOCAL}" "${S3_PREFIX}/${DUMP_NAME}" 2>&1; then
             echo "[migrations] FATAL: pre-migration dump upload failed for ${BASENAME} — refusing to apply migration without a remote-stored snapshot"
             exit 1
         fi
