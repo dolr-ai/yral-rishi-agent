@@ -1,0 +1,25 @@
+{
+    admin 127.0.0.1:2019
+    email rishi@gobazzinga.io
+    # Single-replica issuer: owns :80, does HTTP-01 for all hosts (works solo, no
+    # coordination), stores certs in Redis. The sync job pushes these to the fleet.
+    storage redis {
+        address yral-v2-redis_redis-primary:6379
+        password {env.REDIS_PASSWORD}
+        db 0
+        key_prefix caddy_issuer
+    }
+}
+
+agent.rishi.yral.com,
+langfuse-agent.rishi.yral.com,
+analytics.rishi.yral.com,
+metabase.rishi.yral.com,
+sentry.rishi.yral.com,
+s3.rishi.yral.com,
+cdn.rishi.yral.com,
+amorae.ai,
+www.amorae.ai {
+    respond "edge issuer — cert management only" 200
+}
+
