@@ -28,8 +28,16 @@
 #   g layout assign -z <hostname> -c 1T <node-id>   # storage
 #   g layout assign -g -z gateway <node-id>         # gateway
 #   g layout apply --version N
-# Before a storage server leaves: `g layout remove <node-id>`, apply, and wait
-# until its data has moved (see `g layout history`) before switching it off.
+# Before ANY server leaves (drain, power-off, cancel), take it out of the
+# layout first: `g layout remove <node-id>`, apply, and for a storage server
+# wait until its data has moved (`g layout history` shows the old version
+# Historical). Garage keeps its bucket and key lists on every node in the
+# layout, gateways included, so a node that vanishes while still listed
+# counts against the majority. On 2026-10-04 draining 6 listed gateways at
+# once stopped bucket and key operations. If that happens anyway:
+#   g layout remove <dead-id> …; g layout apply --version N
+#   g layout skip-dead-nodes --version N --allow-missing-data   # gateways only
+# (--allow-missing-data is safe for gateways, which hold no data.)
 version: "3.9"
 
 services:
