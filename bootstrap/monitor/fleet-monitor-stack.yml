@@ -42,7 +42,7 @@ services:
 configs:
   fleet_monitor_sh:
     file: ./fleet-monitor.sh
-    name: fleet_monitor_sh_v1
+    name: fleet_monitor_sh_v2
 
 secrets:
   monitor_gchat_webhook:
