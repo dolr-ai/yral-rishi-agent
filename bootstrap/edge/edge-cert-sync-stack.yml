@@ -1,0 +1,56 @@
+# edge-cert-sync-stack.yml — keeps the edge's certificates current.
+#
+# edge-issuer renews certificates into Redis; this copies them into the
+# serving edge (see edge-cert-sync.sh). Without it, sites keep serving their
+# old certificates until those expire (~90 days) and then break.
+#
+# It must run on a manager: creating secrets and updating a service are
+# manager-only Docker operations. That is the only placement rule; any
+# manager will do, so it moves if one dies.
+#
+# Deploy (on a manager):
+#   docker stack deploy -c edge-cert-sync-stack.yml edge-cert-sync
+version: "3.9"
+
+services:
+  sync:
+    image: docker:27-cli
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apk add --no-cache --quiet redis jq >/dev/null
+        while true; do
+          echo "== $$(date -u +%FT%TZ)"
+          sh /edge-cert-sync.sh || echo "sync failed, retrying next round"
+          sleep "$$SYNC_EVERY"
+        done
+    environment:
+      # Caddy renews ~30 days before expiry, so twice a day is plenty.
+      SYNC_EVERY: "43200"
+    configs:
+      - source: edge_cert_sync_sh
+        target: /edge-cert-sync.sh
+    secrets:
+      - source: yral_v2_redis_primary_password_ceeb8b19
+        target: redis_password
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks: [yral-v2-data-plane]
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.role == manager]
+      restart_policy: { condition: any, delay: 30s }
+
+configs:
+  edge_cert_sync_sh:
+    file: ./edge-cert-sync.sh
+    name: edge_cert_sync_sh_v3
+
+secrets:
+  yral_v2_redis_primary_password_ceeb8b19:
+    external: true
+
+networks:
+  yral-v2-data-plane:
+    external: true

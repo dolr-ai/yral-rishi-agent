@@ -1,0 +1,197 @@
+{
+    admin 127.0.0.1:2019
+    # Fleet serves :443 only, with STATIC certs from secrets — zero ACME, so any
+    # number of replicas is safe (nothing to coordinate). The issuer owns :80.
+    auto_https disable_redirects
+}
+
+placeholder.rishi.local {
+    tls internal
+    respond "v2 cluster edge — yral-rishi-agent monolith deployed" 200
+}
+
+agent.rishi.yral.com {
+    tls /run/secrets/agent.rishi.yral.com.crt /run/secrets/agent.rishi.yral.com.key
+    encode gzip zstd
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "geolocation=(), microphone=(), camera=()"
+        -Server
+    }
+
+    reverse_proxy yral-rishi-agent:8000 {
+        lb_policy first
+        lb_try_duration 5s
+        lb_try_interval 250ms
+
+        health_uri /health
+        health_interval 2s
+        health_timeout 1s
+
+        fail_duration 10s
+        max_fails 2
+        unhealthy_status 5xx
+
+        transport http {
+            dial_timeout 1s
+        }
+
+        header_up X-Real-IP {remote_host}
+    }
+}
+
+langfuse-agent.rishi.yral.com {
+    tls /run/secrets/langfuse-agent.rishi.yral.com.crt /run/secrets/langfuse-agent.rishi.yral.com.key
+    encode gzip zstd
+    reverse_proxy langfuse-web:3000 {
+        health_uri /api/public/health
+        health_interval 10s
+        health_timeout 2s
+        transport http {
+            dial_timeout 2s
+        }
+        header_up X-Real-IP {remote_host}
+    }
+}
+
+analytics.rishi.yral.com {
+    tls /run/secrets/analytics.rishi.yral.com.crt /run/secrets/analytics.rishi.yral.com.key
+    encode gzip zstd
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Cache-Control "no-store"
+        -Server
+    }
+    reverse_proxy yral-rishi-analytics:8001 {
+        health_uri /healthz
+        health_interval 5s
+        health_timeout 2s
+        transport http {
+            dial_timeout 2s
+        }
+        header_up X-Real-IP {remote_host}
+    }
+}
+
+metabase.rishi.yral.com {
+    tls /run/secrets/metabase.rishi.yral.com.crt /run/secrets/metabase.rishi.yral.com.key
+    encode gzip zstd
+    reverse_proxy yral-metabase_metabase:3000 {
+        health_uri /api/health
+        health_interval 30s
+        health_timeout 5s
+        transport http {
+            dial_timeout 2s
+        }
+        header_up X-Real-IP {remote_host}
+    }
+}
+
+sentry.rishi.yral.com {
+    tls /run/secrets/sentry.rishi.yral.com.crt /run/secrets/sentry.rishi.yral.com.key
+    encode gzip zstd
+    reverse_proxy 10.0.1.11:80 {
+        transport http {
+            dial_timeout 3s
+        }
+        header_up X-Real-IP {remote_host}
+    }
+}
+
+# Our own S3 (Garage). The app opens 15-minute signed links here, and the
+# agent uploads here too. The Host header is passed through unchanged because
+# it is part of every signature.
+s3.rishi.yral.com {
+    tls /run/secrets/s3.rishi.yral.com.crt /run/secrets/s3.rishi.yral.com.key
+    reverse_proxy garage:3900 {
+        transport http {
+            dial_timeout 2s
+        }
+        header_up X-Real-IP {remote_host}
+    }
+}
+
+# Public files from Garage, read without a key: /<bucket>/<file>. Garage
+# picks the bucket from the Host header, so each public bucket is listed here.
+cdn.rishi.yral.com {
+    tls /run/secrets/cdn.rishi.yral.com.crt /run/secrets/cdn.rishi.yral.com.key
+    encode gzip zstd
+    header Cache-Control "public, max-age=86400"
+    handle_path /profile-pictures/* {
+        reverse_proxy garage:3902 {
+            header_up Host profile-pictures.web.garage
+        }
+    }
+    respond 404
+}
+
+amorae.ai, www.amorae.ai {
+    tls /run/secrets/amorae.ai.crt /run/secrets/amorae.ai.key
+    encode gzip zstd
+
+    request_body {
+        max_size 10MB
+    }
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "geolocation=(), microphone=(), camera=()"
+        # CSP is fully owned by the amorae app now (config.CONTENT_SECURITY_POLICY + middleware),
+        # so the edge sets NO Content-Security-Policy (Caddy's header directive REPLACES, so any
+        # edge CSP would clobber the app's). Clickjacking protection stays at the edge via the
+        # X-Frame-Options: DENY above — independent of the app being correct.
+        Cross-Origin-Opener-Policy "same-origin"
+        Cross-Origin-Resource-Policy "same-origin"
+        Cache-Control "no-store"
+        -Server
+    }
+
+    reverse_proxy amorae_web:8003 {
+        lb_policy first
+        lb_try_duration 5s
+        lb_try_interval 250ms
+
+        health_uri /health
+        health_interval 5s
+        health_timeout 2s
+
+        fail_duration 30s
+        max_fails 2
+        unhealthy_status 5xx
+
+        transport http {
+            dial_timeout 2s
+        }
+
+        header_up X-Real-IP {remote_host}
+    }
+}
+
+atmz.ai {
+    tls internal
+    encode gzip zstd
+    header {
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
+    }
+    root * /srv/atmz
+    file_server
+}
+
+www.atmz.ai {
+    tls internal
+    redir https://atmz.ai{uri} permanent
+}
+
