@@ -45,7 +45,7 @@ services:
 configs:
   edge_cert_sync_sh:
     file: ./edge-cert-sync.sh
-    name: edge_cert_sync_sh_v2
+    name: edge_cert_sync_sh_v3
 
 secrets:
   yral_v2_redis_primary_password_ceeb8b19:

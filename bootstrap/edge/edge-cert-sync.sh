@@ -29,6 +29,12 @@ mounted_secret() {
 changes=""
 for crt_key in $(redis --scan --pattern 'caddy_issuer/certificates/*/*/*.crt'); do
   host=$(basename "$crt_key" .crt)
+  # The host comes from a Redis key name and ends up in secret names and in
+  # `docker service update` options, so accept only a plain hostname: anything
+  # else could inject options. Nothing legitimate is skipped by this.
+  case "$host" in
+    *[!a-z0-9.-]*|-*|"") echo "skipping unexpected certificate key: $crt_key"; continue ;;
+  esac
   key_key="${crt_key%.crt}.key"
   crt_pem=$(redis_pem "$crt_key")
   hash=$(printf '%s' "$crt_pem" | sha256sum | cut -c1-12)
