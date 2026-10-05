@@ -132,6 +132,62 @@ cdn.rishi.yral.com {
     respond 404
 }
 
+
+billing.rishi.yral.com {
+    # A REAL, publicly-trusted certificate is mandatory here — not `tls internal`.
+    # Apple and Google call this hostname directly to deliver store notifications
+    # and they validate the chain; a self-signed cert means every renewal
+    # notification silently fails. (The old billing.sarvesh.yral.com could get
+    # away with a self-signed origin only because Cloudflare fronted it in
+    # non-strict mode. *.rishi.yral.com is a wildcard A record straight to the
+    # swarm nodes — no proxy in front, so our cert IS the public cert.)
+    #
+    # These files come from the edge-issuer's Let's Encrypt certs, pushed into
+    # Swarm secrets by edge-cert-sync.sh. deploy/provision-edge-cert.sh sets that
+    # up; the block will not provision until those secrets are mounted.
+    tls /run/secrets/billing.rishi.yral.com.crt /run/secrets/billing.rishi.yral.com.key
+    encode gzip zstd
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        -Server
+    }
+    # Points at the service VIP alias, so it always resolves to the live task.
+    # Do NOT use a container hostname here: that resolves to one task's own IP
+    # and goes stale the moment the task is replaced.
+    reverse_proxy yral-rishi-billing:3000 {
+        health_uri /health
+        health_interval 10s
+        health_timeout 5s
+        # Must be multi-line. Caddy rejects `transport http { dial_timeout 2s }`
+        # on one line with "Unexpected next token after '{' on same line".
+        transport http {
+            dial_timeout 2s
+        }
+        header_up X-Real-IP {remote_host}
+    }
+}
+
+# The old public name of billing, fronted by Cloudflare's proxy (non-strict),
+# so the origin certificate can be internal, as for atmz.ai. Serves the same
+# billing service; pointing the DNS record here is the whole cutover, so the
+# app and the Apple/Google webhooks need no change.
+billing.sarvesh.yral.com {
+    tls internal
+    encode gzip zstd
+    reverse_proxy yral-rishi-billing:3000 {
+        health_uri /health
+        health_interval 10s
+        health_timeout 5s
+        # Must be multi-line. Caddy rejects `transport http { dial_timeout 2s }`
+        # on one line with "Unexpected next token after '{' on same line".
+        transport http {
+            dial_timeout 2s
+        }
+        header_up X-Real-IP {remote_host}
+    }
+}
+
 amorae.ai, www.amorae.ai {
     tls /run/secrets/amorae.ai.crt /run/secrets/amorae.ai.key
     encode gzip zstd
