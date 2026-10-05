@@ -5,16 +5,40 @@ stdin — the same way the nightly workflow does — then asserts on the exit co
 and the message. Nothing here reads the script's source.
 
 The IN_SYNC fixture below is the real output of `docker node inspect` across
-the live fleet on 2026-09-25, so these test the format we actually receive.
+the fleet on 2026-09-25, so these test the format we actually receive. They run
+against a fixed test inventory (FIXTURE_INVENTORY), not the repo's
+servers.config, so adding or retiring servers never breaks them.
 """
 
 import shutil
 import subprocess
 import sys
 import pathlib
+import tempfile
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 CHECKER = REPO / "scripts" / "ci" / "check_fleet_drift.py"
+
+# The 2026-09-25 fleet: six Hetzner servers, plus one node of a second site.
+FIXTURE_INVENTORY = """\
+FLEET_NODES="
+rishi-1     hetzner-de  worker   deploy        138.201.137.181  -
+rishi-2     hetzner-de  worker   deploy        136.243.150.84  -
+rishi-3     hetzner-de  worker   deploy        136.243.147.225  -
+rishi-4     hetzner-de  manager  rishi-deploy  138.201.128.108  -
+rishi-5     hetzner-de  manager  rishi-deploy  88.99.160.251  -
+rishi-6     hetzner-de  manager  rishi-deploy  162.55.88.112  -
+rishi-in-1  azure-in    manager  rishi         20.0.0.1  -
+"
+"""
+
+# The checker reads servers.config next to its own scripts/ci/ folder, so a
+# copy of it is run from a throwaway tree holding the fixture inventory.
+_FIXTURE_ROOT = pathlib.Path(tempfile.mkdtemp())
+(_FIXTURE_ROOT / "scripts" / "ci").mkdir(parents=True)
+shutil.copy(CHECKER, _FIXTURE_ROOT / "scripts" / "ci" / CHECKER.name)
+(_FIXTURE_ROOT / "servers.config").write_text(FIXTURE_INVENTORY)
+FIXTURE_CHECKER = _FIXTURE_ROOT / "scripts" / "ci" / CHECKER.name
 
 IN_SYNC = """\
 rishi-1 worker ready active 138.201.137.181
@@ -28,11 +52,10 @@ rishi-6 manager ready active 162.55.88.112
 
 def run(swarm_state):
     return subprocess.run(
-        [sys.executable, str(CHECKER), "--site", "hetzner-de"],
+        [sys.executable, str(FIXTURE_CHECKER), "--site", "hetzner-de"],
         input=swarm_state,
         capture_output=True,
         text=True,
-        cwd=REPO,
     )
 
 
@@ -109,8 +132,8 @@ def test_reports_every_difference_not_just_the_first():
 
 def run_flag(flag):
     return subprocess.run(
-        [sys.executable, str(CHECKER), flag, "--site", "hetzner-de"],
-        capture_output=True, text=True, cwd=REPO,
+        [sys.executable, str(FIXTURE_CHECKER), flag, "--site", "hetzner-de"],
+        capture_output=True, text=True,
     )
 
 
@@ -140,7 +163,7 @@ def test_sites_flag_lists_every_site():
     """The drift workflow iterates this instead of hardcoding one site, so a
     second cluster cannot go unchecked (Codex review on #530)."""
     result = subprocess.run(
-        [sys.executable, str(CHECKER), "--sites"], capture_output=True, text=True, cwd=REPO
+        [sys.executable, str(FIXTURE_CHECKER), "--sites"], capture_output=True, text=True
     )
     assert result.returncode == 0
     assert "hetzner-de" in result.stdout.split()
