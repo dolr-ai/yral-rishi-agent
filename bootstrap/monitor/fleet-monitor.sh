@@ -40,6 +40,9 @@ fi
 
 # Storage, services, servers.
 [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://garage:3903/health)" = 200 ] || add "Garage (our S3) reports unhealthy"
+# Sentry runs outside the swarm (docker compose on one server); its nginx keeps
+# the fixed address 10.0.1.11 on yral-v2-public-web, which the edge uses too.
+[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://10.0.1.11/_health/)" = 200 ] || add "Sentry is not answering (it runs outside the swarm: see yral-rishi-sentry RUNBOOK §10)"
 short=$(docker service ls --format '{{.Name}} {{.Replicas}}' | awk '{split($2,a,"/"); if (a[1]!=a[2]) printf "%s(%s) ", $1, $2}')
 [ -n "$short" ] && add "services below their copies: $short"
 down=$(docker node ls --format '{{.Hostname}} {{.Status}} {{.Availability}}' | awk '$3=="Active" && $2!="Ready"{printf "%s ", $1}')
