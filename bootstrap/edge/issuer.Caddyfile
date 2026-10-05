@@ -18,6 +18,7 @@ metabase.rishi.yral.com,
 sentry.rishi.yral.com,
 s3.rishi.yral.com,
 cdn.rishi.yral.com,
+billing.rishi.yral.com,
 amorae.ai,
 www.amorae.ai {
     respond "edge issuer — cert management only" 200
