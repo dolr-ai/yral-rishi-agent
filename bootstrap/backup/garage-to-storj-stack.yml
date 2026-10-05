@@ -1,0 +1,58 @@
+# garage-to-storj-stack.yml — nightly copy of all of Garage into Storj.
+#
+# Runs garage-to-storj.sh once a day at 04:00 UTC (after the 01:00 database
+# backup and the 02:30 Sentry backup). Any server will do; it only talks to
+# Garage over the overlay and to Storj over the internet.
+#
+# Deploy (on a manager):
+#   docker stack deploy -c garage-to-storj-stack.yml garage-to-storj
+# Run now:  docker service update --force garage-to-storj_mirror
+version: "3.9"
+
+services:
+  mirror:
+    image: rclone/rclone:1.68.2
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          echo "== $$(date -u +%FT%TZ) start"
+          sh /garage-to-storj.sh && echo "== $$(date -u +%FT%TZ) done" || echo "== run failed"
+          # Sleep until the next 04:00 UTC.
+          now=$$(date -u +%s); next=$$(( (now / 86400) * 86400 + 4 * 3600 ))
+          [ $$next -le $$now ] && next=$$(( next + 86400 ))
+          sleep $$(( next - now ))
+        done
+    environment:
+      HISTORY_DAYS: "30"
+    configs:
+      - source: garage_to_storj_sh
+        target: /garage-to-storj.sh
+    secrets:
+      - source: mirror_garage_read_key
+        target: garage_read_key
+      - source: mirror_storj_key
+        target: storj_key
+      - source: monitor_gchat_webhook
+        target: gchat_webhook
+    networks: [yral-v2-data-plane]
+    deploy:
+      replicas: 1
+      restart_policy: { condition: any, delay: 60s }
+
+configs:
+  garage_to_storj_sh:
+    file: ./garage-to-storj.sh
+    name: garage_to_storj_sh_v1
+
+secrets:
+  mirror_garage_read_key:
+    external: true
+  mirror_storj_key:
+    external: true
+  monitor_gchat_webhook:
+    external: true
+
+networks:
+  yral-v2-data-plane:
+    external: true
