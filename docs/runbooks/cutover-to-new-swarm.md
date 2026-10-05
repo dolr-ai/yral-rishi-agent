@@ -82,3 +82,17 @@ the new swarm has run cleanly for a week.
 - ClickHouse ×2 + Metabase self-heal by restarting on another node from that node's copy
   (Rishi chose option (a): restore from copy, ≤1 day loss). Scheduled re-copies come next.
 - Gemini from India: `GEMINI_VERTEX_LOCATION=asia-south1` (chat ~0.7–1.4 s vs ~0.6 s from Germany).
+
+## Done 2026-10-04 — what differed from the plan
+
+- **Stopped services have no task to read secrets from.** `migrate_service.sh` now starts a
+  throwaway `cutover-secrets-<service>` (same secrets, runs `sleep`, never restarts) and reads
+  from that. Remove those services afterwards.
+- **Private GHCR images** couldn't be pulled on India (no registry login there yet); they were
+  copied with `docker save | docker load` from rishi-6.
+- **WAL-G credentials** were added to the live Patroni service by hand; `postgres-stack.yml` now
+  passes `AWS_*` through so a redeploy keeps them.
+- **Sentry** (self-hosted, docker compose, not a swarm service) moved too: same
+  `yral-rishi-sentry` install on india-3, only its Postgres copied (projects, users, DSN keys,
+  alert rules). Old event details stayed on rishi-3, which is stopped, not deleted. Its nginx
+  keeps `10.0.1.11` on `yral-v2-public-web`, so the edge config didn't change.
