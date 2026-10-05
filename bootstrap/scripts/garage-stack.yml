@@ -1,0 +1,91 @@
+# garage-stack.yml — our own S3, on our own servers' disks.
+#
+# Rishi, 2026-10-04: every object we store (database backups, uploads, Sentry
+# settings) lives here, inside the swarm. No outside object storage. Accepted
+# risk: until a second provider's servers hold copies, a fleet-wide disaster
+# loses the database and its backups together.
+#
+#   garage   One copy on EVERY server (global), so a new server runs it with no
+#            change here. Copies find each other through the Consul already
+#            running in the postgres stack, and each works out its own overlay
+#            address, so a copy that moves or restarts with a new IP rejoins by
+#            itself (peers are known by node ID, not address).
+#            Every copy needs a ROLE in Garage's layout before it's any use:
+#            storage (holds data) or gateway (holds none, forwards requests).
+#            A copy with no role doesn't know any keys or buckets, and since
+#            the swarm spreads requests over all copies, it fails a share of
+#            them ("No such key"). So when a server joins, give it a role.
+#            Every object is kept on 3 storage servers, so losing one server
+#            loses nothing and writes keep working.
+#
+# Clients use http://garage:3900 (the swarm spreads requests over all copies).
+#
+# Deploy (on a manager; secrets are 32 random bytes, hex, created once):
+#   docker stack deploy -c garage-stack.yml garage
+# Give a server a role, then commit it (N = current layout version + 1):
+#   g() { docker exec $(docker ps -qf name=garage_garage) /garage "$@"; }
+#   g status                                        # node IDs, roles
+#   g layout assign -z <hostname> -c 1T <node-id>   # storage
+#   g layout assign -g -z gateway <node-id>         # gateway
+#   g layout apply --version N
+# Before ANY server leaves (drain, power-off, cancel), take it out of the
+# layout first: `g layout remove <node-id>`, apply, and for a storage server
+# wait until its data has moved (`g layout history` shows the old version
+# Historical). Garage keeps its bucket and key lists on every node in the
+# layout, gateways included, so a node that vanishes while still listed
+# counts against the majority. On 2026-10-04 draining 6 listed gateways at
+# once stopped bucket and key operations. If that happens anyway:
+#   g layout remove <dead-id> …; g layout apply --version N
+#   g layout skip-dead-nodes --version N --allow-missing-data   # gateways only
+# (--allow-missing-data is safe for gateways, which hold no data.)
+version: "3.9"
+
+services:
+  garage:
+    image: dxflrs/garage:v2.3.0
+    hostname: "garage-{{.Node.Hostname}}"
+    environment:
+      GARAGE_RPC_SECRET_FILE: /run/secrets/garage_rpc_secret
+      GARAGE_ADMIN_TOKEN_FILE: /run/secrets/garage_admin_token
+    configs:
+      - source: garage_toml
+        target: /etc/garage.toml
+    # Garage refuses to start if a secret file is readable by everyone, which
+    # is swarm's default (0444).
+    secrets:
+      - { source: garage_rpc_secret, mode: 0400 }
+      - { source: garage_admin_token, mode: 0400 }
+    volumes:
+      # metadata holds this copy's node ID, which is how peers recognise it
+      # after a restart. Keep it with the data, on the same server.
+      - garage-meta:/var/lib/garage/meta
+      - garage-data:/var/lib/garage/data
+    # data-plane: peers, Consul and the apps. public-web: the edge, which
+    # serves s3.rishi.yral.com (signed links the app opens) and
+    # cdn.rishi.yral.com (public files).
+    networks: [yral-v2-data-plane, yral-v2-public-web]
+    deploy:
+      mode: global
+      update_config: { parallelism: 1, delay: 30s, order: stop-first, failure_action: pause }
+      restart_policy: { condition: any, delay: 5s }
+
+configs:
+  garage_toml:
+    file: ./garage.toml
+    name: garage_toml_v4
+
+secrets:
+  garage_rpc_secret:
+    external: true
+  garage_admin_token:
+    external: true
+
+volumes:
+  garage-meta:
+  garage-data:
+
+networks:
+  yral-v2-data-plane:
+    external: true
+  yral-v2-public-web:
+    external: true

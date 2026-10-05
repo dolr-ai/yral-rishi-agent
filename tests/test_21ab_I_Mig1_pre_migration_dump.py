@@ -8,6 +8,7 @@ happens on the next migration deploy — the workflow doesn't run pg_dump
 itself.
 """
 
+import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -52,18 +53,16 @@ def test_dump_uses_custom_format_and_gzip_6():
 
 
 def test_dump_uploaded_to_separate_s3_prefix():
-    """Must NOT share the WAL-G prefix — accidentally polluting WAL-G
-    state would break PITR. Separate dedicated prefix."""
+    """Must NOT share the WAL-G prefix: dumps landing inside WAL-G's folder
+    would corrupt its backup list and break PITR. The default prefix is read
+    out of the script and checked against WAL-G's folder by value."""
     body = RUNNER.read_text()
-    assert "yral-rishi-agent-pre-migration-dumps" in body
-    # WAL-G's prefix is `yral-rishi-agent-walg` — they must not be the
-    # same string anywhere.
-    pre_pos = body.find("yral-rishi-agent-pre-migration-dumps")
-    walg_pos = body.find("yral-rishi-agent-walg")
-    if walg_pos != -1:
-        # If walg is referenced at all in this file, it must NOT be the
-        # same value as the pre-migration prefix.
-        assert pre_pos != walg_pos
+    match = re.search(r'PRE_MIGRATION_DUMP_S3_PREFIX:-(s3://[^}"]+)', body)
+    assert match, "pre-migration dump has no default S3 prefix"
+    prefix = match.group(1).rstrip("/")
+    assert prefix.startswith("s3://")
+    # WAL-G writes under .../yral-rishi-agent-walg (postgres-stack.yml).
+    assert "yral-rishi-agent-walg" not in prefix
 
 
 def test_dump_skippable_via_env():

@@ -1,0 +1,57 @@
+# fleet-monitor-stack.yml — hourly health check, alerts to Google Chat.
+#
+# Runs fleet-monitor.sh every hour on any manager (it reads `docker service`
+# and `docker node` state, which only managers can). Everything else it checks
+# over the network: Patroni's status API, Garage, the edge's certificates.
+#
+# Deploy (on a manager):
+#   docker stack deploy -c fleet-monitor-stack.yml fleet-monitor
+# Run a check now:  docker service update --force fleet-monitor_check
+version: "3.9"
+
+services:
+  check:
+    image: docker:27-cli
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apk add --no-cache --quiet curl jq openssl aws-cli coreutils >/dev/null
+        while true; do
+          echo "== $$(date -u +%FT%TZ)"
+          sh /fleet-monitor.sh || echo "monitor run failed"
+          sleep $$(( 3600 - $$(date +%s) % 3600 ))
+        done
+    configs:
+      - source: fleet_monitor_sh
+        target: /fleet-monitor.sh
+    secrets:
+      - source: monitor_gchat_webhook
+        target: gchat_webhook
+      - source: monitor_garage_read_key
+        target: garage_read_key
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    # data-plane: Patroni and Garage. public-web: the edge, for certificates.
+    networks: [yral-v2-data-plane, yral-v2-public-web]
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.role == manager]
+      restart_policy: { condition: any, delay: 30s }
+
+configs:
+  fleet_monitor_sh:
+    file: ./fleet-monitor.sh
+    name: fleet_monitor_sh_v1
+
+secrets:
+  monitor_gchat_webhook:
+    external: true
+  monitor_garage_read_key:
+    external: true
+
+networks:
+  yral-v2-data-plane:
+    external: true
+  yral-v2-public-web:
+    external: true
