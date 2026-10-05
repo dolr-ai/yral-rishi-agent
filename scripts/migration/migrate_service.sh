@@ -26,6 +26,9 @@ if [ -z "$NODE" ]; then
     docker service create --quiet --detach=false --name $READ --restart-condition none \$args alpine sleep 900 >/dev/null" \
     || { echo "$SVC: could not start a secret reader"; exit 1; }
   NODE=$(ssh -o BatchMode=yes $MGR "docker service ps $READ --filter desired-state=running --format '{{.Node}}' | head -1")
+  # The reader holds every secret of $SVC: remove it as soon as this script
+  # ends, whether the clone worked or not.
+  trap 'ssh -o BatchMode=yes $MGR "docker service rm $READ >/dev/null 2>&1"' EXIT
 fi
 scp -q "$S/clone_service.py" $NEW:stacks/clone_service.py
 {
