@@ -13,7 +13,7 @@ in; see .github/workflows/fleet-drift.yml for the producing command.
 Expected stdin, one line per node, five whitespace-separated fields:
 
     <hostname> <role> <state> <availability> <address>
-    rishi-4 manager ready active 138.201.128.108
+    rishi-azure-central-india-1 manager ready active 20.219.36.211
 
 Run:  docker node inspect ... | python scripts/ci/check_fleet_drift.py
 """
