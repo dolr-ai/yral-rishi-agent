@@ -4,8 +4,8 @@
 video URL from us — it builds one from the post's `video_uid` and creator
 principal (`IndividualUserDataSourceImpl.videoUrl`):
 
-    https://cdn-yral-sfw.yral.com/{principal}/{video_id}.mp4
-    https://cdn-yral-sfw.yral.com/{principal}/{video_id}-thumbnail.png
+    https://cdn.rishi.yral.com/{principal}/{video_id}.mp4
+    https://cdn.rishi.yral.com/{principal}/{video_id}-thumbnail.png
 
 So a generated video is only playable if it sits at exactly `{principal}/{video_id}`
 in whatever bucket that CDN hostname fronts. Changing bucket or provider is a
